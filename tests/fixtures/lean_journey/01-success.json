@@ -1,0 +1,46 @@
+{
+  "schema_version": "lean-journey-fixture.v1",
+  "fixture_key": "journey_success_package_ready",
+  "scenario": "success",
+  "description": "Sesion completa con discovery, canvas, blueprint, tools, evaluacion, estimacion y package listos para handoff.",
+  "journey_stage": "build",
+  "session_status": "ready",
+  "artifact_versions": {
+    "discovery": 1,
+    "canvas": 1,
+    "blueprint": 4,
+    "tool_recommendation": 1,
+    "evaluation_dataset": 2,
+    "evaluation_rubric": 2,
+    "evaluation_run": 1,
+    "estimation_report": 1,
+    "acp_preview": 1
+  },
+  "trace_summary": {
+    "llm_run_count": 4,
+    "warnings_count": 0,
+    "effective_context_backend": "workspace_staged",
+    "active_provider": "openai",
+    "llm_capabilities": [
+      "normalize_discovery",
+      "build_canvas",
+      "synthesize_blueprint_narrative",
+      "recommend_minimal_tools"
+    ],
+    "checkpoint_count": 8
+  },
+  "source_actions": [
+    "create_session",
+    "normalize_discovery",
+    "build_canvas",
+    "build_blueprint",
+    "recommend_tools",
+    "approve_tools_selection",
+    "bootstrap_evaluation_workbench",
+    "evaluate_blueprint",
+    "generate_estimation_report",
+    "generate_acp_preview"
+  ],
+  "warnings": [],
+  "stale_reasons": []
+}

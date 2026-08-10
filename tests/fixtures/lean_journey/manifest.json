@@ -1,0 +1,20 @@
+{
+  "schema_version": "lean-journey-fixture-manifest.v1",
+  "generated_on": "2026-07-22",
+  "cases": [
+    "01-success.json",
+    "02-missing-input.json",
+    "03-fallback.json",
+    "04-stale.json"
+  ],
+  "required_scenarios": [
+    "success",
+    "missing_input",
+    "fallback",
+    "stale"
+  ],
+  "notes": [
+    "Fixtures resumidos para CI0 con foco en ownership, versiones, trazas y stage lineage.",
+    "Cada source_action incluido debe resolver contra journey_stage_contract.py."
+  ]
+}

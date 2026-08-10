@@ -1,0 +1,33 @@
+{
+  "schema_version": "lean-journey-fixture.v1",
+  "fixture_key": "journey_canvas_fallback_requires_review",
+  "scenario": "fallback",
+  "description": "Sesion donde el provider no pudo construir el canvas y el runtime expuso fallback deterministico visible.",
+  "journey_stage": "define",
+  "session_status": "needs_review",
+  "artifact_versions": {
+    "discovery": 1,
+    "canvas": 1
+  },
+  "trace_summary": {
+    "llm_run_count": 2,
+    "warnings_count": 1,
+    "effective_context_backend": "inline_context",
+    "active_provider": "openai",
+    "llm_capabilities": [
+      "normalize_discovery",
+      "build_canvas"
+    ],
+    "checkpoint_count": 3
+  },
+  "source_actions": [
+    "create_session",
+    "normalize_discovery",
+    "build_canvas"
+  ],
+  "warnings": [
+    "OpenAI no pudo construir el canvas; se uso fallback deterministico.",
+    "El canvas requiere revision manual."
+  ],
+  "stale_reasons": []
+}

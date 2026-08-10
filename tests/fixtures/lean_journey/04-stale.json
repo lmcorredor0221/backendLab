@@ -1,0 +1,47 @@
+{
+  "schema_version": "lean-journey-fixture.v1",
+  "fixture_key": "journey_upstream_change_marks_downstream_stale",
+  "scenario": "stale",
+  "description": "Sesion donde un cambio de blueprint invalida herramientas aprobadas y estimacion para forzar rerun controlado.",
+  "journey_stage": "estimate",
+  "session_status": "needs_review",
+  "artifact_versions": {
+    "discovery": 1,
+    "canvas": 1,
+    "blueprint": 5,
+    "tool_recommendation": 1,
+    "evaluation_run": 1,
+    "estimation_report": 1
+  },
+  "trace_summary": {
+    "llm_run_count": 5,
+    "warnings_count": 2,
+    "effective_context_backend": "workspace_staged",
+    "active_provider": "openai",
+    "llm_capabilities": [
+      "normalize_discovery",
+      "build_canvas",
+      "synthesize_blueprint_narrative",
+      "recommend_minimal_tools"
+    ],
+    "checkpoint_count": 7
+  },
+  "source_actions": [
+    "create_session",
+    "normalize_discovery",
+    "build_canvas",
+    "build_blueprint",
+    "recommend_tools",
+    "approve_tools_selection",
+    "manual_patch",
+    "generate_estimation_report"
+  ],
+  "warnings": [
+    "Tool recommendation y estimate requieren rerun despues del cambio aguas arriba."
+  ],
+  "stale_reasons": [
+    "tool_recommendation_context_changed",
+    "approved_tools_digest_outdated",
+    "blueprint_version_changed"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": "lean-journey-fixture.v1",
+  "fixture_key": "journey_missing_input_discovery_blocked",
+  "scenario": "missing_input",
+  "description": "Sesion detenida en discovery por faltantes criticos antes de desbloquear build-canvas.",
+  "journey_stage": "discover",
+  "session_status": "needs_review",
+  "artifact_versions": {
+    "discovery": 1
+  },
+  "trace_summary": {
+    "llm_run_count": 1,
+    "warnings_count": 1,
+    "effective_context_backend": "inline_context",
+    "active_provider": "openai",
+    "llm_capabilities": [
+      "normalize_discovery"
+    ],
+    "checkpoint_count": 2
+  },
+  "source_actions": [
+    "create_session",
+    "normalize_discovery"
+  ],
+  "warnings": [
+    "Hay campos pendientes antes de avanzar.",
+    "Completar desired_outcome y autonomy_level antes de construir el canvas."
+  ],
+  "stale_reasons": []
+}
