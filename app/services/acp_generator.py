@@ -28,6 +28,7 @@ from app.services.acp_serialization import (
 )
 from app.services.acp_visualization import build_acp_visualization_files
 from app.services.acp_validation import build_acp_file_entry, build_acp_preview
+from app.services.deliverable_catalog.registry_service import list_registry_entries
 
 
 def _slugify(value: str, default: str = "item") -> str:
@@ -480,45 +481,66 @@ def _build_manifest_file(snapshot: SessionSnapshot) -> ACPFileEntry:
 def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
     discovery = snapshot.discovery
     blueprint = snapshot.blueprint
+    canvas = snapshot.canvas
+    title = snapshot.session.title or "Agent Construction Package"
+
+    desired_outcome = discovery.desired_outcome if discovery and discovery.desired_outcome else "Automatizar flujos operativos con garantías de trazabilidad y gobernanza."
+    problem_statement = discovery.problem_statement if discovery and discovery.problem_statement else "Optimización operativa mediante agentes de IA."
+    primary_user = (canvas.agent_profile.primary_user if canvas and canvas.agent_profile else None) or (discovery.current_user if discovery else "Usuario operativo")
+    architecture = blueprint.architecture if blueprint and blueprint.architecture else "Arquitectura agéntica estructurada"
+    reasoning_pattern = blueprint.reasoning_pattern if blueprint and blueprint.reasoning_pattern else "Plan-and-Execute"
+    memory_strategy = blueprint.memory_strategy if blueprint and blueprint.memory_strategy else "Memoria dual (sesión + RAG)"
+    autonomy_level = discovery.autonomy_level if discovery and discovery.autonomy_level else "Supervisada (HITL)"
+    tool_count = len(blueprint.tools) if blueprint and blueprint.tools else 0
+
     sections = [
-        f"# {snapshot.session.title or 'Agent Construction Package'}",
+        f"# {title} — Agent Construction Package (ACP v2)",
         "",
-        "## Objetivo",
-        discovery.desired_outcome if discovery and discovery.desired_outcome else "Pendiente de revision.",
+        "> **Paquete de Construcción Portable y Ejecutable para Desarrolladores e IDEs Agénticos**",
+        "> Este paquete contiene la especificación formal, contratos tipados, prompts de ingeniería, suite de pruebas y guías de ensamblaje para construir y desplegar el agente en producción sin ambigüedades.",
         "",
-        "## Arquitectura base",
-        f"- topology: {blueprint.architecture if blueprint else 'needs_review'}",
-        f"- reasoning_pattern: {blueprint.reasoning_pattern if blueprint else 'needs_review'}",
-        f"- autonomy_level: {discovery.autonomy_level if discovery else 'needs_review'}",
+        "## 1. Resumen Ejecutivo del Agente",
+        f"- **Objetivo de Negocio:** {desired_outcome}",
+        f"- **Problema Operativo:** {problem_statement}",
+        f"- **Usuario / Actor Primario:** {primary_user}",
+        f"- **Topología de Arquitectura:** `{architecture}`",
+        f"- **Modelo de Razonamiento:** `{reasoning_pattern}`",
+        f"- **Estrategia de Memoria:** `{memory_strategy}`",
+        f"- **Nivel de Autonomía:** `{autonomy_level}`",
+        f"- **Herramientas Gobernadas:** `{tool_count}` herramientas con contratos de interfaz.",
         "",
-        "## Contenido del paquete",
-        "- business",
-        "- architecture",
-        "- cognition",
-        "- memory",
-        "- tools",
-        "- workflows",
-        "- prompts",
-        "- runtime",
-        "- launcher",
-        "- adapters",
-        "- conformance",
-        "- evaluation",
-        "- deployment",
-        "- observability",
+        "## 2. Estructura de Directorios del Paquete",
+        "```text",
+        "ACP/",
+        "├── manifest.yaml             # Declaración formal de dependencias y versiones",
+        "├── business/                 # Lean canvas, KPIs y restricciones de negocio",
+        "├── architecture/             # Topología, C4 context y traza de decisiones",
+        "├── cognition/                # Patrones de razonamiento y perfiles de workflow",
+        "├── memory/                   # Estrategia de memoria dual y context budgets",
+        "├── knowledge/                # Fuentes documentales, embeddings e ingestión",
+        "├── tools/                    # Contratos tipados y permisos de herramientas",
+        "├── workflows/                # Máquinas de estado y grafos ejecutables",
+        "├── prompts/                  # Prompts de roles (planner, evaluator, system, skills)",
+        "├── adapters/                 # Guías de configuración para Cursor, Codex y Claude Code",
+        "├── conformance/              # Reglas de validación y linters de construcción",
+        "├── evaluation/               # Datasets de evaluación y casos de prueba",
+        "├── deployment/               # Especificaciones de infraestructura y runtime",
+        "└── launcher/                 # Scripts de inicialización multiplataforma",
+        "```",
         "",
-        "## Arranque portable",
+        "## 3. Instrucciones de Arranque y Asistencia con IDEs",
+        "### Aceleración con Herramientas Agénticas:",
+        "- **Cursor IDE:** Abre la raíz del proyecto en Cursor. Las directivas de contexto se encuentran preconfiguradas.",
+        "- **Claude Code:** Ejecuta `claude` en el directorio para que interprete automáticamente `ACP/manifest.yaml` y los prompts de `ACP/prompts/`.",
+        "- **Codex CLI:** Ejecuta `codex` para inicializar el asistente de construcción.",
         "",
-        "Despues de extraer el ZIP, ejecuta uno de estos comandos desde la raiz del paquete:",
+        "### Script de Inicialización Automática:",
+        "- **Windows (PowerShell):** `ACP/launcher/start-acp.ps1`",
+        "- **Windows (CMD):** `ACP\\launcher\\start-acp.bat`",
+        "- **macOS / Linux:** `sh ACP/launcher/start-acp.sh`",
         "",
-        "- Windows PowerShell: `ACP/launcher/start-acp.ps1`",
-        "- Windows CMD: `ACP\\launcher\\start-acp.bat`",
-        "- macOS/Linux: `sh ACP/launcher/start-acp.sh`",
-        "",
-        "El launcher detecta herramientas agenticas e IDEs disponibles, genera `ACP/launcher/launch-report.json` y no instala dependencias ni ejecuta acciones destructivas.",
-        "",
-        "## Fuente de verdad",
-        "Este ACP se genera a partir del discovery, canvas, blueprint, evaluacion y observabilidad del Lean Agent Builder.",
+        "## 4. Gobernanza y Fuente de Verdad",
+        "Este paquete ha sido generado y validado contra el baseline del **Lean Agent Builder**. Todo cambio en los contratos debe registrarse en los archivos de conformance correspondientes.",
     ]
     return build_acp_file_entry(
         path="ACP/README.md",
@@ -528,6 +550,93 @@ def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
         source_sections=["session.title", "discovery", "blueprint", "evaluation"],
         content_text=serialize_markdown_document("\n".join(sections)),
     )
+
+
+def _deliverable_catalog_entry_payload(entry) -> dict[str, Any]:
+    def path_hint(path: str) -> str:
+        normalized = str(path or "").strip()
+        if normalized.startswith("ACP/"):
+            return normalized.replace("ACP/", "${ACP_ROOT}/", 1)
+        return normalized
+
+    return {
+        "key": entry.deliverable_key,
+        "title": entry.title,
+        "description": entry.description,
+        "type": entry.deliverable_type.value,
+        "category": entry.category,
+        "stage": entry.stage,
+        "enabled_from_stage": entry.enabled_from_stage,
+        "product_scope": list(entry.product_scope),
+        "required_tier": entry.required_tier.value,
+        "access_level": entry.access_level,
+        "formats": entry.formats.model_dump(mode="json"),
+        "generation_mode": entry.generation_mode.value,
+        "prompt_policy": entry.prompt_policy.model_dump(mode="json"),
+        "context_policy": entry.context_policy.model_dump(mode="json"),
+        "quality_policy": entry.quality_policy.model_dump(mode="json"),
+        "dependency_policy": entry.dependency_policy.model_dump(mode="json"),
+        "path_reference_policy": "Path hints use ${ACP_ROOT}; they are not active ZIP references unless materialized in the package.",
+        "canonical_path_hints": [path_hint(path) for path in entry.canonical_paths],
+        "portable_path_hints": [path_hint(path) for path in entry.portable_paths],
+        "exportable": entry.exportable,
+        "blueprint_download": entry.blueprint_download,
+        "acp_download": entry.acp_download,
+    }
+
+
+def _build_deliverable_catalog_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    entries = [entry for entry in list_registry_entries() if entry.active]
+    acp_entries = [entry for entry in entries if "acp" in entry.product_scope]
+    blueprint_entries = [entry for entry in entries if entry.blueprint_download]
+    acp_payload = {
+        "schema_version": "acp-deliverable-catalog.v1",
+        "package_portability": {
+            "portable": True,
+            "requires_origin_platform": False,
+            "contains_internal_session_ids": False,
+        },
+        "source_policy": "Deliverable Catalog governance resolved at export time.",
+        "session_title": snapshot.session.title,
+        "entries": [_deliverable_catalog_entry_payload(entry) for entry in acp_entries],
+        "counts": {
+            "total": len(acp_entries),
+            "diagrams": sum(1 for entry in acp_entries if entry.deliverable_type.value == "diagram"),
+            "prompts": sum(1 for entry in acp_entries if entry.deliverable_type.value == "prompt"),
+            "contracts": sum(1 for entry in acp_entries if entry.deliverable_type.value == "contract"),
+            "tests": sum(1 for entry in acp_entries if entry.deliverable_type.value == "test"),
+            "packages": sum(1 for entry in acp_entries if entry.deliverable_type.value == "package"),
+        },
+    }
+    blueprint_payload = {
+        "schema_version": "blueprint-export-scope.v1",
+        "product": "blueprint_pro",
+        "downloadable_entries": [_deliverable_catalog_entry_payload(entry) for entry in blueprint_entries],
+        "restricted_from_blueprint": [
+            entry.deliverable_key
+            for entry in acp_entries
+            if entry.required_tier.value == "acp" or entry.acp_download
+        ],
+        "separation_policy": "Blueprint Pro exports design documentation; ACP exports construction-ready implementation artifacts.",
+    }
+    return [
+        build_acp_file_entry(
+            path="ACP/governance/deliverable-catalog.acp.json",
+            domain="governance",
+            title="ACP deliverable catalog",
+            format="json",
+            source_sections=["deliverable_catalog", "commercial_access", "governance"],
+            content_text=serialize_json_document(acp_payload),
+        ),
+        build_acp_file_entry(
+            path="ACP/governance/blueprint-export-scope.json",
+            domain="governance",
+            title="Blueprint export scope",
+            format="json",
+            source_sections=["deliverable_catalog", "commercial_access", "governance"],
+            content_text=serialize_json_document(blueprint_payload),
+        ),
+    ]
 
 
 def _build_launcher_python_script() -> str:
@@ -1262,12 +1371,26 @@ def _build_architecture_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     }
     c4_context = "\n".join(
         [
-            "# C4 Context",
+            f"# C4 Context: {snapshot.session.title}",
             "",
-            f"- Agent: {snapshot.session.title}",
-            f"- Primary user: {discovery.current_user if discovery else 'needs_review'}",
-            f"- Objective: {discovery.desired_outcome if discovery else 'needs_review'}",
-            f"- Narrative: {blueprint.narrative or 'Pendiente de narrativa detallada.'}",
+            "> **Diagrama y Especificación de Contexto C4 del Sistema Agéntico**",
+            "",
+            "## 1. Sistema Agéntico Principal",
+            f"- **Nombre del Sistema:** `{snapshot.session.title}`",
+            f"- **Misión y Propósito:** {discovery.desired_outcome if discovery and discovery.desired_outcome else 'Automatización agéntica de procesos de negocio.'}",
+            f"- **Usuario / Actor Primario:** {discovery.current_user if discovery and discovery.current_user else 'Usuario operativo'}",
+            f"- **Narrativa de Diseño:** {blueprint.narrative or 'El sistema agéntico actúa como un copiloto autónomo con supervisión humana por diseño.'}",
+            "",
+            "## 2. Límites del Sistema y Relaciones Externas",
+            "- **Capa de Inferencia (LLM Core):** Motor de razonamiento cognitivo encargado de la interpretación y toma de decisiones.",
+            "- **Capa de Herramientas (Actuation Layer):** Adaptadores y contratos de integración con APIs externas y microservicios.",
+            "- **Capa de Memoria y Conocimiento (State Layer):** Almacenamiento de sesiones cortas y vector store para recuperación RAG.",
+            "- **Capa de Gobernanza (Control Layer):** Guardrails de seguridad, mitigación de alucinaciones y protocolo Human-in-the-Loop.",
+            "",
+            "## 3. Interfaces de Comunicación",
+            f"- **Patrón de Interacción:** `{blueprint.reasoning_pattern}`",
+            f"- **Topología de Ejecución:** `{blueprint.architecture}`",
+            f"- **Herramientas Registradas:** {len(blueprint.tools)} herramienta(s) con esquemas JSON/OpenAPI tipados.",
         ]
     )
     return [
@@ -1758,26 +1881,152 @@ def _build_workflow_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
 def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     discovery = snapshot.discovery
     blueprint = snapshot.blueprint
-    system_prompt = _find_deliverable(snapshot, "system_prompt") or "# System Prompt\nPendiente de revision.\n"
+    canvas = snapshot.canvas
+    title = snapshot.session.title or "Agent System"
+
+    desired_outcome = discovery.desired_outcome if discovery and discovery.desired_outcome else "Automatizar y optimizar el flujo operativo según el diseño aprobado."
+    problem_statement = discovery.problem_statement if discovery and discovery.problem_statement else "Resolver fricciones operativas mediante asistencia agéntica."
+    primary_user = (canvas.agent_profile.primary_user if canvas and canvas.agent_profile else None) or (discovery.current_user if discovery else "Usuario operativo")
+    current_process = discovery.current_process if discovery and discovery.current_process else "Proceso operativo manual susceptible de automatización."
+    architecture = blueprint.architecture if blueprint and blueprint.architecture else "Arquitectura agéntica estructurada"
+    reasoning_pattern = blueprint.reasoning_pattern if blueprint and blueprint.reasoning_pattern else "Plan-and-Execute"
+    autonomy_level = discovery.autonomy_level if discovery and discovery.autonomy_level else "Supervisada (HITL)"
+    
+    guardrails_list = blueprint.guardrails if blueprint and blueprint.guardrails else [
+        "Validación estricta de esquemas de entrada y salida",
+        "Mitigación de alucinaciones con recuperación grounded",
+        "Límites de tokens y presupuesto de inferencia por llamada",
+        "Supervisión humana obligatoria para acciones con efectos secundarios",
+    ]
+    guardrails_text = "\n".join([f"- {g}" for g in guardrails_list])
+
+    system_prompt = _find_deliverable(snapshot, "system_prompt")
+    if not system_prompt or system_prompt.strip() == "# System Prompt\nPendiente de revision.":
+        system_prompt = "\n".join(
+            [
+                f"# System Prompt: {title}",
+                "",
+                "## 1. Identidad y Propósito",
+                f"Eres un agente de inteligencia artificial especializado en {title}.",
+                f"Tu objetivo principal es: {desired_outcome}",
+                "",
+                "## 2. Directrices de Comportamiento y Operación",
+                f"- **Usuario Principal:** {primary_user}",
+                f"- **Modelo de Razonamiento:** {reasoning_pattern}",
+                f"- **Topología:** {architecture}",
+                f"- **Nivel de Autonomía:** {autonomy_level}",
+                "",
+                "## 3. Guardrails y Políticas de Seguridad",
+                guardrails_text,
+                "",
+                "## 4. Manejo de Errores y Excepciones",
+                "- Si la información provista es insuficiente o ambigua, solicita aclaración de manera concisa.",
+                "- Si una herramienta falla o devuelve error, registra el fallo y utiliza el mecanismo de fallback sin exponer detalles internos sensibles.",
+            ]
+        )
+
     skill_spec = _find_deliverable(snapshot, "skill_spec")
+    
     planner_prompt = "\n".join(
         [
-            "# Planner Prompt",
+            f"# Planner Role Prompt: {title}",
             "",
-            f"Objetivo: {discovery.desired_outcome if discovery else 'needs_review'}",
-            f"Arquitectura: {blueprint.architecture if blueprint else 'needs_review'}",
-            f"Razonamiento: {blueprint.reasoning_pattern if blueprint else 'needs_review'}",
-            "Planifica antes de ejecutar tools y deja checkpoints visibles.",
+            "> **Módulo de Planificación Cognitiva y Descomposición de Tareas**",
+            "",
+            "## 1. Misión del Planificador",
+            f"Eres el planificador cognitivo del agente `{title}`. Tu responsabilidad es analizar la solicitud del usuario, descomponerla en una secuencia lógica y estructurada de pasos atómicos, identificar qué herramientas o memorias consultar y definir checkpoints de validación antes de ejecutar.",
+            "",
+            "## 2. Contexto y Objetivos Aprobados",
+            f"- **Objetivo Principal:** {desired_outcome}",
+            f"- **Problema Operativo:** {problem_statement}",
+            f"- **Arquitectura:** {architecture}",
+            f"- **Patrón Cognitivo:** {reasoning_pattern}",
+            f"- **Nivel de Autonomía:** {autonomy_level}",
+            "",
+            "## 3. Reglas de Planificación y Ejecución",
+            "1. **Atomicidad:** Cada paso debe tener un único objetivo observable y verificable.",
+            "2. **Dependencias:** Modela las dependencias entre pasos para evitar llamadas a herramientas sin los parámetros requeridos.",
+            "3. **Idempotencia y Riesgo:** Cualquier acción que altere estado externo debe marcarse explícitamente.",
+            "4. **Presupuesto:** Minimiza el consumo de tokens y llamadas redundantes a APIs.",
+            "",
+            "## 4. Guardrails y Parada (Stop Conditions)",
+            guardrails_text,
+            "- Si faltan datos críticos para planificar, emite un estado `needs_resolution` indicando el campo faltante.",
         ]
     )
+
     evaluator_prompt = "\n".join(
         [
-            "# Evaluator Prompt",
+            f"# Evaluator Role Prompt: {title}",
             "",
-            "Evalua completitud, coherencia, seguridad, operabilidad y utilidad.",
-            f"Guardrails: {', '.join(blueprint.guardrails) if blueprint else 'needs_review'}",
+            "> **Módulo de Control de Calidad, Grounding y Auditoría de Seguridad**",
+            "",
+            "## 1. Misión del Evaluador",
+            f"Eres el evaluador de calidad del agente `{title}`. Tu misión es auditar cada resultado generado, verificar el cumplimiento de los contratos de herramientas, comprobar que no existan alucinaciones y validar que se cumplan las políticas de seguridad antes de entregar la respuesta final.",
+            "",
+            "## 2. Criterios de Evaluación Obligatorios",
+            "1. **Completitud:** ¿La respuesta cubre todos los puntos solicitados por el usuario?",
+            "2. **Grounding y Evidencia:** ¿Cada dato o afirmación crítica proviene de fuentes autorizadas o resultados de herramientas? (Prohibido alucinar datos).",
+            "3. **Seguridad y Guardrails:**",
+            guardrails_text,
+            "4. **Formato y Esquema:** ¿La salida cumple con la estructura y tipos de datos requeridos?",
+            "",
+            "## 3. Rúbrica de Decisión",
+            "- **PASS:** Cumple el 100% de los criterios y guardrails.",
+            "- **FAIL:** Identifica el gap específico y devuelve feedback estructurado para replanificación.",
         ]
     )
+
+    discovery_skill_prompt = "\n".join(
+        [
+            f"# Discovery Skill: Diagnóstico y Captura de Contexto",
+            "",
+            "## Propósito",
+            "Especialista en extracción estructurada de problemas de negocio, mapeo de procesos y requerimientos operativos.",
+            "",
+            "## Contexto Operativo",
+            f"- **Iniciativa:** {title}",
+            f"- **Usuario Objetivo:** {primary_user}",
+            f"- **Problema Diagnosticado:** {problem_statement}",
+            f"- **Proceso Actual:** {current_process}",
+            "",
+            "## Directrices de Ejecución",
+            "- Estructurar siempre las necesidades en: Hechos observables, Supuestos por validar y Restricciones.",
+            "- Identificar métricas cuantitativas de éxito y puntos de fricción.",
+        ]
+    )
+
+    architecture_skill_prompt = "\n".join(
+        [
+            f"# Architecture Skill: Diseño y Orquestación Agéntica",
+            "",
+            "## Propósito",
+            "Especialista en modelado de topologías de agentes, máquinas de estado, contratos de interfaces y patrones de razonamiento.",
+            "",
+            "## Especificación Técnica",
+            f"- **Topología Seleccionada:** {architecture}",
+            f"- **Patrón Cognitivo:** {reasoning_pattern}",
+            f"- **Autonomía:** {autonomy_level}",
+            "",
+            "## Directrices de Ejecución",
+            "- Asegurar que cada agente/herramienta tenga fronteras de aislamiento y contratos de entrada/salida tipados.",
+            "- Garantizar que las transiciones de estado sean deterministas y auditables.",
+        ]
+    )
+
+    evaluation_skill_prompt = "\n".join(
+        [
+            f"# Evaluation Skill: Testing Automatizado y Aseguramiento de Calidad",
+            "",
+            "## Propósito",
+            "Especialista en ejecución de suites de evaluación, pruebas de mutación y auditoría de conformance para agentes de IA.",
+            "",
+            "## Directrices de Ejecución",
+            "- Validar datasets de prueba con casos de éxito, casos límite (edge cases) y casos de fallo controlado.",
+            "- Verificar el cumplimiento de guardrails de seguridad y mitigación de alucinaciones antes del despliegue.",
+        ]
+    )
+
     files = [
         build_acp_file_entry(
             path="ACP/prompts/system.md",
@@ -1809,9 +2058,7 @@ def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             title="Discovery skill prompt",
             format="markdown",
             source_sections=["discovery"],
-            content_text=serialize_markdown_document(
-                f"# Discovery Skill\n\nProblema: {discovery.problem_statement if discovery else 'needs_review'}\n"
-            ),
+            content_text=serialize_markdown_document(discovery_skill_prompt),
         ),
         build_acp_file_entry(
             path="ACP/prompts/skills/architecture.md",
@@ -1819,9 +2066,7 @@ def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             title="Architecture skill prompt",
             format="markdown",
             source_sections=["blueprint.delivery_package.decision_trace"],
-            content_text=serialize_markdown_document(
-                f"# Architecture Skill\n\nArquitectura objetivo: {blueprint.architecture if blueprint else 'needs_review'}\n"
-            ),
+            content_text=serialize_markdown_document(architecture_skill_prompt),
         ),
         build_acp_file_entry(
             path="ACP/prompts/skills/evaluation.md",
@@ -1829,7 +2074,7 @@ def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             title="Evaluation skill prompt",
             format="markdown",
             source_sections=["evaluation_dataset", "evaluation_rubric"],
-            content_text=serialize_markdown_document("# Evaluation Skill\n\nValida rubric, dataset y readiness antes de promotion.\n"),
+            content_text=serialize_markdown_document(evaluation_skill_prompt),
         ),
     ]
     if skill_spec:
@@ -2704,6 +2949,7 @@ def generate_acp_files(
     files: list[ACPFileEntry] = []
     files.append(_build_manifest_file(snapshot))
     files.append(_build_readme_file(snapshot))
+    files.extend(_build_deliverable_catalog_files(snapshot))
     files.extend(_build_launcher_files(snapshot))
     files.extend(_build_adapter_files(snapshot))
     files.extend(_build_business_files(snapshot))

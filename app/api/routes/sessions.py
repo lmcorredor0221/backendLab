@@ -3,11 +3,13 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Callable
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
@@ -36,6 +38,7 @@ from app.models import (
     CanvasArtifact,
     CanvasEnvelope,
     CanvasRecord,
+    CommercialTier,
     CommercialTierUpdateRequest,
     ConstructionGapEntry,
     ConstructionQuestionAnswerRequest,
@@ -89,6 +92,7 @@ from app.models import (
     JourneyStageArtifactRejectionRequest,
     KnowledgeProfile,
     LLMContextTrace,
+    MemoryRecommendationArtifact,
     MemoryRecommendationRequest,
     MemoryRecommendationSourceStageVersions,
     MemoryProfile,
@@ -117,6 +121,8 @@ from app.models import (
     SkillRerunResponse,
     ShortTermMemoryRollbackRequest,
     ShortTermMemoryRuntimeState,
+    StageOperationRecord,
+    StageOperationStatus,
     SubagentRunEntry,
     SubagentRunRecord,
     ToolApiBindRequest,
@@ -240,11 +246,42 @@ from app.services.skill_runtime import (
     run_tool_recommendation_stage,
     validate_definition_artifact,
 )
+from app.services.agentic_runtime.tracing import (
+    build_react_evidence_manifest,
+    build_react_metrics,
+    build_synthetic_react_run,
+)
+from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
+from app.services.agentic_runtime.stages.define import run_define_react
+from app.services.agentic_runtime.stages.extended import (
+    ReactCapabilityOutput,
+    run_design_react,
+    run_evaluation_react,
+    run_memory_react,
+    run_callable_react,
+    run_validation_spec_react,
+    run_tools_react,
+)
 from app.services.llm_runtime.builder_contracts import DiscoveryAnalysisOutput, RequirementsDefinitionOutput
+from app.services.product_processing import (
+    PremiumEnrichmentWorkspace,
+    PremiumSelectiveReprocessResult,
+    PremiumUncertaintyResolutionRequest,
+    acp_route_blocking_reasons,
+    build_acp_direct_resolution,
+    build_premium_enrichment_workspace,
+    classify_uncertainty_for_profile,
+    defer_premium_uncertainty_to_acp,
+    dismiss_premium_uncertainty,
+    resolve_premium_uncertainty,
+    resolve_product_processing_mode,
+    upsert_uncertainty_backlog,
+)
 from app.services.rules import derive_knowledge_profile, find_missing_discovery_fields
 from app.services.short_term_memory import MAIN_BRANCH_KEY, ShortTermMemoryService
 from app.services.tool_recommendation_service import (
     annotate_tool_recommendation_status,
+    ensure_document_ingestion_for_knowledge_retrieval,
     promote_tool_recommendation_to_blueprint_tools,
 )
 from app.services.validation_simulation_service import (
@@ -253,11 +290,13 @@ from app.services.validation_simulation_service import (
     judge_validation_simulation_run,
 )
 from app.services.stage5_service import (
+    FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
     FEATURE_FLAG_ESTIMATION,
     FEATURE_FLAG_GOVERNANCE,
     FEATURE_FLAG_MULTI_AGENT_RUNTIME,
     FEATURE_FLAG_SUBAGENTS,
     FEATURE_FLAG_TOOL_RECOMMENDATION,
+    FEATURE_FLAG_REACT_RUNTIME,
     FEATURE_FLAG_WORKFLOWS,
     HANDOFF_STATUS_COMPLETED,
     HANDOFF_STATUS_RETURNED,
@@ -287,6 +326,56 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 def utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+class StageOperationStepResponse(BaseModel):
+    key: str
+    label: str
+    status: str
+    detail: str = ""
+
+
+class StageOperationResponse(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    session_id: UUID
+    stage_key: str
+    action: str
+    idempotency_key: str = ""
+    attempt_count: int = 1
+    status: StageOperationStatus
+    current_step: str = ""
+    detail: str = ""
+    steps: list[StageOperationStepResponse] = PydanticField(default_factory=list)
+    result_artifact_id: UUID | None = None
+    result: JourneyStageArtifactEntry | None = None
+    error_message: str = ""
+    technical_detail: str = ""
+    can_retry: bool = False
+    can_cancel: bool = False
+    retry_url: str = ""
+    cancel_url: str = ""
+    recover_url: str = ""
+    cancel_requested_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    expires_at: datetime | None = None
+    is_stale: bool = False
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+
+
+STAGE_OPERATION_HEARTBEAT_TTL = timedelta(minutes=30)
+STAGE_OPERATION_ACTIVE_STATUSES = {
+    StageOperationStatus.queued,
+    StageOperationStatus.running,
+    StageOperationStatus.waiting_for_user,
+}
+STAGE_OPERATION_TERMINAL_STATUSES = {
+    StageOperationStatus.completed,
+    StageOperationStatus.failed,
+    StageOperationStatus.cancelled,
+}
 
 
 def ensure_route_feature_flag_enabled(db: Session, *, workspace_id: UUID, flag_key: str, detail: str) -> None:
@@ -481,6 +570,206 @@ def build_journey_evidence_manifest_from_traces(
             seen.add(signature)
             items.append(item)
     return items
+
+
+def _uncertainty_slug(value: object, *, fallback: str = "item") -> str:
+    text = str(value or "").strip()
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
+    return slug or fallback
+
+
+def _uncertainty_item_dump(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return dict(model_dump(mode="json"))
+    return {"question": str(value or "").strip()}
+
+
+def _uncertainty_text(payload: dict[str, object]) -> str:
+    for key in ("question", "question_text", "title", "detail", "summary", "key", "gap_key"):
+        text = str(payload.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _humanize_uncertainty_text(text: str) -> tuple[str, str, str, str]:
+    raw = str(text or "").strip()
+    if ":" not in raw:
+        return raw, raw, "", ""
+    prefix, detail = raw.split(":", 1)
+    prefix = prefix.strip()
+    detail = detail.strip() or "el item detectado"
+    if prefix == "untraced_item":
+        return (
+            f"Trazabilidad de requerimiento {detail}",
+            f"El item {detail} requiere asociarse con evidencia o fuentes de descubrimiento.",
+            f"Conectar {detail} con los objetivos del Canvas o hallazgos de Discover.",
+            f"Vincular {detail} con fuentes aprobadas del proyecto.",
+        )
+    if prefix == "missing_acceptance":
+        return (
+            f"Criterio de aceptacion para {detail}",
+            f"El requisito {detail} necesita un criterio verificable de aceptacion.",
+            f"Definir criterio medible para evaluar {detail}.",
+            f"Cumplimiento verificado mediante pruebas de aceptacion y metricas del Blueprint.",
+        )
+    if prefix == "vague_nfr":
+        return (
+            f"Metrica observable para {detail}",
+            f"El requisito no funcional {detail} debe contar con una metrica cuantificable.",
+            f"Definir umbral observable (latencia, disponibilidad o volumen) para {detail}.",
+            f"Establecer metrica y umbral medible conforme a estandares.",
+        )
+    if prefix == "blocking_question":
+        return (
+            f"Definicion pendiente para {detail}",
+            f"Se requiere confirmar la definicion o alcance para {detail}.",
+            f"Cerrar la duda funcional para evitar ambiguedades.",
+            f"Confirmar especificacion funcional o diferir a ACP.",
+        )
+    if prefix == "canvas_scope_conflict":
+        return (
+            f"Alineacion de alcance: {detail}",
+            f"Resolver conflicto de inclusion en alcance para {detail}.",
+            f"Alinear Canvas y requisitos funcionales.",
+            f"Definir inclusion en MVP o diferir a ACP.",
+        )
+    if prefix == "duplicate_key":
+        return (
+            f"Identificador duplicado: {detail}",
+            f"Unificar o renombrar identificadores duplicados para {detail}.",
+            f"Evitar colisiones de claves en trazabilidad.",
+            f"Unificar identificadores en la etapa de diseno.",
+        )
+    return raw, raw, "", ""
+
+
+def _build_uncertainty_payload(
+    *,
+    stage: str,
+    kind: str,
+    source_ref: str,
+    index: int,
+    value: object,
+    blocking: bool = False,
+) -> dict[str, object] | None:
+    payload = _uncertainty_item_dump(value)
+    text = _uncertainty_text(payload)
+    if not text:
+        return None
+    h_title, h_question, h_reason, h_suggested = _humanize_uncertainty_text(text)
+    payload.setdefault("kind", kind)
+    payload.setdefault("question", h_question or text)
+    payload.setdefault("title", h_title or text)
+    if h_reason:
+        payload.setdefault("reason", h_reason)
+    if h_suggested:
+        payload.setdefault("suggested_answer", h_suggested)
+    if payload.get("gap_key") and not payload.get("key"):
+        payload["key"] = str(payload["gap_key"])
+    if not payload.get("key"):
+        digest = hashlib.sha1(f"{stage}:{source_ref}:{text}".encode("utf-8")).hexdigest()[:10]
+        payload["key"] = f"{stage}:{source_ref}:{index}:{_uncertainty_slug(text)[:48]}:{digest}"
+    if blocking:
+        payload["blocking"] = True
+    severity = str(payload.get("severity") or "").strip().lower()
+    if severity in {"critical", "blocking", "high"}:
+        payload["priority"] = "high"
+        payload.setdefault("blocking", True)
+    elif severity == "low":
+        payload.setdefault("priority", "low")
+    payload.setdefault("source_refs", [source_ref])
+    return payload
+
+
+def _iter_uncertainty_values(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _stage_uncertainty_items(stage: str, output: object) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    sources: list[tuple[str, str, bool, object]] = [
+        ("open_questions", "question", False, getattr(output, "open_questions", [])),
+        ("guided_questions", "question", False, getattr(output, "guided_questions", [])),
+        ("missing_information", "gap", True, getattr(output, "missing_information", [])),
+        ("coverage_gaps", "gap", True, getattr(output, "coverage_gaps", [])),
+        ("needs_information", "question", False, getattr(output, "needs_information", [])),
+    ]
+    validation = getattr(output, "validation", None)
+    if validation is not None:
+        sources.extend(
+            [
+                ("validation.blocking_open_questions", "question", True, getattr(validation, "blocking_open_questions", [])),
+                ("validation.blocking_issues", "gap", True, getattr(validation, "blocking_issues", [])),
+            ]
+        )
+    preflight = getattr(output, "preflight", None)
+    if preflight is not None:
+        sources.append(("preflight.missing_information", "gap", True, getattr(preflight, "missing_information", [])))
+    dry_compile = getattr(output, "dry_compile_status", None)
+    if dry_compile is not None:
+        sources.append(("dry_compile.blocking_issues", "gap", True, getattr(dry_compile, "blocking_issues", [])))
+    seen: set[str] = set()
+    for source_ref, kind, blocking, raw_values in sources:
+        for index, raw_value in enumerate(_iter_uncertainty_values(raw_values), start=1):
+            payload = _build_uncertainty_payload(
+                stage=stage,
+                kind=kind,
+                source_ref=source_ref,
+                index=index,
+                value=raw_value,
+                blocking=blocking,
+            )
+            if payload is None:
+                continue
+            key = str(payload.get("key") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(payload)
+    return items
+
+
+def _record_stage_uncertainties(
+    db: Session,
+    *,
+    record: SessionRecord,
+    stage: str,
+    output: object,
+    created_from: str,
+) -> None:
+    if record.workspace_id is None or not is_feature_flag_enabled(
+        db,
+        FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
+        workspace_id=record.workspace_id,
+        default_if_missing=True,
+    ):
+        return
+    tier = record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    mode = resolve_product_processing_mode(tier)
+    for item in _stage_uncertainty_items(stage, output):
+        try:
+            classification = classify_uncertainty_for_profile(stage, item, mode)
+            upsert_uncertainty_backlog(
+                db,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                classification=classification,
+                dependency_keys=[stage, *[str(key) for key in item.get("affected_deliverable_keys", []) or []]],
+                created_from=created_from,
+            )
+        except (TypeError, ValueError):
+            continue
 
 
 def resolve_discovery_from_stage_artifact(artifact: JourneyStageArtifactEntry) -> DiscoveryArtifact:
@@ -1095,6 +1384,14 @@ def write_skill_runs(
                 },
             )
         )
+        session.add(
+            SkillRunArtifactRecord(
+                skill_run_id=record.id,
+                artifact_role="react_trace",
+                artifact_kind="builder.react.trace.v1",
+                payload=build_synthetic_react_run(trace).model_dump(mode="json"),
+            )
+        )
         if trace.llm_trace is not None:
             session.add(
                 SkillRunArtifactRecord(
@@ -1106,6 +1403,65 @@ def write_skill_runs(
             )
         created_runs.append(record)
     return created_runs
+
+
+def write_react_run(
+    session: Session,
+    *,
+    session_id: UUID,
+    result,
+    stage: str,
+    capability: str,
+    source_action: str,
+    blueprint_version_number: int | None = None,
+) -> SkillRunRecord | None:
+    """Persist one safe ReAct run for support and rollout diagnostics."""
+    if result is None:
+        return None
+    stage_map = {
+        "design": SessionStage.build_blueprint,
+        "tools": SessionStage.build_blueprint,
+        "memory": SessionStage.build_blueprint,
+        "validate": SessionStage.post_validation,
+        "estimate": SessionStage.post_validation,
+        "package": SessionStage.ready_for_export,
+    }
+    status_map = {
+        "completed": ArtifactStatus.ready,
+        "waiting_human": ArtifactStatus.needs_review,
+        "failed": ArtifactStatus.failed,
+    }
+    record = SkillRunRecord(
+        session_id=session_id,
+        skill_key=f"react:{stage}:{capability}",
+        stage=stage_map.get(stage, SessionStage.post_validation),
+        blueprint_version_number=blueprint_version_number,
+        source_action=source_action,
+        status=status_map.get(result.status, ArtifactStatus.needs_review),
+        duration_ms=sum(int(item.duration_ms or 0) for item in result.traces),
+        result_summary=result.message or f"ReAct {stage} ejecutado.",
+        warnings=[],
+        evidence=build_react_evidence_manifest(result),
+    )
+    session.add(record)
+    session.flush()
+    session.add(
+        SkillRunArtifactRecord(
+            skill_run_id=record.id,
+            artifact_role="react_trace",
+            artifact_kind="builder.react.trace.v1",
+            payload=result.model_dump(mode="json"),
+        )
+    )
+    session.add(
+        SkillRunArtifactRecord(
+            skill_run_id=record.id,
+            artifact_role="react_metrics",
+            artifact_kind="builder.react.metrics.v1",
+            payload=build_react_metrics(result),
+        )
+    )
+    return record
 
 
 def upsert_opportunity(session: Session, session_id: UUID, envelope: DiscoveryEnvelope) -> OpportunityRecord:
@@ -1168,11 +1524,22 @@ def upsert_evaluation(session: Session, session_id: UUID, envelope: EvaluationEn
     return record
 
 
-def sync_approval_gates(session: Session, session_id: UUID, blueprint: BlueprintArtifact) -> int:
+def sync_approval_gates(
+    session: Session,
+    session_id: UUID,
+    blueprint: BlueprintArtifact,
+    tier: CommercialTier | str | None = None,
+) -> int:
     existing = {
         item.gate_key: item
         for item in session.exec(select(ApprovalGateRecord).where(ApprovalGateRecord.session_id == session_id)).all()
     }
+    if tier is None:
+        session_rec = session.get(SessionRecord, session_id)
+        tier = session_rec.commercial_tier if session_rec else CommercialTier.blueprint
+    tier_val = getattr(tier, "value", str(tier or "blueprint"))
+    is_basic = tier_val in {"blueprint", "basic"}
+
     pending_count = 0
 
     for tool in blueprint.tools:
@@ -1186,6 +1553,10 @@ def sync_approval_gates(session: Session, session_id: UUID, blueprint: Blueprint
             f"esta accion. Modo de ejecucion: {tool.execution_mode or 'workflow_controlled'}."
         )
         record = existing.get(gate_key)
+        status_val = ApprovalStatus.approved if is_basic else ApprovalStatus.pending
+        note_val = "Auto-aprobado bajo supuestos de Blueprint Básico." if is_basic else ""
+        resolved_at_val = utc_now() if is_basic else None
+
         if record is None:
             record = ApprovalGateRecord(
                 session_id=session_id,
@@ -1194,17 +1565,22 @@ def sync_approval_gates(session: Session, session_id: UUID, blueprint: Blueprint
                 rationale=rationale,
                 instructions=instructions,
                 requested_in_stage=SessionStage.post_validation,
+                status=status_val,
+                resolution_note=note_val,
+                resolved_at=resolved_at_val,
             )
         else:
             record.title = title
             record.rationale = rationale
             record.instructions = instructions
             record.requested_in_stage = SessionStage.post_validation
-            record.status = ApprovalStatus.pending
-            record.resolution_note = ""
-            record.resolved_at = None
+            if is_basic and record.status == ApprovalStatus.pending:
+                record.status = ApprovalStatus.approved
+                record.resolution_note = "Auto-aprobado bajo supuestos de Blueprint Básico."
+                record.resolved_at = utc_now()
         session.add(record)
-        pending_count += 1
+        if record.status == ApprovalStatus.pending:
+            pending_count += 1
 
     return pending_count
 
@@ -1982,6 +2358,26 @@ def build_canonical_export_response(
         ensure_commercial_capability(record, capability_by_contract[contract_key], db=db, current_user=current_user)
 
     snapshot = build_snapshot(db, record)
+    if contract_key in {
+        "construction-pack.v1",
+        "agent-construction-package.v2",
+        "prompt-pack.v1",
+        "test-pack.v1",
+    }:
+        try:
+            acp_resolution = build_acp_direct_resolution(db, record=record, snapshot=snapshot)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        acp_blockers = acp_route_blocking_reasons(acp_resolution)
+        if acp_blockers and not preview:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "ACP export requires completed LEAN stages or explicit justification before Package.",
+                    "blocking_reasons": acp_blockers,
+                    "resolution": acp_resolution.model_dump(mode="json"),
+                },
+            )
     document = build_canonical_export_document(snapshot, contract_key=contract_key)
 
     if should_block_canonical_export(document, preview=preview):
@@ -2628,6 +3024,21 @@ def build_snapshot(
     project_actuals = list_project_actuals(session, record.id)
     estimation_error_metrics = list_estimation_error_metrics(session, record.id)
     current_blueprint_version_number = versions[0].version_number if versions else None
+    latest_tool_recommendation = load_latest_tool_recommendation(
+        session,
+        record.id,
+        discovery=hydrated_discovery,
+        canvas=hydrated_canvas,
+        blueprint=hydrated_blueprint,
+        current_blueprint_version_number=current_blueprint_version_number,
+    )
+    if latest_tool_recommendation is not None and latest_journey_artifacts.get("tools") is not None:
+        latest_journey_artifacts = dict(latest_journey_artifacts)
+        latest_journey_artifacts["tools"] = latest_journey_artifacts["tools"].model_copy(
+            update={
+                "proposal_payload": serialize_tool_recommendation_artifact(latest_tool_recommendation),
+            }
+        )
     current_validation_fingerprint = build_estimation_validation_fingerprint_from_state(
         latest_validate_artifact=latest_validate_artifact,
         evaluation_runs=[
@@ -2671,14 +3082,7 @@ def build_snapshot(
         discovery=hydrated_discovery,
         canvas=hydrated_canvas,
         blueprint=hydrated_blueprint,
-        latest_tool_recommendation=load_latest_tool_recommendation(
-            session,
-            record.id,
-            discovery=hydrated_discovery,
-            canvas=hydrated_canvas,
-            blueprint=hydrated_blueprint,
-            current_blueprint_version_number=current_blueprint_version_number,
-        ),
+        latest_tool_recommendation=latest_tool_recommendation,
         evaluation=evaluation and EvaluationArtifact.model_validate(evaluation.report),
         estimation_report=load_latest_persisted_estimation_report(
             session,
@@ -3397,6 +3801,118 @@ def update_session_commercial_tier(
     return build_snapshot(db, record, current_user=current_user)
 
 
+@router.get("/{session_id}/premium-enrichment", response_model=PremiumEnrichmentWorkspace)
+def get_premium_enrichment_workspace_route(
+    session_id: UUID,
+    selectable_limit: int = Query(default=6, ge=1, le=12),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> PremiumEnrichmentWorkspace:
+    record = get_or_404(db, session_id, current_user.id)
+    workspace = build_premium_enrichment_workspace(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=session_id,
+        current_tier=record.commercial_tier,
+        selectable_limit=selectable_limit,
+        current_user=current_user,
+    )
+    db.commit()
+    return workspace
+
+
+@router.post(
+    "/{session_id}/premium-enrichment/{backlog_id}/resolve",
+    response_model=PremiumSelectiveReprocessResult,
+)
+def resolve_premium_enrichment_item_route(
+    session_id: UUID,
+    backlog_id: UUID,
+    payload: PremiumUncertaintyResolutionRequest,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> PremiumSelectiveReprocessResult:
+    record = get_or_404(db, session_id, current_user.id)
+    membership = get_workspace_membership_for_record(db, record=record, user_id=current_user.id)
+    ensure_project_role(membership, PROJECT_WRITE_ROLES, "resolver enriquecimiento Premium")
+    if record.commercial_tier == CommercialTier.blueprint:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Blueprint Premium debe estar habilitado antes de resolver y reprocesar oportunidades.",
+        )
+    try:
+        result = resolve_premium_uncertainty(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=session_id,
+            backlog_id=backlog_id,
+            actor_user_id=current_user.id,
+            payload=payload,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    sync_short_term_memory_checkpoint(db, record=record, source_action="premium_enrichment_resolve")
+    capture_operational_state(db, session_id=session_id, source_action="premium_enrichment_resolve")
+    db.commit()
+    return result
+
+
+@router.post(
+    "/{session_id}/premium-enrichment/{backlog_id}/defer-to-acp",
+)
+def defer_premium_enrichment_item_route(
+    session_id: UUID,
+    backlog_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> dict[str, str]:
+    record = get_or_404(db, session_id, current_user.id)
+    membership = get_workspace_membership_for_record(db, record=record, user_id=current_user.id)
+    ensure_project_role(membership, PROJECT_WRITE_ROLES, "diferir enriquecimiento a ACP")
+    try:
+        defer_premium_uncertainty_to_acp(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=session_id,
+            backlog_id=backlog_id,
+            actor_user_id=current_user.id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    sync_short_term_memory_checkpoint(db, record=record, source_action="premium_enrichment_defer_acp")
+    capture_operational_state(db, session_id=session_id, source_action="premium_enrichment_defer_acp")
+    db.commit()
+    return {"status": "deferred_to_acp", "backlog_id": str(backlog_id)}
+
+
+@router.post(
+    "/{session_id}/premium-enrichment/{backlog_id}/dismiss",
+)
+def dismiss_premium_enrichment_item_route(
+    session_id: UUID,
+    backlog_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> dict[str, str]:
+    record = get_or_404(db, session_id, current_user.id)
+    membership = get_workspace_membership_for_record(db, record=record, user_id=current_user.id)
+    ensure_project_role(membership, PROJECT_WRITE_ROLES, "descartar enriquecimiento")
+    try:
+        dismiss_premium_uncertainty(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=session_id,
+            backlog_id=backlog_id,
+            actor_user_id=current_user.id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    sync_short_term_memory_checkpoint(db, record=record, source_action="premium_enrichment_dismiss")
+    capture_operational_state(db, session_id=session_id, source_action="premium_enrichment_dismiss")
+    db.commit()
+    return {"status": "dismissed", "backlog_id": str(backlog_id)}
+
+
 @router.get("/{session_id}/short-term-memory", response_model=ShortTermMemoryRuntimeState)
 def get_short_term_memory_route(
     session_id: UUID,
@@ -3753,7 +4269,7 @@ def analyze_discovery_route(
         runtime_settings=runtime_settings,
         stage_context=stage_context,
     )
-    trace = traces[0]
+    trace = traces[0] if traces else (all_traces[0] if all_traces else None)
     proposal_payload = analysis.model_dump(mode="json")
     proposal_payload["schema_version"] = "discovery-analysis.v1"
     service = StageProposalService()
@@ -3766,10 +4282,10 @@ def analyze_discovery_route(
                 artifact_kind="discovery_analysis_artifact",
                 source_action="analyze_discovery",
                 proposal_payload=proposal_payload,
-                provider_key=trace.llm_trace.provider_key if trace.llm_trace is not None else "",
-                model=trace.llm_trace.model_name if trace.llm_trace is not None else "",
-                execution_backend=trace.llm_trace.execution_backend if trace.llm_trace is not None else "",
-                prompt_version=trace.llm_trace.prompt_version if trace.llm_trace is not None else "",
+                provider_key=trace.llm_trace.provider_key if trace is not None and trace.llm_trace is not None else "",
+                model=trace.llm_trace.model_name if trace is not None and trace.llm_trace is not None else "",
+                execution_backend=trace.llm_trace.execution_backend if trace is not None and trace.llm_trace is not None else "",
+                prompt_version=trace.llm_trace.prompt_version if trace is not None and trace.llm_trace is not None else "",
                 schema_version="discovery-analysis.v1",
                 confidence=analysis.confidence,
                 missing_information=list(analysis.missing_information),
@@ -3783,6 +4299,13 @@ def analyze_discovery_route(
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
+    _record_stage_uncertainties(
+        db,
+        record=record,
+        stage="discover",
+        output=analysis,
+        created_from="analyze_discovery",
+    )
     write_skill_runs(
         db,
         session_id=session_id,
@@ -3885,6 +4408,7 @@ def build_canvas_route(
 @router.post("/{session_id}/define-requirements", response_model=JourneyStageArtifactEntry)
 def define_requirements_route(
     session_id: UUID,
+    resume_checkpoint_id: str = "",
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> JourneyStageArtifactEntry:
@@ -3940,17 +4464,88 @@ def define_requirements_route(
         task_source_keys=["requirements_definition_input"],
         allow_second_page=True,
     )
-    definition, traces = run_definition_stage(
-        approved_discovery,
-        working_canvas,
-        runtime_settings=runtime_settings,
-        stage_context=stage_context,
+    runtime_warnings: list[str] = []
+    react_run = None
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    initial_react_state = (
+        BuilderReActCheckpointStore.load(
+            db,
+            session_id=session_id,
+            checkpoint_id=resume_checkpoint_id,
+        )
+        if react_enabled and resume_checkpoint_id
+        else None
     )
+    if react_enabled:
+        try:
+            react_execution = run_define_react(
+                discovery=approved_discovery,
+                canvas=working_canvas,
+                runtime_settings=runtime_settings,
+                stage_context=stage_context,
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                initial_state=initial_react_state,
+            )
+            definition = react_execution.definition
+            traces = react_execution.skill_traces
+            react_run = react_execution.react_run
+            warnings.extend(react_execution.warnings)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(
+                "El controlador ReAct no pudo completar Define; se mantuvo el runtime de skills existente."
+            )
+            warnings.append(f"react_runtime_fallback:{type(exc).__name__}")
+            definition, traces = run_definition_stage(
+                approved_discovery,
+                working_canvas,
+                runtime_settings=runtime_settings,
+                stage_context=stage_context,
+            )
+    else:
+        definition, traces = run_definition_stage(
+            approved_discovery,
+            working_canvas,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
     all_traces.extend(traces)
-    warnings.extend(traces[0].warnings)
+    warnings.extend(item for trace in traces for item in trace.warnings)
+    if react_run is not None and react_run.status == "waiting_human":
+        checkpoint_id = BuilderReActCheckpointStore.save(
+            db,
+            react_run.state,
+            summary=react_run.message,
+            source_action="define_requirements_waiting_human",
+        )
+        react_run = react_run.model_copy(update={"checkpoint_id": checkpoint_id})
+    elif react_run is not None and react_run.status == "completed" and initial_react_state is not None:
+        BuilderReActCheckpointStore.mark_completed(
+            db,
+            session_id=session_id,
+            checkpoint_id=initial_react_state.checkpoint_id,
+        )
     proposal_payload = definition.model_dump(mode="json")
     proposal_payload["schema_version"] = "definition-artifact.v1"
-    trace = traces[0]
+    trace = traces[0] if traces else None
+    evidence_manifest = build_journey_evidence_manifest_from_traces(
+        traces=all_traces,
+        source_action="define_requirements",
+    )
+    if react_run is not None:
+        for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1):
+            evidence_manifest.append(
+                JourneyArtifactEvidenceEntry(
+                    source_type="react_runtime",
+                    source_id=str(react_run.run_id),
+                    source_version=react_run.contract_version,
+                    section_key="react_trace",
+                    artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
+                    used_for="define_requirements",
+                    citation_label=f"react-evidence-{index}",
+                    detail=evidence["detail"],
+                )
+            )
     try:
         artifact = proposal_service.create(
             db,
@@ -3960,24 +4555,28 @@ def define_requirements_route(
                 artifact_kind="definition_artifact",
                 source_action="define_requirements",
                 proposal_payload=proposal_payload,
-                provider_key=trace.llm_trace.provider_key if trace.llm_trace is not None else "",
-                model=trace.llm_trace.model_name if trace.llm_trace is not None else "",
-                execution_backend=trace.llm_trace.execution_backend if trace.llm_trace is not None else "",
-                prompt_version=trace.llm_trace.prompt_version if trace.llm_trace is not None else "",
+                provider_key=trace.llm_trace.provider_key if trace is not None and trace.llm_trace is not None else "",
+                model=trace.llm_trace.model_name if trace is not None and trace.llm_trace is not None else "",
+                execution_backend=trace.llm_trace.execution_backend if trace is not None and trace.llm_trace is not None else "",
+                prompt_version=trace.llm_trace.prompt_version if trace is not None and trace.llm_trace is not None else "",
                 schema_version="definition-artifact.v1",
                 confidence=definition.confidence,
                 missing_information=list(definition.validation.blocking_issues),
                 warnings=list(dict.fromkeys(warnings)),
-                evidence_manifest=build_journey_evidence_manifest_from_traces(
-                    traces=all_traces,
-                    source_action="define_requirements",
-                ),
+                evidence_manifest=evidence_manifest,
             ),
             actor_user=current_user,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
 
+    _record_stage_uncertainties(
+        db,
+        record=record,
+        stage="define",
+        output=definition,
+        created_from="define_requirements",
+    )
     write_skill_runs(
         db,
         session_id=session_id,
@@ -4006,14 +4605,15 @@ def define_requirements_route(
     return artifact
 
 
-@router.post("/{session_id}/propose-design", response_model=JourneyStageArtifactEntry)
-def propose_design_route(
-    session_id: UUID,
-    payload: DesignProposalRequest | None = None,
-    db: Session = Depends(get_session),
-    current_user: UserRecord = Depends(get_current_user),
+def _execute_propose_design(
+    db: Session,
+    *,
+    record: SessionRecord,
+    payload: DesignProposalRequest | None,
+    current_user: UserRecord,
+    progress_callback: Callable[[str, str], None] | None = None,
 ) -> JourneyStageArtifactEntry:
-    record = get_or_404(db, session_id, current_user.id)
+    session_id = record.id
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
     latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
@@ -4061,15 +4661,50 @@ def propose_design_route(
         task_source_keys=["agent_design_critique_input"],
         allow_second_page=True,
     )
-    artifact_payload, traces = run_design_stage(
-        approved_discovery,
-        approved_canvas,
-        definition_artifact,
-        instructions=payload.instructions if payload is not None else "",
-        runtime_settings=runtime_settings,
-        proposal_stage_context=proposal_stage_context,
-        critique_stage_context=critique_stage_context,
-    )
+    runtime_warnings: list[str] = []
+    react_run = None
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    if react_enabled:
+        try:
+            react_execution = run_design_react(
+                discovery=approved_discovery,
+                canvas=approved_canvas,
+                definition_artifact=definition_artifact,
+                instructions=payload.instructions if payload is not None else "",
+                runtime_settings=runtime_settings,
+                proposal_stage_context=proposal_stage_context,
+                critique_stage_context=critique_stage_context,
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                progress_callback=progress_callback,
+            )
+            artifact_payload = react_execution.value
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            runtime_warnings.append("El controlador ReAct no pudo completar Design; se mantuvo el runtime existente.")
+            runtime_warnings.append(f"react_runtime_fallback:{type(exc).__name__}")
+            artifact_payload, traces = run_design_stage(
+                approved_discovery,
+                approved_canvas,
+                definition_artifact,
+                instructions=payload.instructions if payload is not None else "",
+                runtime_settings=runtime_settings,
+                proposal_stage_context=proposal_stage_context,
+                critique_stage_context=critique_stage_context,
+                progress_callback=progress_callback,
+            )
+    else:
+        artifact_payload, traces = run_design_stage(
+            approved_discovery,
+            approved_canvas,
+            definition_artifact,
+            instructions=payload.instructions if payload is not None else "",
+            runtime_settings=runtime_settings,
+            proposal_stage_context=proposal_stage_context,
+            critique_stage_context=critique_stage_context,
+            progress_callback=progress_callback,
+        )
     if payload is not None and payload.instructions.strip():
         artifact_payload = artifact_payload.model_copy(
             update={
@@ -4079,10 +4714,28 @@ def propose_design_route(
             }
         )
     stage_trace = next((trace.llm_trace for trace in traces if trace.llm_trace is not None), None)
-    warnings = list(dict.fromkeys([warning for trace in traces for warning in trace.warnings]))
+    warnings = list(dict.fromkeys([*runtime_warnings, *[warning for trace in traces for warning in trace.warnings]]))
     if artifact_payload.review_state == ReviewState.blocked:
         warnings.append("Design detecto findings bloqueantes; resuelvelos antes de aprobar la arquitectura.")
     proposal_payload = artifact_payload.model_dump(mode="json")
+    evidence_manifest = build_journey_evidence_manifest_from_traces(
+        traces=traces,
+        source_action="propose_design",
+    )
+    if react_run is not None:
+        evidence_manifest.extend(
+            JourneyArtifactEvidenceEntry(
+                source_type="react_runtime",
+                source_id=str(react_run.run_id),
+                source_version=react_run.contract_version,
+                section_key="react_trace",
+                artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
+                used_for="propose_design",
+                citation_label=f"react-evidence-{index}",
+                detail=evidence["detail"],
+            )
+            for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
+        )
     try:
         artifact = proposal_service.create(
             db,
@@ -4100,20 +4753,32 @@ def propose_design_route(
                 confidence=artifact_payload.confidence.overall,
                 missing_information=list(artifact_payload.missing_information),
                 warnings=warnings,
-                evidence_manifest=build_journey_evidence_manifest_from_traces(
-                    traces=traces,
-                    source_action="propose_design",
-                ),
+                evidence_manifest=evidence_manifest,
             ),
             actor_user=current_user,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
 
+    _record_stage_uncertainties(
+        db,
+        record=record,
+        stage="design",
+        output=artifact_payload,
+        created_from="propose_design",
+    )
     write_skill_runs(
         db,
         session_id=session_id,
         traces=traces,
+        source_action="propose_design",
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="design",
+        capability="propose_agent_design",
         source_action="propose_design",
     )
     write_validation(
@@ -4136,6 +4801,1358 @@ def propose_design_route(
     capture_operational_state(db, session_id=session_id, source_action="propose_design")
     db.commit()
     return artifact
+
+
+_STAGE_OPERATION_STEPS_BY_ACTION: dict[str, list[tuple[str, str]]] = {
+    "analyze_discovery": [
+        ("queued", "Solicitud recibida"),
+        ("normalize", "Estructuracion de contexto"),
+        ("analysis", "Analisis de necesidad"),
+        ("questions", "Preguntas y gaps"),
+        ("persist", "Publicacion de Discover"),
+    ],
+    "define_requirements": [
+        ("queued", "Solicitud recibida"),
+        ("canvas", "Canvas de solucion"),
+        ("requirements", "Requerimientos funcionales"),
+        ("questions", "Preguntas y riesgos"),
+        ("persist", "Publicacion de Definir"),
+    ],
+    "propose_design": [
+        ("queued", "Solicitud recibida"),
+        ("proposal", "Propuesta de arquitectura"),
+        ("critique", "Revision critica"),
+        ("merge", "Consolidacion"),
+        ("persist", "Publicacion del artefacto"),
+    ],
+    "recommend_tools": [
+        ("queued", "Solicitud recibida"),
+        ("context", "Contexto de Diseno aprobado"),
+        ("recommendation", "Set minimo de herramientas"),
+        ("questions", "Gaps y decisiones"),
+        ("persist", "Publicacion de Herramientas"),
+    ],
+    "recommend_memory": [
+        ("queued", "Solicitud recibida"),
+        ("context", "Contexto de Tools aprobado"),
+        ("profile", "Arquitectura de memoria"),
+        ("critique", "Revision critica"),
+        ("questions", "Preguntas y gobernanza"),
+        ("persist", "Publicacion de Memoria"),
+    ],
+    "generate_estimation_report": [
+        ("queued", "Solicitud recibida"),
+        ("inputs", "Insumos deterministas"),
+        ("analysis", "Analisis de esfuerzo y riesgo"),
+        ("persist", "Publicacion de estimacion"),
+    ],
+}
+
+
+def _stage_operation_step_definitions(action: str) -> list[tuple[str, str]]:
+    return _STAGE_OPERATION_STEPS_BY_ACTION.get(action, _STAGE_OPERATION_STEPS_BY_ACTION["propose_design"])
+
+
+class StageOperationCancelled(RuntimeError):
+    """Raised when a queued or checkpointed operation was cooperatively cancelled."""
+
+
+def _operation_expires_at(now: datetime) -> datetime:
+    return now + STAGE_OPERATION_HEARTBEAT_TTL
+
+
+def _is_operation_active(operation: StageOperationRecord) -> bool:
+    return operation.status in STAGE_OPERATION_ACTIVE_STATUSES
+
+
+def _is_operation_stale(operation: StageOperationRecord, now: datetime | None = None) -> bool:
+    if not _is_operation_active(operation):
+        return False
+    current = now or utc_now()
+    return operation.expires_at is not None and operation.expires_at <= current
+
+
+def _resolve_stage_operation_idempotency_key(
+    *,
+    action: str,
+    current_user: UserRecord,
+    payload: dict[str, object],
+    record: SessionRecord,
+    request: Request,
+) -> str:
+    header_value = (request.headers.get("x-idempotency-key") or request.headers.get("idempotency-key") or "").strip()
+    if header_value:
+        return header_value
+
+    payload_signature = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(payload_signature.encode("utf-8")).hexdigest()[:20]
+    return f"{action}:{record.id}:{current_user.id}:{digest}"
+
+
+def _recover_stale_stage_operation(db: Session, operation: StageOperationRecord) -> bool:
+    if not _is_operation_stale(operation):
+        return False
+
+    now = utc_now()
+    operation.status = StageOperationStatus.failed
+    operation.current_step = operation.current_step or "queued"
+    operation.detail = "La operacion quedo sin heartbeat y requiere reintento explicito."
+    operation.error_message = "Stage operation heartbeat expired before completion."
+    operation.technical_detail = "stage_operation_stale"
+    operation.updated_at = now
+    operation.completed_at = now
+    operation.expires_at = None
+    db.add(operation)
+    db.commit()
+    db.refresh(operation)
+    return True
+
+
+def _stage_operation_steps(
+    current_step: str,
+    *,
+    action: str = "propose_design",
+    cancelled: bool = False,
+    failed: bool = False,
+    completed: bool = False,
+) -> list[dict[str, str]]:
+    step_definitions = _stage_operation_step_definitions(action)
+    keys = [key for key, _ in step_definitions]
+    active_index = keys.index(current_step) if current_step in keys else 0
+    steps: list[dict[str, str]] = []
+    for index, (key, label) in enumerate(step_definitions):
+        if completed:
+            step_status = "completed"
+        elif cancelled and index == active_index:
+            step_status = "failed"
+        elif failed and index == active_index:
+            step_status = "failed"
+        elif index < active_index:
+            step_status = "completed"
+        elif index == active_index:
+            step_status = "active"
+        else:
+            step_status = "pending"
+        steps.append({"key": key, "label": label, "status": step_status, "detail": ""})
+    return steps
+
+
+def _update_stage_operation(
+    db: Session,
+    operation: StageOperationRecord,
+    *,
+    status_value: StageOperationStatus,
+    current_step: str,
+    detail: str,
+    result_artifact_id: UUID | None = None,
+    error_message: str = "",
+    technical_detail: str = "",
+) -> None:
+    now = utc_now()
+    operation.status = status_value
+    operation.current_step = current_step
+    operation.detail = detail
+    operation.steps = _stage_operation_steps(
+        current_step,
+        action=operation.action,
+        cancelled=status_value == StageOperationStatus.cancelled,
+        failed=status_value == StageOperationStatus.failed,
+        completed=status_value == StageOperationStatus.completed,
+    )
+    if result_artifact_id is not None:
+        operation.result_artifact_id = result_artifact_id
+    if error_message:
+        operation.error_message = error_message
+    if technical_detail:
+        operation.technical_detail = technical_detail
+    operation.updated_at = now
+    operation.heartbeat_at = now
+    if status_value in STAGE_OPERATION_TERMINAL_STATUSES:
+        operation.completed_at = now
+        operation.expires_at = None
+    else:
+        operation.expires_at = _operation_expires_at(now)
+    db.add(operation)
+    db.commit()
+    db.refresh(operation)
+
+
+def _build_stage_operation_response(
+    db: Session,
+    *,
+    session_record: SessionRecord,
+    operation: StageOperationRecord,
+) -> StageOperationResponse:
+    result: JourneyStageArtifactEntry | None = None
+    if operation.result_artifact_id is not None:
+        try:
+            result = StageProposalService().get(
+                db,
+                session_record=session_record,
+                stage_key=operation.stage_key,
+                artifact_id=operation.result_artifact_id,
+            )
+        except StageProposalNotFoundError:
+            result = None
+    return StageOperationResponse(
+        id=operation.id,
+        workspace_id=operation.workspace_id,
+        session_id=operation.session_id,
+        stage_key=operation.stage_key,
+        action=operation.action,
+        idempotency_key=operation.idempotency_key,
+        attempt_count=operation.attempt_count,
+        status=operation.status,
+        current_step=operation.current_step,
+        detail=operation.detail,
+        steps=[StageOperationStepResponse(**item) for item in operation.steps],
+        result_artifact_id=operation.result_artifact_id,
+        result=result,
+        error_message=operation.error_message,
+        technical_detail=operation.technical_detail,
+        can_retry=operation.status in {StageOperationStatus.failed, StageOperationStatus.cancelled},
+        can_cancel=_is_operation_active(operation) and operation.cancel_requested_at is None,
+        retry_url=f"/api/v1/sessions/{operation.session_id}/stage-operations/{operation.id}/retry"
+        if operation.status in {StageOperationStatus.failed, StageOperationStatus.cancelled}
+        else "",
+        cancel_url=f"/api/v1/sessions/{operation.session_id}/stage-operations/{operation.id}/cancel"
+        if _is_operation_active(operation) and operation.cancel_requested_at is None
+        else "",
+        recover_url=f"/api/v1/sessions/{operation.session_id}/stage-operations/{operation.id}/recover"
+        if _is_operation_active(operation)
+        else "",
+        cancel_requested_at=operation.cancel_requested_at,
+        heartbeat_at=operation.heartbeat_at,
+        expires_at=operation.expires_at,
+        is_stale=_is_operation_stale(operation),
+        created_at=operation.created_at,
+        updated_at=operation.updated_at,
+        completed_at=operation.completed_at,
+    )
+
+
+def _get_or_create_stage_operation(
+    db: Session,
+    *,
+    action: str,
+    current_user: UserRecord,
+    queued_detail: str,
+    record: SessionRecord,
+    request: Request,
+    request_payload: dict[str, object],
+    session_id: UUID,
+    stage_key: str,
+) -> tuple[StageOperationRecord, bool]:
+    idempotency_key = _resolve_stage_operation_idempotency_key(
+        action=action,
+        current_user=current_user,
+        payload=request_payload,
+        record=record,
+        request=request,
+    )
+    idempotent_operation = db.exec(
+        select(StageOperationRecord)
+        .where(
+            StageOperationRecord.workspace_id == record.workspace_id,
+            StageOperationRecord.session_id == session_id,
+            StageOperationRecord.action == action,
+            StageOperationRecord.idempotency_key == idempotency_key,
+        )
+        .order_by(StageOperationRecord.updated_at.desc(), StageOperationRecord.created_at.desc())
+    ).first()
+    if idempotent_operation is not None:
+        _recover_stale_stage_operation(db, idempotent_operation)
+        if _is_operation_active(idempotent_operation):
+            return idempotent_operation, False
+
+    active_operation = db.exec(
+        select(StageOperationRecord)
+        .where(
+            StageOperationRecord.workspace_id == record.workspace_id,
+            StageOperationRecord.session_id == session_id,
+            StageOperationRecord.action == action,
+            StageOperationRecord.status.in_(list(STAGE_OPERATION_ACTIVE_STATUSES)),
+        )
+        .order_by(StageOperationRecord.updated_at.desc(), StageOperationRecord.created_at.desc())
+    ).first()
+    if active_operation is not None:
+        _recover_stale_stage_operation(db, active_operation)
+        if _is_operation_active(active_operation):
+            return active_operation, False
+
+    now = utc_now()
+    operation = StageOperationRecord(
+        workspace_id=record.workspace_id,
+        session_id=session_id,
+        user_id=current_user.id,
+        stage_key=stage_key,
+        action=action,
+        idempotency_key=idempotency_key,
+        attempt_count=1,
+        status=StageOperationStatus.queued,
+        current_step="queued",
+        detail=queued_detail,
+        request_payload=request_payload,
+        steps=_stage_operation_steps("queued", action=action),
+        heartbeat_at=now,
+        expires_at=_operation_expires_at(now),
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(operation)
+    db.commit()
+    db.refresh(operation)
+    return operation, True
+
+
+def _raise_if_stage_operation_cancelled(
+    db: Session,
+    operation: StageOperationRecord,
+    *,
+    current_step: str,
+) -> None:
+    db.refresh(operation)
+    if operation.cancel_requested_at is None:
+        return
+    _update_stage_operation(
+        db,
+        operation,
+        status_value=StageOperationStatus.cancelled,
+        current_step=operation.current_step or current_step,
+        detail="Operacion cancelada antes de continuar el siguiente checkpoint.",
+    )
+    raise StageOperationCancelled("Stage operation cancelled at checkpoint.")
+
+
+def _complete_stage_operation_with_artifact(
+    db: Session,
+    operation: StageOperationRecord,
+    *,
+    artifact: JourneyStageArtifactEntry,
+    completed_detail: str,
+    waiting_detail: str,
+) -> None:
+    missing_information = list(artifact.missing_information or [])
+    if missing_information:
+        _update_stage_operation(
+            db,
+            operation,
+            status_value=StageOperationStatus.waiting_for_user,
+            current_step="questions",
+            detail=waiting_detail,
+            result_artifact_id=artifact.id,
+        )
+        return
+    _update_stage_operation(
+        db,
+        operation,
+        status_value=StageOperationStatus.completed,
+        current_step="persist",
+        detail=completed_detail,
+        result_artifact_id=artifact.id,
+    )
+
+
+def _run_propose_design_operation(operation_id: UUID, bind) -> None:
+    with Session(bind) as db:
+        operation = db.get(StageOperationRecord, operation_id)
+        if operation is None:
+            return
+        record = db.get(SessionRecord, operation.session_id)
+        user = db.get(UserRecord, operation.user_id)
+        if record is None or user is None:
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step="queued",
+                detail="No se pudo recuperar la sesion o usuario de la operacion.",
+                error_message="Session or user not found for propose-design operation.",
+            )
+            return
+
+        def progress_callback(step_key: str, detail: str) -> None:
+            db.refresh(operation)
+            if operation.cancel_requested_at is not None:
+                _update_stage_operation(
+                    db,
+                    operation,
+                    status_value=StageOperationStatus.cancelled,
+                    current_step=operation.current_step or step_key,
+                    detail="Operacion cancelada antes de continuar el siguiente checkpoint.",
+                )
+                raise StageOperationCancelled("Stage operation cancelled at checkpoint.")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step=step_key,
+                detail=detail,
+            )
+
+        try:
+            db.refresh(operation)
+            if operation.cancel_requested_at is not None:
+                _update_stage_operation(
+                    db,
+                    operation,
+                    status_value=StageOperationStatus.cancelled,
+                    current_step="queued",
+                    detail="Operacion cancelada antes de iniciar el procesamiento.",
+                )
+                return
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="queued",
+                detail="Preparando contexto aprobado de Discover, Define y memoria de largo plazo.",
+            )
+            payload = DesignProposalRequest.model_validate(operation.request_payload or {})
+            artifact = _execute_propose_design(
+                db,
+                record=record,
+                payload=payload,
+                current_user=user,
+                progress_callback=progress_callback,
+            )
+            db.refresh(operation)
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.completed,
+                current_step="persist",
+                detail=(
+                    "Diseno generado y publicado como artefacto revisable."
+                    if operation.cancel_requested_at is None
+                    else "Diseno generado antes de que la cancelacion pudiera interrumpir el runtime."
+                ),
+                result_artifact_id=artifact.id,
+            )
+        except StageOperationCancelled:
+            return
+        except HTTPException as exc:
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "queued",
+                detail="La operacion no pudo completar las validaciones de entrada.",
+                error_message=str(exc.detail),
+                technical_detail=f"HTTP {exc.status_code}",
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_blueprint,
+                status_value=ArtifactStatus.failed,
+                message="propose_design_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc.detail),
+                    "technical_detail": f"HTTP {exc.status_code}",
+                },
+            )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "proposal",
+                detail="Codex o el runtime no completaron la generacion de Diseno.",
+                error_message=str(exc) or type(exc).__name__,
+                technical_detail=type(exc).__name__,
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_blueprint,
+                status_value=ArtifactStatus.failed,
+                message="propose_design_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc) or type(exc).__name__,
+                    "technical_detail": type(exc).__name__,
+                },
+            )
+            db.commit()
+
+
+def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
+    with Session(bind) as db:
+        operation = db.get(StageOperationRecord, operation_id)
+        if operation is None:
+            return
+        record = db.get(SessionRecord, operation.session_id)
+        user = db.get(UserRecord, operation.user_id)
+        if record is None or user is None:
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step="queued",
+                detail="No se pudo recuperar la sesion o usuario de la operacion.",
+                error_message="Session or user not found for analyze-discovery operation.",
+            )
+            return
+
+        try:
+            _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
+            payload = DiscoveryInput.model_validate(operation.request_payload or {})
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="normalize",
+                detail="Estructurando contexto y guardando Discovery antes del analisis.",
+            )
+            normalize_discovery_route(operation.session_id, payload, db=db, current_user=user)
+            _raise_if_stage_operation_cancelled(db, operation, current_step="normalize")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="analysis",
+                detail="Analizando necesidad, alcance MVP y gaps con el runtime configurado.",
+            )
+            artifact = analyze_discovery_route(operation.session_id, payload, db=db, current_user=user)
+            _complete_stage_operation_with_artifact(
+                db,
+                operation,
+                artifact=artifact,
+                completed_detail="Discover analizado y publicado como propuesta revisable.",
+                waiting_detail="Discover genero preguntas accionables antes de avanzar a Definir.",
+            )
+        except StageOperationCancelled:
+            return
+        except HTTPException as exc:
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "queued",
+                detail="Discover no pudo completar las validaciones de entrada.",
+                error_message=str(exc.detail),
+                technical_detail=f"HTTP {exc.status_code}",
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.normalize_discovery,
+                status_value=ArtifactStatus.failed,
+                message="analyze_discovery_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc.detail),
+                    "technical_detail": f"HTTP {exc.status_code}",
+                },
+            )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "analysis",
+                detail="El runtime no completo el analisis de Discover.",
+                error_message=str(exc) or type(exc).__name__,
+                technical_detail=type(exc).__name__,
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.normalize_discovery,
+                status_value=ArtifactStatus.failed,
+                message="analyze_discovery_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc) or type(exc).__name__,
+                    "technical_detail": type(exc).__name__,
+                },
+            )
+            db.commit()
+
+
+def _run_define_requirements_operation(operation_id: UUID, bind) -> None:
+    with Session(bind) as db:
+        operation = db.get(StageOperationRecord, operation_id)
+        if operation is None:
+            return
+        record = db.get(SessionRecord, operation.session_id)
+        user = db.get(UserRecord, operation.user_id)
+        if record is None or user is None:
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step="queued",
+                detail="No se pudo recuperar la sesion o usuario de la operacion.",
+                error_message="Session or user not found for define-requirements operation.",
+            )
+            return
+
+        try:
+            _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="canvas",
+                detail="Construyendo Canvas desde el Discover aprobado.",
+            )
+            build_canvas_route(operation.session_id, db=db, current_user=user)
+            _raise_if_stage_operation_cancelled(db, operation, current_step="canvas")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="requirements",
+                detail="Generando requerimientos, criterios y riesgos funcionales.",
+            )
+            artifact = define_requirements_route(operation.session_id, db=db, current_user=user)
+            _complete_stage_operation_with_artifact(
+                db,
+                operation,
+                artifact=artifact,
+                completed_detail="Definir generado y publicado como artefacto revisable.",
+                waiting_detail="Definir genero preguntas accionables antes de avanzar a Disenar.",
+            )
+        except StageOperationCancelled:
+            return
+        except HTTPException as exc:
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "queued",
+                detail="Definir no pudo completar sus prerequisitos.",
+                error_message=str(exc.detail),
+                technical_detail=f"HTTP {exc.status_code}",
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_canvas,
+                status_value=ArtifactStatus.failed,
+                message="define_requirements_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc.detail),
+                    "technical_detail": f"HTTP {exc.status_code}",
+                },
+            )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "requirements",
+                detail="El runtime no completo la generacion de Definir.",
+                error_message=str(exc) or type(exc).__name__,
+                technical_detail=type(exc).__name__,
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_canvas,
+                status_value=ArtifactStatus.failed,
+                message="define_requirements_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc) or type(exc).__name__,
+                    "technical_detail": type(exc).__name__,
+                },
+            )
+            db.commit()
+
+
+def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
+    with Session(bind) as db:
+        operation = db.get(StageOperationRecord, operation_id)
+        if operation is None:
+            return
+        record = db.get(SessionRecord, operation.session_id)
+        user = db.get(UserRecord, operation.user_id)
+        if record is None or user is None:
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step="queued",
+                detail="No se pudo recuperar la sesion o usuario de la operacion.",
+                error_message="Session or user not found for recommend-tools operation.",
+            )
+            return
+
+        try:
+            _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
+            payload = ToolRecommendationRequest.model_validate(operation.request_payload or {})
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="context",
+                detail="Validando Discover, Definir y Diseno aprobados antes de recomendar herramientas.",
+            )
+            _raise_if_stage_operation_cancelled(db, operation, current_step="context")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="recommendation",
+                detail="Generando set minimo, cobertura y decisiones de Herramientas.",
+            )
+            recommend_tools_route(operation.session_id, payload, db=db, current_user=user)
+            _raise_if_stage_operation_cancelled(db, operation, current_step="recommendation")
+            artifact = StageProposalService().latest(db, session_record=record, stage_key="tools")
+            if artifact is None:
+                raise RuntimeError("Tools operation completed without a persisted journey artifact.")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.completed,
+                current_step="persist",
+                detail="Herramientas generadas y publicadas como artefacto revisable.",
+                result_artifact_id=artifact.id,
+            )
+        except StageOperationCancelled:
+            return
+        except HTTPException as exc:
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "queued",
+                detail="Herramientas no pudo completar sus prerequisitos.",
+                error_message=str(exc.detail),
+                technical_detail=f"HTTP {exc.status_code}",
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_blueprint,
+                status_value=ArtifactStatus.failed,
+                message="recommend_tools_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc.detail),
+                    "technical_detail": f"HTTP {exc.status_code}",
+                },
+            )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "recommendation",
+                detail="El runtime no completo la generacion de Herramientas.",
+                error_message=str(exc) or type(exc).__name__,
+                technical_detail=type(exc).__name__,
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_blueprint,
+                status_value=ArtifactStatus.failed,
+                message="recommend_tools_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc) or type(exc).__name__,
+                    "technical_detail": type(exc).__name__,
+                },
+            )
+            db.commit()
+
+
+def _run_recommend_memory_operation(operation_id: UUID, bind) -> None:
+    with Session(bind) as db:
+        operation = db.get(StageOperationRecord, operation_id)
+        if operation is None:
+            return
+        record = db.get(SessionRecord, operation.session_id)
+        user = db.get(UserRecord, operation.user_id)
+        if record is None or user is None:
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step="queued",
+                detail="No se pudo recuperar la sesion o usuario de la operacion.",
+                error_message="Session or user not found for recommend-memory operation.",
+            )
+            return
+
+        try:
+            _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
+            payload = MemoryRecommendationRequest.model_validate(operation.request_payload or {})
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="context",
+                detail="Validando Tools aprobadas y contexto de Diseno antes de recomendar Memoria.",
+            )
+            _raise_if_stage_operation_cancelled(db, operation, current_step="context")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="profile",
+                detail="Generando arquitectura de memoria, fuentes y reglas de gobernanza.",
+            )
+            artifact = recommend_memory_route(operation.session_id, payload, db=db, current_user=user)
+            _complete_stage_operation_with_artifact(
+                db,
+                operation,
+                artifact=artifact,
+                completed_detail="Memoria generada y publicada como artefacto revisable.",
+                waiting_detail="Memoria genero preguntas accionables antes de avanzar a Estimate.",
+            )
+        except StageOperationCancelled:
+            return
+        except HTTPException as exc:
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "queued",
+                detail="Memoria no pudo completar sus prerequisitos.",
+                error_message=str(exc.detail),
+                technical_detail=f"HTTP {exc.status_code}",
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_blueprint,
+                status_value=ArtifactStatus.failed,
+                message="recommend_memory_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc.detail),
+                    "technical_detail": f"HTTP {exc.status_code}",
+                },
+            )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "profile",
+                detail="El runtime no completo la generacion de Memoria.",
+                error_message=str(exc) or type(exc).__name__,
+                technical_detail=type(exc).__name__,
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=SessionStage.build_blueprint,
+                status_value=ArtifactStatus.failed,
+                message="recommend_memory_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc) or type(exc).__name__,
+                    "technical_detail": type(exc).__name__,
+                },
+            )
+            db.commit()
+
+
+def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
+    with Session(bind) as db:
+        operation = db.get(StageOperationRecord, operation_id)
+        if operation is None:
+            return
+        record = db.get(SessionRecord, operation.session_id)
+        user = db.get(UserRecord, operation.user_id)
+        if record is None or user is None:
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step="queued",
+                detail="No se pudo recuperar la sesion o usuario de la operacion.",
+                error_message="Session or user not found for estimation operation.",
+            )
+            return
+
+        try:
+            _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="inputs",
+                detail="Preparando Canvas, Blueprint, validacion y benchmarks para estimacion.",
+            )
+            _raise_if_stage_operation_cancelled(db, operation, current_step="inputs")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.running,
+                current_step="analysis",
+                detail="Calculando esfuerzo, riesgo, ROI y politica de avance al paquete.",
+            )
+            generate_estimation_report_route(operation.session_id, db=db, current_user=user)
+            persisted_report = load_latest_persisted_estimation_report(
+                db,
+                operation.session_id,
+                current_blueprint_version_number=latest_blueprint_version_number(db, operation.session_id),
+            )
+            if persisted_report is None:
+                raise RuntimeError("Estimate operation completed without a persisted estimation artifact.")
+            _raise_if_stage_operation_cancelled(db, operation, current_step="analysis")
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.completed,
+                current_step="persist",
+                detail="Estimacion generada y persistida como artefacto final de Blueprint.",
+            )
+        except StageOperationCancelled:
+            return
+        except HTTPException as exc:
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "queued",
+                detail="Estimate no pudo completar sus prerequisitos.",
+                error_message=str(exc.detail),
+                technical_detail=f"HTTP {exc.status_code}",
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=record.current_stage,
+                status_value=ArtifactStatus.failed,
+                message="generate_estimation_report_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc.detail),
+                    "technical_detail": f"HTTP {exc.status_code}",
+                },
+            )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            _update_stage_operation(
+                db,
+                operation,
+                status_value=StageOperationStatus.failed,
+                current_step=operation.current_step or "analysis",
+                detail="El runtime no completo la estimacion comercial.",
+                error_message=str(exc) or type(exc).__name__,
+                technical_detail=type(exc).__name__,
+            )
+            write_log(
+                db,
+                session_id=operation.session_id,
+                stage=record.current_stage,
+                status_value=ArtifactStatus.failed,
+                message="generate_estimation_report_async_failed",
+                payload={
+                    "operation_id": str(operation.id),
+                    "error_message": str(exc) or type(exc).__name__,
+                    "technical_detail": type(exc).__name__,
+                },
+            )
+            db.commit()
+
+
+def _add_stage_operation_background_task(
+    background_tasks: BackgroundTasks,
+    *,
+    bind,
+    operation: StageOperationRecord,
+) -> None:
+    if operation.action == "analyze_discovery":
+        background_tasks.add_task(_run_analyze_discovery_operation, operation.id, bind)
+        return
+    if operation.action == "define_requirements":
+        background_tasks.add_task(_run_define_requirements_operation, operation.id, bind)
+        return
+    if operation.action == "propose_design":
+        background_tasks.add_task(_run_propose_design_operation, operation.id, bind)
+        return
+    if operation.action == "recommend_tools":
+        background_tasks.add_task(_run_recommend_tools_operation, operation.id, bind)
+        return
+    if operation.action == "recommend_memory":
+        background_tasks.add_task(_run_recommend_memory_operation, operation.id, bind)
+        return
+    if operation.action == "generate_estimation_report":
+        background_tasks.add_task(_run_generate_estimation_report_operation, operation.id, bind)
+        return
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This stage operation does not support background execution.")
+
+
+def _stage_operation_retry_detail(action: str) -> str:
+    if action == "analyze_discovery":
+        return "Reintento solicitado. Discover volvera a normalizarse y analizarse en segundo plano."
+    if action == "define_requirements":
+        return "Reintento solicitado. Definir volvera a construir Canvas y requisitos en segundo plano."
+    if action == "recommend_tools":
+        return "Reintento solicitado. Herramientas volvera a generar cobertura y decisiones en segundo plano."
+    if action == "recommend_memory":
+        return "Reintento solicitado. Memoria volvera a generar arquitectura y gobernanza en segundo plano."
+    if action == "generate_estimation_report":
+        return "Reintento solicitado. Estimate volvera a calcular esfuerzo, riesgo y valor en segundo plano."
+    return "Reintento solicitado. La generacion de Diseno volvera a ejecutarse en segundo plano."
+
+
+@router.post("/{session_id}/propose-design", response_model=JourneyStageArtifactEntry)
+def propose_design_route(
+    session_id: UUID,
+    payload: DesignProposalRequest | None = None,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> JourneyStageArtifactEntry:
+    record = get_or_404(db, session_id, current_user.id)
+    return _execute_propose_design(db, record=record, payload=payload, current_user=current_user)
+
+
+@router.post("/{session_id}/propose-design/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_propose_design_route(
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    payload: DesignProposalRequest | None = None,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    request_payload = (payload or DesignProposalRequest()).model_dump(mode="json")
+    operation, created = _get_or_create_stage_operation(
+        db,
+        action="propose_design",
+        current_user=current_user,
+        queued_detail="Solicitud recibida. La generacion de Diseno se ejecutara en segundo plano.",
+        record=record,
+        request=request,
+        request_payload=request_payload,
+        session_id=session_id,
+        stage_key="design",
+    )
+    if created:
+        _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.post("/{session_id}/analyze-discovery/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_analyze_discovery_route(
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    payload: DiscoveryInput,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    request_payload = payload.model_dump(mode="json")
+    operation, created = _get_or_create_stage_operation(
+        db,
+        action="analyze_discovery",
+        current_user=current_user,
+        queued_detail="Solicitud recibida. Discover se normalizara y analizara en segundo plano.",
+        record=record,
+        request=request,
+        request_payload=request_payload,
+        session_id=session_id,
+        stage_key="discover",
+    )
+    if created:
+        _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.post("/{session_id}/define-requirements/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_define_requirements_route(
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    operation, created = _get_or_create_stage_operation(
+        db,
+        action="define_requirements",
+        current_user=current_user,
+        queued_detail="Solicitud recibida. Definir construira Canvas y requisitos en segundo plano.",
+        record=record,
+        request=request,
+        request_payload={},
+        session_id=session_id,
+        stage_key="define",
+    )
+    if created:
+        _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.post("/{session_id}/recommend-tools/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_recommend_tools_route(
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    payload: ToolRecommendationRequest | None = None,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    request_payload = (payload or ToolRecommendationRequest()).model_dump(mode="json")
+    operation, created = _get_or_create_stage_operation(
+        db,
+        action="recommend_tools",
+        current_user=current_user,
+        queued_detail="Solicitud recibida. Herramientas se recomendara en segundo plano.",
+        record=record,
+        request=request,
+        request_payload=request_payload,
+        session_id=session_id,
+        stage_key="tools",
+    )
+    if created:
+        _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.post("/{session_id}/recommend-memory/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_recommend_memory_route(
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    payload: MemoryRecommendationRequest | None = None,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    request_payload = (payload or MemoryRecommendationRequest()).model_dump(mode="json")
+    operation, created = _get_or_create_stage_operation(
+        db,
+        action="recommend_memory",
+        current_user=current_user,
+        queued_detail="Solicitud recibida. Memoria se recomendara en segundo plano.",
+        record=record,
+        request=request,
+        request_payload=request_payload,
+        session_id=session_id,
+        stage_key="memory",
+    )
+    if created:
+        _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.post("/{session_id}/estimate/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_generate_estimation_report_route(
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    operation, created = _get_or_create_stage_operation(
+        db,
+        action="generate_estimation_report",
+        current_user=current_user,
+        queued_detail="Solicitud recibida. Estimate calculara esfuerzo, riesgo y valor en segundo plano.",
+        record=record,
+        request=request,
+        request_payload={},
+        session_id=session_id,
+        stage_key="estimate",
+    )
+    if created:
+        _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+def _get_stage_operation_or_404(
+    db: Session,
+    *,
+    operation_id: UUID,
+    record: SessionRecord,
+    session_id: UUID,
+) -> StageOperationRecord:
+    operation = db.get(StageOperationRecord, operation_id)
+    if (
+        operation is None
+        or operation.workspace_id != record.workspace_id
+        or operation.session_id != session_id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stage operation not found.")
+    return operation
+
+
+@router.get("/{session_id}/stage-operations/current", response_model=StageOperationResponse | None)
+def get_current_stage_operation_route(
+    session_id: UUID,
+    stage_key: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse | None:
+    record = get_or_404(db, session_id, current_user.id)
+    # 1. Prioritize any live active operation for this session
+    global_active_statement = select(StageOperationRecord).where(
+        StageOperationRecord.workspace_id == record.workspace_id,
+        StageOperationRecord.session_id == session_id,
+        StageOperationRecord.status.in_(list(STAGE_OPERATION_ACTIVE_STATUSES)),
+    ).order_by(StageOperationRecord.updated_at.desc(), StageOperationRecord.created_at.desc())
+    active_operations = list(db.exec(global_active_statement).all())
+    for op in active_operations:
+        _recover_stale_stage_operation(db, op)
+    live_active = next((op for op in active_operations if _is_operation_active(op)), None)
+    if live_active is not None:
+        return _build_stage_operation_response(db, session_record=record, operation=live_active)
+
+    # 2. Otherwise return the latest operation for the requested stage or action
+    statement = select(StageOperationRecord).where(
+        StageOperationRecord.workspace_id == record.workspace_id,
+        StageOperationRecord.session_id == session_id,
+    )
+    if stage_key:
+        statement = statement.where(StageOperationRecord.stage_key == stage_key)
+    if action:
+        statement = statement.where(StageOperationRecord.action == action)
+
+    operations = list(
+        db.exec(
+            statement.order_by(StageOperationRecord.updated_at.desc(), StageOperationRecord.created_at.desc())
+        ).all()
+    )
+    if not operations:
+        return None
+
+    for operation in operations:
+        _recover_stale_stage_operation(db, operation)
+
+    active_operation = next((operation for operation in operations if _is_operation_active(operation)), None)
+    return _build_stage_operation_response(db, session_record=record, operation=active_operation or operations[0])
+
+
+@router.post("/{session_id}/stage-operations/{operation_id}/cancel", response_model=StageOperationResponse)
+def cancel_stage_operation_route(
+    session_id: UUID,
+    operation_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
+    _recover_stale_stage_operation(db, operation)
+
+    if operation.status in STAGE_OPERATION_TERMINAL_STATUSES:
+        return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+    now = utc_now()
+    operation.cancel_requested_at = operation.cancel_requested_at or now
+    operation.updated_at = now
+    operation.heartbeat_at = now
+    if operation.status == StageOperationStatus.queued:
+        operation.status = StageOperationStatus.cancelled
+        operation.current_step = operation.current_step or "queued"
+        operation.detail = "Operacion cancelada antes de iniciar el procesamiento."
+        operation.completed_at = now
+        operation.expires_at = None
+        operation.steps = _stage_operation_steps(operation.current_step, action=operation.action, cancelled=True)
+    else:
+        operation.detail = "Cancelacion solicitada. El runtime se detendra en el siguiente checkpoint seguro."
+        operation.expires_at = _operation_expires_at(now)
+    db.add(operation)
+    db.commit()
+    db.refresh(operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.post("/{session_id}/stage-operations/{operation_id}/retry", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
+def retry_stage_operation_route(
+    session_id: UUID,
+    operation_id: UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
+    _recover_stale_stage_operation(db, operation)
+
+    if _is_operation_active(operation):
+        return _build_stage_operation_response(db, session_record=record, operation=operation)
+    if operation.status == StageOperationStatus.completed:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Completed stage operations cannot be retried.")
+    if operation.action not in {
+        "analyze_discovery",
+        "define_requirements",
+        "propose_design",
+        "recommend_tools",
+        "recommend_memory",
+        "generate_estimation_report",
+    }:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This stage operation does not support retry yet.")
+
+    now = utc_now()
+    operation.status = StageOperationStatus.queued
+    operation.attempt_count = max(1, operation.attempt_count) + 1
+    operation.current_step = "queued"
+    operation.detail = _stage_operation_retry_detail(operation.action)
+    operation.error_message = ""
+    operation.technical_detail = ""
+    operation.cancel_requested_at = None
+    operation.result_artifact_id = None
+    operation.completed_at = None
+    operation.updated_at = now
+    operation.heartbeat_at = now
+    operation.expires_at = _operation_expires_at(now)
+    operation.steps = _stage_operation_steps("queued", action=operation.action)
+    db.add(operation)
+    db.commit()
+    db.refresh(operation)
+    _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.post("/{session_id}/stage-operations/{operation_id}/recover", response_model=StageOperationResponse)
+def recover_stage_operation_route(
+    session_id: UUID,
+    operation_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
+    _recover_stale_stage_operation(db, operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
+
+
+@router.get("/{session_id}/stage-operations/{operation_id}", response_model=StageOperationResponse)
+def get_stage_operation_route(
+    session_id: UUID,
+    operation_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> StageOperationResponse:
+    record = get_or_404(db, session_id, current_user.id)
+    operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
+    _recover_stale_stage_operation(db, operation)
+    return _build_stage_operation_response(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/build-blueprint", response_model=BlueprintEnvelope)
@@ -4484,18 +6501,66 @@ def recommend_tools_route(
         task_source_keys=["tool_recommendation_case", "tool_recommendation_catalog"],
         allow_second_page=True,
     )
-    envelope, traces = run_tool_recommendation_stage(
-        session_id,
-        hydrate_discovery(opportunity),
-        hydrate_canvas(canvas),
-        hydrate_blueprint(blueprint),
-        definition_artifact=definition_artifact,
-        design_artifact=design_artifact,
-        instructions=payload.instructions if payload is not None else "",
-        blueprint_version_number=blueprint_version_number,
-        runtime_settings=runtime_settings,
-        stage_context=stage_context,
-    )
+    react_run = None
+    react_runtime_warnings: list[str] = []
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        try:
+            react_execution = run_tools_react(
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                discovery=hydrate_discovery(opportunity),
+                canvas=hydrate_canvas(canvas),
+                blueprint=hydrate_blueprint(blueprint),
+                definition_artifact=definition_artifact,
+                design_artifact=design_artifact,
+                instructions=payload.instructions if payload is not None else "",
+                blueprint_version_number=blueprint_version_number,
+                runtime_settings=runtime_settings,
+                stage_context=stage_context,
+            )
+            envelope = ToolRecommendationEnvelope(
+                status=ArtifactStatus.needs_review if react_execution.react_run and react_execution.react_run.status != "completed" else ArtifactStatus.ready,
+                stage=SessionStage.build_blueprint,
+                data=react_execution.value,
+                missing_fields=[],
+                assumptions=[],
+                warnings=react_execution.warnings,
+                evidence=[],
+                llm_trace=None,
+                next_action="resolve_tool_recommendation_findings" if react_execution.react_run and react_execution.react_run.status != "completed" else "review_tool_recommendation",
+            )
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            react_runtime_warnings = [
+                "El controlador ReAct no pudo completar Tools; se mantuvo el runtime existente.",
+                f"react_runtime_fallback:{type(exc).__name__}",
+            ]
+            envelope, traces = run_tool_recommendation_stage(
+                session_id,
+                hydrate_discovery(opportunity),
+                hydrate_canvas(canvas),
+                hydrate_blueprint(blueprint),
+                definition_artifact=definition_artifact,
+                design_artifact=design_artifact,
+                instructions=payload.instructions if payload is not None else "",
+                blueprint_version_number=blueprint_version_number,
+                runtime_settings=runtime_settings,
+                stage_context=stage_context,
+            )
+    else:
+        envelope, traces = run_tool_recommendation_stage(
+            session_id,
+            hydrate_discovery(opportunity),
+            hydrate_canvas(canvas),
+            hydrate_blueprint(blueprint),
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            instructions=payload.instructions if payload is not None else "",
+            blueprint_version_number=blueprint_version_number,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
     envelope = envelope.model_copy(
         update={
             "data": envelope.data.model_copy(
@@ -4509,6 +6574,8 @@ def recommend_tools_route(
             )
         }
     )
+    if react_runtime_warnings:
+        envelope = envelope.model_copy(update={"warnings": list(dict.fromkeys([*envelope.warnings, *react_runtime_warnings]))})
 
     record_tool_recommendation_artifact(
         db,
@@ -4542,6 +6609,24 @@ def recommend_tools_route(
         payload=envelope.model_dump(mode="json"),
     )
     stage_trace = envelope.llm_trace
+    evidence_manifest = build_journey_evidence_manifest_from_traces(
+        traces=traces,
+        source_action="recommend_tools",
+    )
+    if react_run is not None:
+        evidence_manifest.extend(
+            JourneyArtifactEvidenceEntry(
+                source_type="react_runtime",
+                source_id=str(react_run.run_id),
+                source_version=react_run.contract_version,
+                section_key="react_trace",
+                artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
+                used_for="recommend_tools",
+                citation_label=f"react-evidence-{index}",
+                detail=evidence["detail"],
+            )
+            for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
+        )
     try:
         proposal_service.create(
             db,
@@ -4568,15 +6653,28 @@ def recommend_tools_route(
                 ],
                 warnings=list(dict.fromkeys(envelope.warnings)),
                 corpus_hash=stage_context.corpus_hash if stage_context is not None else "",
-                evidence_manifest=build_journey_evidence_manifest_from_traces(
-                    traces=traces,
-                    source_action="recommend_tools",
-                ),
+                evidence_manifest=evidence_manifest,
             ),
             actor_user=current_user,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
+    _record_stage_uncertainties(
+        db,
+        record=record,
+        stage="tools",
+        output=envelope.data,
+        created_from="recommend_tools",
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="tools",
+        capability="recommend_minimal_tools",
+        source_action="recommend_tools",
+        blueprint_version_number=blueprint_version_number,
+    )
     db.add(record)
     sync_short_term_memory_checkpoint(db, record=record, source_action="recommend_tools")
     capture_operational_state(db, session_id=session_id, source_action="recommend_tools")
@@ -4809,6 +6907,121 @@ def recommend_memory_route(
             status_code=status.HTTP_409_CONFLICT,
             detail="Memory requires regenerating Tools after the design context changed",
         )
+    remediated_recommendation, tools_remediated = ensure_document_ingestion_for_knowledge_retrieval(
+        artifact=latest_recommendation,
+        blueprint=blueprint,
+    )
+    if tools_remediated:
+        try:
+            approved_tools, review_decisions, digest = promote_tool_recommendation_to_blueprint_tools(
+                remediated_recommendation
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Memory detected an auto-remediable Tools dependency, but HT4 still blocks promotion: "
+                    f"{exc}"
+                ),
+            ) from exc
+
+        envelope = patch_blueprint(
+            blueprint,
+            BlueprintPatchRequest(
+                tools=approved_tools,
+                knowledge_profile=derive_knowledge_profile(
+                    discovery,
+                    approved_tools,
+                    blueprint.memory_strategy,
+                ),
+            ),
+            discovery,
+            canvas,
+        )
+        pending_approvals = sync_approval_gates(db, session_id, envelope.data)
+        envelope = apply_pending_approvals_to_blueprint(envelope, pending_approvals)
+        upsert_blueprint(db, session_id, envelope)
+        blueprint_version_number = create_blueprint_version(
+            db,
+            session_id=session_id,
+            source_action="auto_memory_dependency_remediation",
+            status_value=envelope.status,
+            blueprint=envelope.data,
+        )
+        record_delivery_artifacts(
+            db,
+            session_id=session_id,
+            blueprint_version_number=blueprint_version_number,
+            source_action="auto_memory_dependency_remediation",
+            stage=envelope.stage,
+            blueprint=envelope.data,
+        )
+        sync_governance_handoff(
+            db,
+            session_record=record,
+            blueprint_version_number=blueprint_version_number,
+            blueprint=envelope.data,
+            source_action="auto_memory_dependency_remediation",
+            pending_approvals=pending_approvals,
+        )
+        promoted_digest = digest.model_copy(update={"promoted_blueprint_version": blueprint_version_number})
+        latest_recommendation = remediated_recommendation.model_copy(
+            update={
+                "review_decisions": review_decisions,
+                "approved_tools_digest": promoted_digest,
+                "review_state": ReviewState.complete,
+                "summary": (
+                    "Tools fue remediado automaticamente antes de Memoria: se agrego document_ingestion "
+                    "para cerrar la dependencia RAG generada por knowledge_retrieval."
+                ),
+            }
+        )
+        if latest_tools_artifact is not None:
+            remediated_tools_payload = latest_recommendation.model_dump(mode="json")
+            remediated_tools_warnings = list(
+                dict.fromkeys(
+                    [
+                        *(latest_tools_artifact.warnings or []),
+                        "Tools auto-remediado antes de Memoria: document_ingestion fue agregado por dependencia RAG.",
+                    ]
+                )
+            )
+            latest_tools_record = db.get(JourneyStageArtifactRecord, latest_tools_artifact.id)
+            if latest_tools_record is not None and latest_tools_record.session_id == session_id:
+                latest_tools_record.proposal_payload = remediated_tools_payload
+                latest_tools_record.warnings = remediated_tools_warnings
+                latest_tools_record.updated_at = utc_now()
+                db.add(latest_tools_record)
+            latest_tools_artifact = latest_tools_artifact.model_copy(
+                update={
+                    "proposal_payload": remediated_tools_payload,
+                    "warnings": remediated_tools_warnings,
+                    "updated_at": utc_now(),
+                }
+            )
+        record_tool_recommendation_artifact(
+            db,
+            session_id=session_id,
+            blueprint_version_number=blueprint_version_number,
+            stage=envelope.stage,
+            source_action="auto_memory_dependency_remediation",
+            recommendation=latest_recommendation,
+        )
+        write_log(
+            db,
+            session_id=session_id,
+            stage=envelope.stage,
+            status_value=envelope.status,
+            message="Tools auto-remediado antes de generar Memoria",
+            payload={
+                "added_tool_key": "document_ingestion",
+                "reason": "knowledge_retrieval requiere ingesta/refresh/lineage para RAG gobernado",
+                "approved_tool_keys": promoted_digest.approved_tool_keys,
+                "digest_sha256": promoted_digest.digest_sha256,
+                "promoted_blueprint_version": blueprint_version_number,
+            },
+        )
+        blueprint = envelope.data
 
     definition_artifact = (
         resolve_definition_from_stage_artifact(latest_define_artifact) if latest_define_artifact is not None else None
@@ -4848,33 +7061,101 @@ def recommend_memory_route(
         allow_second_page=True,
     )
     session_snapshot = build_snapshot(db, record)
-    artifact, traces = run_memory_recommendation_stage(
-        session_id=session_id,
-        discovery=discovery,
-        canvas=canvas,
-        blueprint=blueprint,
-        definition_artifact=definition_artifact,
-        design_artifact=design_artifact,
-        approved_tools_digest=latest_recommendation.approved_tools_digest,
-        session_snapshot=session_snapshot,
-        instructions=payload.instructions if payload is not None else "",
-        blueprint_version_number=blueprint_version_number,
-        source_stage_versions=source_stage_versions,
-        runtime_settings=runtime_settings,
-        proposal_stage_context=proposal_stage_context,
-        critique_stage_context=critique_stage_context,
-    )
+    react_run = None
+    react_runtime_warnings: list[str] = []
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        try:
+            react_execution = run_memory_react(
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=blueprint,
+                definition_artifact=definition_artifact,
+                design_artifact=design_artifact,
+                approved_tools_digest=latest_recommendation.approved_tools_digest,
+                tools_artifact=latest_recommendation,
+                session_snapshot=session_snapshot,
+                instructions=payload.instructions if payload is not None else "",
+                blueprint_version_number=blueprint_version_number,
+                source_stage_versions=source_stage_versions,
+                runtime_settings=runtime_settings,
+                proposal_stage_context=proposal_stage_context,
+                critique_stage_context=critique_stage_context,
+            )
+            artifact = react_execution.value
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            react_runtime_warnings = [
+                "El controlador ReAct no pudo completar Memory; se mantuvo el runtime existente.",
+                f"react_runtime_fallback:{type(exc).__name__}",
+            ]
+            artifact, traces = run_memory_recommendation_stage(
+                session_id=session_id,
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=blueprint,
+                definition_artifact=definition_artifact,
+                design_artifact=design_artifact,
+                approved_tools_digest=latest_recommendation.approved_tools_digest,
+                session_snapshot=session_snapshot,
+                instructions=payload.instructions if payload is not None else "",
+                blueprint_version_number=blueprint_version_number,
+                source_stage_versions=source_stage_versions,
+                runtime_settings=runtime_settings,
+                proposal_stage_context=proposal_stage_context,
+                critique_stage_context=critique_stage_context,
+            )
+    else:
+        artifact, traces = run_memory_recommendation_stage(
+            session_id=session_id,
+            discovery=discovery,
+            canvas=canvas,
+            blueprint=blueprint,
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            approved_tools_digest=latest_recommendation.approved_tools_digest,
+            session_snapshot=session_snapshot,
+            instructions=payload.instructions if payload is not None else "",
+            blueprint_version_number=blueprint_version_number,
+            source_stage_versions=source_stage_versions,
+            runtime_settings=runtime_settings,
+            proposal_stage_context=proposal_stage_context,
+            critique_stage_context=critique_stage_context,
+        )
     stage_trace = next((trace.llm_trace for trace in reversed(traces) if trace.llm_trace is not None), None)
     combined_warnings = list(
         dict.fromkeys(
             [
-                warning
-                for trace in traces
-                for warning in trace.warnings
-                if warning
+                *react_runtime_warnings,
+                *[
+                    warning
+                    for trace in traces
+                    for warning in trace.warnings
+                    if warning
+                ],
             ]
         )
     )
+    evidence_manifest = build_journey_evidence_manifest_from_traces(
+        traces=traces,
+        source_action="recommend_memory",
+    )
+    if react_run is not None:
+        evidence_manifest.extend(
+            JourneyArtifactEvidenceEntry(
+                source_type="react_runtime",
+                source_id=str(react_run.run_id),
+                source_version=react_run.contract_version,
+                section_key="react_trace",
+                artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
+                used_for="recommend_memory",
+                citation_label=f"react-evidence-{index}",
+                detail=evidence["detail"],
+            )
+            for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
+        )
     try:
         journey_artifact = proposal_service.create(
             db,
@@ -4894,20 +7175,33 @@ def recommend_memory_route(
                 missing_information=list(dict.fromkeys(artifact.missing_information)),
                 warnings=combined_warnings,
                 corpus_hash=proposal_stage_context.corpus_hash or critique_stage_context.corpus_hash,
-                evidence_manifest=build_journey_evidence_manifest_from_traces(
-                    traces=traces,
-                    source_action="recommend_memory",
-                ),
+                evidence_manifest=evidence_manifest,
             ),
             actor_user=current_user,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
 
+    _record_stage_uncertainties(
+        db,
+        record=record,
+        stage="memory",
+        output=artifact,
+        created_from="recommend_memory",
+    )
     write_skill_runs(
         db,
         session_id=session_id,
         traces=traces,
+        source_action="recommend_memory",
+        blueprint_version_number=blueprint_version_number,
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="memory",
+        capability="recommend_memory_architecture",
         source_action="recommend_memory",
         blueprint_version_number=blueprint_version_number,
     )
@@ -4932,6 +7226,86 @@ def recommend_memory_route(
     capture_operational_state(db, session_id=session_id, source_action="recommend_memory")
     db.commit()
     return journey_artifact
+
+
+def _memory_finding_identity(finding: object) -> str:
+    finding_key = str(getattr(finding, "finding_key", "") or "").strip()
+    if finding_key:
+        return finding_key
+    return "|".join(
+        str(getattr(finding, field, "") or "").strip()
+        for field in ("title", "detail", "category")
+    )
+
+
+def _merge_memory_review_findings(
+    original: MemoryRecommendationArtifact,
+    refreshed: MemoryRecommendationArtifact,
+):
+    merged: dict[str, object] = {}
+    for finding in original.critic_findings:
+        merged[_memory_finding_identity(finding)] = finding.model_copy(deep=True)
+    for finding in refreshed.critic_findings:
+        merged[_memory_finding_identity(finding)] = finding.model_copy(deep=True)
+    return list(merged.values())
+
+
+def _merge_memory_guided_questions(
+    original: MemoryRecommendationArtifact,
+    refreshed: MemoryRecommendationArtifact,
+):
+    merged: dict[str, object] = {}
+    for question in [*original.guided_questions, *refreshed.guided_questions]:
+        question_key = question.key.strip() or question.question.strip()
+        if question_key:
+            merged[question_key] = question.model_copy(deep=True)
+    return list(merged.values())
+
+
+def _merge_memory_strings(*collections: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for collection in collections:
+        for value in collection:
+            normalized = " ".join(str(value or "").strip().split())
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+    return merged
+
+
+def _preserve_reviewed_memory_fields(
+    *,
+    original_payload: dict,
+    refreshed_artifact: MemoryRecommendationArtifact,
+) -> MemoryRecommendationArtifact:
+    try:
+        original_artifact = MemoryRecommendationArtifact.model_validate(original_payload)
+    except Exception:  # noqa: BLE001
+        return refreshed_artifact
+
+    reviewed_summary = original_artifact.summary.strip()
+    return refreshed_artifact.model_copy(
+        update={
+            "summary": reviewed_summary or refreshed_artifact.summary,
+            "open_questions": _merge_memory_strings(
+                original_artifact.open_questions,
+                refreshed_artifact.open_questions,
+            ),
+            "guided_questions": _merge_memory_guided_questions(original_artifact, refreshed_artifact),
+            "missing_information": _merge_memory_strings(
+                original_artifact.missing_information,
+                refreshed_artifact.missing_information,
+            ),
+            "critic_findings": _merge_memory_review_findings(original_artifact, refreshed_artifact),
+            "evidence_refs": _merge_memory_strings(
+                original_artifact.evidence_refs,
+                refreshed_artifact.evidence_refs,
+            ),
+        },
+        deep=True,
+    )
 
 
 @router.post("/{session_id}/approve-memory-profile", response_model=SessionSnapshot)
@@ -5016,6 +7390,10 @@ def approve_memory_profile_route(
                 session_snapshot=build_snapshot(db, record),
                 proposed_memory_profile=MemoryProfile.model_validate(proposed_memory_profile),
                 proposed_knowledge_profile=KnowledgeProfile.model_validate(proposed_knowledge_profile),
+            )
+            refreshed_artifact = _preserve_reviewed_memory_fields(
+                original_payload=memory_payload,
+                refreshed_artifact=refreshed_artifact,
             )
             try:
                 proposal_service.patch(
@@ -5111,20 +7489,77 @@ def generate_validation_scenarios_route(
         "tools": latest_tools_artifact.version_number if latest_tools_artifact is not None else None,
         "memory": latest_memory_artifact.version_number if latest_memory_artifact is not None else None,
     }
-    artifact, traces = build_validation_simulation_specification(
-        discovery=discovery,
-        canvas=canvas,
-        blueprint=blueprint,
-        definition_artifact=definition_artifact,
-        session_snapshot=build_snapshot(db, record),
-        blueprint_version_number=blueprint_version_number,
-        source_stage_versions=source_stage_versions,
-        instructions=payload.instructions if payload is not None else "",
-        runtime_settings=runtime_settings,
-        stage_context=stage_context,
-    )
+    react_run = None
+    react_runtime_warnings: list[str] = []
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        try:
+            react_execution = run_validation_spec_react(
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=blueprint,
+                definition_artifact=definition_artifact,
+                session_snapshot=build_snapshot(db, record),
+                blueprint_version_number=blueprint_version_number,
+                source_stage_versions=source_stage_versions,
+                instructions=payload.instructions if payload is not None else "",
+                runtime_settings=runtime_settings,
+                stage_context=stage_context,
+            )
+            artifact = react_execution.value
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            react_runtime_warnings = [
+                "El controlador ReAct no pudo completar Validate; se mantuvo el runtime existente.",
+                f"react_runtime_fallback:{type(exc).__name__}",
+            ]
+            artifact, traces = build_validation_simulation_specification(
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=blueprint,
+                definition_artifact=definition_artifact,
+                session_snapshot=build_snapshot(db, record),
+                blueprint_version_number=blueprint_version_number,
+                source_stage_versions=source_stage_versions,
+                instructions=payload.instructions if payload is not None else "",
+                runtime_settings=runtime_settings,
+                stage_context=stage_context,
+            )
+    else:
+        artifact, traces = build_validation_simulation_specification(
+            discovery=discovery,
+            canvas=canvas,
+            blueprint=blueprint,
+            definition_artifact=definition_artifact,
+            session_snapshot=build_snapshot(db, record),
+            blueprint_version_number=blueprint_version_number,
+            source_stage_versions=source_stage_versions,
+            instructions=payload.instructions if payload is not None else "",
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
     stage_trace = next((trace.llm_trace for trace in reversed(traces) if trace.llm_trace is not None), None)
-    combined_warnings = list(dict.fromkeys([warning for trace in traces for warning in trace.warnings if warning]))
+    combined_warnings = list(dict.fromkeys([*react_runtime_warnings, *[warning for trace in traces for warning in trace.warnings if warning]]))
+    evidence_manifest = build_journey_evidence_manifest_from_traces(
+        traces=traces,
+        source_action="generate_validation_scenarios",
+    )
+    if react_run is not None:
+        evidence_manifest.extend(
+            JourneyArtifactEvidenceEntry(
+                source_type="react_runtime",
+                source_id=str(react_run.run_id),
+                source_version=react_run.contract_version,
+                section_key="react_trace",
+                artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
+                used_for="generate_validation_scenarios",
+                citation_label=f"react-evidence-{index}",
+                detail=evidence["detail"],
+            )
+            for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
+        )
     try:
         journey_artifact = proposal_service.create(
             db,
@@ -5144,10 +7579,7 @@ def generate_validation_scenarios_route(
                 missing_information=list(artifact.missing_information),
                 warnings=combined_warnings,
                 corpus_hash=stage_context.corpus_hash,
-                evidence_manifest=build_journey_evidence_manifest_from_traces(
-                    traces=traces,
-                    source_action="generate_validation_scenarios",
-                ),
+                evidence_manifest=evidence_manifest,
             ),
             actor_user=current_user,
         )
@@ -5158,6 +7590,15 @@ def generate_validation_scenarios_route(
         db,
         session_id=session_id,
         traces=traces,
+        source_action="generate_validation_scenarios",
+        blueprint_version_number=blueprint_version_number,
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="validate",
+        capability="generate_validation_scenarios",
         source_action="generate_validation_scenarios",
         blueprint_version_number=blueprint_version_number,
     )
@@ -5276,28 +7717,76 @@ def run_validation_simulation_route(
         task_source_keys=["validation_scenario_simulation_input"],
         allow_second_page=True,
     )
-    generated_run, traces = execute_validation_simulation(
-        blueprint=blueprint,
-        scenario=scenario,
-        request=payload,
-        blueprint_version_number=blueprint_version_number,
-        specification_artifact_id=latest_validate_artifact.id,
-        scenario_version_number=latest_validate_artifact.version_number,
-        runtime_settings=runtime_settings,
-        stage_context=stage_context,
-        source_action="run_validation_simulation",
-    )
+    react_run = None
+    react_runtime_warnings: list[str] = []
+
+    def run_simulation_capability() -> ReactCapabilityOutput:
+        generated, trace_items = execute_validation_simulation(
+            blueprint=blueprint,
+            scenario=scenario,
+            request=payload,
+            blueprint_version_number=blueprint_version_number,
+            specification_artifact_id=latest_validate_artifact.id,
+            scenario_version_number=latest_validate_artifact.version_number,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+            source_action="run_validation_simulation",
+        )
+        return ReactCapabilityOutput(
+            value=generated,
+            traces=trace_items,
+            warnings=[warning for trace in trace_items for warning in trace.warnings if warning],
+            summary="Validate ejecuto la simulacion con eventos y condiciones de fallo trazables.",
+        )
+
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        try:
+            react_execution = run_callable_react(
+                stage="validate",
+                capability="simulate_validation_scenario",
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                context_refs=["session.validate", "session.blueprint", "knowledge.evaluation_rubric"],
+                runner=run_simulation_capability,
+                validator=lambda value: (
+                    ["La simulacion no produjo un identificador de ejecucion."],
+                    not bool(getattr(value, "id", None)),
+                    "Validate valido la ejecucion simulada." if getattr(value, "id", None) else "La simulacion requiere revision.",
+                ),
+            )
+            generated_run = react_execution.value
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            react_runtime_warnings = [
+                "El controlador ReAct no pudo completar la simulacion; se mantuvo el runtime existente.",
+                f"react_runtime_fallback:{type(exc).__name__}",
+            ]
+            fallback = run_simulation_capability()
+            generated_run, traces = fallback.value, fallback.traces
+    else:
+        fallback = run_simulation_capability()
+        generated_run, traces = fallback.value, fallback.traces
     db_run = persist_validation_simulation_run(db, session_id=session_id, run_record=generated_run)
     persisted = build_validation_simulation_run_entry(
         db_run,
         latest_blueprint_version_number=blueprint_version_number,
         latest_validate_artifact_id=latest_validate_artifact.id,
     )
-    combined_warnings = list(dict.fromkeys([warning for trace in traces for warning in trace.warnings if warning]))
+    combined_warnings = list(dict.fromkeys([*react_runtime_warnings, *[warning for trace in traces for warning in trace.warnings if warning]]))
     write_skill_runs(
         db,
         session_id=session_id,
         traces=traces,
+        source_action="run_validation_simulation",
+        blueprint_version_number=blueprint_version_number,
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="validate",
+        capability="simulate_validation_scenario",
         source_action="run_validation_simulation",
         blueprint_version_number=blueprint_version_number,
     )
@@ -5387,28 +7876,77 @@ def inject_validation_event_route(
         task_source_keys=["validation_scenario_simulation_input"],
         allow_second_page=True,
     )
-    generated_run, traces = execute_validation_simulation(
-        blueprint=blueprint,
-        scenario=scenario,
-        request=ValidationSimulationRunRequest(
-            scenario_key=scenario.scenario_key,
-            scenario_version_number=source_run.scenario_version_number,
-            initial_input_override=initial_input,
-            injected_conditions=injected_conditions,
-        ),
-        blueprint_version_number=latest_blueprint_version_number(db, session_id),
-        specification_artifact_id=latest_validate_artifact.id,
-        scenario_version_number=latest_validate_artifact.version_number,
-        runtime_settings=runtime_settings,
-        stage_context=stage_context,
-        source_action="inject_validation_event",
+    injection_request = ValidationSimulationRunRequest(
+        scenario_key=scenario.scenario_key,
+        scenario_version_number=source_run.scenario_version_number,
+        initial_input_override=initial_input,
+        injected_conditions=injected_conditions,
     )
+    react_run = None
+    react_runtime_warnings: list[str] = []
+
+    def run_injection_capability() -> ReactCapabilityOutput:
+        generated, trace_items = execute_validation_simulation(
+            blueprint=blueprint,
+            scenario=scenario,
+            request=injection_request,
+            blueprint_version_number=latest_blueprint_version_number(db, session_id),
+            specification_artifact_id=latest_validate_artifact.id,
+            scenario_version_number=latest_validate_artifact.version_number,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+            source_action="inject_validation_event",
+        )
+        return ReactCapabilityOutput(
+            value=generated,
+            traces=trace_items,
+            warnings=[warning for trace in trace_items for warning in trace.warnings if warning],
+            summary="Validate reproceso la simulacion con la condicion inyectada.",
+        )
+
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        try:
+            react_execution = run_callable_react(
+                stage="validate",
+                capability="simulate_validation_scenario",
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                context_refs=["session.validate", "session.blueprint", "session.validation_run"],
+                runner=run_injection_capability,
+                validator=lambda value: (
+                    ["El reproceso no produjo un identificador de ejecucion."],
+                    not bool(getattr(value, "id", None)),
+                    "Validate valido el reproceso de simulacion." if getattr(value, "id", None) else "El reproceso requiere revision.",
+                ),
+            )
+            generated_run = react_execution.value
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            react_runtime_warnings = [
+                "El controlador ReAct no pudo completar el reproceso; se mantuvo el runtime existente.",
+                f"react_runtime_fallback:{type(exc).__name__}",
+            ]
+            fallback = run_injection_capability()
+            generated_run, traces = fallback.value, fallback.traces
+    else:
+        fallback = run_injection_capability()
+        generated_run, traces = fallback.value, fallback.traces
     db_run = persist_validation_simulation_run(db, session_id=session_id, run_record=generated_run)
-    combined_warnings = list(dict.fromkeys([warning for trace in traces for warning in trace.warnings if warning]))
+    combined_warnings = list(dict.fromkeys([*react_runtime_warnings, *[warning for trace in traces for warning in trace.warnings if warning]]))
     write_skill_runs(
         db,
         session_id=session_id,
         traces=traces,
+        source_action="inject_validation_event",
+        blueprint_version_number=latest_blueprint_version_number(db, session_id),
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="validate",
+        capability="simulate_validation_scenario",
         source_action="inject_validation_event",
         blueprint_version_number=latest_blueprint_version_number(db, session_id),
     )
@@ -5496,24 +8034,72 @@ def judge_validation_run_route(
         task_source_keys=["validation_run_judgment_input"],
         allow_second_page=True,
     )
-    judgement, traces = judge_validation_simulation_run(
-        run_record=run_entry,
-        blueprint=hydrate_blueprint(blueprint_record),
-        scenario=scenario,
-        runtime_settings=runtime_settings,
-        stage_context=stage_context,
-    )
+    react_run = None
+    react_runtime_warnings: list[str] = []
+
+    def run_judgement_capability() -> ReactCapabilityOutput:
+        generated, trace_items = judge_validation_simulation_run(
+            run_record=run_entry,
+            blueprint=hydrate_blueprint(blueprint_record),
+            scenario=scenario,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
+        return ReactCapabilityOutput(
+            value=generated,
+            traces=trace_items,
+            warnings=[warning for trace in trace_items for warning in trace.warnings if warning],
+            summary="Validate juzgo la simulacion contra el rubric y los guardrails aprobados.",
+        )
+
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        try:
+            react_execution = run_callable_react(
+                stage="validate",
+                capability="judge_validation_run",
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                context_refs=["session.validate", "session.validation_run", "knowledge.evaluation_rubric"],
+                runner=run_judgement_capability,
+                validator=lambda value: (
+                    ["El juicio de Validate no produjo un estado final."],
+                    not bool(getattr(value, "final_status", None)),
+                    "Validate valido el juicio de la simulacion." if getattr(value, "final_status", None) else "El juicio requiere revision.",
+                ),
+            )
+            judgement = react_execution.value
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            react_runtime_warnings = [
+                "El controlador ReAct no pudo completar el juicio; se mantuvo el runtime existente.",
+                f"react_runtime_fallback:{type(exc).__name__}",
+            ]
+            fallback = run_judgement_capability()
+            judgement, traces = fallback.value, fallback.traces
+    else:
+        fallback = run_judgement_capability()
+        judgement, traces = fallback.value, fallback.traces
     db_run.final_status = judgement.final_status
     db_run.status = ArtifactStatus.ready if judgement.final_status == "pass" else ArtifactStatus.needs_review
     db_run.summary = judgement.summary
     db_run.judgement = judgement.model_dump(mode="json")
     db_run.updated_at = utc_now()
     db.add(db_run)
-    combined_warnings = list(dict.fromkeys([warning for trace in traces for warning in trace.warnings if warning]))
+    combined_warnings = list(dict.fromkeys([*react_runtime_warnings, *[warning for trace in traces for warning in trace.warnings if warning]]))
     write_skill_runs(
         db,
         session_id=session_id,
         traces=traces,
+        source_action="judge_validation_run",
+        blueprint_version_number=current_blueprint_version_number,
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="validate",
+        capability="judge_validation_run",
         source_action="judge_validation_run",
         blueprint_version_number=current_blueprint_version_number,
     )
@@ -5580,14 +8166,30 @@ def evaluate_blueprint_route(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Evaluation assets not available")
 
     runtime_settings = load_effective_runtime_settings(db, record.workspace_id)
-    envelope, traces = run_evaluation_stage(
-        discovery_artifact,
-        canvas_artifact,
-        blueprint_artifact,
-        evaluation_dataset,
-        evaluation_rubric,
-        runtime_settings=runtime_settings,
-    )
+    react_run = None
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        react_execution = run_evaluation_react(
+            session_id=session_id,
+            workspace_id=record.workspace_id,
+            discovery=discovery_artifact,
+            canvas=canvas_artifact,
+            blueprint=blueprint_artifact,
+            dataset=evaluation_dataset,
+            rubric=evaluation_rubric,
+            runtime_settings=runtime_settings,
+        )
+        envelope = react_execution.value
+        traces = react_execution.traces
+        react_run = react_execution.react_run
+    else:
+        envelope, traces = run_evaluation_stage(
+            discovery_artifact,
+            canvas_artifact,
+            blueprint_artifact,
+            evaluation_dataset,
+            evaluation_rubric,
+            runtime_settings=runtime_settings,
+        )
     pending_approvals = count_pending_approvals(db, session_id)
     envelope = apply_pending_approvals_to_evaluation(envelope, pending_approvals)
     run_summary = score_evaluation_workbench(
@@ -5624,6 +8226,15 @@ def evaluate_blueprint_route(
         db,
         session_id=session_id,
         traces=traces,
+        source_action="evaluate_blueprint",
+        blueprint_version_number=blueprint_version_number,
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="validate",
+        capability="generate_validation_scenarios",
         source_action="evaluate_blueprint",
         blueprint_version_number=blueprint_version_number,
     )
@@ -5707,12 +8318,45 @@ def generate_estimation_report_route(
         task_source_keys=["estimation_risk_analysis_input"],
         allow_second_page=True,
     )
-    analysis, trace = run_estimation_analysis(
-        db,
-        snapshot=snapshot,
-        report=estimation_report,
-        stage_context=stage_context,
-    )
+    react_run = None
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        def run_estimation_capability() -> ReactCapabilityOutput:
+            analysis_value, trace_value = run_estimation_analysis(
+                db,
+                snapshot=snapshot,
+                report=estimation_report,
+                stage_context=stage_context,
+            )
+            return ReactCapabilityOutput(
+                value=analysis_value,
+                traces=[trace_value],
+                warnings=list(trace_value.warnings),
+                summary="Estimate analizo riesgos, calibration, pricing y banda de incertidumbre.",
+            )
+
+        react_execution = run_callable_react(
+            stage="estimate",
+            capability="analyze_estimation_risks",
+            session_id=session_id,
+            workspace_id=record.workspace_id,
+            context_refs=["session.blueprint", "session.validate", "knowledge.pricing_catalog", "workspace.trm"],
+            runner=run_estimation_capability,
+            validator=lambda value: (
+                [],
+                value is None,
+                "Estimate valido sus insumos deterministas." if value is not None else "Estimate requiere revision.",
+            ),
+        )
+        analysis = react_execution.value
+        trace = react_execution.traces[0]
+        react_run = react_execution.react_run
+    else:
+        analysis, trace = run_estimation_analysis(
+            db,
+            snapshot=snapshot,
+            report=estimation_report,
+            stage_context=stage_context,
+        )
     deterministic_inputs = build_estimation_deterministic_inputs(
         db,
         snapshot=snapshot,
@@ -5798,6 +8442,15 @@ def generate_estimation_report_route(
         source_action="analyze_estimation_risks",
         blueprint_version_number=blueprint_version_number,
     )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="estimate",
+        capability="analyze_estimation_risks",
+        source_action="generate_estimation_report",
+        blueprint_version_number=blueprint_version_number,
+    )
     record.updated_at = utc_now()
     db.add(record)
     write_log(
@@ -5817,6 +8470,16 @@ def generate_estimation_report_route(
         },
     )
     capture_operational_state(db, session_id=session_id, source_action="generate_estimation_report")
+    try:
+        from app.services.product_processing.blueprint_basic_service import prepare_blueprint_basic_commercial_result
+        prepare_blueprint_basic_commercial_result(
+            db,
+            record=record,
+            current_user=current_user,
+            allow_llm=False,
+        )
+    except Exception:
+        pass
     db.commit()
     return envelope
 
@@ -5889,6 +8552,16 @@ def apply_estimation_analysis_decision_route(
     )
     sync_short_term_memory_checkpoint(db, record=record, source_action="apply_estimation_analysis_decision")
     capture_operational_state(db, session_id=session_id, source_action="apply_estimation_analysis_decision")
+    try:
+        from app.services.product_processing.blueprint_basic_service import prepare_blueprint_basic_commercial_result
+        prepare_blueprint_basic_commercial_result(
+            db,
+            record=record,
+            current_user=current_user,
+            allow_llm=False,
+        )
+    except Exception:
+        pass
     db.commit()
     return EstimationEnvelope(
         status=status_value,

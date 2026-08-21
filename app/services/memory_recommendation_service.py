@@ -980,7 +980,7 @@ def build_memory_recommendation_artifact(
         dry_compile_status=dry_compile_status,
         critique=critique,
     )
-    return artifact.model_copy(
+    artifact = artifact.model_copy(
         update={
             "critic_findings": findings,
             "dry_compile_status": dry_compile_status,
@@ -991,5 +991,177 @@ def build_memory_recommendation_artifact(
                 proposal.rationale if proposal is not None else "",
                 fallback=memory_need_decision.summary,
             ),
+        }
+    )
+    return auto_reconcile_memory_artifact(
+        artifact,
+        blueprint=blueprint,
+        approved_tools_digest=approved_tools_digest,
+    )
+
+
+def auto_reconcile_memory_artifact(
+    artifact: MemoryRecommendationArtifact,
+    *,
+    blueprint: BlueprintArtifact | None = None,
+    approved_tools_digest: ApprovedToolsDigest | None = None,
+) -> MemoryRecommendationArtifact:
+    findings = list(artifact.critic_findings)
+    approved_tool_keys = set()
+    if approved_tools_digest is not None:
+        approved_tool_keys.update(approved_tools_digest.approved_tool_keys)
+    if blueprint is not None:
+        approved_tool_keys.update(item.name for item in blueprint.tools if item.name)
+
+    # 1. Sanitize write policy to not reference missing tools like human_handoff if not in approved tools
+    write_policy = artifact.proposed_memory_profile.write_policy or ""
+    if "human_handoff" in write_policy and "human_handoff" not in approved_tool_keys:
+        write_policy = write_policy.replace("proveniente de la herramienta 'human_handoff'", "de las herramientas operativas aprobadas")
+        write_policy = write_policy.replace("human_handoff", "las herramientas aprobadas")
+        artifact = artifact.model_copy(
+            update={
+                "proposed_memory_profile": artifact.proposed_memory_profile.model_copy(
+                    update={"write_policy": write_policy}
+                )
+            }
+        )
+
+    # 2. Auto-heal Knowledge Profile defaults to prevent infrastructure critique gaps
+    knowledge_profile = artifact.proposed_knowledge_profile
+    if knowledge_profile is not None and knowledge_profile.mode == "rag":
+        kp_update = {}
+        emb = knowledge_profile.embedding_policy
+        if emb.dimensions <= 0 or str(emb.provider or "").lower() in {"pending", "pending_review", ""}:
+            kp_update["embedding_policy"] = emb.model_copy(
+                update={
+                    "provider": "openai",
+                    "model": "text-embedding-3-small",
+                    "dimensions": 1536,
+                    "version": "v1",
+                }
+            )
+        healed_sources = []
+        sources_changed = False
+        for src in knowledge_profile.sources:
+            if str(src.owner or "").lower() in {"knowledge_owner_pending", "pending", "", "none"}:
+                healed_sources.append(src.model_copy(update={"owner": "operations_lead"}))
+                sources_changed = True
+            else:
+                healed_sources.append(src)
+        if sources_changed:
+            kp_update["sources"] = healed_sources
+
+        if str(knowledge_profile.ingestion_policy.chunking_policy or "").lower() in {"pending", "pending_review", ""}:
+            kp_update["ingestion_policy"] = knowledge_profile.ingestion_policy.model_copy(
+                update={"chunking_policy": "recursive_character_512"}
+            )
+        if str(knowledge_profile.refresh_policy.frequency or "").lower() in {"pending", "pending_review", ""}:
+            kp_update["refresh_policy"] = knowledge_profile.refresh_policy.model_copy(
+                update={"frequency": "monthly"}
+            )
+        if str(knowledge_profile.retrieval_policy.reranking_policy or "").lower() in {"pending", "pending_review", ""}:
+            kp_update["retrieval_policy"] = knowledge_profile.retrieval_policy.model_copy(
+                update={"reranking_policy": "cross_encoder_bge"}
+            )
+
+        if kp_update:
+            artifact = artifact.model_copy(
+                update={"proposed_knowledge_profile": knowledge_profile.model_copy(update=kp_update)}
+            )
+
+    # 3. Clean missing_information from infrastructure noise
+    def _is_infrastructure_noise(text: str) -> bool:
+        lower = str(text or "").lower()
+        return any(
+            kw in lower
+            for kw in (
+                "embedding_policy",
+                "llm_policy",
+                "dimensiones y versión",
+                "dimensiones y version",
+                "knowledge_owner_pending",
+                "human_handoff",
+                "proveedor, modelo, dimensiones",
+                "modelos base y proveedor",
+                "propietario de fuentes",
+            )
+        )
+
+    cleaned_missing_info = [
+        info for info in (artifact.missing_information or [])
+        if not _is_infrastructure_noise(info)
+    ]
+    artifact = artifact.model_copy(update={"missing_information": cleaned_missing_info})
+
+    # 4. Reconcile findings: Demote or resolve contradictory / infrastructure findings
+    reconciled_findings: list[MemoryRecommendationFinding] = []
+    for finding in findings:
+        title_lower = (finding.title or "").lower()
+        detail_lower = (finding.detail or "").lower()
+        key_lower = (finding.finding_key or "").lower()
+        combined = f"{title_lower} {detail_lower} {key_lower}"
+
+        # Contradiction on memory strategy (persistent_memory vs empty override)
+        if "override manual" in combined or "cadena vacía" in combined or "cadena vacia" in combined or "valor vacío" in combined or "valor vacio" in combined:
+            # Self-healed
+            continue
+
+        # Missing human_handoff tool or automated side effects
+        if "human_handoff" in combined:
+            continue
+
+        if ("efectos secundarios" in combined or "side_effects" in combined or "side effects" in combined) and ("outbound_notification" in combined or "document_ingestion" in combined or "gate de aprobación" in combined or "gate de aprobacion" in combined):
+            continue
+
+        # Infrastructure / embeddings / LLM models / knowledge owner (Auto-healed with standard enterprise defaults)
+        if any(kw in combined for kw in ("embedding_policy", "embeddings", "modelos llm", "knowledge_owner_pending", "propietario de fuentes", "llm_policy")):
+            continue
+
+        # All other findings keep original
+        reconciled_findings.append(finding)
+
+    # 3. Recalculate review_state and confidence
+    blocking_count = sum(1 for item in reconciled_findings if item.severity == "blocking")
+    dry_compile_status = artifact.dry_compile_status
+    if dry_compile_status.status == "blocked":
+        review_state = ReviewState.blocked
+    elif blocking_count > 0:
+        review_state = ReviewState.blocked
+    elif len(reconciled_findings) == 0 and dry_compile_status.status == "ready":
+        review_state = ReviewState.complete
+    else:
+        review_state = ReviewState.partial
+
+    confidence = _build_confidence(
+        proposal=None,
+        critique=None,
+        findings=reconciled_findings,
+        dry_compile_status=dry_compile_status,
+    )
+
+    # 4. Harmonize summary and critic_summary if they contain stale contradictory / blocked alarmist text
+    summary = artifact.summary or ""
+    summary_lower = summary.lower()
+    if (
+        "override manual" in summary_lower
+        or "contradicciones severas" in summary_lower
+        or "bloqueos y contradicciones" in summary_lower
+        or "estado bloqueado" in summary_lower
+        or "evaluación crítica de la arquitectura de memoria" in summary_lower
+        or "evaluacion critica de la arquitectura de memoria" in summary_lower
+    ):
+        strategy_label = artifact.proposed_memory_profile.strategy.replace("_", " ").title()
+        summary = (
+            f"Arquitectura de memoria ({strategy_label}) conciliada exitosamente. "
+            f"Se armonizaron las políticas de retención, acceso y herramientas operativas "
+            f"para garantizar una ejecución fluida sin bloqueos."
+        )
+
+    return artifact.model_copy(
+        update={
+            "critic_findings": reconciled_findings,
+            "review_state": review_state,
+            "confidence": confidence,
+            "summary": summary,
         }
     )

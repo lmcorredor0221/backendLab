@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+from typing import Any
 
 from app.models import (
+    AgentExecutionBackend,
     BlueprintArtifact,
     CanvasArtifact,
     DiscoveryArtifact,
@@ -13,6 +15,9 @@ from app.models import (
     ToolRecommendationLLMOutput,
     ToolRecommendationPromptInput,
 )
+from app.services.llm_finops.ledger_service import LLMUsageLedgerService
+from app.services.llm_finops.provider_instrumentation import FinOpsSessionFactory, record_provider_result
+from app.services.llm_finops.usage_normalization import normalize_cli_usage
 from app.services.agent_i18n import apply_agent_language_directive, get_effective_language
 from app.services.diagram_center.contracts import DiagramGenerationInput
 from app.services.llm_runtime.builder_contracts import (
@@ -38,7 +43,7 @@ from app.services.llm_runtime.codex_cli.context_assembler import (
     CodexContextRequest,
 )
 from app.services.llm_runtime.codex_cli.execution_service import CodexExecutionService
-from app.services.llm_runtime.stage_context_types import StageContextBundle
+from app.services.llm_runtime.stage_context_types import StageContextBundle, build_llm_call_context
 from app.services.rules import normalize_text
 
 
@@ -67,10 +72,18 @@ def _localized_prompt(prompt: str, context_bundle: StageContextBundle | None) ->
 
 
 class CodexLocalBuilderService:
-    def __init__(self, runtime_settings: LLMRuntimeSettings) -> None:
+    def __init__(
+        self,
+        runtime_settings: LLMRuntimeSettings,
+        *,
+        finops_session_factory: FinOpsSessionFactory | None = None,
+        finops_ledger_service: LLMUsageLedgerService | None = None,
+    ) -> None:
         self.runtime_settings = runtime_settings
         self.execution_service = CodexExecutionService(runtime_settings)
         self._context_assembler = CodexContextAssembler()
+        self._finops_session_factory = finops_session_factory
+        self._finops_ledger_service = finops_ledger_service
 
     def can_attempt(self) -> bool:
         return self.runtime_settings.active_provider == LLMProviderKey.codex_local
@@ -213,6 +226,79 @@ class CodexLocalBuilderService:
         result.context_stats = dict(context_envelope.context_stats)
         return result
 
+    def _attach_finops_record(
+        self,
+        result: LLMArtifactResult,
+        *,
+        capability: BuilderCapability,
+        context_bundle: StageContextBundle | None,
+        audit: dict[str, Any],
+        prompt_text: str = "",
+        output_text: str = "",
+    ) -> LLMArtifactResult:
+        model_name = str(
+            audit.get("selected_model", self.runtime_settings.codex_local.model)
+            or self.runtime_settings.codex_local.model
+        )
+        requested_model = str(
+            audit.get("requested_model", self.runtime_settings.codex_local.model)
+            or self.runtime_settings.codex_local.model
+        )
+        call_context = build_llm_call_context(
+            context_bundle,
+            capability=capability.value,
+            provider_key=LLMProviderKey.codex_local.value,
+            execution_backend=AgentExecutionBackend.codex_cli.value,
+            metadata={
+                "runner_id": self.runtime_settings.codex_local.runner_id,
+                "profile": self.runtime_settings.codex_local.profile,
+                "cost_policy": self.runtime_settings.codex_local.cost_policy.value,
+                "runtime": "codex_cli",
+            },
+        )
+        usage = normalize_cli_usage(audit, prompt_text=prompt_text, output_text=output_text)
+        metrics = audit.get("metrics", {}) if isinstance(audit.get("metrics"), dict) else {}
+        duration_ms = int(metrics.get("duration_ms", 0) or 0)
+        queue_wait_ms = int(metrics.get("queue_wait_ms", 0) or 0)
+        attempts = audit.get("attempts", [])
+        retry_count = max(0, len(attempts) - 1) if isinstance(attempts, list) else 0
+        enriched = replace(
+            result,
+            provider_key=LLMProviderKey.codex_local.value,
+            execution_backend=AgentExecutionBackend.codex_cli.value,
+            execution_mode=call_context.execution_mode,
+            capability_key=result.capability_key or capability.value,
+            request_id=str(audit.get("run_id", "") or result.request_id or ""),
+            finish_reason=str(audit.get("status", result.finish_reason or "") or ""),
+            model_name=model_name,
+            retry_count=retry_count,
+            fallback_used=bool(audit.get("fallback_used", result.fallback_used)),
+            duration_ms=duration_ms,
+            queue_wait_ms=queue_wait_ms,
+            token_usage=usage.compatibility_token_usage(),
+            normalized_usage=usage,
+            finops_context=call_context,
+        )
+        return record_provider_result(
+            enriched,
+            call_context=call_context,
+            provider_key=LLMProviderKey.codex_local,
+            model_name=model_name,
+            requested_model=requested_model,
+            execution_backend=AgentExecutionBackend.codex_cli.value,
+            execution_mode=call_context.execution_mode,
+            started_at=audit.get("started_at"),
+            finished_at=audit.get("finished_at"),
+            duration_ms=duration_ms,
+            ledger_service=self._finops_ledger_service,
+            session_factory=self._finops_session_factory,
+            metadata={
+                "attempted_models": audit.get("attempted_models", []),
+                "fallback_used": bool(audit.get("fallback_used", False)),
+                "runtime": "codex_cli",
+            },
+        )
+
     def _capability_source(self, spec: BuilderCapabilitySpec, payload) -> CodexContextInlineSource:
         return CodexContextInlineSource(
             key=spec.source_key,
@@ -246,7 +332,7 @@ class CodexLocalBuilderService:
             capability_policy=_capability_policy_payload(spec),
         )
         if not self.is_available():
-            return self._attach_context_metadata(
+            result = self._attach_context_metadata(
                 replace(
                     base_result,
                     warning=f"Codex local no esta disponible para {capability.value}; policy={spec.fallback_policy}.",
@@ -255,6 +341,12 @@ class CodexLocalBuilderService:
                     degraded=True,
                 ),
                 context_envelope=context_envelope,
+            )
+            return self._attach_finops_record(
+                result,
+                capability=capability,
+                context_bundle=context_bundle,
+                audit={},
             )
         prompt = _localized_prompt(
             "Devuelve exclusivamente JSON valido segun el schema provisto. "
@@ -270,7 +362,7 @@ class CodexLocalBuilderService:
                 context_request=context_envelope.context_request,
             )
             audit = self.execution_service.read_last_known_result() or {}
-            return self._attach_context_metadata(
+            result = self._attach_context_metadata(
                 replace(
                     base_result,
                     artifact=spec.output_model.model_validate(parsed.model_dump(mode="json")),
@@ -281,9 +373,17 @@ class CodexLocalBuilderService:
                 ),
                 context_envelope=context_envelope,
             )
+            return self._attach_finops_record(
+                result,
+                capability=capability,
+                context_bundle=context_bundle,
+                audit=audit,
+                prompt_text=prompt,
+                output_text=json.dumps(parsed.model_dump(mode="json"), ensure_ascii=True),
+            )
         except Exception as exc:
             audit = self.execution_service.read_last_known_result() or {}
-            return self._attach_context_metadata(
+            result = self._attach_context_metadata(
                 replace(
                     base_result,
                     warning=f"Codex local no pudo ejecutar {capability.value}; policy={spec.fallback_policy}.",
@@ -296,6 +396,13 @@ class CodexLocalBuilderService:
                     degraded=True,
                 ),
                 context_envelope=context_envelope,
+            )
+            return self._attach_finops_record(
+                result,
+                capability=capability,
+                context_bundle=context_bundle,
+                audit=audit,
+                prompt_text=prompt,
             )
 
     def normalize_discovery(

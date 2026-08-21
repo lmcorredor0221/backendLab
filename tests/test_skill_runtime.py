@@ -259,7 +259,10 @@ def test_registry_exposes_stage_two_skills() -> None:
 
     expected = {
         "discovery_skill",
+        "discovery_analysis_skill",
         "lean_scope_skill",
+        "requirements_definition_skill",
+        "design_proposal_skill",
         "architecture_selection_skill",
         "reasoning_pattern_skill",
         "tool_design_skill",
@@ -374,3 +377,67 @@ def test_evaluation_skill_is_registered_with_structured_output() -> None:
     skill = registry.get("evaluation_skill")
 
     assert skill.output_model is EvaluationArtifact
+
+
+def test_design_self_healing_reconciles_contradictions() -> None:
+    from app.services.design_recommendation_service import (
+        build_design_recommendation_artifact,
+        merge_llm_design_recommendation,
+        evaluate_design_recommendation_artifact,
+    )
+    from app.services.llm_runtime.builder_contracts import (
+        AgentDesignProposalOutput,
+        DesignCritiqueOutput,
+        CritiqueFinding,
+    )
+
+    discovery_envelope, _ = run_discovery_stage(complete_discovery_input())
+    canvas_envelope, _ = run_canvas_stage(discovery_envelope.data)
+    definition = complete_definition_artifact()
+
+    artifact = build_design_recommendation_artifact(discovery_envelope.data, canvas_envelope.data, definition)
+
+    # Simulate contradictory LLM output: recommended is 'handoffs' but rationale argues for Router-Worker / Supervisor
+    proposal = AgentDesignProposalOutput(
+        summary="Recomendamos Router-Worker (Supervisor con subagentes) por su estricto control de barreras de confianza.",
+        alternatives=artifact.alternatives,
+        fit_matrix=artifact.fit_matrix,
+        recommended_alternative_key="handoffs",
+        decision_rationale="El resumen ejecutivo recomienda explícitamente una arquitectura Router-Worker (Jerárquica / Supervisor con subagentes).",
+        requirements_coverage=artifact.requirements_coverage,
+        evidence_refs=artifact.evidence_refs,
+        confidence=0.85,
+        architecture="supervisor_with_subagents",
+        reasoning_pattern="Plan-and-Execute",
+        coordination_model="orchestrated",
+        open_questions=[],
+        narrative="Se recomienda Supervisor con subagentes.",
+    )
+
+    critique = DesignCritiqueOutput(
+        overall_status="needs_revision",
+        summary="Inconsistencia detectada.",
+        findings=[
+            CritiqueFinding(
+                finding_key="design-contradiction-alternative",
+                title="Inconsistencia entre la alternativa seleccionada y la justificación/narrativa de diseño",
+                severity="blocking",
+                detail="El resumen ejecutivo y la razón de decisión recomiendan Router-Worker, pero recommended_alternative_key selecciona handoffs.",
+                suggested_action="Alinear alternativa con justificación.",
+                source_refs=["proposal.recommended_alternative_key"],
+            )
+        ],
+        contradictions=["contradiction between handoffs and supervisor"],
+        missing_evidence=[],
+    )
+
+    merged = merge_llm_design_recommendation(artifact, proposal, critique)
+    evaluated = evaluate_design_recommendation_artifact(merged, discovery_envelope.data, definition)
+
+    # Verify self-healing resolved the contradiction
+    assert not any("inconsistencia" in f.title.lower() for f in evaluated.critic_findings)
+    assert evaluated.selected_design is not None
+    # Verify recommended alternative was reconciled with the justified architecture
+    assert evaluated.selected_design.architecture in {"supervisor_with_subagents", "handoffs"}
+    assert evaluated.review_state != ReviewState.blocked
+

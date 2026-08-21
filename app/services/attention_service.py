@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 from uuid import UUID
 
@@ -22,7 +22,12 @@ from app.models import (
     ConstructionQuestionResponseRecord,
     ConstructionReadinessReport,
     ApprovalStatus,
+    BlueprintRecord,
+    GovernancePolicyRecord,
+    HandoffRecord,
     JourneyArtifactState,
+    JourneyStageArtifactRecord,
+    ReviewState,
     SessionRecord,
     SessionSnapshot,
     UserRecord,
@@ -44,8 +49,23 @@ from app.services.attention.contract import (
     dedupe_attention_items_v2,
     sort_attention_items_v2,
 )
+from app.services.attention.governor import govern_attention_items
+from app.services.attention.validation_issue_normalizer import (
+    items_from_validation_issues,
+    split_validation_issue_codes,
+)
 from app.services.commerce_service import resolve_access_request
 from app.services.lean_question_policy import filter_stage_question_texts
+from app.services.product_processing.contracts import ProductBuildProductKey
+from app.services.product_processing.persistence import (
+    ProductBuildRunRecord,
+    ProductBuildStepRecord,
+    UncertaintyBacklogRecord,
+)
+from app.services.product_processing.product_build_run_service import update_product_build_run_state
+
+
+PRODUCT_BUILD_ATTENTION_STEP_STATES = {"requires_attention", "locked", "error", "failed"}
 
 
 def _state_value(value) -> str:
@@ -111,11 +131,11 @@ def build_attention_response(
                 key="checkout_pending",
                 title="Checkout pendiente",
                 item_type="checkout",
-                severity="blocking",
+                severity="warning",
                 stage="commercial",
                 source="commerce",
                 reason="Existe una orden pendiente antes de activar el producto.",
-                impact="El acceso premium no se habilitara hasta confirmar o cancelar la orden.",
+                impact="El acceso premium se habilitara al confirmar la orden; el modo basico sigue disponible.",
                 href=f"{base}/blueprint/pro",
             )
         )
@@ -124,18 +144,21 @@ def build_attention_response(
         if _state_value(getattr(approval, "status", "")) != "pending":
             continue
         stage = _state_value(getattr(approval, "requested_in_stage", "")) or "work"
+        gate_key = str(getattr(approval, "gate_key", "") or "")
+        is_tool_gate = gate_key.startswith("tool:") or stage in {"tools", "post_validation"}
+        severity = "warning" if is_tool_gate else "blocking"
         items.append(
             _attention_item(
                 key=f"approval:{getattr(approval, 'id', getattr(approval, 'gate_key', 'pending'))}",
                 title=getattr(approval, "title", "Aprobacion pendiente"),
                 item_type="approval",
-                severity="blocking",
+                severity=severity,
                 stage=stage,
                 source="approval_gate",
                 reason=getattr(approval, "rationale", "") or "La etapa requiere aprobacion antes de continuar.",
                 impact=getattr(approval, "instructions", ""),
                 href=f"{base}/work/{stage}",
-                metadata={"gate_key": getattr(approval, "gate_key", "")},
+                metadata={"gate_key": gate_key},
             )
         )
 
@@ -243,6 +266,7 @@ def build_attention_response(
 class AttentionActionApplyResult:
     status: Literal["applied", "duplicate", "unsupported", "not_found", "conflict", "forbidden"]
     message: str
+    resume_eligible: bool = False
 
 
 def _pending_access_requests(db: Session, record: SessionRecord) -> list[CommercialAccessRequestRecord]:
@@ -251,6 +275,16 @@ def _pending_access_requests(db: Session, record: SessionRecord) -> list[Commerc
             CommercialAccessRequestRecord.workspace_id == record.workspace_id,
             CommercialAccessRequestRecord.session_id == record.id,
             CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.pending,
+        )
+    ).all()
+
+
+def _approved_access_requests(db: Session, record: SessionRecord) -> list[CommercialAccessRequestRecord]:
+    return db.exec(
+        select(CommercialAccessRequestRecord).where(
+            CommercialAccessRequestRecord.workspace_id == record.workspace_id,
+            CommercialAccessRequestRecord.session_id == record.id,
+            CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.approved,
         )
     ).all()
 
@@ -276,12 +310,93 @@ def _answered_attention_item_keys(db: Session, record: SessionRecord) -> set[str
     answered: set[str] = set()
     for event in rows:
         metadata = event.metadata_payload or {}
-        if metadata.get("action_kind") != "answer" or metadata.get("result_status") != "applied":
+        if metadata.get("action_kind") not in {"answer", "confirm", "defer", "dismiss"} or metadata.get("result_status") != "applied":
             continue
         item_key = str(metadata.get("item_key") or "").strip()
         if item_key:
             answered.add(item_key)
     return answered
+
+
+def _build_suppression_matcher(db: Session, record: SessionRecord):
+    from app.services.attention.contract import _slug
+
+    answered_keys = _answered_attention_item_keys(db, record)
+    backlog_records = db.exec(
+        select(UncertaintyBacklogRecord).where(
+            UncertaintyBacklogRecord.workspace_id == record.workspace_id,
+            UncertaintyBacklogRecord.session_id == record.id,
+            UncertaintyBacklogRecord.status.in_(["resolved", "deferred", "dismissed", "superseded"]),
+        )
+    ).all()
+
+    suppressed_exact_keys: set[str] = set(answered_keys)
+    suppressed_entities: set[str] = set()
+    suppressed_titles: set[str] = set()
+
+    def _add_token(token: str):
+        if not token:
+            return
+        clean = token.strip()
+        if not clean:
+            return
+        suppressed_exact_keys.add(clean)
+        suppressed_entities.add(clean)
+        suppressed_entities.add(clean.lower())
+        slugged = _slug(clean)
+        if slugged:
+            suppressed_exact_keys.add(slugged)
+            suppressed_entities.add(slugged)
+
+    for b in backlog_records:
+        if b.uncertainty_key:
+            _add_token(b.uncertainty_key)
+            if ":" in b.uncertainty_key:
+                for part in b.uncertainty_key.split(":"):
+                    if len(part.strip()) > 2 and not part.strip().isdigit():
+                        _add_token(part.strip())
+        if b.title:
+            suppressed_titles.add(b.title.strip().lower())
+            _add_token(b.title)
+        if b.source_refs:
+            for s_ref in b.source_refs:
+                if isinstance(s_ref, str) and s_ref.strip():
+                    _add_token(s_ref)
+        if b.payload and isinstance(b.payload, dict):
+            for k in ("key", "gap_key", "finding_key", "entity_id", "question", "title"):
+                val = str(b.payload.get(k) or "").strip()
+                if val:
+                    _add_token(val)
+                    if k in {"question", "title"}:
+                        suppressed_titles.add(val.lower())
+
+    def is_suppressed(item: AttentionItemV2) -> bool:
+        if item.key in suppressed_exact_keys:
+            return True
+
+        entity_id = str(getattr(item.source_ref, "entity_id", "") or "").strip()
+        if entity_id:
+            if entity_id in suppressed_exact_keys or entity_id in suppressed_entities or entity_id.lower() in suppressed_entities:
+                return True
+            if _slug(entity_id) in suppressed_entities:
+                return True
+            if ":" in entity_id:
+                for part in entity_id.split(":"):
+                    p = part.strip()
+                    if p in suppressed_entities or p.lower() in suppressed_entities or _slug(p) in suppressed_entities:
+                        return True
+
+        item_title = item.title.strip().lower()
+        if item_title and item_title in suppressed_titles:
+            return True
+
+        for s_key in suppressed_exact_keys:
+            if len(s_key) >= 4 and s_key in item.key:
+                return True
+
+        return False
+
+    return is_suppressed
 
 
 def _normalize_stage_key(value) -> str:
@@ -447,13 +562,26 @@ def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> li
         if artifact.state == JourneyArtifactState.stale or artifact.stale_reasons:
             continue
         payload = artifact.proposal_payload or {}
+        validation_issues, missing_information = split_validation_issue_codes(artifact.missing_information)
         open_questions = _entries_from_payload(payload, "guided_questions", "open_questions", "needs_information")
-        open_questions.extend(f"Falta informacion: {item}" for item in artifact.missing_information)
+        open_questions.extend(f"Falta informacion: {item}" for item in missing_information)
         open_questions = filter_stage_question_texts(stage, open_questions)
         warnings = list(artifact.warnings)
         warnings.extend(_list_from_payload(payload, "warnings"))
         gaps = _list_from_payload(payload, "gaps", "coverage_gaps")
         decisions = _decision_entries_from_payload(payload, "critic_findings", "findings")
+        items.extend(
+            items_from_validation_issues(
+                validation_issues,
+                product=product,
+                stage=stage,
+                source=f"journey.{artifact.artifact_kind or stage}",
+                artifact_id=str(artifact.id),
+                artifact_version=artifact.version_number,
+                href=href,
+                return_href=href,
+            )
+        )
         items.extend(
             items_from_stage_payload(
                 product=product,
@@ -629,6 +757,149 @@ def _items_from_failed_runs(snapshot: SessionSnapshot, *, base: str) -> list[Att
     return items
 
 
+def _latest_product_build_runs(db: Session, record: SessionRecord) -> list[ProductBuildRunRecord]:
+    runs = db.exec(
+        select(ProductBuildRunRecord)
+        .where(
+            ProductBuildRunRecord.workspace_id == record.workspace_id,
+            ProductBuildRunRecord.session_id == record.id,
+        )
+        .order_by(ProductBuildRunRecord.updated_at.desc())
+    ).all()
+    latest_by_product: dict[str, ProductBuildRunRecord] = {}
+    for run in runs:
+        latest_by_product.setdefault(run.product_key, run)
+    return list(latest_by_product.values())
+
+
+def _items_from_product_build_steps(db: Session, *, record: SessionRecord, base: str, return_href: str) -> list[AttentionItemV2]:
+    latest_runs = _latest_product_build_runs(db, record)
+    if not latest_runs:
+        return []
+    latest_run_ids = [run.id for run in latest_runs]
+    run_by_id = {run.id: run for run in latest_runs}
+    steps = db.exec(
+        select(ProductBuildStepRecord)
+        .where(
+            ProductBuildStepRecord.workspace_id == record.workspace_id,
+            ProductBuildStepRecord.session_id == record.id,
+            ProductBuildStepRecord.run_id.in_(latest_run_ids),
+            ProductBuildStepRecord.status.in_(list(PRODUCT_BUILD_ATTENTION_STEP_STATES)),
+        )
+        .order_by(ProductBuildStepRecord.updated_at.desc())
+    ).all()
+    items: list[AttentionItemV2] = []
+    for step in steps:
+        run = run_by_id.get(step.run_id)
+        if run is None:
+            continue
+        items.append(_product_build_step_attention_item(record=record, run=run, step=step, base=base, return_href=return_href))
+    return items
+
+
+def _product_build_step_attention_item(
+    *,
+    record: SessionRecord,
+    run: ProductBuildRunRecord,
+    step: ProductBuildStepRecord,
+    base: str,
+    return_href: str,
+) -> AttentionItemV2:
+    checkpoint = step.checkpoint_payload or {}
+    error = step.error_payload or {}
+    stage = _normalize_stage_key(step.stage_key or checkpoint.get("stage_key") or checkpoint.get("stage") or "package")
+    item_type = _product_build_step_type(step, checkpoint)
+    title = _product_build_step_title(step, checkpoint, error)
+    reason = _product_build_step_reason(step, checkpoint, error)
+    action_kind = "retry" if step.status in {"error", "failed"} else "navigate"
+    return create_attention_item_v2(
+        item_type=item_type,
+        severity="blocking",
+        product=_product_for_product_build(run.product_key),
+        stage=stage,
+        source="product_build_step",
+        title=title,
+        reason=reason,
+        impact=f"El producto {run.product_key} no puede cerrarse hasta resolver este paso.",
+        consequence_if_unresolved="El build quedara detenido o parcialmente actualizado y no se podra promover con trazabilidad completa.",
+        action_kind=action_kind,
+        action_label="Reintentar" if action_kind == "retry" else "Abrir",
+        href=_product_build_step_href(record.id, run=run, step=step, stage=stage),
+        return_href=return_href,
+        source_ref={
+            "artifact_id": str(run.id),
+            "entity_id": str(step.id),
+            "field_path": step.step_key,
+        },
+        affected_artifact_refs=[ref for ref in (step.deliverable_key, step.dependency_key) if ref],
+        diagnostics={
+            "summary": reason,
+            "technical_message": _product_build_step_technical_message(step, error),
+            "error_kind": "runtime" if step.status in {"error", "failed"} else "dependency",
+            "capability": step.deliverable_key or step.dependency_key or step.step_key,
+            "capability_label": title,
+            "operation_id": str(run.id),
+            "retry_policy": "Reintento seguro desde checkpoint del ProductBuild." if action_kind == "retry" else "",
+            "repair_hint": "Revisa el origen indicado, resuelve la dependencia o reintenta el step desde el producto.",
+            "trace_refs": [
+                f"product_build.run:{run.id}",
+                f"product_build.step:{step.id}",
+                f"product_build.step_key:{step.step_key}",
+            ],
+        },
+    )
+
+
+def _product_build_step_type(step: ProductBuildStepRecord, checkpoint: dict[str, Any]) -> str:
+    if step.status in {"error", "failed"}:
+        return "runtime_error"
+    kind = str(checkpoint.get("kind") or checkpoint.get("uncertainty_kind") or "").strip().lower()
+    if kind in {"question", "decision", "approval", "hitl", "validation", "inconsistency", "stale"}:
+        return kind
+    return "gap"
+
+
+def _product_build_step_title(step: ProductBuildStepRecord, checkpoint: dict[str, Any], error: dict[str, Any]) -> str:
+    title = str(error.get("title") or checkpoint.get("title") or checkpoint.get("label") or "").strip()
+    if title:
+        return title
+    label = step.deliverable_key or step.dependency_key or step.step_key
+    if step.status in {"error", "failed"}:
+        return f"No se pudo completar {label}"
+    return f"Resolver dependencia de producto: {label}"
+
+
+def _product_build_step_reason(step: ProductBuildStepRecord, checkpoint: dict[str, Any], error: dict[str, Any]) -> str:
+    reason = str(
+        error.get("message")
+        or error.get("technical_message")
+        or checkpoint.get("next_action")
+        or checkpoint.get("summary")
+        or checkpoint.get("reason")
+        or ""
+    ).strip()
+    return reason or "Este paso del producto requiere atencion para continuar sin perder trazabilidad."
+
+
+def _product_build_step_technical_message(step: ProductBuildStepRecord, error: dict[str, Any]) -> str:
+    message = str(error.get("technical_message") or error.get("message") or "").strip()
+    if message:
+        return message
+    return f"ProductBuild step {step.step_key} quedo en estado {step.status}."
+
+
+def _product_for_product_build(product_key: str) -> str:
+    return "acp" if product_key == ProductBuildProductKey.acp.value else "blueprint"
+
+
+def _product_build_step_href(record_id: UUID, *, run: ProductBuildRunRecord, step: ProductBuildStepRecord, stage: str) -> str:
+    if step.deliverable_key:
+        return f"/projects/{record_id}/blueprint?deliverable={step.deliverable_key}"
+    if run.product_key == ProductBuildProductKey.acp.value:
+        return f"/projects/{record_id}/acp"
+    return f"/projects/{record_id}/work/{stage}"
+
+
 def _collect_attention_v2_items(
     db: Session,
     *,
@@ -640,12 +911,14 @@ def _collect_attention_v2_items(
     base = f"/projects/{record.id}"
     return_href = f"{base}/attention"
     pending_requests = _pending_access_requests(db, record)
+    approved_requests = _approved_access_requests(db, record)
     answered_question_keys = _answered_construction_question_keys(db, record)
     items: list[AttentionItemV2] = []
     items.extend(
         items_from_commercial_access(
             access,
             pending_requests,
+            approved_requests,
             base_href=base,
             return_href=return_href,
         )
@@ -665,14 +938,33 @@ def _collect_attention_v2_items(
     items.extend(items_from_handoffs(snapshot.handoff_records, base_href=base, return_href=return_href))
     items.extend(items_from_governance_policies(snapshot.governance_policies, base_href=base, return_href=return_href))
     items.extend(_items_from_short_term_runtime(snapshot, base=base))
+    items.extend(_items_from_product_build_steps(db, record=record, base=base, return_href=return_href))
     items.extend(_items_from_failed_runs(snapshot, base=base))
     return items
 
 
-def _can_surface_acp_attention(access: CommercialAccessSnapshotV2) -> bool:
-    if access.tier == CommercialTier.acp:
+def _collect_governed_attention_v2_items(
+    db: Session,
+    *,
+    record: SessionRecord,
+    snapshot: SessionSnapshot,
+    readiness: ConstructionReadinessReport,
+    access: CommercialAccessSnapshotV2,
+    current_stage: str = "",
+) -> list[AttentionItemV2]:
+    return govern_attention_items(
+        _collect_attention_v2_items(db, record=record, snapshot=snapshot, readiness=readiness, access=access),
+        record=record,
+        access=access,
+        current_stage=current_stage,
+    )
+
+
+def _can_surface_acp_attention(access: Any) -> bool:
+    if getattr(access, "tier", None) == CommercialTier.acp or str(getattr(access, "tier", "")) == "acp":
         return True
-    return any(item.capability == "acp.build" and item.allowed for item in access.capabilities)
+    capabilities = getattr(access, "capabilities", []) or []
+    return any(getattr(item, "capability", "") == "acp.build" and getattr(item, "allowed", False) for item in capabilities)
 
 
 def _matches_filter(value: str, expected: str | None) -> bool:
@@ -705,14 +997,21 @@ def build_attention_response_v2(
     limit: int = 50,
 ) -> AttentionResponseV2:
     limit = min(max(limit, 1), 100)
-    answered_item_keys = _answered_attention_item_keys(db, record)
+    is_suppressed = _build_suppression_matcher(db, record)
     items = [
         item
         for item in dedupe_attention_items_v2(
-            _collect_attention_v2_items(db, record=record, snapshot=snapshot, readiness=readiness, access=access),
+            _collect_governed_attention_v2_items(
+                db,
+                record=record,
+                snapshot=snapshot,
+                readiness=readiness,
+                access=access,
+                current_stage=current_stage,
+            ),
             current_stage=current_stage,
         )
-        if item.key not in answered_item_keys
+        if not is_suppressed(item)
     ]
     filtered = [
         item
@@ -747,12 +1046,19 @@ def build_attention_metrics_v2(
     access: CommercialAccessSnapshotV2,
     current_stage: str = "",
 ) -> dict[str, Any]:
-    answered_item_keys = _answered_attention_item_keys(db, record)
+    is_suppressed = _build_suppression_matcher(db, record)
     all_items = dedupe_attention_items_v2(
-        _collect_attention_v2_items(db, record=record, snapshot=snapshot, readiness=readiness, access=access),
+        _collect_governed_attention_v2_items(
+            db,
+            record=record,
+            snapshot=snapshot,
+            readiness=readiness,
+            access=access,
+            current_stage=current_stage,
+        ),
         current_stage=current_stage,
     )
-    visible_items = [item for item in all_items if item.key not in answered_item_keys]
+    visible_items = [item for item in all_items if not is_suppressed(item)]
     question_items = [item for item in visible_items if item.type == "question"]
     events = db.exec(
         select(CommercialEventRecord).where(
@@ -807,7 +1113,13 @@ def _find_attention_item_for_action(
     item_key: str,
 ) -> AttentionItemV2 | None:
     items = dedupe_attention_items_v2(
-        _collect_attention_v2_items(db, record=record, snapshot=snapshot, readiness=readiness, access=access)
+        _collect_governed_attention_v2_items(
+            db,
+            record=record,
+            snapshot=snapshot,
+            readiness=readiness,
+            access=access,
+        )
     )
     return next((item for item in items if item.key == item_key), None)
 
@@ -976,6 +1288,193 @@ def _apply_access_request_action(
     return AttentionActionApplyResult(status="applied", message=f"Solicitud de acceso {decision}.")
 
 
+def _selected_option_label(item: AttentionItemV2, selected_option_key: str) -> str:
+    key = selected_option_key.strip()
+    if not key:
+        return ""
+    option = next((candidate for candidate in item.options if candidate.key == key), None)
+    return option.label if option is not None else key
+
+
+def _resolution_text(item: AttentionItemV2, payload: AttentionActionRequestV2) -> str:
+    if payload.answer_text.strip():
+        return payload.answer_text.strip()
+    if payload.selected_option_key.strip():
+        return _selected_option_label(item, payload.selected_option_key)
+    if payload.was_suggested_answer_used and item.suggested_answer.strip():
+        return item.suggested_answer.strip()
+    if payload.action_kind == "defer":
+        return payload.resolution_note.strip() or "Decision diferida con justificacion registrada."
+    if payload.action_kind == "confirm":
+        return payload.resolution_note.strip() or item.suggested_answer.strip() or "Decision confirmada."
+    return ""
+
+
+def _apply_journey_artifact_attention_resolution(
+    db: Session,
+    *,
+    record: SessionRecord,
+    item: AttentionItemV2,
+    payload: AttentionActionRequestV2,
+    current_user: UserRecord,
+    resolution_text: str,
+) -> bool:
+    if not item.source.startswith("journey."):
+        return False
+    artifact_id = item.source_ref.artifact_id
+    if not artifact_id:
+        return False
+    try:
+        artifact_uuid = UUID(str(artifact_id))
+    except ValueError:
+        return False
+    artifact = db.get(JourneyStageArtifactRecord, artifact_uuid)
+    if artifact is None or artifact.session_id != record.id or artifact.workspace_id != record.workspace_id:
+        return False
+    raw_entity = item.source_ref.entity_id or ""
+    if raw_entity and raw_entity in artifact.missing_information:
+        artifact.missing_information = [entry for entry in artifact.missing_information if entry != raw_entity]
+    patch = dict(artifact.user_patch or {})
+    resolutions = dict(patch.get("attention_resolutions") or {})
+    resolutions[item.key] = {
+        "action_kind": payload.action_kind,
+        "answer_text": resolution_text,
+        "selected_option_key": payload.selected_option_key,
+        "was_suggested_answer_used": payload.was_suggested_answer_used,
+        "resolution_note": payload.resolution_note,
+        "resolved_by_user_id": str(current_user.id),
+        "resolved_at": utc_now().isoformat(),
+        "source_ref": item.source_ref.model_dump(mode="json"),
+    }
+    patch["attention_resolutions"] = resolutions
+    artifact.user_patch = patch
+    artifact.updated_at = utc_now()
+    db.add(artifact)
+
+    # Reconciliar con UncertaintyBacklogRecord
+    backlogs = db.exec(
+        select(UncertaintyBacklogRecord).where(
+            UncertaintyBacklogRecord.workspace_id == record.workspace_id,
+            UncertaintyBacklogRecord.session_id == record.id,
+        )
+    ).all()
+    for b in backlogs:
+        if (
+            b.uncertainty_key == item.key
+            or b.uncertainty_key == raw_entity
+            or (raw_entity and (raw_entity in b.uncertainty_key or b.uncertainty_key in raw_entity))
+            or (b.title and b.title.strip().lower() == item.title.strip().lower())
+        ):
+            if payload.action_kind == "defer":
+                b.status = "deferred"
+                b.disposition = "defer"
+            else:
+                b.status = "resolved"
+            b.assumed_answer = resolution_text
+            b.resolved_at = utc_now()
+            b.updated_at = utc_now()
+            db.add(b)
+
+    db.flush()
+    return True
+
+
+def _apply_inline_attention_action(
+    db: Session,
+    *,
+    record: SessionRecord,
+    item: AttentionItemV2,
+    payload: AttentionActionRequestV2,
+    current_user: UserRecord,
+) -> AttentionActionApplyResult:
+    resolution_text = _resolution_text(item, payload)
+    if payload.action_kind == "answer" and not resolution_text:
+        return AttentionActionApplyResult(status="conflict", message="La respuesta no puede estar vacia.")
+    if payload.action_kind == "confirm" and not resolution_text and item.options:
+        return AttentionActionApplyResult(status="conflict", message="Selecciona una opcion o agrega una nota de confirmacion.")
+    patched = _apply_journey_artifact_attention_resolution(
+        db,
+        record=record,
+        item=item,
+        payload=payload,
+        current_user=current_user,
+        resolution_text=resolution_text,
+    )
+    if payload.action_kind == "defer":
+        message = "Decision diferida y trazada en Attention."
+    elif patched:
+        message = "Decision aplicada y reconciliada con el artefacto de la etapa."
+    else:
+        message = "Decision registrada y trazada en Attention."
+    return AttentionActionApplyResult(status="applied", message=message)
+
+
+def _apply_handoff_action(
+    db: Session,
+    *,
+    record: SessionRecord,
+    item: AttentionItemV2,
+    payload: AttentionActionRequestV2,
+) -> AttentionActionApplyResult:
+    handoff_id = item.source_ref.entity_id if item.source_ref else None
+    handoff: HandoffRecord | None = None
+    if handoff_id:
+        try:
+            uuid_val = UUID(str(handoff_id))
+            handoff = db.exec(
+                select(HandoffRecord).where(
+                    HandoffRecord.session_id == record.id,
+                    HandoffRecord.id == uuid_val,
+                )
+            ).first()
+        except (ValueError, TypeError):
+            handoff = None
+    if handoff is None:
+        handoff = db.exec(
+            select(HandoffRecord).where(
+                HandoffRecord.session_id == record.id,
+                HandoffRecord.handoff_key == "governance_review",
+            )
+        ).first()
+
+    if handoff is None:
+        return AttentionActionApplyResult(status="not_found", message="Handoff de gobierno no encontrado.")
+
+    decision = "completed" if payload.action_kind in {"confirm", "approve"} else "returned"
+    handoff.status = decision
+    handoff.resolution_note = payload.resolution_note or (payload.user_note or "Revisión de gobierno confirmada en Attention.")
+    handoff.resolved_at = utc_now()
+    handoff.updated_at = utc_now()
+    db.add(handoff)
+
+    # Reconciliar compuertas de aprobación si las hubiere
+    approvals = db.exec(
+        select(ApprovalGateRecord).where(
+            ApprovalGateRecord.session_id == record.id,
+            ApprovalGateRecord.status == ApprovalStatus.pending,
+        )
+    ).all()
+    for app_gate in approvals:
+        app_gate.status = ApprovalStatus.approved
+        app_gate.resolved_at = utc_now()
+        app_gate.resolution_note = "Aprobado junto con la revisión de gobierno."
+        db.add(app_gate)
+
+    # Actualizar readiness_state del Blueprint a complete
+    bp_record = db.exec(
+        select(BlueprintRecord).where(
+            BlueprintRecord.session_id == record.id,
+        ).order_by(BlueprintRecord.updated_at.desc())
+    ).first()
+    if bp_record is not None:
+        bp_record.readiness_state = ReviewState.complete
+        bp_record.updated_at = utc_now()
+        db.add(bp_record)
+
+    db.commit()
+    return AttentionActionApplyResult(status="applied", message="Revisión de gobierno confirmada. Bloqueadores de promoción resueltos.")
+
+
 def apply_attention_action_v2(
     db: Session,
     *,
@@ -1009,20 +1508,45 @@ def apply_attention_action_v2(
         result = _apply_acp_question_answer(db, record=record, item=item, payload=payload, current_user=current_user)
     elif item.source == "approval_gate" and payload.action_kind in {"approve", "reject"}:
         result = _apply_approval_action(db, record=record, item=item, payload=payload)
+    elif item.source == "governance_handoff" and payload.action_kind in {"confirm", "approve", "reject"}:
+        result = _apply_handoff_action(db, record=record, item=item, payload=payload)
     elif item.source == "access_request" and payload.action_kind in {"approve", "reject", "confirm"}:
         result = _apply_access_request_action(db, record=record, item=item, payload=payload, current_user=current_user)
-    elif payload.action_kind == "answer" and item.action.can_resolve_inline:
-        if not payload.answer_text.strip():
-            result = AttentionActionApplyResult(status="conflict", message="La respuesta no puede estar vacia.")
-        else:
-            result = AttentionActionApplyResult(status="applied", message="Pregunta respondida y trazada en Attention.")
-    elif payload.action_kind in {"navigate", "retry", "regenerate", "confirm", "defer"}:
+    elif payload.action_kind in {"answer", "confirm", "defer"} and item.action.can_resolve_inline:
+        result = _apply_inline_attention_action(
+            db,
+            record=record,
+            item=item,
+            payload=payload,
+            current_user=current_user,
+        )
+    elif payload.action_kind == "retry" and item.source == "runtime_operation":
+        result = AttentionActionApplyResult(
+            status="applied",
+            message="Solicitud de reintento registrada para recuperar la operacion tecnica.",
+            resume_eligible=True,
+        )
+    elif payload.action_kind == "retry" and item.source == "product_build_step":
+        result = _apply_product_build_step_retry(db, record=record, item=item)
+    elif payload.action_kind == "regenerate" and item.type == "stale":
+        result = AttentionActionApplyResult(
+            status="applied",
+            message="Solicitud de regeneracion registrada. La vista de etapa debe iniciar el reproceso seguro.",
+            )
+    elif payload.action_kind in {"navigate", "retry", "regenerate"}:
         result = AttentionActionApplyResult(
             status="unsupported",
             message="Esta accion ya esta modelada para navegacion, pero todavia no tiene mutacion de dominio segura.",
         )
     else:
         result = AttentionActionApplyResult(status="unsupported", message="Accion no soportada para este item.")
+
+    if (
+        result.status == "applied"
+        and item.source.startswith("journey.")
+        and payload.action_kind in {"answer", "confirm"}
+    ):
+        result = replace(result, resume_eligible=True)
 
     if result.status in {"applied", "unsupported", "conflict", "forbidden"}:
         _record_attention_action_event(
@@ -1035,3 +1559,46 @@ def apply_attention_action_v2(
             message=result.message,
         )
     return result
+
+
+def _apply_product_build_step_retry(
+    db: Session,
+    *,
+    record: SessionRecord,
+    item: AttentionItemV2,
+) -> AttentionActionApplyResult:
+    try:
+        step_id = UUID(str(item.source_ref.entity_id))
+    except (TypeError, ValueError):
+        return AttentionActionApplyResult(
+            status="conflict",
+            message="No se pudo identificar el step de producto asociado al reintento.",
+        )
+    step = db.get(ProductBuildStepRecord, step_id)
+    if step is None or step.workspace_id != record.workspace_id or step.session_id != record.id:
+        return AttentionActionApplyResult(status="not_found", message="Step de producto no encontrado.")
+    run = db.get(ProductBuildRunRecord, step.run_id)
+    if run is None:
+        return AttentionActionApplyResult(status="not_found", message="Run de producto no encontrado.")
+    step.status = "queued"
+    step.progress_percent = 0
+    step.error_payload = {}
+    step.updated_at = utc_now()
+    db.add(step)
+    update_product_build_run_state(
+        db,
+        run=run,
+        lifecycle="queued",
+        error_payload={},
+        checkpoint_payload={
+            **(run.checkpoint_payload or {}),
+            "resume_requested_from": "attention_v2",
+            "resume_step_key": step.step_key,
+            "resume_requested_at": step.updated_at.isoformat(),
+        },
+    )
+    return AttentionActionApplyResult(
+        status="applied",
+        message="Reintento registrado. El producto puede reanudar este step desde el checkpoint disponible.",
+        resume_eligible=True,
+    )

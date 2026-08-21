@@ -4,6 +4,25 @@ from app.models import AttentionItemV2
 from app.services.attention.contract import create_attention_item_v2
 
 
+STAGE_KIND_LABELS: dict[str, str] = {
+    "estimation_report_artifact": "El reporte de estimación",
+    "discovery_artifact": "El artefacto de descubrimiento",
+    "definition_artifact": "La definición de requerimientos",
+    "design_recommendation_artifact": "El diseño de arquitectura",
+    "tool_recommendation_artifact": "La recomendación de herramientas",
+    "memory_recommendation_artifact": "La política de memoria",
+    "evaluation_artifact": "La evaluación del blueprint",
+}
+
+
+def _humanize_stale_reason(reason: str, state: str) -> str:
+    if not reason:
+        return f"El artefacto está en estado {state} y requiere revisión."
+    if "upstream_" in reason:
+        return "Se generaron o aprobaron nuevas versiones en etapas previas. Es necesario regenerar esta etapa para reflejar los últimos cambios y mantener la consistencia."
+    return reason
+
+
 def items_from_stage_artifact_state(
     *,
     stage: str,
@@ -20,6 +39,10 @@ def items_from_stage_artifact_state(
         return []
     item_type = "stale" if normalized_state == "stale" else "validation"
     severity = "blocking" if normalized_state in {"blocked", "rejected"} else "warning"
+    label = STAGE_KIND_LABELS.get(artifact_kind, f"El artefacto {artifact_kind}")
+    title = f"{label} está desactualizado" if normalized_state == "stale" else f"{label} requiere revisión"
+    human_reason = _humanize_stale_reason(reason, normalized_state)
+
     return [
         create_attention_item_v2(
             item_type=item_type,
@@ -32,10 +55,10 @@ def items_from_stage_artifact_state(
                 "artifact_version": artifact_version,
                 "field_path": f"{artifact_kind}.state",
             },
-            title=f"{artifact_kind} requiere revision",
-            reason=reason or "El artefacto cambio de estado y requiere atencion del usuario.",
-            impact="Puede afectar la trazabilidad y la consistencia entre etapas LEAN.",
-            consequence_if_unresolved="La etapa puede continuar usando una version no vigente o no aprobada.",
+            title=title,
+            reason=human_reason,
+            impact="Puede afectar la trazabilidad y la consistencia entre etapas del Blueprint.",
+            consequence_if_unresolved="El Blueprint continuará utilizando datos de una versión previa desactualizada.",
             action_kind="regenerate" if state == "stale" else "navigate",
             href=href,
             return_href=return_href,

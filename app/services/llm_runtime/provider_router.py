@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Protocol
+from uuid import UUID, uuid4
 
 from app.models import (
     AgentExecutionBackend,
@@ -35,7 +36,7 @@ from app.services.llm_runtime.capability_registry import (
     BuilderCapability,
     get_builder_capability_spec,
 )
-from app.services.llm_runtime.stage_context_types import StageContextBundle
+from app.services.llm_runtime.stage_context_types import StageContextBundle, build_llm_call_context
 
 
 class BuilderExecutionMode(StrEnum):
@@ -444,8 +445,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.normalize_discovery,
-            native_call=lambda service: service.normalize_discovery(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.normalize_discovery(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.normalize_discovery(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.normalize_discovery(payload, context_bundle=route_context_bundle),
         )
 
     def analyze_discovery(
@@ -456,8 +458,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.analyze_discovery,
-            native_call=lambda service: service.analyze_discovery(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.analyze_discovery(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.analyze_discovery(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.analyze_discovery(payload, context_bundle=route_context_bundle),
         )
 
     def build_canvas(
@@ -468,8 +471,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.build_canvas,
-            native_call=lambda service: service.build_canvas(discovery, context_bundle=context_bundle),
-            codex_call=lambda service: service.build_canvas(discovery, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.build_canvas(discovery, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.build_canvas(discovery, context_bundle=route_context_bundle),
         )
 
     def define_requirements(
@@ -480,8 +484,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.define_requirements,
-            native_call=lambda service: service.define_requirements(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.define_requirements(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.define_requirements(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.define_requirements(payload, context_bundle=route_context_bundle),
         )
 
     def synthesize_blueprint_narrative(
@@ -494,17 +499,18 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.synthesize_blueprint_narrative,
-            native_call=lambda service: service.synthesize_blueprint_narrative(
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.synthesize_blueprint_narrative(
                 discovery,
                 canvas,
                 blueprint,
-                context_bundle=context_bundle,
+                context_bundle=route_context_bundle,
             ),
-            codex_call=lambda service: service.synthesize_blueprint_narrative(
+            codex_call=lambda service, route_context_bundle: service.synthesize_blueprint_narrative(
                 discovery,
                 canvas,
                 blueprint,
-                context_bundle=context_bundle,
+                context_bundle=route_context_bundle,
             ),
         )
 
@@ -516,8 +522,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.propose_agent_design,
-            native_call=lambda service: service.propose_agent_design(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.propose_agent_design(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.propose_agent_design(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.propose_agent_design(payload, context_bundle=route_context_bundle),
         )
 
     def critique_agent_design(
@@ -528,8 +535,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.critique_agent_design,
-            native_call=lambda service: service.critique_agent_design(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.critique_agent_design(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.critique_agent_design(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.critique_agent_design(payload, context_bundle=route_context_bundle),
         )
 
     def recommend_minimal_tools(
@@ -540,8 +548,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.recommend_minimal_tools,
-            native_call=lambda service: service.recommend_minimal_tools(prompt_input, context_bundle=context_bundle),
-            codex_call=lambda service: service.recommend_minimal_tools(prompt_input, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.recommend_minimal_tools(prompt_input, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.recommend_minimal_tools(prompt_input, context_bundle=route_context_bundle),
         )
 
     def recommend_memory_architecture(
@@ -552,8 +561,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.recommend_memory_architecture,
-            native_call=lambda service: service.recommend_memory_architecture(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.recommend_memory_architecture(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.recommend_memory_architecture(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.recommend_memory_architecture(payload, context_bundle=route_context_bundle),
         )
 
     def critique_memory_architecture(
@@ -564,8 +574,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.critique_memory_architecture,
-            native_call=lambda service: service.critique_memory_architecture(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.critique_memory_architecture(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.critique_memory_architecture(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.critique_memory_architecture(payload, context_bundle=route_context_bundle),
         )
 
     def generate_validation_scenarios(
@@ -576,8 +587,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.generate_validation_scenarios,
-            native_call=lambda service: service.generate_validation_scenarios(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.generate_validation_scenarios(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.generate_validation_scenarios(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.generate_validation_scenarios(payload, context_bundle=route_context_bundle),
         )
 
     def simulate_validation_scenario(
@@ -588,8 +600,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.simulate_validation_scenario,
-            native_call=lambda service: service.simulate_validation_scenario(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.simulate_validation_scenario(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.simulate_validation_scenario(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.simulate_validation_scenario(payload, context_bundle=route_context_bundle),
         )
 
     def judge_validation_run(
@@ -600,8 +613,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.judge_validation_run,
-            native_call=lambda service: service.judge_validation_run(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.judge_validation_run(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.judge_validation_run(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.judge_validation_run(payload, context_bundle=route_context_bundle),
         )
 
     def analyze_estimation_risks(
@@ -612,8 +626,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.analyze_estimation_risks,
-            native_call=lambda service: service.analyze_estimation_risks(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.analyze_estimation_risks(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.analyze_estimation_risks(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.analyze_estimation_risks(payload, context_bundle=route_context_bundle),
         )
 
     def generate_diagram_model(
@@ -624,8 +639,9 @@ class BuilderProviderFacade:
     ) -> LLMArtifactResult:
         return self._execute_capability(
             capability=BuilderCapability.generate_diagram_model,
-            native_call=lambda service: service.generate_diagram_model(payload, context_bundle=context_bundle),
-            codex_call=lambda service: service.generate_diagram_model(payload, context_bundle=context_bundle),
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.generate_diagram_model(payload, context_bundle=route_context_bundle),
+            codex_call=lambda service, route_context_bundle: service.generate_diagram_model(payload, context_bundle=route_context_bundle),
         )
 
     def _native_service(self) -> BuilderProviderService:
@@ -650,6 +666,7 @@ class BuilderProviderFacade:
         *,
         provider_key: LLMProviderKey,
         decision: BuilderRouteDecision,
+        context_bundle: StageContextBundle | None = None,
         route_reason: str | None = None,
         shadow_provider_key: LLMProviderKey | None = None,
     ) -> LLMArtifactResult:
@@ -663,6 +680,32 @@ class BuilderProviderFacade:
         }
         merged_policy = dict(result.capability_policy)
         merged_policy.update(policy)
+        existing_finops_context = result.finops_context
+        route_metadata = {
+            **(existing_finops_context.metadata if existing_finops_context is not None else {}),
+            "selected_provider": decision.selected_provider.value,
+            "provider_key": provider_key.value,
+            "execution_backend": decision.execution_backend.value,
+            "execution_mode": decision.execution_mode.value,
+            "provider_route": f"{decision.execution_mode.value}:{provider_key.value}",
+            "route_reason": route_reason or decision.reason,
+            "fallback_provider": decision.fallback_provider.value if decision.fallback_provider is not None else "",
+            "shadow_provider_key": shadow_provider_key.value if shadow_provider_key is not None else "",
+            "fallback_used": result.fallback_used,
+            "degraded": result.degraded,
+        }
+        finops_context = build_llm_call_context(
+            context_bundle,
+            capability=decision.capability.value,
+            provider_key=provider_key.value,
+            execution_backend=decision.execution_backend.value,
+            execution_mode=decision.execution_mode.value,
+            action_key=result.capability_key or decision.capability.value,
+            operation_id=existing_finops_context.operation_id if existing_finops_context is not None else None,
+            parent_run_id=existing_finops_context.parent_run_id if existing_finops_context is not None else "",
+            correlation_id=existing_finops_context.correlation_id if existing_finops_context is not None else "",
+            metadata=route_metadata,
+        )
         return replace(
             result,
             provider_key=provider_key.value,
@@ -672,7 +715,49 @@ class BuilderProviderFacade:
             route_reason=route_reason or decision.reason,
             capability_key=result.capability_key or decision.capability.value,
             prompt_version=result.prompt_version or spec.prompt_version,
+            finops_context=finops_context,
             capability_policy=merged_policy,
+        )
+
+    def _build_route_context_bundle(
+        self,
+        context_bundle: StageContextBundle | None,
+        *,
+        decision: BuilderRouteDecision,
+        provider_key: LLMProviderKey,
+        operation_id: UUID,
+        route_leg: str,
+        fallback_used: bool = False,
+        degraded: bool = False,
+        shadow_provider_key: LLMProviderKey | None = None,
+    ) -> StageContextBundle | None:
+        if context_bundle is None:
+            return None
+        metadata = {
+            **context_bundle.finops_metadata,
+            "selected_provider": decision.selected_provider.value,
+            "provider_key": provider_key.value,
+            "execution_backend": decision.execution_backend.value,
+            "execution_mode": decision.execution_mode.value,
+            "provider_route": f"{decision.execution_mode.value}:{provider_key.value}",
+            "route_leg": route_leg,
+            "route_reason": decision.reason,
+            "fallback_provider": decision.fallback_provider.value if decision.fallback_provider is not None else "",
+            "shadow_provider_key": shadow_provider_key.value if shadow_provider_key is not None else "",
+            "fallback_used": fallback_used,
+            "degraded": degraded,
+        }
+        correlation_id = (
+            context_bundle.finops_correlation_id
+            or context_bundle.context_fingerprint
+            or f"{context_bundle.session_id}:{decision.capability.value}:{operation_id}"
+        )
+        return replace(
+            context_bundle,
+            finops_operation_id=operation_id,
+            finops_correlation_id=str(correlation_id),
+            finops_execution_mode=decision.execution_mode.value,
+            finops_metadata=metadata,
         )
 
     def _execute_capability(
@@ -681,22 +766,41 @@ class BuilderProviderFacade:
         capability: BuilderCapability,
         native_call,
         codex_call,
+        context_bundle: StageContextBundle | None = None,
     ) -> LLMArtifactResult:
         decision = self.router.resolve(capability)
+        operation_id = uuid4()
         native_provider = self.runtime_settings.active_provider
         native_service = self._native_service()
         codex_service = self._codex_service
 
         if decision.selected_provider == LLMProviderKey.antigravity_cli and self._antigravity_service:
             agy_service = self._antigravity_service
+            agy_context_bundle = self._build_route_context_bundle(
+                context_bundle,
+                decision=decision,
+                provider_key=LLMProviderKey.antigravity_cli,
+                operation_id=operation_id,
+                route_leg="primary",
+            )
             agy_result = self._annotate_result(
-                codex_call(agy_service),
+                codex_call(agy_service, agy_context_bundle),
                 provider_key=LLMProviderKey.antigravity_cli,
                 decision=decision,
+                context_bundle=agy_context_bundle,
             )
             if agy_result.artifact is not None or decision.fallback_provider is None:
                 return agy_result
-            fallback_result = native_call(native_service)
+            fallback_context_bundle = self._build_route_context_bundle(
+                context_bundle,
+                decision=decision,
+                provider_key=decision.fallback_provider,
+                operation_id=operation_id,
+                route_leg="fallback",
+                fallback_used=True,
+                degraded=True,
+            )
+            fallback_result = native_call(native_service, fallback_context_bundle)
             fallback_warning = merge_warnings(
                 agy_result.warning,
                 (
@@ -714,6 +818,7 @@ class BuilderProviderFacade:
                 ),
                 provider_key=decision.fallback_provider,
                 decision=decision,
+                context_bundle=fallback_context_bundle,
                 route_reason=(
                     f"{decision.reason} Fallback lateral activado hacia "
                     f"{_provider_label(decision.fallback_provider)}."
@@ -721,14 +826,31 @@ class BuilderProviderFacade:
             )
 
         if decision.selected_provider == LLMProviderKey.codex_local:
+            codex_context_bundle = self._build_route_context_bundle(
+                context_bundle,
+                decision=decision,
+                provider_key=LLMProviderKey.codex_local,
+                operation_id=operation_id,
+                route_leg="primary",
+            )
             codex_result = self._annotate_result(
-                codex_call(codex_service),
+                codex_call(codex_service, codex_context_bundle),
                 provider_key=LLMProviderKey.codex_local,
                 decision=decision,
+                context_bundle=codex_context_bundle,
             )
             if codex_result.artifact is not None or decision.fallback_provider is None:
                 return codex_result
-            fallback_result = native_call(native_service)
+            fallback_context_bundle = self._build_route_context_bundle(
+                context_bundle,
+                decision=decision,
+                provider_key=decision.fallback_provider,
+                operation_id=operation_id,
+                route_leg="fallback",
+                fallback_used=True,
+                degraded=True,
+            )
+            fallback_result = native_call(native_service, fallback_context_bundle)
             fallback_warning = merge_warnings(
                 codex_result.warning,
                 (
@@ -746,26 +868,45 @@ class BuilderProviderFacade:
                 ),
                 provider_key=decision.fallback_provider,
                 decision=decision,
+                context_bundle=fallback_context_bundle,
                 route_reason=(
                     f"{decision.reason} Fallback lateral activado hacia "
                     f"{_provider_label(decision.fallback_provider)}."
                 ),
             )
 
+        primary_context_bundle = self._build_route_context_bundle(
+            context_bundle,
+            decision=decision,
+            provider_key=native_provider,
+            operation_id=operation_id,
+            route_leg="primary",
+            shadow_provider_key=decision.shadow_provider,
+        )
         primary_result = self._annotate_result(
-            native_call(native_service),
+            native_call(native_service, primary_context_bundle),
             provider_key=native_provider,
             decision=decision,
+            context_bundle=primary_context_bundle,
             shadow_provider_key=decision.shadow_provider,
         )
 
         if decision.execution_mode != BuilderExecutionMode.shadow or decision.shadow_provider is None:
             return primary_result
 
+        shadow_context_bundle = self._build_route_context_bundle(
+            context_bundle,
+            decision=decision,
+            provider_key=LLMProviderKey.codex_local,
+            operation_id=operation_id,
+            route_leg="shadow",
+            shadow_provider_key=decision.shadow_provider,
+        )
         shadow_result = self._annotate_result(
-            codex_call(codex_service),
+            codex_call(codex_service, shadow_context_bundle),
             provider_key=LLMProviderKey.codex_local,
             decision=decision,
+            context_bundle=shadow_context_bundle,
             shadow_provider_key=decision.shadow_provider,
         )
         if primary_result.artifact is not None:
@@ -804,6 +945,7 @@ class BuilderProviderFacade:
                 ),
                 provider_key=LLMProviderKey.codex_local,
                 decision=decision,
+                context_bundle=shadow_context_bundle,
                 route_reason=f"{decision.reason} Shadow promovido por indisponibilidad del provider activo.",
             )
         if shadow_result.warning:

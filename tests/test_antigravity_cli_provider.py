@@ -68,15 +68,13 @@ def test_build_execution_args_with_model(tmp_path):
         stderr_path=tmp_path / "stderr.log",
     )
     args = svc.build_execution_args(workspace=ws, model="gemini-3.6-pro", enable_web_search=True)
-    assert "run" in args
+    assert "--print" in args
     assert str(tmp_path) in args
-    assert str(tmp_path / "output.md") in args
-    assert "--non-interactive" in args
+    assert "--dangerously-skip-permissions" in args
     assert "--model" in args
     assert "gemini-3.6-pro" in args
     assert "--effort" in args
     assert "high" in args
-    assert "--web-search" in args
 
 
 def test_build_execution_args_without_model(tmp_path):

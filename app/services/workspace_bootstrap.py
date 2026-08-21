@@ -15,7 +15,14 @@ from app.models import (
     WorkspaceContract,
     WorkspaceSectionEntry,
 )
-from app.services.stage5_service import seed_governance_policies, seed_workflow_templates
+from app.services.deliverable_catalog.governance_bootstrap import seed_deliverable_governance_defaults
+from app.services.stage5_service import (
+    FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
+    FEATURE_FLAG_DELIVERABLE_CATALOG,
+    FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN,
+    seed_governance_policies,
+    seed_workflow_templates,
+)
 from app.services.skill_runtime import sync_skill_catalog
 
 
@@ -29,6 +36,7 @@ MIGRATION_KEY_STAGE6 = "2026-07-08-stage6-estimation-contracts"
 CATALOG_VERSION_CURRENT = "stage6.v3"
 FEATURE_FLAG_PRODUCT_EXPERIENCE_V2 = "product_experience_v2"
 FEATURE_FLAG_ATTENTION_V2 = "attention_v2"
+FEATURE_FLAG_REACT_RUNTIME = "react_runtime_v1"
 
 
 DEFAULT_FEATURE_FLAGS = [
@@ -52,6 +60,30 @@ DEFAULT_FEATURE_FLAGS = [
         "enabled": True,
         "description": "Expone el contrato attention.v2 en paralelo a attention.v1 durante validacion.",
         "stage_hint": "workspace",
+    },
+    {
+        "key": FEATURE_FLAG_REACT_RUNTIME,
+        "enabled": False,
+        "description": "Activa el controlador ReAct nativo por workspace para pilotos controlados.",
+        "stage_hint": "runtime",
+    },
+    {
+        "key": FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
+        "enabled": True,
+        "description": "Activa la politica Basic/Premium/ACP para inferir, diferir, enriquecer y validar por producto.",
+        "stage_hint": "bdg17",
+    },
+    {
+        "key": FEATURE_FLAG_DELIVERABLE_CATALOG,
+        "enabled": True,
+        "description": "Activa el catalogo canonico de entregables, diagramas, artefactos y reglas de acceso.",
+        "stage_hint": "bdg17",
+    },
+    {
+        "key": FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN,
+        "enabled": True,
+        "description": "Activa la consola admin de gobernanza de entregables, prompts, auditoria y overrides.",
+        "stage_hint": "bdg17",
     },
     {
         "key": "blueprint_evolution_roadmap",
@@ -1509,6 +1541,7 @@ def apply_workspace_bootstrap(session: Session, workspace_id: UUID) -> None:
     seed_runtime_catalogs(session)
     seed_workflow_templates(session, workspace_id=workspace_id)
     seed_governance_policies(session, workspace_id=workspace_id)
+    seed_deliverable_governance_defaults(session)
     sync_skill_catalog(session)
     _ensure_migration(
         session,

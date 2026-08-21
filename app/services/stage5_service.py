@@ -42,6 +42,10 @@ FEATURE_FLAG_SUBAGENTS = "specialized_subagents_v1"
 FEATURE_FLAG_MULTI_AGENT_RUNTIME = "multi_agent_runtime_v1"
 FEATURE_FLAG_ESTIMATION = "estimation_comparative_v1"
 FEATURE_FLAG_TOOL_RECOMMENDATION = "tool_recommendation_llm_v1"
+FEATURE_FLAG_REACT_RUNTIME = "react_runtime_v1"
+FEATURE_FLAG_BLUEPRINT_TIER_POLICY = "blueprint_tier_policy_enabled"
+FEATURE_FLAG_DELIVERABLE_CATALOG = "deliverable_catalog_enabled"
+FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN = "deliverable_governance_admin_enabled"
 
 SPECIALIST_RUN_KINDS = ("evaluation_specialist", "risk_specialist", "artifact_specialist")
 
@@ -395,14 +399,14 @@ def seed_governance_policies(session: Session, *, workspace_id: UUID) -> None:
         session.rollback()
 
 
-def is_feature_flag_enabled(session: Session, flag_key: str, *, workspace_id: UUID) -> bool:
+def is_feature_flag_enabled(session: Session, flag_key: str, *, workspace_id: UUID, default_if_missing: bool = False) -> bool:
     record = session.exec(
         select(RuntimeFeatureFlagRecord).where(
             RuntimeFeatureFlagRecord.workspace_id == workspace_id,
             RuntimeFeatureFlagRecord.flag_key == flag_key,
         )
     ).first()
-    return bool(record.enabled) if record is not None else False
+    return bool(record.enabled) if record is not None else bool(default_if_missing)
 
 
 def update_feature_flag(session: Session, *, workspace_id: UUID, flag_key: str, enabled: bool) -> RuntimeFeatureFlagRecord:

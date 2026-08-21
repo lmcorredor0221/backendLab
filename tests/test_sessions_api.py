@@ -2616,6 +2616,19 @@ def test_approve_memory_profile_refreshes_user_edits_and_promotes_blueprint_sect
     assert recommendation.status_code == 200
     memory_artifact = recommendation.json()
     edited_payload = memory_artifact["proposal_payload"]
+    edited_payload["summary"] = "Resumen revisado por el usuario antes de aprobar Memoria."
+    edited_payload["open_questions"] = ["Confirmar retencion exacta durante implementacion."]
+    edited_payload["critic_findings"] = [
+        {
+            "finding_key": "deferred-retention-owner",
+            "title": "Owner de retencion pendiente",
+            "detail": "La decision puede diferirse al ACP sin bloquear Blueprint Basico.",
+            "severity": "warning",
+            "category": "governance",
+            "suggested_action": "Documentar como decision diferida.",
+            "source_refs": ["memory.review"],
+        }
+    ]
     edited_payload["proposed_memory_profile"]["write_policy"] = (
         "Persistir decisiones aprobadas y resumenes compactos por 30 dias."
     )
@@ -2653,6 +2666,13 @@ def test_approve_memory_profile_refreshes_user_edits_and_promotes_blueprint_sect
     assert (
         snapshot["journey_latest_artifacts"]["memory"]["proposal_payload"]["proposed_memory_profile"]["write_policy"]
         == "Persistir decisiones aprobadas y resumenes compactos por 30 dias."
+    )
+    approved_memory_payload = snapshot["journey_latest_artifacts"]["memory"]["proposal_payload"]
+    assert approved_memory_payload["summary"] == "Resumen revisado por el usuario antes de aprobar Memoria."
+    assert approved_memory_payload["open_questions"] == ["Confirmar retencion exacta durante implementacion."]
+    assert any(
+        finding["finding_key"] == "deferred-retention-owner"
+        for finding in approved_memory_payload["critic_findings"]
     )
 
 

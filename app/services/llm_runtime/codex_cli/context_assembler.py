@@ -112,8 +112,19 @@ class CodexContextSource:
     source_version: str = ""
     stage_affinity: list[str] = field(default_factory=list)
     agent_affinity: list[str] = field(default_factory=list)
+    staged_file_content: str = ""
+    prompt_truncated: bool = False
+
+    @property
+    def workspace_content(self) -> str:
+        return self.staged_file_content or self.content
 
     def to_payload(self) -> dict[str, Any]:
+        staged_file_chars = len(self.workspace_content)
+        staged_file_truncated = staged_file_chars < self.baseline_chars
+        delivery_mode = "filesystem_compact"
+        if self.required and self.staged_file_content:
+            delivery_mode = "filesystem_required_excerpt" if staged_file_truncated else "filesystem_full_required"
         return {
             "key": self.key,
             "title": self.title,
@@ -125,8 +136,13 @@ class CodexContextSource:
             "relative_path": self.relative_path,
             "baseline_chars": self.baseline_chars,
             "assembled_chars": self.assembled_chars,
+            "prompt_chars": self.assembled_chars,
+            "staged_file_chars": staged_file_chars,
             "token_estimate": self.token_estimate,
             "truncated": self.truncated,
+            "prompt_truncated": self.prompt_truncated,
+            "staged_file_truncated": staged_file_truncated,
+            "delivery_mode": delivery_mode,
             "source_refs": list(self.source_refs),
             "source_lineage": list(self.source_lineage),
             "source_version": self.source_version,
@@ -146,6 +162,7 @@ class CodexContextStats:
     reduction_estimated_tokens: int
     used_full_documents: bool
     truncated_source_count: int
+    prompt_truncated_source_count: int
     required_source_count: int
     candidate_source_count: int
     discarded_candidate_count: int
@@ -171,6 +188,7 @@ class CodexContextStats:
             "reduction_estimated_tokens": self.reduction_estimated_tokens,
             "used_full_documents": self.used_full_documents,
             "truncated_source_count": self.truncated_source_count,
+            "prompt_truncated_source_count": self.prompt_truncated_source_count,
             "required_source_count": self.required_source_count,
             "candidate_source_count": self.candidate_source_count,
             "discarded_candidate_count": self.discarded_candidate_count,
@@ -350,6 +368,7 @@ class CodexContextAssembler:
             reduction_estimated_tokens=max(0, baseline_tokens - assembled_tokens),
             used_full_documents=False,
             truncated_source_count=sum(1 for item in all_sources if item.truncated),
+            prompt_truncated_source_count=sum(1 for item in all_sources if item.prompt_truncated),
             required_source_count=len(required_sources),
             candidate_source_count=len(candidate_sources),
             discarded_candidate_count=discarded_candidate_count,
@@ -829,13 +848,17 @@ class CodexContextAssembler:
             if not preserve_all:
                 target_chars = min(target_chars, 1_600)
             content = candidate.content.strip()
-            truncated = len(content) > target_chars
-            rendered = content[: max(0, target_chars - 32)].rstrip() + "\n\n[truncated]" if truncated else content
+            prompt_truncated = len(content) > target_chars
+            rendered = content[: max(0, target_chars - 32)].rstrip() + "\n\n[truncated]" if prompt_truncated else content
             rendered = rendered.strip()
             assembled_chars = len(rendered)
             remaining_chars = max(0, remaining_chars - assembled_chars)
             slug = _slugify(candidate.key or candidate.title, fallback=f"source-{index}")
             relative_path = f"knowledge/{bucket}/{index:02d}-{slug}.md"
+            staged_file_content = content if preserve_all and prompt_truncated else ""
+            baseline_chars = max(candidate.baseline_chars, len(candidate.content))
+            workspace_content = staged_file_content or rendered
+            staged_file_truncated = len(workspace_content) < baseline_chars
             sources.append(
                 CodexContextSource(
                     key=candidate.key,
@@ -847,15 +870,17 @@ class CodexContextAssembler:
                     summary=candidate.summary,
                     relative_path=relative_path,
                     content=rendered,
-                    baseline_chars=max(candidate.baseline_chars, len(candidate.content)),
+                    baseline_chars=baseline_chars,
                     assembled_chars=assembled_chars,
                     token_estimate=_estimate_tokens(rendered),
-                    truncated=truncated,
+                    truncated=staged_file_truncated,
                     source_refs=list(candidate.source_refs),
                     source_lineage=list(candidate.source_lineage),
                     source_version=candidate.source_version,
                     stage_affinity=list(candidate.stage_affinity),
                     agent_affinity=list(candidate.agent_affinity),
+                    staged_file_content=staged_file_content,
+                    prompt_truncated=prompt_truncated,
                 )
             )
         return sources, remaining_chars
@@ -879,6 +904,7 @@ class CodexContextAssembler:
             "- read `input/knowledge_manifest.json` and `knowledge/required/*` before responder;",
             "- usa `knowledge/candidate/*` solo si la evidencia requerida no alcanza;",
             "- cita `key` o `relative_path` de la fuente usada cuando una conclusion dependa del contexto staged;",
+            "- if a required source has `prompt_truncated=true` and `staged_file_truncated=false`, treat the file at `relative_path` as the complete evidence;",
             "- no assumes unstaged knowledge and do not reconstruct full documents from excerpts.",
         ]
         if request.retrieval_pages:

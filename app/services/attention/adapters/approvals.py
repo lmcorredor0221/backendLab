@@ -23,10 +23,12 @@ def items_from_approval_gates(
         approval_id = _value(getattr(approval, "id", ""))
         gate_key = _value(getattr(approval, "gate_key", "")) or approval_id or "approval"
         stage = _value(getattr(approval, "requested_in_stage", "")) or "discover"
+        is_tool_gate = gate_key.startswith("tool:") or stage in {"tools", "post_validation"}
+        severity = "warning" if is_tool_gate else "blocking"
         items.append(
             create_attention_item_v2(
                 item_type="approval",
-                severity="blocking",
+                severity=severity,
                 product="blueprint",
                 stage=stage,
                 source="approval_gate",
@@ -39,7 +41,7 @@ def items_from_approval_gates(
                 href=f"{base_href}/{stage}",
                 return_href=return_href,
                 owner_role="business_owner",
-                can_resolve_inline=False,
+                can_resolve_inline=True,
             )
         )
     return items

@@ -1,0 +1,37 @@
+{
+  "schema_version": "diagram-model.v1",
+  "diagram_key": "dense_use_case",
+  "title": "Casos de uso del agente",
+  "description": "Fixture UML de casos de uso con varios actores y relaciones include/extend.",
+  "notation": "uml_use_case",
+  "direction": "LR",
+  "nodes": [
+    {"id": "customer", "label": "Cliente", "kind": "actor"},
+    {"id": "operator", "label": "Usuario operativo", "kind": "actor"},
+    {"id": "supervisor", "label": "Supervisor", "kind": "actor"},
+    {"id": "system", "label": "Sistema corporativo", "kind": "actor_external"},
+    {"id": "uc_receive", "label": "Recibir solicitud multicanal", "kind": "use_case"},
+    {"id": "uc_classify", "label": "Clasificar intencion", "kind": "use_case"},
+    {"id": "uc_retrieve", "label": "Recuperar informacion autorizada", "kind": "use_case"},
+    {"id": "uc_answer", "label": "Proponer respuesta trazable", "kind": "use_case"},
+    {"id": "uc_execute", "label": "Ejecutar operacion permitida", "kind": "use_case"},
+    {"id": "uc_escalate", "label": "Escalar a persona responsable", "kind": "use_case"},
+    {"id": "uc_audit", "label": "Registrar evidencia de decision", "kind": "use_case"},
+    {"id": "uc_monitor", "label": "Monitorear calidad del servicio", "kind": "use_case"}
+  ],
+  "edges": [
+    {"id": "u01", "source": "customer", "target": "uc_receive", "label": "inicia"},
+    {"id": "u02", "source": "operator", "target": "uc_answer", "label": "revisa"},
+    {"id": "u03", "source": "supervisor", "target": "uc_escalate", "label": "atiende"},
+    {"id": "u04", "source": "system", "target": "uc_retrieve", "label": "provee datos"},
+    {"id": "u05", "source": "uc_receive", "target": "uc_classify", "label": "include", "kind": "include"},
+    {"id": "u06", "source": "uc_classify", "target": "uc_retrieve", "label": "include", "kind": "include"},
+    {"id": "u07", "source": "uc_retrieve", "target": "uc_answer", "label": "include", "kind": "include"},
+    {"id": "u08", "source": "uc_answer", "target": "uc_execute", "label": "extend", "kind": "extend"},
+    {"id": "u09", "source": "uc_answer", "target": "uc_escalate", "label": "extend", "kind": "extend"},
+    {"id": "u10", "source": "uc_execute", "target": "uc_audit", "label": "include", "kind": "include"},
+    {"id": "u11", "source": "uc_escalate", "target": "uc_audit", "label": "include", "kind": "include"},
+    {"id": "u12", "source": "uc_audit", "target": "uc_monitor", "label": "include", "kind": "include"}
+  ],
+  "source_refs": ["fixture:diagram-layout:dense-use-case"]
+}

@@ -66,10 +66,10 @@ ARCHETYPE_DISTRIBUTIONS: dict[str, dict[str, int]] = {
     },
 }
 COMPLEXITY_BASELINE_POINTS: dict[EstimationComplexityLevel, int] = {
-    EstimationComplexityLevel.simple: 28,
-    EstimationComplexityLevel.moderate: 46,
-    EstimationComplexityLevel.complex: 66,
-    EstimationComplexityLevel.critical: 86,
+    EstimationComplexityLevel.simple: 50,
+    EstimationComplexityLevel.moderate: 140,
+    EstimationComplexityLevel.complex: 260,
+    EstimationComplexityLevel.critical: 380,
 }
 MATURITY_FACTORS: dict[EstimationMaturityStage, float] = {
     EstimationMaturityStage.canvas: 0.62,
@@ -169,6 +169,7 @@ class EstimationSignals:
     approval_tools: int
     workflow_steps: int
     safety_checks: int
+    guardrails: int
     memory_layers: int
     observability_signals: int
     evaluation_cases: int
@@ -330,24 +331,79 @@ def _build_signals(
         and latest_run.overall_score >= 80
     )
 
-    scope_points = 14
-    scope_points += v1_scope_count * 4
-    scope_points += constraints_count * 2
-    scope_points += non_delegable_count * 3
-    scope_points += automation_opportunities * 2
-    scope_points += approval_count * 2
-    scope_points += tool_count * 4
-    scope_points += implementation_side_effect_tools * 6
-    scope_points += approval_tools * 3
-    scope_points += workflow_steps * 3
-    scope_points += safety_checks * 2
-    scope_points += guardrails
-    scope_points += memory_layers * 3
-    scope_points += observability_signals
-    scope_points += evaluation_cases
-    scope_points += len(snapshot.evaluation_runs)
+    # 1. Puntos de Negocio y Alcance Funcional
+    p_business = 12
+    p_business += v1_scope_count * 4
+    p_business += constraints_count * 2
+    p_business += non_delegable_count * 4
+    p_business += automation_opportunities * 2
+
+    # 2. Puntos de Herramientas (Ponderación por tipo, mutación, APIs externas y HITL)
+    p_tools = 0
+    for item in tools:
+        is_ext = _is_external_implementation_tool(item) or any(
+            ext in (item.name + " " + item.purpose).lower()
+            for ext in ["api", "externa", "webhook", "outbound", "crm", "erp", "salesforce", "sap", "zendesk"]
+        )
+        has_se = item.has_side_effects or item.execution_mode == "async"
+        if has_se and is_ext:
+            weight = 12
+        elif is_ext:
+            weight = 8
+        elif has_se:
+            weight = 7
+        else:
+            weight = 4
+        if item.requires_approval:
+            weight += 3
+        p_tools += weight
+
+    # 3. Puntos de Memoria y Estado
+    mem_strategy = (blueprint.memory_strategy if blueprint else "").lower()
+    grounding = blueprint.memory_profile.grounding_policy if blueprint else None
+    if "hybrid" in mem_strategy or "hibrid" in mem_strategy:
+        p_memory = 24 + (memory_layers * 3)
+    elif "persistent" in mem_strategy or "checkpoints" in mem_strategy:
+        p_memory = 16 + (memory_layers * 2)
+    elif "vector" in mem_strategy or "semantic" in mem_strategy:
+        p_memory = 14 + (memory_layers * 2)
+    elif memory_layers > 0:
+        p_memory = 8 + (memory_layers * 2)
+    else:
+        p_memory = 0
+    if grounding and getattr(grounding, "citations_policy", ""):
+        p_memory += 4
+
+    # 4. Puntos de Guardrails, Safety y Aprobaciones Humanas
+    human_approval_count = approval_count
+    if not human_approval_count and snapshot.approvals:
+        human_approval_count = len(snapshot.approvals)
+    p_guardrails = (safety_checks * 4) + (guardrails * 3) + (human_approval_count * 4)
+
+    # 5. Puntos de Ejecución, Observabilidad y Evaluación
+    p_execution = (workflow_steps * 3) + observability_signals + min(15, evaluation_cases * 2) + len(snapshot.evaluation_runs)
     if maturity_stage == EstimationMaturityStage.ready_to_build:
-        scope_points += 4
+        p_execution += 6
+
+    # Multiplicador de Arquitectura y Patrón de Razonamiento
+    arch = (blueprint.architecture if blueprint else "single_agent").lower()
+    pattern = (blueprint.reasoning_pattern if blueprint else "react").lower()
+    arch_map = {
+        "single_agent": 1.00,
+        "single_agent_with_skills": 1.10,
+        "plan_and_execute": 1.25,
+        "supervisor_with_subagents": 1.50,
+        "handoffs": 1.65,
+        "hierarchical_multi_agent": 1.75,
+    }
+    m_arch = arch_map.get(arch, 1.15)
+    if "plan-and-execute" in pattern or "plan and execute" in pattern:
+        m_arch *= 1.08
+    elif "reflection" in pattern or "tree" in pattern:
+        m_arch *= 1.15
+
+    raw_points = p_business + p_tools + p_memory + p_guardrails + p_execution
+    scope_points = int(round(raw_points * m_arch))
 
     complexity = _infer_complexity(scope_points)
     project_archetype = _infer_project_archetype(snapshot, tool_count, implementation_side_effect_tools, memory_layers)
@@ -480,6 +536,7 @@ def _build_signals(
         approval_tools=approval_tools,
         workflow_steps=workflow_steps,
         safety_checks=safety_checks,
+        guardrails=guardrails,
         memory_layers=memory_layers,
         observability_signals=observability_signals,
         evaluation_cases=evaluation_cases,
@@ -548,8 +605,8 @@ def _build_agentic_estimate(
     complexity_map = {
         EstimationComplexityLevel.simple: 8.0,
         EstimationComplexityLevel.moderate: 16.0,
-        EstimationComplexityLevel.complex: 24.0,
-        EstimationComplexityLevel.critical: 40.0,
+        EstimationComplexityLevel.complex: 26.0,
+        EstimationComplexityLevel.critical: 42.0,
     }
     complexity_base = complexity_map.get(signals.complexity, 16.0)
     
@@ -558,7 +615,8 @@ def _build_agentic_estimate(
     if signals.evaluation_cases > 0:
         eval_relief = max(0.70, 1.0 - (signals.evaluation_cases * 0.03))
         
-    tool_factor = signals.tool_count * 2.5
+    tool_factor = (signals.tool_count * 1.5) + (signals.implementation_side_effect_tools * 4.0) + (signals.approval_tools * 2.0)
+    guardrail_factor = (signals.safety_checks * 1.2) + (signals.guardrails * 0.8)
     ambiguity_factor = (signals.blocking_gaps * 3.5) + (signals.open_questions * 1.0)
     
     maturity_map = {
@@ -568,7 +626,7 @@ def _build_agentic_estimate(
     }
     maturity_multiplier = maturity_map.get(signals.maturity_stage, 1.00)
     
-    supervision_hours = (complexity_base * eval_relief + tool_factor + ambiguity_factor) * maturity_multiplier
+    supervision_hours = (complexity_base * eval_relief + tool_factor + guardrail_factor + ambiguity_factor) * maturity_multiplier
     supervision_hours = round(max(8.0, supervision_hours), 2)
 
     shares = _build_workstream_shares(signals)
@@ -660,16 +718,54 @@ def _build_construction_scenarios(
     blended_rate = baseline_cost / baseline_hours if baseline_hours else 0
     provider_runtime_cost = max(agentic.provider_runtime_cost_total_cop, 0)
 
-    blueprint_reduction = _clamp(signals.blueprint_design_coverage_percent * 0.0045, 0.18, 0.42)
+    design_uncertainty_penalty = min(0.08, signals.design_gap_count * 0.04 + signals.design_open_questions * 0.01)
+    implementation_uncertainty_penalty = min(
+        0.06,
+        signals.implementation_gap_count * 0.02 + signals.implementation_open_questions * 0.005,
+    )
+    residual_uncertainty_note = (
+        "Incertidumbre residual separada: "
+        f"diseno={signals.design_gap_count} gap(s)/{signals.design_open_questions} pregunta(s), "
+        f"implementacion={signals.implementation_gap_count} gap(s)/{signals.implementation_open_questions} pregunta(s). "
+        "Los gaps de implementacion se gestionan en ACP sin penalizar el Blueprint como si fueran diseno abierto."
+    )
+
+    blueprint_basic_reduction = _clamp(
+        signals.blueprint_design_coverage_percent * 0.0032 - design_uncertainty_penalty * 0.45,
+        0.12,
+        0.30,
+    )
+    blueprint_premium_reduction = _clamp(
+        signals.blueprint_design_coverage_percent * 0.0042 - design_uncertainty_penalty * 0.35,
+        0.22,
+        0.40,
+    )
     acp_manual_reduction = _clamp(signals.acp_package_readiness_percent * 0.0035, 0.22, 0.36)
-    agentic_blueprint_hours = max(agentic.estimated_hours_total * 1.22, baseline_hours * (1 - blueprint_reduction))
-    acp_manual_hours = max(agentic.estimated_hours_total * 1.12, baseline_hours * (1 - acp_manual_reduction))
+    blueprint_basic_hours = baseline_hours * (1 - blueprint_basic_reduction)
+    blueprint_premium_hours = baseline_hours * (1 - blueprint_premium_reduction)
+
+    acp_agentic_hours = agentic.estimated_hours_total
+    agentic_bp_min_hours = acp_agentic_hours * 1.20
+    agentic_blueprint_hours = _clamp(
+        max(agentic_bp_min_hours, baseline_hours * 0.58),
+        acp_agentic_hours * 1.18,
+        blueprint_premium_hours * 0.94,
+    )
+
+    blueprint_premium_cost = round(blueprint_premium_hours * blended_rate + provider_runtime_cost * 0.45, 2)
+    agentic_blueprint_cost = round(agentic_blueprint_hours * blended_rate + provider_runtime_cost * 0.75, 2)
+    if agentic_blueprint_cost >= blueprint_premium_cost and blended_rate > 0:
+        target_hours = (blueprint_premium_cost * 0.96 - provider_runtime_cost * 0.75) / blended_rate
+        agentic_blueprint_hours = max(acp_agentic_hours * 1.18, min(agentic_blueprint_hours, target_hours))
+        agentic_blueprint_cost = round(agentic_blueprint_hours * blended_rate + provider_runtime_cost * 0.75, 2)
+    acp_manual_hours = max(acp_agentic_hours * 1.12, baseline_hours * (1 - acp_manual_reduction))
+    done_for_you_factory_cost = round(agentic.estimated_cost * 0.9, 2)
 
     scenarios = [
         _construction_scenario(
             scenario_key="traditional_blueprint",
-            label="Tradicional + Blueprint",
-            description="Equipo humano construye usando el Blueprint como diseno funcional y tecnico.",
+            label="Desarrollo tradicional",
+            description="Equipo humano construye de forma tradicional; sirve como linea base para comparar el valor del Blueprint, ACP y tooling agentico.",
             hours=traditional.estimated_hours_total,
             duration=traditional.estimated_duration_weeks,
             cost=traditional.estimated_cost,
@@ -680,6 +776,41 @@ def _build_construction_scenarios(
             notes=[
                 "Maximiza trazabilidad del diseno, pero mantiene ejecucion manual.",
                 "Util cuando el cliente no usara tooling agentico durante construccion.",
+                residual_uncertainty_note,
+            ],
+        ),
+        _construction_scenario(
+            scenario_key="blueprint_basic",
+            label="Blueprint Basico",
+            description="Producto de entrada: genera el diseno inicial, infiere, registra supuestos y continua con costo computacional controlado.",
+            hours=round(blueprint_basic_hours, 2),
+            duration=round(_scale_duration(baseline_duration, blueprint_basic_hours, baseline_hours, 0.96), 1),
+            cost=round(blueprint_basic_hours * blended_rate + provider_runtime_cost * 0.25, 2),
+            baseline_hours=baseline_hours,
+            baseline_cost=baseline_cost,
+            human_intervention_percent=82,
+            automation_leverage_percent=int(_clamp(round(signals.blueprint_design_coverage_percent * 0.38), 15, 45)),
+            notes=[
+                "Inferir + registrar + continuar: las preguntas no bloquean salvo imposibilidad tecnica.",
+                "Las dudas se preservan como oportunidades de enriquecimiento para convertir a Premium.",
+                residual_uncertainty_note,
+            ],
+        ),
+        _construction_scenario(
+            scenario_key="blueprint_premium",
+            label="Blueprint Premium",
+            description="Blueprint enriquecido: preguntas relevantes se resuelven y solo se reprocesan los entregables afectados.",
+            hours=round(blueprint_premium_hours, 2),
+            duration=round(_scale_duration(baseline_duration, blueprint_premium_hours, baseline_hours, 0.92), 1),
+            cost=blueprint_premium_cost,
+            baseline_hours=baseline_hours,
+            baseline_cost=baseline_cost,
+            human_intervention_percent=68,
+            automation_leverage_percent=int(_clamp(round(signals.blueprint_design_coverage_percent * 0.55), 32, 68)),
+            notes=[
+                "Pregunta + resolver + enriquecer: reduce incertidumbre de diseno antes de construir.",
+                "El reprocesamiento selectivo se basa en dependencias de entregables y respuestas.",
+                residual_uncertainty_note,
             ],
         ),
         _construction_scenario(
@@ -688,14 +819,16 @@ def _build_construction_scenarios(
             description="Herramientas agenticas asisten la construccion tomando el Blueprint como insumo principal.",
             hours=round(agentic_blueprint_hours, 2),
             duration=round(_scale_duration(baseline_duration, agentic_blueprint_hours, baseline_hours, 0.9), 1),
-            cost=round(agentic_blueprint_hours * blended_rate + provider_runtime_cost * 0.75, 2),
+            cost=agentic_blueprint_cost,
             baseline_hours=baseline_hours,
             baseline_cost=baseline_cost,
             human_intervention_percent=55,
-            automation_leverage_percent=int(_clamp(round(signals.blueprint_design_coverage_percent * 0.62), 25, 70)),
+            automation_leverage_percent=45,
             notes=[
                 "Acelera construccion, pero aun requiere interpretar y convertir artefactos a estructura ejecutable.",
+                "Debe mejorar el esfuerzo frente a Blueprint Premium porque adiciona herramientas agenticas de construccion.",
                 "No reemplaza el ACP cuando se busca handoff premium y repetible.",
+                residual_uncertainty_note,
             ],
         ),
         _construction_scenario(
@@ -712,6 +845,7 @@ def _build_construction_scenarios(
             notes=[
                 "El valor proviene de tener prompts, contratos, memoria, flujos y preguntas de implementacion ya empaquetadas.",
                 "Reduce retrabajo aunque la ejecucion siga siendo principalmente humana.",
+                "Incluye preguntas tecnicas y gaps de implementacion en el momento correcto del ACP.",
             ],
         ),
         _construction_scenario(
@@ -723,11 +857,34 @@ def _build_construction_scenarios(
             cost=agentic.estimated_cost,
             baseline_hours=baseline_hours,
             baseline_cost=baseline_cost,
-            human_intervention_percent=int(_clamp(100 - agentic.automation_coverage_percent, 20, 70)),
-            automation_leverage_percent=agentic.automation_coverage_percent,
+            human_intervention_percent=28,
+            automation_leverage_percent=72,
             notes=[
                 "Es el escenario de mayor apalancamiento porque parte del paquete tecnico completo.",
                 "Las preguntas pendientes se resuelven durante implementacion, no reducen el valor del Blueprint ni del ACP.",
+                f"Penalizacion residual controlada por implementacion: {implementation_uncertainty_penalty:.0%} maximo local, sin mezclarla con gaps de diseno.",
+            ],
+        ),
+        _construction_scenario(
+            scenario_key="done_for_you_factory",
+            label="Hagalo con nosotros (Fabrica de Desarrollo)",
+            description=(
+                "Nosotros podemos desarrollar el agente por ustedes. El mayor tiempo considera la alineacion con "
+                "la infraestructura del cliente, sincronizacion operativa y entendimiento de las herramientas "
+                "entregadas por el cliente. Si tambien desean que desarrollemos herramientas externas, APIs, MCP "
+                "o integraciones legacy, se cotiza por separado."
+            ),
+            hours=round(acp_manual_hours, 2),
+            duration=traditional.estimated_duration_weeks,
+            cost=done_for_you_factory_cost,
+            baseline_hours=baseline_hours,
+            baseline_cost=baseline_cost,
+            human_intervention_percent=35,
+            automation_leverage_percent=int(_clamp(round(signals.acp_package_readiness_percent * 0.72), 45, 86)),
+            notes=[
+                "Servicio de fabrica: el cliente delega la construccion del agente manteniendo aprobaciones y accesos bajo su control.",
+                "El tiempo adicional cubre alineacion con infraestructura, coordinacion con equipos internos y transferencia de conocimiento de herramientas existentes.",
+                "No incluye construir o modernizar APIs externas, MCP, conectores legacy, credenciales ni aprobaciones de seguridad; esos frentes requieren cotizacion separada.",
             ],
         ),
     ]
@@ -835,7 +992,7 @@ def _estimate_total_traditional_hours(
         reference_total += _band_midpoint(band)
 
     scope_baseline = COMPLEXITY_BASELINE_POINTS[signals.complexity]
-    scope_factor = _clamp(signals.scope_points / max(scope_baseline, 1), 0.72, 1.35)
+    scope_factor = _clamp(signals.scope_points / max(scope_baseline, 1), 0.65, 2.20)
 
     risk_multiplier = 1.0
     if signals.implementation_side_effect_tools > 0:
@@ -852,7 +1009,7 @@ def _estimate_total_traditional_hours(
         risk_multiplier += 0.04
 
     # Cap risk multiplier to avoid compounded escalation
-    risk_multiplier = min(1.20, risk_multiplier)
+    risk_multiplier = min(1.25, risk_multiplier)
 
     # Calculate base hours for legacy rebuild
     raw_legacy_hours = reference_total * MATURITY_FACTORS[signals.maturity_stage] * scope_factor * risk_multiplier
@@ -1298,11 +1455,11 @@ def _collect_context_text(snapshot: SessionSnapshot) -> str:
 
 
 def _infer_complexity(scope_points: int) -> EstimationComplexityLevel:
-    if scope_points < 34:
+    if scope_points < 90:
         return EstimationComplexityLevel.simple
-    if scope_points < 54:
+    if scope_points < 200:
         return EstimationComplexityLevel.moderate
-    if scope_points < 76:
+    if scope_points < 320:
         return EstimationComplexityLevel.complex
     return EstimationComplexityLevel.critical
 

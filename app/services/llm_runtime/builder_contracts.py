@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -17,6 +18,7 @@ from app.models import (
     EstimationAnalysisArtifact,
     EstimationReportArtifact,
 )
+from app.services.llm_finops import LLMCallContext, NormalizedLLMUsage
 from app.services.rules import infer_case_type, normalize_text
 
 
@@ -370,11 +372,18 @@ class LLMArtifactResult:
     finish_reason: str | None = None
     schema_validation_status: str | None = None
     token_usage: dict[str, int] = field(default_factory=dict)
+    normalized_usage: NormalizedLLMUsage | None = None
     failure_kind: str | None = None
     failure_detail: str | None = None
     retry_count: int = 0
     fallback_used: bool = False
     degraded: bool = False
+    duration_ms: int = 0
+    queue_wait_ms: int = 0
+    finops_context: LLMCallContext | None = None
+    usage_record_id: UUID | None = None
+    cost_total: float = 0.0
+    currency: str = "USD"
     capability_policy: dict[str, Any] = field(default_factory=dict)
     rollout_comparison: dict[str, Any] = field(default_factory=dict)
 

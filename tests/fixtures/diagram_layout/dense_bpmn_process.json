@@ -1,0 +1,57 @@
+{
+  "schema_version": "diagram-model.v1",
+  "diagram_key": "dense_bpmn_process",
+  "title": "Proceso actual con lanes",
+  "description": "Fixture BPMN denso con pool y lanes para evaluar separacion de actividades, gateways y flujos cruzados.",
+  "notation": "bpmn",
+  "direction": "LR",
+  "pools": [
+    {
+      "id": "main_pool",
+      "label": "Atencion operativa",
+      "lanes": [
+        {"id": "lane_customer", "label": "Cliente"},
+        {"id": "lane_agent", "label": "Agente"},
+        {"id": "lane_backoffice", "label": "Backoffice"}
+      ]
+    }
+  ],
+  "nodes": [
+    {"id": "start", "label": "Solicitud recibida", "kind": "start_event", "metadata": {"pool_id": "main_pool", "lane_id": "lane_customer"}},
+    {"id": "capture", "label": "Capturar detalle de solicitud", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "interpret", "label": "Interpretar contenido", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "content_ok", "label": "Contenido claro", "kind": "exclusive_gateway", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "clarify", "label": "Solicitar aclaracion", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_customer"}},
+    {"id": "classify", "label": "Clasificar intencion", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "confidence_ok", "label": "Confianza suficiente", "kind": "exclusive_gateway", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "retrieve", "label": "Recuperar informacion autorizada", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_backoffice"}},
+    {"id": "evidence_ok", "label": "Evidencia suficiente", "kind": "exclusive_gateway", "metadata": {"pool_id": "main_pool", "lane_id": "lane_backoffice"}},
+    {"id": "draft", "label": "Preparar respuesta trazable", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "operation", "label": "Requiere operacion", "kind": "exclusive_gateway", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "execute", "label": "Ejecutar operacion permitida", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_backoffice"}},
+    {"id": "handoff", "label": "Escalar a persona", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_backoffice"}},
+    {"id": "trace", "label": "Registrar trazabilidad", "kind": "task", "metadata": {"pool_id": "main_pool", "lane_id": "lane_agent"}},
+    {"id": "end", "label": "Caso cerrado", "kind": "end_event", "metadata": {"pool_id": "main_pool", "lane_id": "lane_customer"}}
+  ],
+  "edges": [
+    {"id": "b01", "source": "start", "target": "capture", "label": "inicio"},
+    {"id": "b02", "source": "capture", "target": "interpret", "label": "detalle"},
+    {"id": "b03", "source": "interpret", "target": "content_ok", "label": "validar"},
+    {"id": "b04", "source": "content_ok", "target": "clarify", "label": "no"},
+    {"id": "b05", "source": "clarify", "target": "capture", "label": "respuesta"},
+    {"id": "b06", "source": "content_ok", "target": "classify", "label": "si"},
+    {"id": "b07", "source": "classify", "target": "confidence_ok", "label": "intencion"},
+    {"id": "b08", "source": "confidence_ok", "target": "clarify", "label": "baja confianza"},
+    {"id": "b09", "source": "confidence_ok", "target": "retrieve", "label": "suficiente"},
+    {"id": "b10", "source": "retrieve", "target": "evidence_ok", "label": "evidencia"},
+    {"id": "b11", "source": "evidence_ok", "target": "handoff", "label": "insuficiente"},
+    {"id": "b12", "source": "evidence_ok", "target": "draft", "label": "suficiente"},
+    {"id": "b13", "source": "draft", "target": "operation", "label": "respuesta"},
+    {"id": "b14", "source": "operation", "target": "execute", "label": "si"},
+    {"id": "b15", "source": "operation", "target": "trace", "label": "no"},
+    {"id": "b16", "source": "execute", "target": "trace", "label": "resultado"},
+    {"id": "b17", "source": "handoff", "target": "trace", "label": "derivado"},
+    {"id": "b18", "source": "trace", "target": "end", "label": "cierre"}
+  ],
+  "source_refs": ["fixture:diagram-layout:dense-bpmn"]
+}

@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
@@ -42,12 +43,19 @@ def _write_doc(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _build_memory_session() -> Session:
+def _build_memory_session(*, enforce_foreign_keys: bool = False) -> Session:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    if enforce_foreign_keys:
+        @event.listens_for(engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
     SQLModel.metadata.create_all(engine)
     return Session(engine)
 
@@ -113,6 +121,30 @@ def test_docs_ingestion_is_scope_aware_and_reindexes_incrementally(tmp_path: Pat
         assert len(current_docs) == 1
         assert current_docs[0].version_number == 2
         assert [item.source_lineage for item in third_sections] != first_lineages
+
+
+def test_docs_ingestion_deletes_stale_sections_before_documents(tmp_path: Path) -> None:
+    docs_root = tmp_path / "Docs"
+    runtime_root = tmp_path / "runtime"
+    _write_doc(docs_root / "old" / "first.md", "# First\n\n## One\nContenido inicial.\n")
+    _write_doc(docs_root / "old" / "second.md", "# Second\n\n## Two\nContenido inicial.\n")
+
+    service = KnowledgeMemoryService(docs_root=docs_root, runtime_root=runtime_root)
+    with _build_memory_session(enforce_foreign_keys=True) as session:
+        service.sync_docs_corpus(session, force=True)
+        assert len(session.exec(select(KnowledgeDocumentRecord)).all()) == 2
+        assert session.exec(select(KnowledgeSectionRecord)).all()
+
+        (docs_root / "old" / "first.md").unlink()
+        (docs_root / "old" / "second.md").unlink()
+
+        report = service.sync_docs_corpus(session, force=False)
+
+        assert report.document_count == 0
+        assert len(session.exec(select(KnowledgeDocumentRecord)).all()) == 0
+        assert len(session.exec(select(KnowledgeSectionRecord)).all()) == 0
+        assert "deleted::Docs/old/first.md" in report.changed_paths
+        assert "deleted::Docs/old/second.md" in report.changed_paths
 
 
 def test_docs_ingestion_redacts_sensitive_content_before_indexing(tmp_path: Path) -> None:

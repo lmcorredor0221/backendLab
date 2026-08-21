@@ -13,6 +13,7 @@ def _value(value: Any) -> str:
 def items_from_commercial_access(
     access: Any,
     pending_requests: list[Any] | None = None,
+    approved_requests: list[Any] | None = None,
     *,
     base_href: str,
     return_href: str,
@@ -22,15 +23,15 @@ def items_from_commercial_access(
         items.append(
             create_attention_item_v2(
                 item_type="confirmation",
-                severity="blocking",
+                severity="warning",
                 product="commercial",
                 stage="commercial",
                 source="checkout",
                 source_ref={"artifact_id": "commercial_access", "field_path": "checkout_state"},
                 title="Checkout pendiente",
                 reason="Existe una orden pendiente antes de activar el producto.",
-                impact="El acceso premium no se habilitara hasta confirmar o cancelar la orden.",
-                consequence_if_unresolved="El usuario seguira viendo contenidos bloqueados por licencia.",
+                impact="El acceso premium se habilitara al confirmar la orden; el modo basico sigue disponible.",
+                consequence_if_unresolved="El usuario seguira viendo contenidos en modo basico hasta completar la orden.",
                 action_kind="confirm",
                 href=f"{base_href}/blueprint/pro",
                 return_href=return_href,
@@ -56,6 +57,41 @@ def items_from_commercial_access(
                 href=f"{base_href}/attention",
                 return_href=return_href,
                 owner_role="owner/admin",
+            )
+        )
+    for request in approved_requests or []:
+        request_id = _value(getattr(request, "id", ""))
+        product_key = _value(getattr(request, "product_key", ""))
+        is_acp = "acp" in product_key.lower()
+
+        if is_acp:
+            product_label = "Agent Construction Package (ACP)"
+            price_label = "$490 USD"
+            target_href = f"{base_href}/acp"
+            action_btn_label = "Ir a ACP"
+        else:
+            product_label = "Blueprint Pro"
+            price_label = "$149 USD"
+            target_href = f"{base_href}/blueprint/pro"
+            action_btn_label = "Ir a Blueprint Pro"
+
+        items.append(
+            create_attention_item_v2(
+                item_type="confirmation",
+                severity="info",
+                product="commercial",
+                stage="commercial",
+                source="access_request_approved",
+                source_ref={"artifact_id": "commercial_access", "entity_id": request_id, "field_path": "approved_requests"},
+                title=f"¡{product_label} desbloqueado!",
+                reason=f"El Administrador del Sistema ha aprobado tu solicitud de acceso. El producto (Valor comercial de referencia: {price_label}) ya se encuentra completamente activo para este proyecto.",
+                impact="Tienes acceso completo a las descargas, enriquecimiento profesional y exportables.",
+                consequence_if_unresolved="Puedes utilizar todas las capacidades asignadas al proyecto.",
+                action_kind="navigate",
+                action_label=action_btn_label,
+                href=target_href,
+                return_href=return_href,
+                owner_role="user",
             )
         )
     return items

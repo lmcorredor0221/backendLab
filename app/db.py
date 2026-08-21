@@ -110,6 +110,8 @@ def ensure_runtime_schema() -> None:
 
 
 def create_db_and_tables() -> None:
+    from app.services.deliverable_catalog import persistence as _deliverable_catalog_persistence  # noqa: F401
+    from app.services.product_processing import persistence as _product_processing_persistence  # noqa: F401
     from app.services.journey_stage_migration import JourneyStageMigrationService
     from app.services.llm_runtime.settings_migration import apply_runtime_llm_multitenant_migration
     from app.services.runtime_governance_bootstrap import backfill_platform_runtime_governance

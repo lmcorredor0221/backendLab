@@ -1,6 +1,16 @@
 from fastapi.testclient import TestClient
 import pytest
+from sqlmodel import select
+from uuid import UUID
 
+from app.db import get_session
+from app.models import SessionRecord
+from app.services.deliverable_catalog.persistence import (
+    DeliverableGenerationJobRecord,
+    DeliverableGovernanceAuditRecord,
+    DeliverablePromptAuditRecord,
+)
+from app.services.product_processing.persistence import ProductBuildRunRecord, UncertaintyBacklogRecord
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
@@ -65,6 +75,123 @@ def test_acp_routes_are_backend_blocked_without_acp_entitlement(client: TestClie
         json={"artifact_kind": "acp_portable_zip", "idempotency_key": f"{session_id}:free-acp-zip"},
     )
     assert blocked_job.status_code == 403
+
+
+def test_confirmed_blueprint_pro_checkout_activates_product_build_run(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    checkout_response = client.post(
+        "/api/v1/commerce/checkout-sessions",
+        headers=headers,
+        json={
+            "idempotency_key": f"{session_id}:blueprint-pro:eov6",
+            "product_key": "blueprint_pro",
+            "session_id": session_id,
+        },
+    )
+    assert checkout_response.status_code == 200
+    checkout = checkout_response.json()
+    payment_response = client.post(
+        f"/api/v1/commerce/checkout-sessions/{checkout['checkout_ref']}/sandbox-complete",
+        headers=headers,
+        json={"outcome": "success", "provider_payment_id": f"sandbox_{checkout['checkout_ref']}"},
+    )
+    assert payment_response.status_code == 200
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    db = next(session_generator)
+    try:
+        runs = db.exec(
+            select(ProductBuildRunRecord).where(
+                ProductBuildRunRecord.session_id == UUID(session_id),
+                ProductBuildRunRecord.product_key == "blueprint_pro",
+            )
+        ).all()
+    finally:
+        session_generator.close()
+
+    assert len(runs) == 1
+    assert runs[0].checkpoint_payload["activation"]["checkout_ref"] == checkout["checkout_ref"]
+    assert runs[0].checkpoint_payload["activation"]["order_id"] == checkout["order_id"]
+
+
+def test_confirmed_acp_checkout_activates_product_build_run_once(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    checkout_response = client.post(
+        "/api/v1/commerce/checkout-sessions",
+        headers=headers,
+        json={
+            "idempotency_key": f"{session_id}:acp:eov6",
+            "product_key": "acp",
+            "session_id": session_id,
+        },
+    )
+    assert checkout_response.status_code == 200
+    checkout = checkout_response.json()
+    completion_url = f"/api/v1/commerce/checkout-sessions/{checkout['checkout_ref']}/sandbox-complete"
+    payment_payload = {"outcome": "success", "provider_payment_id": f"sandbox_{checkout['checkout_ref']}"}
+    first_payment_response = client.post(completion_url, headers=headers, json=payment_payload)
+    second_payment_response = client.post(completion_url, headers=headers, json=payment_payload)
+    assert first_payment_response.status_code == 200
+    assert second_payment_response.status_code == 200
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    db = next(session_generator)
+    try:
+        runs = db.exec(
+            select(ProductBuildRunRecord).where(
+                ProductBuildRunRecord.session_id == UUID(session_id),
+                ProductBuildRunRecord.product_key == "acp",
+            )
+        ).all()
+    finally:
+        session_generator.close()
+
+    assert len(runs) == 1
+    assert runs[0].checkpoint_payload["activation"]["checkout_ref"] == checkout["checkout_ref"]
+    assert runs[0].checkpoint_payload["activation"]["order_id"] == checkout["order_id"]
+
+
+def test_pending_checkout_does_not_start_product_build_run(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    checkout_response = client.post(
+        "/api/v1/commerce/checkout-sessions",
+        headers=headers,
+        json={
+            "idempotency_key": f"{session_id}:blueprint-pro:eov6-pending",
+            "product_key": "blueprint_pro",
+            "session_id": session_id,
+        },
+    )
+    assert checkout_response.status_code == 200
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    db = next(session_generator)
+    try:
+        runs = db.exec(
+            select(ProductBuildRunRecord).where(
+                ProductBuildRunRecord.session_id == UUID(session_id),
+                ProductBuildRunRecord.product_key == "blueprint_pro",
+            )
+        ).all()
+    finally:
+        session_generator.close()
+
+    assert runs == []
 
 
 def test_acp_invitation_event_is_recorded_before_acp_purchase(client: TestClient) -> None:
@@ -181,6 +308,73 @@ def test_commercial_audit_report_summarizes_events_and_redacts_sensitive_metadat
     )
     assert payment_response.status_code == 200
 
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    db = next(session_generator)
+    try:
+        record = db.exec(select(SessionRecord).where(SessionRecord.id == UUID(session_id))).one()
+        assert record.workspace_id is not None
+        db.add(
+            DeliverableGenerationJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                deliverable_key="discovery.problem_context_brief",
+                status="completed",
+                product_mode="basic_free",
+                generation_mode="llm",
+                idempotency_key=f"{session_id}:bdg16:job",
+                provider_key="openai",
+                model_name="gpt-test",
+                tokens_input=120,
+                tokens_output=80,
+                estimated_cost_usd=0.012,
+                request_metadata={"prompt": "must redact", "fallback_policy": "none"},
+            )
+        )
+        db.add(
+            UncertaintyBacklogRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                uncertainty_key="implementation_owner",
+                product_mode="acp_implementation",
+                source_stage="tools",
+                kind="question",
+                disposition="block",
+                status="open",
+                title="Owner tecnico",
+                description="Confirmar owner tecnico.",
+                reason="Necesario para implementacion.",
+                impact="Bloquea readiness ACP.",
+            )
+        )
+        db.add(
+            DeliverableGovernanceAuditRecord(
+                scope_key="workspace",
+                workspace_id=record.workspace_id,
+                deliverable_key="discovery.problem_context_brief",
+                action="governance_updated",
+                changed_fields=["enabled"],
+                before_payload={"enabled": True},
+                after_payload={"enabled": False},
+                reason="test",
+            )
+        )
+        db.add(
+            DeliverablePromptAuditRecord(
+                scope_key="workspace",
+                workspace_id=record.workspace_id,
+                deliverable_key="discovery.problem_context_brief",
+                action="prompt_updated",
+                changed_fields=["prompt_body"],
+                before_payload={"prompt_body": "secret prompt"},
+                after_payload={"prompt_body": "safe prompt"},
+                reason="test",
+            )
+        )
+        db.commit()
+    finally:
+        session_generator.close()
+
     report_response = client.get(f"/api/v1/sessions/{session_id}/commercial-audit", headers=headers)
 
     assert report_response.status_code == 200
@@ -191,8 +385,16 @@ def test_commercial_audit_report_summarizes_events_and_redacts_sensitive_metadat
     assert report["requested_by_user_id"]
     assert any(item["key"] == "total_events" and item["value"] >= 3 for item in report["metrics"])
     assert any(item["key"] == "blocked_events" and item["value"] >= 1 for item in report["metrics"])
+    assert any(item["key"] == "deliverable_generation_jobs" and item["value"] == 1 for item in report["metrics"])
+    assert any(item["key"] == "llm_token_usage" and item["value"] == 200 for item in report["metrics"])
+    assert any(item["key"] == "llm_estimated_cost_usd" and item["value"] == 0.012 for item in report["metrics"])
+    assert any(item["key"] == "uncertainties_blocking" and item["value"] == 1 for item in report["metrics"])
+    assert any(item["key"] == "admin_governance_audits" and item["value"] >= 1 for item in report["metrics"])
+    assert any(item["key"] == "prompt_audits" and item["value"] >= 1 for item in report["metrics"])
     assert any(item["product"] == "blueprint_pro" and item["purchases"] == 1 for item in report["product_summary"])
     serialized = str(report)
     assert "sk-test-secret" not in serialized
     assert "secret diagram" not in serialized
+    assert "must redact" not in serialized
+    assert "secret prompt" not in serialized
     assert "[redacted]" in serialized

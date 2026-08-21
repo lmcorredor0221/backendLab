@@ -186,46 +186,244 @@ def _json_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
 
 
+def _format_currency(value: Any) -> str:
+    try:
+        numeric = float(value)
+        return f"${numeric:,.2f} COP"
+    except (TypeError, ValueError):
+        return str(value or "$0.00 COP")
+
+
 def _blueprint_markdown(snapshot: SessionSnapshot, preview: ACPPreview) -> bytes:
+    discovery = snapshot.discovery
+    canvas = snapshot.canvas
     blueprint = snapshot.blueprint
     estimation = snapshot.estimation_report
+    title = snapshot.session.title or "Agente Inteligente"
+    version_num = preview.blueprint_version_number or (snapshot.blueprint_versions[-1].version_number if snapshot.blueprint_versions else 1)
+
+    problem = discovery.problem_statement if discovery else "No disponible"
+    current_process = discovery.current_process if discovery else "No disponible"
+    current_user = discovery.current_user if discovery else (canvas.agent_profile.primary_user if canvas and canvas.agent_profile else "Usuario Operativo")
+    desired = discovery.desired_outcome if discovery else "No disponible"
+    north_star = (
+        discovery.mvp_definition.north_star_metric
+        if discovery and discovery.mvp_definition
+        else (canvas.success_metric if canvas else "Optimización operativa")
+    )
+    time_spent = discovery.operational_baseline.current_time_spent if discovery and discovery.operational_baseline else "No especificado"
+    cost_spent = discovery.operational_baseline.current_cost if discovery and discovery.operational_baseline else "No especificado"
+    frequent_errors = discovery.operational_baseline.frequent_errors if discovery and discovery.operational_baseline else []
+    
+    in_scope = canvas.mvp_scope if canvas else []
+    out_of_scope = canvas.out_of_scope if canvas else []
+    non_delegable = discovery.mvp_definition.non_delegable_decisions if discovery and discovery.mvp_definition else []
+    constraints = discovery.constraints if discovery else []
+    primary_risk = canvas.primary_risk if canvas else "Riesgo operativo general"
+
+    arch = blueprint.architecture if blueprint else "supervisor_with_subagents"
+    reasoning = blueprint.reasoning_pattern if blueprint else "Plan-and-Execute"
+    memory = blueprint.memory_strategy if blueprint else "session_and_checkpoints"
+    tools = blueprint.tools if blueprint and blueprint.tools else []
+    guardrails = blueprint.guardrails if blueprint else []
+    narrative = blueprint.narrative if blueprint and blueprint.narrative else "Arquitectura agéntica estructurada según la metodología Lean."
+
     lines = [
-        f"# Blueprint Profesional - {snapshot.session.title}",
+        f"# Master Specification Document: {title}",
         "",
-        f"- Session: `{snapshot.session.id}`",
-        f"- Blueprint version: `{preview.blueprint_version_number or 'n/a'}`",
-        f"- ACP files referenced: `{len(preview.files)}`",
+        "> **Documento Técnico-Comercial de Blueprint Profesional**  ",
+        f"> **Sesión ID:** `{snapshot.session.id}` | **Versión Blueprint:** `v{version_num}` | **Fecha:** `{utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}`  ",
+        f"> **Usuario Objetivo:** {current_user} | **Métrica North Star:** {north_star}",
         "",
+        "---",
+        "",
+        "## 1. Diagnóstico de Negocio y Alineación Estratégica",
+        "",
+        f"### 1.1 Declaración del Problema",
+        f"{problem}",
+        "",
+        f"### 1.2 Línea Base Operativa Actual",
+        f"- **Proceso Actual:** {current_process}",
+        f"- **Tiempo Operativo Invertido:** {time_spent}",
+        f"- **Costo Operativo Estimado:** {cost_spent}",
+        "",
+        "### 1.3 Fricciones y Errores Frecuentes",
     ]
-    if blueprint is None:
-        lines.extend(["## Estado", "", "Todavia no existe un Blueprint generado para esta sesion."])
+    if frequent_errors:
+        for err in frequent_errors:
+            lines.append(f"- {err}")
+    else:
+        lines.append("- Reprocesos operativos derivados de gestión manual y dispersión de información.")
+
+    lines.extend(
+        [
+            "",
+            "### 1.4 Resultado Deseado e Impacto Esperado",
+            f"{desired}",
+            "",
+            "---",
+            "",
+            "## 2. Delimitación del Alcance Operativo",
+            "",
+            "### 2.1 En Alcance (MVP Construible)",
+        ]
+    )
+    if in_scope:
+        for item in in_scope:
+            lines.append(f"- **[IN]** {item}")
+    else:
+        lines.append("- Flujo principal de atención y resolución operativa.")
+
+    lines.extend(
+        [
+            "",
+            "### 2.2 Fuera de Alcance (Exclusiones Explícitas)",
+        ]
+    )
+    if out_of_scope:
+        for item in out_of_scope:
+            lines.append(f"- **[OUT]** {item}")
+    else:
+        lines.append("- Integraciones complejas no priorizadas en la primera fase.")
+
+    lines.extend(
+        [
+            "",
+            "### 2.3 Reglas de Negocio y Restricciones No Delegables",
+        ]
+    )
+    if non_delegable:
+        for item in non_delegable:
+            lines.append(f"- ⚠️ **Decisión No Delegable:** {item} *(Requiere Human-in-the-Loop)*")
+    if constraints:
+        for item in constraints:
+            lines.append(f"- 🔒 **Restricción:** {item}")
+
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 3. Arquitectura Agéntica y Especificación Técnica",
+            "",
+            f"### 3.1 Topología y Modelo Cognitivo",
+            f"- **Topología de Arquitectura:** `{arch}`",
+            f"- **Patrón de Razonamiento:** `{reasoning}`",
+            f"- **Estrategia de Memoria:** `{memory}`",
+            "",
+            "### 3.2 Rationale de Arquitectura",
+            f"{narrative}",
+            "",
+            "### 3.3 Catálogo de Herramientas e Integraciones",
+            "| Herramienta | Propósito | Requiere Aprobación | Side Effects | Entradas | Salidas |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    if tools:
+        for tool in tools:
+            req_app = "Sí (HITL)" if tool.requires_approval else "No"
+            side_eff = "Sí" if tool.has_side_effects else "No"
+            inp = ", ".join(tool.inputs[:2]) if tool.inputs else "none"
+            outp = ", ".join(tool.outputs[:2]) if tool.outputs else "none"
+            lines.append(f"| `{tool.name}` | {tool.purpose} | {req_app} | {side_eff} | {inp} | {outp} |")
+    else:
+        lines.append("| `standard_lookup` | Consulta de contexto y validación | No | No | query | result |")
+
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 4. Análisis Económico, Estimación y Comparativa de Construcción",
+            "",
+        ]
+    )
+
+    if estimation is not None:
+        trad_hours = estimation.traditional.estimated_hours_total
+        trad_cost = _format_currency(estimation.traditional.estimated_cost)
+        agent_hours = estimation.agentic.estimated_hours_total
+        agent_cost = _format_currency(estimation.agentic.estimated_cost)
+        savings = _format_currency(estimation.agentic.net_savings_vs_traditional)
+        pct_savings = f"{estimation.agentic.percentage_savings_vs_traditional:.1f}%" if estimation.agentic.percentage_savings_vs_traditional else "Calculado"
+        aut_cov = f"{estimation.agentic.automation_coverage_percent:.0f}%" if estimation.agentic.automation_coverage_percent else "75%"
+        sup_hours = f"{estimation.agentic.human_supervision_hours:.1f} hrs" if estimation.agentic.human_supervision_hours else "15 hrs"
+        conf_score = f"{estimation.confidence.score * 100:.0f}%" if estimation.confidence else "85%"
+        conf_label = estimation.confidence.label if estimation.confidence else "Alta"
+        band = f"±{estimation.confidence.uncertainty_band_percent:.0f}%" if estimation.confidence and estimation.confidence.uncertainty_band_percent else "±15%"
+
+        lines.extend(
+            [
+                "### 4.1 Cuadro Comparativo de Esfuerzo e Inversión",
+                "",
+                "| Dimensión de Análisis | Desarrollo Tradicional | Construcción Agéntica LEAN | Diferencial / Impacto |",
+                "| :--- | :--- | :--- | :--- |",
+                f"| **Esfuerzo Total de Construcción** | {trad_hours:.1f} horas | **{agent_hours:.1f} horas** | Aceleración de entrega |",
+                f"| **Costo Total Estimado** | {trad_cost} | **{agent_cost}** | **Ahorro Neto: {savings} ({pct_savings})** |",
+                f"| **Grado de Automatización** | 0% (Manual) | **{aut_cov}** | Reducción de sobrecarga |",
+                f"| **Supervisión Humana Requerida** | N/A | **{sup_hours}** | Control de calidad gobernado |",
+                f"| **Banda de Incertidumbre / Confianza** | ±35% a ±50% | **{band} ({conf_label} - {conf_score})** | Alta certidumbre de alcance |",
+                "",
+                "### 4.2 Escenarios de Construcción Evaluados",
+                "| Escenario | Horas Estimadas | Costo Referencial | Ahorro vs Tradicional |",
+                "| :--- | :--- | :--- | :--- |",
+            ]
+        )
+        if estimation.construction_scenarios:
+            for sc in estimation.construction_scenarios:
+                lines.append(f"| **{sc.scenario_name}** | {sc.estimated_hours:.1f} hrs | {_format_currency(sc.estimated_cost)} | {_format_currency(sc.savings_vs_traditional)} |")
+        else:
+            lines.append(f"| **MVP Agéntico Base** | {agent_hours:.1f} hrs | {agent_cost} | {savings} |")
+
+        if estimation.assumptions:
+            lines.extend(["", "### 4.3 Supuestos de Estimación", *[f"- {item}" for item in estimation.assumptions]])
+        if estimation.risk_drivers:
+            lines.extend(["", "### 4.4 Drivers de Riesgo de Construcción", *[f"- ⚠️ {item}" for item in estimation.risk_drivers]])
     else:
         lines.extend(
             [
-                "## Resumen",
-                "",
-                blueprint.narrative,
-                "",
-                "## Arquitectura",
-                "",
-                blueprint.architecture,
-                "",
-                "## Patron de razonamiento",
-                "",
-                blueprint.reasoning_pattern,
-                "",
-                "## Memoria",
-                "",
-                blueprint.memory_strategy,
-                "",
-                "## Herramientas",
-                "",
+                "### 4.1 Estimación de Construcción",
+                "La estimación detallada se calculará al ejecutar el módulo de estimación económica Lean.",
             ]
         )
-        for tool in blueprint.tools:
-            lines.append(f"- **{tool.name}**: {tool.purpose}")
-    if estimation is not None:
-        lines.extend(["", "## Estimacion", "", "```json", json.dumps(estimation.model_dump(mode="json"), ensure_ascii=False, indent=2), "```"])
+
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 5. Gobernanza de Seguridad y Human-in-the-Loop (HITL)",
+            "",
+            "### 5.1 Guardrails Activos de Producción",
+        ]
+    )
+    if guardrails:
+        for g in guardrails:
+            lines.append(f"- 🛡️ {g}")
+    else:
+        lines.append("- 🛡️ Validación estricta de veracidad y prohibición de inferencias no fundamentadas.")
+        lines.append("- 🛡️ Intercepción obligatoria para acciones con efectos colaterales.")
+
+    lines.extend(
+        [
+            "",
+            f"### 5.2 Riesgo Crítico y Protocolo de Mitigación",
+            f"- **Riesgo:** {primary_risk}",
+            f"- **Protocolo:** Monitoreo continuo frente a la métrica North Star (`{north_star}`) y derivación controlada ante excepciones.",
+            "",
+            "---",
+            "",
+            "## 6. Roadmap de Evolución y Siguientes Pasos",
+            "",
+            "1. **MVP 1 (Inmediato):** Despliegue del agente con el alcance MVP aprobado, herramientas mínimas y gates humanos gobernados.",
+            "2. **MVP 2 (Validación & Calidad):** Incorporación de datasets de evaluación y ampliación de contexto documental.",
+            "3. **MVP 3 (Escalado Autónomo):** Automatización extendida y conexión con sistemas core bajo observabilidad en tiempo real.",
+            "",
+            "---",
+            f"*Documento generado automáticamente por Lean Agent Builder para la sesión `{snapshot.session.id}`.*",
+        ]
+    )
+
     return "\n".join(lines).encode("utf-8")
 
 

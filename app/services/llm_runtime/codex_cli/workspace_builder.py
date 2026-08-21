@@ -45,7 +45,8 @@ class CodexPromptWorkspaceBuilder:
                     "- start with `input/read_order.md`;",
                     "- read `knowledge/required/*` before candidate context;",
                     "- use `knowledge/candidate/*` only when more context is needed;",
-                    "- staged knowledge files are compact excerpts or metadata cards, never full documents;",
+                    "- staged knowledge files may be full required payloads or compact metadata cards; trust manifest delivery_mode;",
+                    "- when prompt_truncated=true and staged_file_truncated=false, inspect the relative_path file before judging evidence;",
                     "- write new output only inside `output/`.",
                     "",
                 ]
@@ -129,7 +130,7 @@ class CodexPromptWorkspaceBuilder:
         for item in context_assembly.used_sources:
             target_path = root_dir / item.relative_path
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(item.content, encoding="utf-8")
+            target_path.write_text(item.workspace_content, encoding="utf-8")
 
     def _build_output_schema(self, output_model: type[BaseModel]) -> dict[str, object]:
         schema = output_model.model_json_schema()

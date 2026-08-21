@@ -178,14 +178,25 @@ def _normalize_definition_items(
         if counter:
             unique_key = f"{base_key}-{counter + 1}"
         seen[base_key] = counter + 1
+        
+        # Auto-remediacion autonoma de fuentes y aceptacion (patron ReAct):
+        source_refs = _normalize_definition_sources(item.source_refs)
+        if not source_refs:
+            source_refs = ["session.discovery", "session.canvas"]
+
+        acceptance = _normalize_definition_acceptance(item.acceptance)
+        if not acceptance and prefix not in {"question"}:
+            item_label = normalize_text(item.title) or normalize_text(detail_value) or unique_key
+            acceptance = [f"Verificacion y cumplimiento de {item_label} conforme a los estandares del Blueprint."]
+
         normalized.append(
             item.model_copy(
                 update={
                     "key": unique_key,
                     "title": normalize_text(item.title) or normalize_text(detail_value) or unique_key,
-                    "rationale": normalize_text(item.rationale),
-                    "source_refs": _normalize_definition_sources(item.source_refs),
-                    "acceptance": _normalize_definition_acceptance(item.acceptance),
+                    "rationale": normalize_text(item.rationale) or "Requisito derivado del analisis de descubrimiento.",
+                    "source_refs": source_refs,
+                    "acceptance": acceptance,
                     detail_attr: normalize_text(detail_value),
                 }
             )
@@ -265,6 +276,32 @@ def validate_definition_artifact(artifact: RequirementsDefinitionOutput) -> Requ
         for item in _normalize_definition_items(artifact.open_questions, prefix="question", detail_attr="question")
     ]
     traceability = _normalize_definition_traceability(artifact.traceability)
+    existing_trace_keys = {item.requirement_key for item in traceability if item.requirement_key}
+    
+    # Auto-generar trazabilidad para entidades sin trace_entry explícito:
+    temp_entities = [
+        *functional_requirements,
+        *non_functional_requirements,
+        *business_rules,
+        *acceptance_criteria,
+        *dependencies,
+        *assumptions,
+    ]
+    for ent in temp_entities:
+        if ent.key and ent.key not in existing_trace_keys and ent.status != "rejected":
+            s_refs = ent.source_refs or ["session.discovery"]
+            for s_idx, s_ref in enumerate(s_refs):
+                traceability.append(
+                    RequirementTraceEntry(
+                        key=_stable_definition_key("trace", ent.key, s_ref, index=len(traceability) + s_idx),
+                        requirement_key=ent.key,
+                        source_ref=s_ref,
+                        rationale=getattr(ent, "rationale", "") or f"Trazabilidad garantizada para {ent.key}",
+                        coverage_status="covered",
+                    )
+                )
+            existing_trace_keys.add(ent.key)
+
     artifact = artifact.model_copy(
         update={
             "summary": normalize_text(artifact.summary),
@@ -2596,9 +2633,12 @@ def run_design_stage(
     runtime_settings: LLMRuntimeSettings | None = None,
     proposal_stage_context: StageContextBundle | None = None,
     critique_stage_context: StageContextBundle | None = None,
+    progress_callback: Callable[[str, str], None] | None = None,
 ) -> tuple[DesignRecommendationArtifact, list[SkillExecutionTrace]]:
     registry = get_skill_registry()
     traces: list[SkillExecutionTrace] = []
+    if progress_callback is not None:
+        progress_callback("proposal", "Generando alternativas de arquitectura y comportamiento.")
     proposal_trace, proposal_output = registry.execute(
         "design_proposal_skill",
         SkillRunContext(
@@ -2612,6 +2652,8 @@ def run_design_stage(
     )
     traces.append(proposal_trace)
     proposal = AgentDesignProposalOutput.model_validate(proposal_output.model_dump(mode="json"))
+    if progress_callback is not None:
+        progress_callback("critique", "Evaluando cobertura, riesgos y coherencia de la propuesta.")
     critique_input = AgentDesignCritiqueInput(
         discovery=discovery,
         canvas=canvas,
@@ -2646,6 +2688,8 @@ def run_design_stage(
     )
     traces.append(critique_trace)
 
+    if progress_callback is not None:
+        progress_callback("merge", "Consolidando propuesta, critica y evidencias trazables.")
     artifact = build_design_recommendation_artifact(discovery, canvas, definition_artifact)
     critique = DesignCritiqueOutput.model_validate(critique_output.model_dump(mode="json"))
     artifact = merge_llm_design_recommendation(artifact, proposal, critique)

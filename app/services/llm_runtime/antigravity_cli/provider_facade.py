@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import Any
 
 from app.models import (
+    AgentExecutionBackend,
     BlueprintArtifact,
     CanvasArtifact,
     DiscoveryArtifact,
@@ -13,6 +15,9 @@ from app.models import (
     ToolRecommendationLLMOutput,
     ToolRecommendationPromptInput,
 )
+from app.services.llm_finops.ledger_service import LLMUsageLedgerService
+from app.services.llm_finops.provider_instrumentation import FinOpsSessionFactory, record_provider_result
+from app.services.llm_finops.usage_normalization import normalize_cli_usage
 from app.services.agent_i18n import apply_agent_language_directive, get_effective_language
 from app.services.diagram_center.contracts import DiagramGenerationInput
 from app.services.llm_runtime.antigravity_cli.execution_service import AgyExecutionService
@@ -37,7 +42,7 @@ from app.services.llm_runtime.capability_registry import (
     BuilderCapabilitySpec,
     get_builder_capability_spec,
 )
-from app.services.llm_runtime.stage_context_types import StageContextBundle
+from app.services.llm_runtime.stage_context_types import StageContextBundle, build_llm_call_context
 from app.services.rules import normalize_text
 
 
@@ -74,9 +79,17 @@ class AntigravityLocalBuilderService:
     - El prompt se construye de forma inline (igual al modo no-staged de Codex).
     """
 
-    def __init__(self, runtime_settings: LLMRuntimeSettings) -> None:
+    def __init__(
+        self,
+        runtime_settings: LLMRuntimeSettings,
+        *,
+        finops_session_factory: FinOpsSessionFactory | None = None,
+        finops_ledger_service: LLMUsageLedgerService | None = None,
+    ) -> None:
         self.runtime_settings = runtime_settings
         self.execution_service = AgyExecutionService(runtime_settings)
+        self._finops_session_factory = finops_session_factory
+        self._finops_ledger_service = finops_ledger_service
 
     # ------------------------------------------------------------------
     # BuilderProviderService Protocol
@@ -86,20 +99,25 @@ class AntigravityLocalBuilderService:
         return self.runtime_settings.active_provider == LLMProviderKey.antigravity_cli
 
     def is_available(self) -> bool:
-        return self.can_attempt() and self.runtime_settings.antigravity.executable_found
+        return (
+            self.can_attempt()
+            and self.runtime_settings.antigravity.executable_found is not False
+            and bool(self.execution_service.resolve_executable())
+        )
 
     def provider_summary(self) -> dict[str, str | bool]:
         cfg = self.runtime_settings.antigravity
+        executable_found = bool(self.execution_service.resolve_executable())
         return {
             "provider": self.runtime_settings.active_provider.value,
             "mode": "local_exec",
             "configured": bool(cfg.executable and cfg.model),
-            "sdk_ready": cfg.executable_found,
+            "sdk_ready": executable_found,
             "fast_model": cfg.model,
             "reasoning_model": cfg.model,
             "executable": cfg.executable,
             "effort": cfg.effort,
-            "status_note": cfg.status_note,
+            "status_note": cfg.status_note or ("Binario agy detectado." if executable_found else "No se encontro el binario agy."),
         }
 
     # ------------------------------------------------------------------
@@ -128,6 +146,73 @@ class AntigravityLocalBuilderService:
             degraded=True,
         )
 
+    def _attach_finops_record(
+        self,
+        result: LLMArtifactResult,
+        *,
+        capability: BuilderCapability,
+        context_bundle: StageContextBundle | None,
+        audit: dict[str, Any],
+        prompt_text: str = "",
+        output_text: str = "",
+    ) -> LLMArtifactResult:
+        cfg = self.runtime_settings.antigravity
+        model_name = str(audit.get("selected_model", cfg.model) or cfg.model)
+        requested_model = str(audit.get("requested_model", cfg.model) or cfg.model)
+        call_context = build_llm_call_context(
+            context_bundle,
+            capability=capability.value,
+            provider_key=LLMProviderKey.antigravity_cli.value,
+            execution_backend=AgentExecutionBackend.antigravity_cli.value,
+            metadata={
+                "runner_id": cfg.runner_id,
+                "effort": cfg.effort,
+                "runtime": "antigravity_cli",
+            },
+        )
+        usage = normalize_cli_usage(audit, prompt_text=prompt_text, output_text=output_text)
+        metrics = audit.get("metrics", {}) if isinstance(audit.get("metrics"), dict) else {}
+        duration_ms = int(metrics.get("duration_ms", 0) or 0)
+        queue_wait_ms = int(metrics.get("queue_wait_ms", 0) or 0)
+        attempts = audit.get("attempts", [])
+        retry_count = max(0, len(attempts) - 1) if isinstance(attempts, list) else 0
+        enriched = replace(
+            result,
+            provider_key=LLMProviderKey.antigravity_cli.value,
+            execution_backend=AgentExecutionBackend.antigravity_cli.value,
+            execution_mode=call_context.execution_mode,
+            capability_key=result.capability_key or capability.value,
+            request_id=str(audit.get("run_id", "") or result.request_id or ""),
+            finish_reason=str(audit.get("status", result.finish_reason or "") or ""),
+            model_name=model_name,
+            retry_count=retry_count,
+            fallback_used=bool(audit.get("fallback_used", result.fallback_used)),
+            duration_ms=duration_ms,
+            queue_wait_ms=queue_wait_ms,
+            token_usage=usage.compatibility_token_usage(),
+            normalized_usage=usage,
+            finops_context=call_context,
+        )
+        return record_provider_result(
+            enriched,
+            call_context=call_context,
+            provider_key=LLMProviderKey.antigravity_cli,
+            model_name=model_name,
+            requested_model=requested_model,
+            execution_backend=AgentExecutionBackend.antigravity_cli.value,
+            execution_mode=call_context.execution_mode,
+            started_at=audit.get("started_at"),
+            finished_at=audit.get("finished_at"),
+            duration_ms=duration_ms,
+            ledger_service=self._finops_ledger_service,
+            session_factory=self._finops_session_factory,
+            metadata={
+                "attempted_models": audit.get("attempted_models", []),
+                "fallback_used": bool(audit.get("fallback_used", False)),
+                "runtime": "antigravity_cli",
+            },
+        )
+
     def _execute_structured_capability(
         self,
         *,
@@ -145,10 +230,17 @@ class AntigravityLocalBuilderService:
         base_result = self._base_result(capability, spec)
 
         if not self.is_available():
-            return self._unavailable_result(capability, spec)
+            return self._attach_finops_record(
+                self._unavailable_result(capability, spec),
+                capability=capability,
+                context_bundle=context_bundle,
+                audit={},
+            )
 
+        schema_json = json.dumps(spec.output_model.model_json_schema(), ensure_ascii=True)
         prompt = _localized_prompt(
-            "Devuelve exclusivamente JSON valido segun el schema provisto. "
+            "Devuelve exclusivamente un JSON valido que cumpla con el siguiente schema JSON:\n"
+            f"{schema_json}\n\n"
             f"{spec.task_instruction}\n\n"
             f"INPUT:\n{json.dumps(payload.model_dump(mode='json'), ensure_ascii=True)}",
             context_bundle,
@@ -162,7 +254,7 @@ class AntigravityLocalBuilderService:
                 timeout_ms=spec.timeout_ms,
             )
             audit = self.execution_service.read_last_known_result() or {}
-            return replace(
+            result = replace(
                 base_result,
                 artifact=spec.output_model.model_validate(parsed.model_dump(mode="json")),
                 request_id=str(audit.get("run_id", "") or ""),
@@ -173,9 +265,17 @@ class AntigravityLocalBuilderService:
                 ),
                 schema_validation_status="valid",
             )
+            return self._attach_finops_record(
+                result,
+                capability=capability,
+                context_bundle=context_bundle,
+                audit=audit,
+                prompt_text=prompt,
+                output_text=json.dumps(parsed.model_dump(mode="json"), ensure_ascii=True),
+            )
         except Exception as exc:
             audit = self.execution_service.read_last_known_result() or {}
-            return replace(
+            result = replace(
                 base_result,
                 warning=f"Antigravity CLI no pudo ejecutar {capability.value}; policy={spec.fallback_policy}.",
                 request_id=str(audit.get("run_id", "") or ""),
@@ -188,6 +288,13 @@ class AntigravityLocalBuilderService:
                 failure_kind="provider_error",
                 failure_detail=str(exc)[:400],
                 degraded=True,
+            )
+            return self._attach_finops_record(
+                result,
+                capability=capability,
+                context_bundle=context_bundle,
+                audit=audit,
+                prompt_text=prompt,
             )
 
     # ------------------------------------------------------------------
@@ -203,8 +310,10 @@ class AntigravityLocalBuilderService:
         if not self.is_available():
             return LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.antigravity_cli.value)
 
+        schema_json = json.dumps(DiscoveryArtifact.model_json_schema(), ensure_ascii=True)
         prompt = _localized_prompt(
-            "Devuelve exclusivamente JSON valido segun el schema provisto. "
+            "Devuelve exclusivamente un JSON valido que cumpla con el siguiente schema JSON:\n"
+            f"{schema_json}\n\n"
             "Normaliza esta captura a un discovery estructurado para un builder Lean de agentes. "
             "Usa solo hechos presentes en la entrada. Si un dato no esta claro, usa 'unknown'. "
             "Para case_type usa solo: informacion, automatizacion, copiloto, operador_autonomo, sistema_multiagente. "
@@ -239,8 +348,10 @@ class AntigravityLocalBuilderService:
         if not self.is_available():
             return LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.antigravity_cli.value)
 
+        schema_json = json.dumps(CanvasArtifact.model_json_schema(), ensure_ascii=True)
         prompt = _localized_prompt(
-            "Devuelve exclusivamente JSON valido segun el schema provisto. "
+            "Devuelve exclusivamente un JSON valido que cumpla con el siguiente schema JSON:\n"
+            f"{schema_json}\n\n"
             "Genera un canvas Lean para un agente usando solo el discovery recibido. "
             "Manten el alcance corto, concreto y util para un MVP. Si algo no esta claro, usa 'unknown'.\n\n"
             f"DISCOVERY:\n{json.dumps(discovery.model_dump(mode='json'), ensure_ascii=True)}",
@@ -275,8 +386,10 @@ class AntigravityLocalBuilderService:
         if not self.is_available():
             return LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.antigravity_cli.value)
 
+        schema_json = json.dumps(BlueprintNarrativeOutput.model_json_schema(), ensure_ascii=True)
         prompt = _localized_prompt(
-            "Devuelve exclusivamente JSON valido segun el schema provisto. "
+            "Devuelve exclusivamente un JSON valido que cumpla con el siguiente schema JSON:\n"
+            f"{schema_json}\n\n"
             "Redacta la narrativa tecnica de un blueprint Lean para un agente. "
             "No cambies la arquitectura, memoria, tools ni guardrails ya definidos. "
             "Explica por que la recomendacion encaja con el discovery y el canvas, "
@@ -326,8 +439,10 @@ class AntigravityLocalBuilderService:
             "forbidden_tool_keys": [item.value for item in prompt_input.forbidden_tool_keys],
             "candidate_tools": [item.model_dump(mode="json") for item in prompt_input.candidate_tools],
         }
+        schema_json = json.dumps(ToolRecommendationLLMOutput.model_json_schema(), ensure_ascii=True)
         prompt = _localized_prompt(
-            "Devuelve exclusivamente JSON valido segun el schema provisto. "
+            "Devuelve exclusivamente un JSON valido que cumpla con el siguiente schema JSON:\n"
+            f"{schema_json}\n\n"
             "Selecciona el conjunto minimo de herramientas para un agente Lean usando solo el contexto aprobado "
             "y el catalogo permitido. Nunca inventes tool keys fuera del catalogo. "
             "Manten toda tool mandatory si la evidencia la sostiene. "

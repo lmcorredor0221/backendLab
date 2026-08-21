@@ -77,13 +77,15 @@ def build_knowledge_tool_policy(
         ),
         "document_ingestion": KnowledgeToolPolicyDecision(
             tool_key="document_ingestion",
-            required=rag_enabled and has_sources,
+            required=rag_enabled or has_sources,
             reason=(
                 "Las fuentes documentales aprobadas necesitan pipeline de ingesta y refresh."
                 if rag_enabled and has_sources
                 else (
-                    "RAG aun no tiene fuentes aprobadas; define el corpus antes de exigir ingestion."
+                    "RAG requiere una capacidad de ingesta aunque el corpus exacto quede como decision diferida."
                     if rag_enabled
+                    else "Existen fuentes aprobadas; se necesita ingesta para mantener lineage y refresh."
+                    if has_sources
                     else "No hace falta pipeline de ingesta dedicado para esta estrategia."
                 )
             ),

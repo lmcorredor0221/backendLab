@@ -19,6 +19,12 @@ from app.models import (
     SessionRecord,
     UserRecord,
 )
+from app.services.deliverable_catalog.persistence import (
+    DeliverableGenerationJobRecord,
+    DeliverableGovernanceAuditRecord,
+    DeliverablePromptAuditRecord,
+)
+from app.services.product_processing.persistence import UncertaintyBacklogRecord
 
 
 SENSITIVE_KEY_FRAGMENTS = (
@@ -296,6 +302,132 @@ def _build_product_summary(events: list[CommercialAuditEventEntry]) -> list[Comm
     return rows
 
 
+def _build_product_runtime_metrics(db: Session, record: SessionRecord) -> tuple[list[CommercialAuditMetric], list[str]]:
+    metrics: list[CommercialAuditMetric] = []
+    warnings: list[str] = []
+    jobs = db.exec(
+        select(DeliverableGenerationJobRecord).where(
+            DeliverableGenerationJobRecord.workspace_id == record.workspace_id,
+            DeliverableGenerationJobRecord.session_id == record.id,
+        )
+    ).all()
+    uncertainties = db.exec(
+        select(UncertaintyBacklogRecord).where(
+            UncertaintyBacklogRecord.workspace_id == record.workspace_id,
+            UncertaintyBacklogRecord.session_id == record.id,
+        )
+    ).all()
+    governance_audits = db.exec(
+        select(DeliverableGovernanceAuditRecord).where(
+            (DeliverableGovernanceAuditRecord.workspace_id == record.workspace_id)
+            | (DeliverableGovernanceAuditRecord.scope_key == "platform")
+        )
+    ).all()
+    prompt_audits = db.exec(
+        select(DeliverablePromptAuditRecord).where(
+            (DeliverablePromptAuditRecord.workspace_id == record.workspace_id)
+            | (DeliverablePromptAuditRecord.scope_key == "platform")
+        )
+    ).all()
+
+    total_tokens = sum(max(0, job.tokens_input) + max(0, job.tokens_output) for job in jobs)
+    estimated_cost_usd = round(sum(max(0, job.estimated_cost_usd) for job in jobs), 6)
+    failed_jobs = [job for job in jobs if job.status in {"failed", "requires_attention"} or job.error_code]
+    fallback_jobs = []
+    for job in jobs:
+        request_metadata = job.request_metadata or {}
+        fallback_used = str(request_metadata.get("fallback_used") or "").strip().lower()
+        fallback_policy = str(request_metadata.get("fallback_policy") or "").strip().lower()
+        if fallback_used in {"true", "1", "yes"} or fallback_policy not in {"", "none", "not_applicable", "disabled"}:
+            fallback_jobs.append(job)
+    deferred = [item for item in uncertainties if item.disposition == "defer" or item.status == "deferred"]
+    blocking = [item for item in uncertainties if item.disposition == "block" and item.status not in {"resolved", "dismissed", "superseded"}]
+    premium_items = [item for item in uncertainties if item.product_mode == "premium_enrichment"]
+    acp_items = [item for item in uncertainties if item.product_mode == "acp_implementation"]
+
+    metrics.extend(
+        [
+            CommercialAuditMetric(
+                detail="Jobs de generacion de entregables registrados por catalogo y producto.",
+                key="deliverable_generation_jobs",
+                label="Generaciones",
+                tone="green" if jobs else "slate",
+                value=len(jobs),
+            ),
+            CommercialAuditMetric(
+                detail="Jobs con error, fallback accionable o estado requires_attention.",
+                key="deliverable_generation_errors",
+                label="Errores/fallback",
+                tone="red" if failed_jobs else "orange" if fallback_jobs else "green",
+                value=len(failed_jobs) + len(fallback_jobs),
+            ),
+            CommercialAuditMetric(
+                detail="Tokens agregados de generacion. No expone prompts ni razonamiento interno.",
+                key="llm_token_usage",
+                label="Tokens LLM",
+                tone="blue" if total_tokens else "slate",
+                value=total_tokens,
+                unit="tokens",
+            ),
+            CommercialAuditMetric(
+                detail="Costo estimado de generacion por entregables, en USD, cuando el proveedor lo reporta.",
+                key="llm_estimated_cost_usd",
+                label="Costo LLM",
+                tone="violet" if estimated_cost_usd else "slate",
+                value=estimated_cost_usd,
+                unit="USD",
+            ),
+            CommercialAuditMetric(
+                detail="Preguntas/gaps diferidos por Blueprint Basico o flujo no bloqueante.",
+                key="uncertainties_deferred",
+                label="Diferidas",
+                tone="blue" if deferred else "green",
+                value=len(deferred),
+            ),
+            CommercialAuditMetric(
+                detail="Preguntas/gaps que bloquean ACP o readiness tecnico hasta resolverse.",
+                key="uncertainties_blocking",
+                label="Bloqueantes",
+                tone="red" if blocking else "green",
+                value=len(blocking),
+            ),
+            CommercialAuditMetric(
+                detail="Incertidumbres asociadas al enriquecimiento Premium.",
+                key="premium_uncertainties",
+                label="Premium",
+                tone="violet" if premium_items else "slate",
+                value=len(premium_items),
+            ),
+            CommercialAuditMetric(
+                detail="Incertidumbres asociadas al ACP y decisiones de implementacion.",
+                key="acp_uncertainties",
+                label="ACP",
+                tone="orange" if acp_items else "slate",
+                value=len(acp_items),
+            ),
+            CommercialAuditMetric(
+                detail="Cambios administrativos de gobernanza de entregables aplicables al workspace/plataforma.",
+                key="admin_governance_audits",
+                label="Auditoria gov",
+                tone="blue" if governance_audits else "slate",
+                value=len(governance_audits),
+            ),
+            CommercialAuditMetric(
+                detail="Cambios administrativos de prompts versionados aplicables al workspace/plataforma.",
+                key="prompt_audits",
+                label="Auditoria prompts",
+                tone="blue" if prompt_audits else "slate",
+                value=len(prompt_audits),
+            ),
+        ]
+    )
+    if failed_jobs:
+        warnings.append("Existen generaciones de entregables con error o atencion requerida; revisar antes de exportar comercialmente.")
+    if blocking:
+        warnings.append("Existen incertidumbres bloqueantes activas para ACP/readiness.")
+    return metrics, warnings
+
+
 def build_commercial_audit_report(
     db: Session,
     *,
@@ -311,7 +443,7 @@ def build_commercial_audit_report(
     events = [event for log in logs if (event := _normalize_event(log)) is not None]
     checkout_events = db.exec(
         select(CommercialEventRecord)
-        .where(CommercialEventRecord.session_id == record.id, CommercialEventRecord.source == "commerce_checkout")
+        .where(CommercialEventRecord.session_id == record.id)
         .order_by(CommercialEventRecord.created_at.desc())
     ).all()
     events = sorted(
@@ -330,6 +462,8 @@ def build_commercial_audit_report(
         warnings.append("No hay eventos comerciales normalizados para esta sesion todavia.")
     if conformance_errors:
         warnings.append("Existen bloqueos o errores de conformance registrados para revisar antes de vender el paquete como listo.")
+    runtime_metrics, runtime_warnings = _build_product_runtime_metrics(db, record)
+    warnings.extend(runtime_warnings)
 
     return CommercialAuditReport(
         current_tier=record.commercial_tier if isinstance(record.commercial_tier, CommercialTier) else CommercialTier(record.commercial_tier),
@@ -377,6 +511,7 @@ def build_commercial_audit_report(
                 tone="green" if launcher_used else "slate",
                 value=launcher_used,
             ),
+            *runtime_metrics,
         ],
         product_summary=_build_product_summary(events),
         recent_events=events[: max(1, min(limit, 100))],

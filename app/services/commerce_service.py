@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import timedelta
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from dataclasses import dataclass
@@ -45,7 +46,9 @@ from app.models import (
     WorkspaceRole,
     utc_now,
 )
+from app.services.commerce_provider_router import get_commerce_payment_provider
 from app.services.commercial_event_catalog import enrich_commercial_event_metadata
+from app.services.payment_providers.base import CheckoutProviderContext
 
 
 @dataclass(frozen=True)
@@ -196,16 +199,16 @@ PRICE_SEED: tuple[dict, ...] = (
         "product_key": "blueprint_pro",
         "price_code": "blueprint-pro-usd-v1",
         "currency": "USD",
-        "unit_amount_cents": 6000,
-        "unit_amount_usd_cents": 6000,
+        "unit_amount_cents": 4900,
+        "unit_amount_usd_cents": 4900,
         "billing_period": "one_time",
     },
     {
         "product_key": "acp",
         "price_code": "acp-premium-usd-v1",
         "currency": "USD",
-        "unit_amount_cents": 22000,
-        "unit_amount_usd_cents": 22000,
+        "unit_amount_cents": 14900,
+        "unit_amount_usd_cents": 14900,
         "billing_period": "one_time",
     },
 )
@@ -244,6 +247,14 @@ def ensure_commercial_seed(db: Session) -> None:
         if existing.unit_amount_usd_cents <= 0 and item["unit_amount_usd_cents"] > 0:
             existing.unit_amount_usd_cents = item["unit_amount_usd_cents"]
             existing.unit_amount_cents = item["unit_amount_cents"]
+        legacy_defaults = {"blueprint_pro": 6000, "acp": 22000}
+        if (
+            item["product_key"] in legacy_defaults
+            and existing.unit_amount_usd_cents == legacy_defaults[item["product_key"]]
+        ):
+            existing.unit_amount_usd_cents = item["unit_amount_usd_cents"]
+            existing.unit_amount_cents = item["unit_amount_cents"]
+            existing.currency = item["currency"]
         existing.status = CommercialPriceStatus.active
         existing.updated_at = utc_now()
         db.add(existing)
@@ -325,13 +336,12 @@ def serialize_price(record: ProductPriceRecord) -> ProductPriceResponse:
 
 
 def get_base_prices_summary(db: Session) -> BasePricesResponse:
-    ensure_commercial_seed(db)
-    pro = db.exec(select(ProductPriceRecord).where(ProductPriceRecord.product_key == "blueprint_pro")).first()
-    acp = db.exec(select(ProductPriceRecord).where(ProductPriceRecord.product_key == "acp")).first()
+    pro = get_price(db, "blueprint_pro")
+    acp = get_price(db, "acp")
     trm_info = get_today_trm_data()
 
-    pro_val = (pro.unit_amount_usd_cents if pro and pro.unit_amount_usd_cents > 0 else 6000) / 100.0
-    acp_val = (acp.unit_amount_usd_cents if acp and acp.unit_amount_usd_cents > 0 else 22000) / 100.0
+    pro_val = (pro.unit_amount_usd_cents if pro.unit_amount_usd_cents > 0 else 4900) / 100.0
+    acp_val = (acp.unit_amount_usd_cents if acp.unit_amount_usd_cents > 0 else 14900) / 100.0
 
     return BasePricesResponse(
         blueprint_free_usd=0.0,
@@ -345,7 +355,7 @@ def get_base_prices_summary(db: Session) -> BasePricesResponse:
 def update_base_prices_usd(db: Session, blueprint_pro_usd: float, acp_premium_usd: float) -> BasePricesResponse:
     ensure_commercial_seed(db)
 
-    price_pro = db.exec(select(ProductPriceRecord).where(ProductPriceRecord.product_key == "blueprint_pro")).first()
+    price_pro = get_price(db, "blueprint_pro")
     if price_pro:
         price_pro.unit_amount_usd_cents = int(round(blueprint_pro_usd * 100))
         price_pro.unit_amount_cents = price_pro.unit_amount_usd_cents
@@ -353,7 +363,7 @@ def update_base_prices_usd(db: Session, blueprint_pro_usd: float, acp_premium_us
         price_pro.updated_at = utc_now()
         db.add(price_pro)
 
-    price_acp = db.exec(select(ProductPriceRecord).where(ProductPriceRecord.product_key == "acp")).first()
+    price_acp = get_price(db, "acp")
     if price_acp:
         price_acp.unit_amount_usd_cents = int(round(acp_premium_usd * 100))
         price_acp.unit_amount_cents = price_acp.unit_amount_usd_cents
@@ -732,6 +742,28 @@ def calculate_project_upgrade_discount_cents(
     return discount_cents, net_cents, True
 
 
+def validate_safe_redirect_url(url: str, base_url: str = "") -> str:
+    if not url:
+        return ""
+    cleaned = url.strip()
+    if cleaned.startswith("/"):
+        return cleaned
+    if cleaned.startswith("http://") or cleaned.startswith("https://"):
+        parsed = urlparse(cleaned)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"Invalid redirect URL format: {cleaned}")
+        if base_url:
+            base_parsed = urlparse(base_url)
+            allowed_hosts = {base_parsed.netloc, base_parsed.hostname, "localhost", "127.0.0.1", "example.test"}
+            allowed_hosts.discard(None)
+            allowed_hosts.discard("")
+            host = parsed.hostname or parsed.netloc
+            if host not in allowed_hosts and parsed.netloc != base_parsed.netloc:
+                raise ValueError(f"Redirect URL host is not permitted: {cleaned}")
+        return cleaned
+    raise ValueError(f"Invalid redirect URL format: {cleaned}")
+
+
 def create_checkout_session(
     db: Session,
     *,
@@ -747,6 +779,8 @@ def create_checkout_session(
     if resolved_request is None or resolved_record is None:
         raise ValueError("Checkout request and project record are required.")
     ensure_buyer_can_checkout(db, resolved_record, current_user)
+    validated_success_url = validate_safe_redirect_url(resolved_request.success_url, base_url)
+    validated_cancel_url = validate_safe_redirect_url(resolved_request.cancel_url, base_url)
     product = get_product(db, resolved_request.product_key)
     if product.product_key == "blueprint":
         raise ValueError("Blueprint free does not require checkout.")
@@ -770,27 +804,47 @@ def create_checkout_session(
     if existing is not None:
         return serialize_checkout_response(db, existing)
 
-    checkout_ref = f"sandbox_{uuid4().hex}"
-    fallback_checkout_url = f"{base_url.rstrip('/')}/checkout/sandbox/{checkout_ref}" if base_url else f"/checkout/sandbox/{checkout_ref}"
+    provider = get_commerce_payment_provider(resolved_request.provider)
+    provider_draft = provider.create_checkout_draft(
+        CheckoutProviderContext(
+            workspace_id=resolved_record.workspace_id,
+            session_record=resolved_record,
+            current_user=current_user,
+            product=product,
+            price=price,
+            subtotal_cents=price.unit_amount_cents,
+            discount_cents=discount_cents,
+            total_cents=net_total_cents,
+            currency=price.currency,
+            is_upgrade=is_upgrade,
+            idempotency_key=idempotency_key,
+            success_url=validated_success_url,
+            cancel_url=validated_cancel_url,
+            base_url=base_url,
+        )
+    )
     order = CommercialOrderRecord(
         workspace_id=resolved_record.workspace_id,
         session_id=resolved_record.id,
         buyer_user_id=current_user.id,
+        status=provider_draft.status,
         currency=price.currency,
         subtotal_cents=price.unit_amount_cents,
         total_cents=net_total_cents,
-        provider="sandbox",
-        checkout_ref=checkout_ref,
-        checkout_url=resolved_request.success_url or fallback_checkout_url,
+        provider=provider_draft.provider,
+        checkout_ref=provider_draft.checkout_ref,
+        checkout_url=provider_draft.checkout_url,
         idempotency_key=idempotency_key,
         metadata_payload={
             "product_key": product.product_key,
             "price_code": price.price_code,
-            "success_url": resolved_request.success_url,
-            "cancel_url": resolved_request.cancel_url,
+            "provider": provider_draft.provider,
+            "success_url": validated_success_url,
+            "cancel_url": validated_cancel_url,
             "is_upgrade": is_upgrade,
             "upgrade_discount_cents": discount_cents,
             "base_product_cents": price.unit_amount_cents,
+            **provider_draft.metadata,
         },
     )
     db.add(order)
@@ -813,8 +867,8 @@ def create_checkout_session(
         event_key="checkout_started",
         product_key=product.product_key,
         source="commerce_checkout",
-        metadata={"order_id": str(order.id), "price_code": price.price_code},
-        correlation_id=checkout_ref,
+        metadata={"order_id": str(order.id), "price_code": price.price_code, "provider": provider_draft.provider},
+        correlation_id=provider_draft.checkout_ref,
     )
     db.flush()
     return serialize_checkout_response(db, order)
@@ -828,6 +882,9 @@ def checkout_idempotency_key(session_id: UUID, product_key: str, user_id: UUID) 
 def serialize_checkout_response(db: Session, order: CommercialOrderRecord) -> CommercialCheckoutSessionResponse:
     line = db.exec(select(CommercialOrderLineRecord).where(CommercialOrderLineRecord.order_id == order.id)).first()
     entitlement = find_entitlement_for_order(db, order)
+    next_action = "refresh_access" if order.status == CommercialOrderStatus.paid else "open_checkout"
+    if order.provider == "hotmart" and not order.checkout_url and order.status == CommercialOrderStatus.pending:
+        next_action = "await_payment_link"
     return CommercialCheckoutSessionResponse(
         checkout_ref=order.checkout_ref,
         order_id=order.id,
@@ -841,7 +898,7 @@ def serialize_checkout_response(db: Session, order: CommercialOrderRecord) -> Co
         currency=order.currency,
         expires_at=order.created_at + timedelta(minutes=30),
         entitlement=serialize_entitlement(entitlement) if entitlement else None,
-        next_action="refresh_access" if order.status == CommercialOrderStatus.paid else "open_checkout",
+        next_action=next_action,
     )
 
 
@@ -896,6 +953,14 @@ def complete_checkout_session(
         return serialize_checkout_response(db, order)
 
     if order.status == CommercialOrderStatus.paid:
+        from app.services.product_processing.product_build_activation_service import activate_product_builds_for_paid_order
+
+        activate_product_builds_for_paid_order(
+            db,
+            order=order,
+            current_user=current_user,
+            source="commerce_checkout_retry",
+        )
         return serialize_checkout_response(db, order)
 
     line = db.exec(select(CommercialOrderLineRecord).where(CommercialOrderLineRecord.order_id == order.id)).first()
@@ -964,6 +1029,14 @@ def complete_checkout_session(
         currency=order.currency,
         metadata={"order_id": str(order.id), "entitlement_id": str(entitlement.id)},
         correlation_id=checkout_ref,
+    )
+    from app.services.product_processing.product_build_activation_service import activate_product_builds_for_paid_order
+
+    activate_product_builds_for_paid_order(
+        db,
+        order=order,
+        current_user=current_user,
+        source="commerce_checkout",
     )
     return serialize_checkout_response(db, order)
 
@@ -1128,23 +1201,47 @@ def resolve_access_request_by_id(
     request: AccessRequestResolveRequest,
     current_user: UserRecord,
 ) -> AccessRequestResponse:
+    from app.services.runtime_access_control import is_platform_admin
+
     record = db.get(CommercialAccessRequestRecord, request_id)
     if record is None or record.workspace_id != workspace_id:
         raise ValueError("Access request not found.")
     session_record = db.get(SessionRecord, record.session_id)
     if session_record is None:
         raise ValueError("Project is not available.")
+    
+    is_admin = is_platform_admin(db, current_user)
     membership = get_membership(db, session_record, current_user)
-    if membership is None or membership.role not in {WorkspaceRole.owner, WorkspaceRole.admin}:
-        raise PermissionError("Only workspace owners or admins can resolve access requests.")
+    if not is_admin and (membership is None or membership.role not in {WorkspaceRole.owner, WorkspaceRole.admin}):
+        raise PermissionError("Solo un administrador del sistema o un workspace owner/admin puede resolver solicitudes.")
     if record.status != CommercialAccessRequestStatus.pending:
-        return serialize_access_request(record)
+        return serialize_access_request(record, db)
     record.status = CommercialAccessRequestStatus(request.decision)
     record.resolver_user_id = current_user.id
     record.resolution_note = request.resolution_note
     record.resolved_at = utc_now()
     record.updated_at = utc_now()
     db.add(record)
+
+    if request.decision == "approved":
+        target_tier = record.target_tier or (CommercialTier.acp if record.product_key == "acp" else CommercialTier.blueprint_pro)
+        product_key = record.product_key or ("acp" if target_tier == CommercialTier.acp else "blueprint_pro")
+        entitlement = CommercialEntitlementRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.session_id,
+            product_key=product_key,
+            tier=target_tier,
+            status=CommercialEntitlementStatus.active,
+            source=CommercialEntitlementSource.admin_grant,
+            granted_by_user_id=current_user.id,
+            metadata_payload={"access_request_id": str(record.id), "decision": "approved"},
+        )
+        db.add(entitlement)
+        if tier_rank(target_tier) > tier_rank(session_record.commercial_tier):
+            session_record.commercial_tier = target_tier
+            session_record.updated_at = utc_now()
+            db.add(session_record)
+
     record_commercial_event(
         db,
         workspace_id=workspace_id,
@@ -1155,7 +1252,7 @@ def resolve_access_request_by_id(
         source="access_request",
         metadata={"capability": record.capability, "request_id": str(record.id)},
     )
-    return serialize_access_request(record)
+    return serialize_access_request(record, db)
 
 
 def resolve_access_request(
@@ -1165,20 +1262,44 @@ def resolve_access_request(
     payload: AccessRequestResolveRequest,
     current_user: UserRecord,
 ) -> AccessRequestResponse:
+    from app.services.runtime_access_control import is_platform_admin
+
     session_record = db.get(SessionRecord, access_request.session_id)
     if session_record is None:
         raise ValueError("Project is not available.")
+    
+    is_admin = is_platform_admin(db, current_user)
     membership = get_membership(db, session_record, current_user)
-    if membership is None or membership.role not in {WorkspaceRole.owner, WorkspaceRole.admin}:
-        raise PermissionError("Only workspace owners or admins can resolve access requests.")
+    if not is_admin and (membership is None or membership.role not in {WorkspaceRole.owner, WorkspaceRole.admin}):
+        raise PermissionError("Solo un administrador del sistema o un workspace owner/admin puede resolver solicitudes.")
     if access_request.status != CommercialAccessRequestStatus.pending:
-        return serialize_access_request(access_request)
+        return serialize_access_request(access_request, db)
     access_request.status = CommercialAccessRequestStatus(payload.decision)
     access_request.resolver_user_id = current_user.id
     access_request.resolution_note = payload.resolution_note
     access_request.resolved_at = utc_now()
     access_request.updated_at = utc_now()
     db.add(access_request)
+
+    if payload.decision == "approved":
+        target_tier = access_request.target_tier or (CommercialTier.acp if access_request.product_key == "acp" else CommercialTier.blueprint_pro)
+        product_key = access_request.product_key or ("acp" if target_tier == CommercialTier.acp else "blueprint_pro")
+        entitlement = CommercialEntitlementRecord(
+            workspace_id=access_request.workspace_id,
+            session_id=access_request.session_id,
+            product_key=product_key,
+            tier=target_tier,
+            status=CommercialEntitlementStatus.active,
+            source=CommercialEntitlementSource.admin_grant,
+            granted_by_user_id=current_user.id,
+            metadata_payload={"access_request_id": str(access_request.id), "decision": "approved"},
+        )
+        db.add(entitlement)
+        if tier_rank(target_tier) > tier_rank(session_record.commercial_tier):
+            session_record.commercial_tier = target_tier
+            session_record.updated_at = utc_now()
+            db.add(session_record)
+
     record_commercial_event(
         db,
         workspace_id=access_request.workspace_id,
@@ -1189,10 +1310,30 @@ def resolve_access_request(
         source="access_request",
         metadata={"capability": access_request.capability, "request_id": str(access_request.id)},
     )
-    return serialize_access_request(access_request)
+    return serialize_access_request(access_request, db)
 
 
-def serialize_access_request(record: CommercialAccessRequestRecord) -> AccessRequestResponse:
+def serialize_access_request(
+    record: CommercialAccessRequestRecord,
+    db: Session | None = None,
+) -> AccessRequestResponse:
+    project_title = ""
+    workspace_name = ""
+    requester_name = ""
+    requester_email = ""
+    if db is not None:
+        session_record = db.get(SessionRecord, record.session_id)
+        if session_record:
+            project_title = session_record.title
+        from app.models import WorkspaceRecord
+        ws_record = db.get(WorkspaceRecord, record.workspace_id)
+        if ws_record:
+            workspace_name = ws_record.name
+        req_user = db.get(UserRecord, record.requester_user_id)
+        if req_user:
+            requester_name = req_user.full_name
+            requester_email = req_user.email
+
     return AccessRequestResponse(
         id=record.id,
         workspace_id=record.workspace_id,
@@ -1207,7 +1348,45 @@ def serialize_access_request(record: CommercialAccessRequestRecord) -> AccessReq
         created_at=record.created_at,
         updated_at=record.updated_at,
         resolved_at=record.resolved_at,
+        project_title=project_title,
+        workspace_name=workspace_name,
+        requester_name=requester_name,
+        requester_email=requester_email,
     )
+
+
+def list_all_access_requests(
+    db: Session,
+    *,
+    status_filter: str | None = None,
+    current_user: UserRecord,
+) -> list[AccessRequestResponse]:
+    from app.services.runtime_access_control import ensure_platform_admin
+
+    ensure_platform_admin(db, current_user)
+    query = select(CommercialAccessRequestRecord).order_by(CommercialAccessRequestRecord.created_at.desc())
+    if status_filter and status_filter != "all":
+        try:
+            status_enum = CommercialAccessRequestStatus(status_filter)
+            query = query.where(CommercialAccessRequestRecord.status == status_enum)
+        except ValueError:
+            pass
+    records = db.exec(query).all()
+    return [serialize_access_request(rec, db) for rec in records]
+
+
+def get_access_requests_count(
+    db: Session,
+    *,
+    current_user: UserRecord,
+) -> dict[str, int]:
+    from app.services.runtime_access_control import is_platform_admin
+
+    if not is_platform_admin(db, current_user):
+        return {"pending": 0, "total": 0}
+    all_records = db.exec(select(CommercialAccessRequestRecord)).all()
+    pending = sum(1 for r in all_records if r.status == CommercialAccessRequestStatus.pending)
+    return {"pending": pending, "total": len(all_records)}
 
 
 def build_access_request_response(record: CommercialAccessRequestRecord) -> AccessRequestResponse:

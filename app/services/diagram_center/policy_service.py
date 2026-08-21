@@ -3,6 +3,8 @@ from __future__ import annotations
 from sqlmodel import Session, select
 
 from app.models import CommercialTier, JourneyStageArtifactRecord, SessionRecord, WorkspaceRole
+from app.services.deliverable_catalog.policy_service import effective_deliverable_governance
+from app.services.deliverable_catalog.registry_service import get_registry_entry as get_deliverable_registry_entry
 from app.services.diagram_center.contracts import DiagramPolicyDecision, DiagramRegistryEntry
 from app.services.diagram_center.persistence import DiagramGovernanceRecord
 
@@ -33,7 +35,8 @@ WRITE_ROLES = {WorkspaceRole.owner, WorkspaceRole.admin, WorkspaceRole.editor}
 
 
 def resolve_project_stage(db: Session, record: SessionRecord) -> str:
-    resolved = SESSION_STAGE_MAP.get(record.current_stage.value, "discover")
+    stage_val = getattr(record.current_stage, "value", str(record.current_stage or "discover"))
+    resolved = SESSION_STAGE_MAP.get(stage_val, "discover")
     artifact_stages = db.exec(
         select(JourneyStageArtifactRecord.stage_key).where(JourneyStageArtifactRecord.session_id == record.id)
     ).all()
@@ -51,6 +54,14 @@ def effective_registry_policy(
     governance = db.exec(
         select(DiagramGovernanceRecord).where(DiagramGovernanceRecord.diagram_key == entry.key)
     ).first()
+    deliverable_entry = get_deliverable_registry_entry(f"diagram.{entry.key}")
+    if governance is None and deliverable_entry is not None:
+        enabled, generation_enabled, required_tier, preview_mode, _, _, _ = effective_deliverable_governance(
+            db,
+            deliverable_entry,
+            workspace_id=None,
+        )
+        return enabled, generation_enabled, required_tier.value, preview_mode, None
     enabled = governance.enabled if governance is not None else entry.active
     generation_enabled = governance.generation_enabled if governance is not None else True
     required_tier = governance.required_tier_override if governance and governance.required_tier_override else entry.required_tier
@@ -92,13 +103,14 @@ def resolve_diagram_policy(
 
     has_tier = TIER_ORDER.get(current_tier, 0) >= TIER_ORDER.get(required_tier, 0)
     if has_tier:
+        is_premium_tier = current_tier in {"blueprint_pro", "acp", "enterprise"}
         return DiagramPolicyDecision(
             access_state="available",
             can_generate=generation_enabled and can_write,
             can_view=True,
-            can_download=current_tier in {"blueprint_pro", "acp", "enterprise"},
-            can_regenerate=generation_enabled and can_write,
-            can_compare=current_tier in {"blueprint_pro", "acp", "enterprise"},
+            can_download=is_premium_tier,
+            can_regenerate=False,
+            can_compare=is_premium_tier,
             reason_code="entitled",
             reason="Disponible según el plan, la etapa y las reglas administrativas vigentes.",
             required_tier=required_tier,
@@ -122,4 +134,3 @@ def resolve_diagram_policy(
         cta_label=f"Adquirir {product}",
         required_tier=required_tier,
     )
-

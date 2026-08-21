@@ -6,7 +6,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field as PydanticField, field_validator, model_validator
-from sqlalchemy import Column, JSON, String, UniqueConstraint
+from sqlalchemy import Column, Index, JSON, String, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from app.diagnostics import (
@@ -118,6 +118,15 @@ class ExportJobStatus(str, Enum):
     expired = "expired"
 
 
+class StageOperationStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    waiting_for_user = "waiting_for_user"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 class WorkspaceRole(str, Enum):
     owner = "owner"
     admin = "admin"
@@ -200,6 +209,23 @@ class LLMProviderKey(str, Enum):
     deepseek = "deepseek"
     codex_local = "codex_local"
     antigravity_cli = "antigravity_cli"
+
+
+class LLMBudgetScopeType(str, Enum):
+    workspace = "workspace"
+    user = "user"
+    project = "project"
+    initiative = "initiative"
+    stage = "stage"
+    provider = "provider"
+    model = "model"
+
+
+class LLMBudgetPeriodType(str, Enum):
+    daily = "daily"
+    weekly = "weekly"
+    monthly = "monthly"
+    custom = "custom"
 
 
 class EstimationMaturityStage(str, Enum):
@@ -827,6 +853,217 @@ class CommercialEventRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class HotmartIntegrationConfigRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_integration_configs"
+    __table_args__ = (UniqueConstraint("workspace_id", "environment", name="uq_hotmart_config_workspace_environment"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    enabled: bool = Field(default=False, nullable=False)
+    status: str = Field(default="not_configured", index=True, nullable=False)
+    client_id_configured: bool = Field(default=False, nullable=False)
+    client_secret_configured: bool = Field(default=False, nullable=False)
+    basic_token_configured: bool = Field(default=False, nullable=False)
+    hottok_configured: bool = Field(default=False, nullable=False)
+    api_base_url: str = Field(default="", nullable=False)
+    auth_base_url: str = Field(default="", nullable=False)
+    webhook_public_url: str = Field(default="", nullable=False)
+    last_health_check_at: datetime | None = Field(default=None, nullable=True)
+    last_health_status: str = Field(default="", nullable=False)
+    last_health_message: str = Field(default="", nullable=False)
+    last_sync_at: datetime | None = Field(default=None, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    updated_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartIntegrationSecretRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_integration_secrets"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "environment", "secret_kind", name="uq_hotmart_secret_workspace_environment_kind"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    secret_kind: str = Field(default="", index=True, nullable=False)
+    secret_ciphertext: str = Field(default="", nullable=False)
+    secret_ref: str = Field(default="", nullable=False)
+    status: str = Field(default="not_configured", nullable=False)
+    last_rotated_at: datetime | None = Field(default=None, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartProductMappingRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_product_mappings"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "internal_product_key", "environment", name="uq_hotmart_mapping_workspace_product_environment"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    internal_product_key: str = Field(default="", index=True, nullable=False)
+    hotmart_product_id: str = Field(default="", index=True, nullable=False)
+    hotmart_product_ucode: str = Field(default="", nullable=False)
+    offer_code: str = Field(default="", nullable=False)
+    plan_code: str = Field(default="", nullable=False)
+    billing_mode: str = Field(default="one_time", nullable=False)
+    currency: str = Field(default="USD", nullable=False)
+    internal_base_currency: str = Field(default="USD", nullable=False)
+    internal_unit_amount_usd_cents: int = Field(default=0, nullable=False)
+    hotmart_price_strategy: str = Field(default="internal_net_amount", nullable=False)
+    trm_policy: str = Field(default="display_only", nullable=False)
+    grants_tier: CommercialTier = Field(default=CommercialTier.blueprint_pro, nullable=False)
+    entitlement_scope: str = Field(default="project", nullable=False)
+    is_active: bool = Field(default=True, nullable=False)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartPaymentLinkRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_payment_links"
+    __table_args__ = (UniqueConstraint("workspace_id", "hotmart_payment_link_id", name="uq_hotmart_payment_link_provider_id"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", index=True, nullable=True)
+    created_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    internal_product_key: str = Field(default="", index=True, nullable=False)
+    hotmart_payment_link_id: str = Field(default="", index=True, nullable=False)
+    checkout_url: str = Field(default="", nullable=False)
+    activation_status: str = Field(default="draft", index=True, nullable=False)
+    provider_ref: str = Field(default="", index=True, nullable=False)
+    gross_amount_cents: int = Field(default=0, nullable=False)
+    discount_amount_cents: int = Field(default=0, nullable=False)
+    net_amount_cents: int = Field(default=0, nullable=False)
+    currency: str = Field(default="USD", nullable=False)
+    internal_unit_amount_usd_cents: int = Field(default=0, nullable=False)
+    trm_cop_applied: float | None = Field(default=None, nullable=True)
+    discount_origin: str = Field(default="", nullable=False)
+    request_payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    response_payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    expires_at: datetime | None = Field(default=None, nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartPromotionRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_promotions"
+    __table_args__ = (UniqueConstraint("workspace_id", "environment", "coupon_code", name="uq_hotmart_promotion_coupon"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    internal_campaign_key: str = Field(default="", index=True, nullable=False)
+    internal_product_key: str = Field(default="", index=True, nullable=False)
+    hotmart_product_id: str = Field(default="", index=True, nullable=False)
+    offer_codes: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    coupon_id: str = Field(default="", index=True, nullable=False)
+    coupon_code: str = Field(default="", index=True, nullable=False)
+    discount_percent: float = Field(default=0.0, nullable=False)
+    discount_origin: str = Field(default="provider_coupon", nullable=False)
+    discount_type: str = Field(default="percent", nullable=False)
+    discount_amount_cents: int | None = Field(default=None, nullable=True)
+    starts_at: datetime | None = Field(default=None, nullable=True)
+    ends_at: datetime | None = Field(default=None, nullable=True)
+    status: str = Field(default="draft", index=True, nullable=False)
+    published_at: datetime | None = Field(default=None, nullable=True)
+    created_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartSyncRunRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_sync_runs"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    resource: str = Field(default="", index=True, nullable=False)
+    status: str = Field(default="idle", index=True, nullable=False)
+    started_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    started_at: datetime = Field(default_factory=utc_now, nullable=False)
+    finished_at: datetime | None = Field(default=None, nullable=True)
+    cursor_before: str = Field(default="", nullable=False)
+    cursor_after: str = Field(default="", nullable=False)
+    records_read: int = Field(default=0, nullable=False)
+    records_created: int = Field(default=0, nullable=False)
+    records_updated: int = Field(default=0, nullable=False)
+    records_skipped: int = Field(default=0, nullable=False)
+    error_summary: str = Field(default="", nullable=False)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+
+
+class HotmartSyncCursorRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_sync_cursors"
+    __table_args__ = (UniqueConstraint("workspace_id", "environment", "resource", name="uq_hotmart_sync_cursor_resource"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    resource: str = Field(default="", index=True, nullable=False)
+    page_token: str = Field(default="", nullable=False)
+    last_event_at: datetime | None = Field(default=None, nullable=True)
+    last_transaction: str = Field(default="", nullable=False)
+    last_success_at: datetime | None = Field(default=None, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartWebhookEventRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_webhook_events"
+    __table_args__ = (UniqueConstraint("event_id", name="uq_hotmart_webhook_event_id"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    event_id: str = Field(default="", index=True, nullable=False)
+    event_type: str = Field(default="", index=True, nullable=False)
+    transaction: str = Field(default="", index=True, nullable=False)
+    workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", index=True, nullable=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", index=True, nullable=True)
+    payment_id: UUID | None = Field(default=None, foreign_key="commercial_payments.id", nullable=True)
+    hottok_validated: bool = Field(default=False, nullable=False)
+    processing_status: str = Field(default="received", index=True, nullable=False)
+    payload_hash: str = Field(default="", index=True, nullable=False)
+    payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    error_code: str = Field(default="", nullable=False)
+    error_message: str = Field(default="", nullable=False)
+    retries: int = Field(default=0, nullable=False)
+    processed_at: datetime | None = Field(default=None, nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartReconciliationIssueRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_reconciliation_issues"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    issue_type: str = Field(default="", index=True, nullable=False)
+    severity: str = Field(default="medium", index=True, nullable=False)
+    status: str = Field(default="open", index=True, nullable=False)
+    provider_ref: str = Field(default="", index=True, nullable=False)
+    internal_ref: str = Field(default="", index=True, nullable=False)
+    summary: str = Field(default="", nullable=False)
+    suggested_action: str = Field(default="", nullable=False)
+    resolution_action: str = Field(default="", nullable=False)
+    resolution_note: str = Field(default="", nullable=False)
+    resolved_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    resolved_at: datetime | None = Field(default=None, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
 class ACPBuildRunRecord(SQLModel, table=True):
     __tablename__ = "acp_build_runs"
     __table_args__ = (UniqueConstraint("workspace_id", "session_id", "idempotency_key", name="uq_acp_build_run_idempotency"),)
@@ -967,6 +1204,28 @@ class WorkspaceMembershipRecord(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class AdminUserInvitationRecord(SQLModel, table=True):
+    __tablename__ = "admin_user_invitations"
+    __table_args__ = (
+        Index("ix_admin_user_invitations_workspace_status", "workspace_id", "status", "created_at"),
+        Index("ix_admin_user_invitations_email_status", "email", "status"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    email: str = Field(index=True, nullable=False)
+    full_name: str = Field(default="", nullable=False)
+    role: WorkspaceRole = Field(default=WorkspaceRole.viewer, nullable=False)
+    status: str = Field(default="pending", index=True, nullable=False)
+    invited_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    accepted_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    expires_at: datetime | None = Field(default=None, nullable=True)
+    message: str = Field(default="", nullable=False)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
 class AuthTokenRecord(SQLModel, table=True):
     __tablename__ = "auth_tokens"
 
@@ -1088,6 +1347,185 @@ class RuntimeSettingsAuditRecord(SQLModel, table=True):
     after_payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     actor_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
     actor_email: str = Field(default="", nullable=False)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class LLMUsageLedgerRecord(SQLModel, table=True):
+    __tablename__ = "llm_usage_ledger"
+    __table_args__ = (
+        Index("ix_llm_usage_ledger_workspace_started", "workspace_id", "started_at"),
+        Index("ix_llm_usage_ledger_user_started", "workspace_id", "user_id", "started_at"),
+        Index("ix_llm_usage_ledger_session_started", "workspace_id", "session_id", "started_at"),
+        Index("ix_llm_usage_ledger_project_started", "workspace_id", "project_id", "started_at"),
+        Index("ix_llm_usage_ledger_stage_capability_started", "workspace_id", "stage", "capability_key", "started_at"),
+        Index("ix_llm_usage_ledger_provider_model_started", "workspace_id", "provider_key", "model_name", "started_at"),
+        Index("ix_llm_usage_ledger_request_attempt", "request_id", "attempt_number"),
+        Index("ix_llm_usage_ledger_operation", "operation_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", index=True, nullable=True)
+    user_id: UUID | None = Field(default=None, foreign_key="users.id", index=True, nullable=True)
+    session_id: UUID | None = Field(default=None, foreign_key="sessions.id", index=True, nullable=True)
+    project_id: UUID | None = Field(default=None, index=True, nullable=True)
+    initiative_id: UUID | None = Field(default=None, index=True, nullable=True)
+    stage: str = Field(default="", index=True, nullable=False)
+    substage: str = Field(default="", index=True, nullable=False)
+    agent_key: str = Field(default="", index=True, nullable=False)
+    capability_key: str = Field(default="", index=True, nullable=False)
+    action_key: str = Field(default="", index=True, nullable=False)
+    operation_id: UUID | None = Field(default=None, index=True, nullable=True)
+    parent_run_id: str = Field(default="", index=True, nullable=False)
+    correlation_id: str = Field(default="", index=True, nullable=False)
+    provider_key: str = Field(default="", index=True, nullable=False)
+    model_name: str = Field(default="", index=True, nullable=False)
+    requested_model: str = Field(default="", nullable=False)
+    execution_backend: str = Field(default="", index=True, nullable=False)
+    execution_mode: str = Field(default="primary", index=True, nullable=False)
+    request_id: str = Field(default="", index=True, nullable=False)
+    provider_request_id: str = Field(default="", index=True, nullable=False)
+    attempt_number: int = Field(default=1, nullable=False)
+    retry_count: int = Field(default=0, nullable=False)
+    fallback_used: bool = Field(default=False, nullable=False)
+    shadow_provider_key: str = Field(default="", index=True, nullable=False)
+    status: str = Field(default="succeeded", index=True, nullable=False)
+    failure_kind: str = Field(default="", index=True, nullable=False)
+    failure_detail_redacted: str = Field(default="", nullable=False)
+    started_at: datetime = Field(default_factory=utc_now, index=True, nullable=False)
+    finished_at: datetime | None = Field(default=None, nullable=True)
+    duration_ms: int = Field(default=0, nullable=False)
+    queue_wait_ms: int = Field(default=0, nullable=False)
+    input_tokens: int = Field(default=0, nullable=False)
+    output_tokens: int = Field(default=0, nullable=False)
+    total_tokens: int = Field(default=0, nullable=False)
+    cached_input_tokens: int = Field(default=0, nullable=False)
+    reasoning_tokens: int = Field(default=0, nullable=False)
+    other_token_metrics: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    provider_metrics: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    cost_input: float = Field(default=0.0, nullable=False)
+    cost_output: float = Field(default=0.0, nullable=False)
+    cost_other: float = Field(default=0.0, nullable=False)
+    cost_total: float = Field(default=0.0, index=True, nullable=False)
+    currency: str = Field(default="USD", index=True, nullable=False)
+    fx_rate: float = Field(default=1.0, nullable=False)
+    pricing_profile_key: str = Field(default="", index=True, nullable=False)
+    pricing_snapshot: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    usage_raw_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    prompt_hash: str = Field(default="", index=True, nullable=False)
+    response_hash: str = Field(default="", index=True, nullable=False)
+    schema_validation_status: str = Field(default="", index=True, nullable=False)
+    finish_reason: str = Field(default="", nullable=False)
+    value_signal: str = Field(default="", index=True, nullable=False)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class LLMBudgetPolicyRecord(SQLModel, table=True):
+    __tablename__ = "llm_budget_policies"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "policy_key", name="uq_llm_budget_policy_workspace_key"),
+        Index("ix_llm_budget_policies_workspace_scope", "workspace_id", "scope_type", "scope_value"),
+        Index("ix_llm_budget_policies_active_period", "workspace_id", "is_active", "period_type"),
+        Index("ix_llm_budget_policies_provider_model", "workspace_id", "provider_key", "model_name"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True, nullable=False)
+    policy_key: str = Field(default="", index=True, nullable=False)
+    name: str = Field(default="", nullable=False)
+    description: str = Field(default="", nullable=False)
+    scope_type: LLMBudgetScopeType = Field(default=LLMBudgetScopeType.workspace, index=True, nullable=False)
+    scope_value: str = Field(default="", index=True, nullable=False)
+    user_id: UUID | None = Field(default=None, foreign_key="users.id", index=True, nullable=True)
+    project_id: UUID | None = Field(default=None, index=True, nullable=True)
+    initiative_id: UUID | None = Field(default=None, index=True, nullable=True)
+    stage: str = Field(default="", index=True, nullable=False)
+    provider_key: str = Field(default="", index=True, nullable=False)
+    model_name: str = Field(default="", index=True, nullable=False)
+    period_type: LLMBudgetPeriodType = Field(default=LLMBudgetPeriodType.monthly, index=True, nullable=False)
+    custom_period_start: datetime | None = Field(default=None, nullable=True)
+    custom_period_end: datetime | None = Field(default=None, nullable=True)
+    limit_amount: float = Field(default=0.0, nullable=False)
+    currency: str = Field(default="USD", index=True, nullable=False)
+    threshold_percentages: list[float] = Field(default_factory=lambda: [50.0, 80.0, 95.0, 100.0], sa_column=Column(JSON, nullable=False))
+    hard_limit_percent: float = Field(default=100.0, nullable=False)
+    is_active: bool = Field(default=True, index=True, nullable=False)
+    created_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    updated_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class LLMFinOpsAlertRecord(SQLModel, table=True):
+    __tablename__ = "llm_finops_alerts"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "alert_key",
+            "period_start",
+            "period_end",
+            name="uq_llm_finops_alert_period_key",
+        ),
+        Index("ix_llm_finops_alerts_workspace_status_created", "workspace_id", "status", "created_at"),
+        Index("ix_llm_finops_alerts_policy_threshold", "budget_policy_id", "threshold_percent"),
+        Index("ix_llm_finops_alerts_scope_period", "workspace_id", "scope_type", "scope_value", "period_start"),
+        Index("ix_llm_finops_alerts_provider_model", "workspace_id", "provider_key", "model_name"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True, nullable=False)
+    budget_policy_id: UUID | None = Field(default=None, foreign_key="llm_budget_policies.id", index=True, nullable=True)
+    usage_record_id: UUID | None = Field(default=None, foreign_key="llm_usage_ledger.id", index=True, nullable=True)
+    alert_key: str = Field(default="", index=True, nullable=False)
+    alert_type: str = Field(default="", index=True, nullable=False)
+    severity: str = Field(default="medium", index=True, nullable=False)
+    title: str = Field(default="", nullable=False)
+    message: str = Field(default="", nullable=False)
+    status: str = Field(default="active", index=True, nullable=False)
+    scope_type: str = Field(default="", index=True, nullable=False)
+    scope_value: str = Field(default="", index=True, nullable=False)
+    provider_key: str = Field(default="", index=True, nullable=False)
+    model_name: str = Field(default="", index=True, nullable=False)
+    stage: str = Field(default="", index=True, nullable=False)
+    threshold_percent: float = Field(default=0.0, nullable=False)
+    period_start: datetime = Field(index=True, nullable=False)
+    period_end: datetime = Field(index=True, nullable=False)
+    consumed_amount: float = Field(default=0.0, nullable=False)
+    limit_amount: float = Field(default=0.0, nullable=False)
+    currency: str = Field(default="USD", index=True, nullable=False)
+    evidence: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+    resolved_at: datetime | None = Field(default=None, nullable=True)
+
+
+class LLMValueAnnotationRecord(SQLModel, table=True):
+    __tablename__ = "llm_value_annotations"
+    __table_args__ = (
+        Index("ix_llm_value_annotations_usage", "usage_record_id"),
+        Index("ix_llm_value_annotations_workspace_artifact", "workspace_id", "artifact_type", "artifact_id"),
+        Index("ix_llm_value_annotations_workspace_result", "workspace_id", "result_type", "result_id"),
+        Index("ix_llm_value_annotations_workspace_stage", "workspace_id", "stage", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", index=True, nullable=True)
+    usage_record_id: UUID | None = Field(default=None, foreign_key="llm_usage_ledger.id", index=True, nullable=True)
+    artifact_type: str = Field(default="", index=True, nullable=False)
+    artifact_id: str = Field(default="", index=True, nullable=False)
+    result_type: str = Field(default="", index=True, nullable=False)
+    result_id: str = Field(default="", index=True, nullable=False)
+    stage: str = Field(default="", index=True, nullable=False)
+    decision_key: str = Field(default="", index=True, nullable=False)
+    value_signal: str = Field(default="", index=True, nullable=False)
+    artifact_created: bool = Field(default=False, nullable=False)
+    stage_completed: bool = Field(default=False, nullable=False)
+    evaluation_passed: bool = Field(default=False, nullable=False)
+    human_review_needed: bool = Field(default=False, nullable=False)
+    created_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", index=True, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
@@ -1296,6 +1734,42 @@ class ExecutionLogRecord(SQLModel, table=True):
     message: str
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class StageOperationRecord(SQLModel, table=True):
+    __tablename__ = "stage_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "session_id",
+            "action",
+            "idempotency_key",
+            name="uq_stage_operations_workspace_session_action_idempotency",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    session_id: UUID = Field(foreign_key="sessions.id", index=True)
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    stage_key: str = Field(index=True)
+    action: str = Field(index=True)
+    idempotency_key: str = Field(default="", index=True, nullable=False)
+    attempt_count: int = Field(default=1, nullable=False)
+    status: StageOperationStatus = Field(default=StageOperationStatus.queued, index=True)
+    current_step: str = Field(default="")
+    detail: str = Field(default="")
+    request_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    steps: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    result_artifact_id: UUID | None = Field(default=None, foreign_key="journey_stage_artifacts.id", index=True)
+    error_message: str = Field(default="")
+    technical_detail: str = Field(default="")
+    cancel_requested_at: datetime | None = Field(default=None, nullable=True, index=True)
+    heartbeat_at: datetime | None = Field(default=None, nullable=True, index=True)
+    expires_at: datetime | None = Field(default=None, nullable=True, index=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+    completed_at: datetime | None = Field(default=None, nullable=True)
 
 
 class ApprovalGateRecord(SQLModel, table=True):
@@ -4135,7 +4609,15 @@ class EstimationScenarioAdjustment(ContractModel):
 
 
 class EstimationConstructionScenario(ContractModel):
-    scenario_key: Literal["traditional_blueprint", "agentic_blueprint", "acp_manual", "acp_agentic"] = "traditional_blueprint"
+    scenario_key: Literal[
+        "traditional_blueprint",
+        "blueprint_basic",
+        "blueprint_premium",
+        "agentic_blueprint",
+        "acp_manual",
+        "acp_agentic",
+        "done_for_you_factory",
+    ] = "traditional_blueprint"
     label: str = ""
     description: str = ""
     estimated_hours_total: float = 0
@@ -4877,8 +5359,8 @@ class BasePricesUpdateRequest(ContractModel):
 class BasePricesResponse(ContractModel):
     contract_version: str = "base-prices.v1"
     blueprint_free_usd: float = 0.0
-    blueprint_pro_usd: float = 60.0
-    acp_premium_usd: float = 220.0
+    blueprint_pro_usd: float = 49.0
+    acp_premium_usd: float = 149.0
     trm_cop: float = 3171.93
     updated_at: datetime = PydanticField(default_factory=utc_now)
 
@@ -4952,6 +5434,7 @@ class CommercialCheckoutSessionRequest(ContractModel):
     session_id: UUID
     product_key: str
     price_code: str = ""
+    provider: Literal["sandbox", "hotmart"] | None = None
     success_url: str = ""
     cancel_url: str = ""
     idempotency_key: str = ""
@@ -5003,6 +5486,387 @@ class CommercialOrderResponse(ContractModel):
     updated_at: datetime
 
 
+class HotmartCredentialUpsertRequest(ContractModel):
+    environment: Literal["sandbox", "production"] = "sandbox"
+    enabled: bool = True
+    client_id: str = ""
+    client_secret: str = ""
+    basic_token: str = ""
+    hottok: str = ""
+    api_base_url: str = ""
+    auth_base_url: str = ""
+    webhook_public_url: str = ""
+
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, value: str) -> str:
+        candidate = value.strip().lower()
+        if candidate not in {"sandbox", "production"}:
+            raise ValueError("environment must be sandbox or production.")
+        return candidate
+
+
+class HotmartIntegrationStatusResponse(ContractModel):
+    contract_version: str = "hotmart-integration-status.v1"
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    enabled: bool = False
+    status: str = "not_configured"
+    client_id_configured: bool = False
+    client_secret_configured: bool = False
+    basic_token_configured: bool = False
+    hottok_configured: bool = False
+    api_base_url: str = ""
+    auth_base_url: str = ""
+    webhook_public_url: str = ""
+    last_health_check_at: datetime | None = None
+    last_health_status: str = ""
+    last_health_message: str = ""
+    last_sync_at: datetime | None = None
+    storage_mode: str = "none"
+    updated_at: datetime | None = None
+
+
+class HotmartTestConnectionResponse(ContractModel):
+    contract_version: str = "hotmart-test-connection.v1"
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    reachable: bool = False
+    status: str = "not_configured"
+    message: str = ""
+    token_expires_in: int | None = None
+    http_status: int | None = None
+    rate_limit_remaining: int | None = None
+    checked_at: datetime
+
+
+class HotmartProductMappingUpsertRequest(ContractModel):
+    environment: Literal["sandbox", "production"] = "sandbox"
+    internal_product_key: str
+    hotmart_product_id: str = ""
+    hotmart_product_ucode: str = ""
+    offer_code: str = ""
+    plan_code: str = ""
+    billing_mode: str = "one_time"
+    currency: str = "USD"
+    hotmart_price_strategy: str = "net_order_amount"
+    trm_policy: str = "internal_usd"
+    grants_tier: CommercialTier = CommercialTier.blueprint_pro
+    entitlement_scope: str = "project"
+    is_active: bool = True
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class HotmartProductMappingResponse(ContractModel):
+    contract_version: str = "hotmart-product-mapping.v1"
+    id: UUID
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    internal_product_key: str
+    hotmart_product_id: str = ""
+    hotmart_product_ucode: str = ""
+    offer_code: str = ""
+    plan_code: str = ""
+    billing_mode: str = "one_time"
+    currency: str = "USD"
+    internal_unit_amount_usd_cents: int = 0
+    hotmart_price_strategy: str = "net_order_amount"
+    trm_policy: str = "internal_usd"
+    grants_tier: CommercialTier = CommercialTier.blueprint_pro
+    entitlement_scope: str = "project"
+    is_active: bool = True
+    updated_at: datetime
+
+
+class HotmartPaymentLinkCreateRequest(ContractModel):
+    order_id: UUID | None = None
+    checkout_ref: str = ""
+    environment: Literal["sandbox", "production"] = "sandbox"
+    link_name: str = ""
+    callback_url: str = ""
+    force_new: bool = False
+
+
+class HotmartPaymentLinkResponse(ContractModel):
+    contract_version: str = "hotmart-payment-link.v1"
+    id: UUID
+    workspace_id: UUID
+    order_id: UUID
+    internal_product_key: str = ""
+    hotmart_payment_link_id: str = ""
+    provider_ref: str = ""
+    checkout_url: str = ""
+    activation_status: str = "pending_activation"
+    gross_amount_cents: int = 0
+    discount_amount_cents: int = 0
+    net_amount_cents: int = 0
+    currency: str = "USD"
+    discount_origin: str = "none"
+    created_at: datetime
+    updated_at: datetime
+
+
+class HotmartPromotionCreateRequest(ContractModel):
+    environment: Literal["sandbox", "production"] = "sandbox"
+    internal_campaign_key: str = ""
+    internal_product_key: str
+    coupon_code: str
+    discount_percent: float
+    offer_codes: list[str] = PydanticField(default_factory=list)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    affiliate_id: str = ""
+    publish: bool = True
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class HotmartPromotionResponse(ContractModel):
+    contract_version: str = "hotmart-promotion.v1"
+    id: UUID
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    internal_campaign_key: str = ""
+    internal_product_key: str = ""
+    hotmart_product_id: str = ""
+    offer_codes: list[str] = PydanticField(default_factory=list)
+    coupon_id: str = ""
+    coupon_code: str = ""
+    discount_percent: float = 0.0
+    discount_origin: str = "provider_coupon"
+    discount_type: str = "percent"
+    discount_amount_cents: int | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    status: str = "draft"
+    published_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class HotmartPromotionDeleteResponse(ContractModel):
+    contract_version: str = "hotmart-promotion-delete.v1"
+    id: UUID
+    coupon_id: str = ""
+    coupon_code: str = ""
+    status: str = "deleted"
+    deleted_remote: bool = False
+    message: str = ""
+
+
+class HotmartPromotionMetricsResponse(ContractModel):
+    contract_version: str = "hotmart-promotion-metrics.v1"
+    total: int = 0
+    active: int = 0
+    scheduled: int = 0
+    expired: int = 0
+    deleted: int = 0
+    sync_error: int = 0
+    provider_coupon_count: int = 0
+    internal_upgrade_credit_count: int = 0
+
+
+class HotmartSyncRequest(ContractModel):
+    environment: Literal["sandbox", "production"] = "sandbox"
+    resource: Literal["products", "offers", "plans", "sales", "subscriptions", "coupons", "payment_links"]
+    force_reset: bool = False
+    max_results: int = 50
+    page_token: str = ""
+    product_id: str = ""
+    filters: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class HotmartSyncRunResponse(ContractModel):
+    contract_version: str = "hotmart-sync-run.v1"
+    id: UUID
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    resource: str = ""
+    status: str = "idle"
+    started_by_user_id: UUID | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    cursor_before: str = ""
+    cursor_after: str = ""
+    records_read: int = 0
+    records_created: int = 0
+    records_updated: int = 0
+    records_skipped: int = 0
+    error_summary: str = ""
+    issue_count: int = 0
+
+
+class HotmartSyncCursorResponse(ContractModel):
+    contract_version: str = "hotmart-sync-cursor.v1"
+    id: UUID
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    resource: str = ""
+    page_token: str = ""
+    last_event_at: datetime | None = None
+    last_transaction: str = ""
+    last_success_at: datetime | None = None
+    updated_at: datetime
+
+
+class HotmartReconciliationIssueResponse(ContractModel):
+    contract_version: str = "hotmart-reconciliation-issue.v1"
+    id: UUID
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    issue_type: str = ""
+    severity: str = "medium"
+    status: str = "open"
+    provider_ref: str = ""
+    internal_ref: str = ""
+    summary: str = ""
+    suggested_action: str = ""
+    resolution_action: str = ""
+    resolution_note: str = ""
+    resolved_by_user_id: UUID | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class HotmartReconciliationResolveRequest(ContractModel):
+    resolution_action: str
+    resolution_note: str = ""
+    status: Literal["resolved", "ignored", "needs_review"] = "resolved"
+
+
+class HotmartWebhookReplayResponse(ContractModel):
+    contract_version: str = "hotmart-webhook-replay.v1"
+    event_id: str
+    processing_status: str = ""
+    retries: int = 0
+    issue_id: UUID | None = None
+    message: str = ""
+
+
+class HotmartClubSyncRequest(ContractModel):
+    environment: Literal["sandbox", "production"] = "sandbox"
+    subdomain: str
+    sync_modules: bool = True
+    sync_pages: bool = True
+    sync_students: bool = True
+    sync_progress: bool = False
+    module_id: str = ""
+    user_id: str = ""
+    is_extra: bool | None = None
+
+
+class HotmartClubOverviewResponse(ContractModel):
+    contract_version: str = "hotmart-club-overview.v1"
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    subdomain: str = ""
+    modules_count: int = 0
+    pages_count: int = 0
+    students_count: int = 0
+    progress_count: int = 0
+    open_issue_count: int = 0
+    last_sync_status: str = "idle"
+    last_sync_at: datetime | None = None
+
+
+class HotmartClubModuleResponse(ContractModel):
+    contract_version: str = "hotmart-club-module.v1"
+    module_id: str = ""
+    name: str = ""
+    sequence: int = 0
+    is_public: bool = False
+    is_extra: bool = False
+    is_extra_paid: bool = False
+    total_pages: int = 0
+
+
+class HotmartClubPageResponse(ContractModel):
+    contract_version: str = "hotmart-club-page.v1"
+    page_id: str = ""
+    module_id: str = ""
+    name: str = ""
+    page_order: int = 0
+    type: str = ""
+
+
+class HotmartClubStudentResponse(ContractModel):
+    contract_version: str = "hotmart-club-student.v1"
+    user_id: str = ""
+    name: str = ""
+    email: str = ""
+    status: str = ""
+    engagement: str = ""
+    progress: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class HotmartClubProgressResponse(ContractModel):
+    contract_version: str = "hotmart-club-progress.v1"
+    user_id: str = ""
+    email: str = ""
+    page_id: str = ""
+    page_name: str = ""
+    completed: bool = False
+    completed_at: datetime | None = None
+    progress_payload: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class HotmartReleaseChecklistItemResponse(ContractModel):
+    contract_version: str = "hotmart-release-checklist-item.v1"
+    key: str = ""
+    label: str = ""
+    status: Literal["failed", "manual", "passed", "warning"] = "manual"
+    severity: Literal["critical", "high", "medium", "low"] = "medium"
+    required: bool = True
+    detail: str = ""
+    evidence: list[str] = PydanticField(default_factory=list)
+
+
+class HotmartOperationalAlertResponse(ContractModel):
+    contract_version: str = "hotmart-operational-alert.v1"
+    key: str = ""
+    severity: Literal["critical", "high", "medium", "low"] = "medium"
+    status: Literal["active", "resolved"] = "active"
+    title: str = ""
+    message: str = ""
+    evidence: list[str] = PydanticField(default_factory=list)
+    created_at: datetime = PydanticField(default_factory=utc_now)
+
+
+class HotmartRunbookSectionResponse(ContractModel):
+    contract_version: str = "hotmart-runbook-section.v1"
+    key: str = ""
+    title: str = ""
+    steps: list[str] = PydanticField(default_factory=list)
+    links: list[str] = PydanticField(default_factory=list)
+
+
+class HotmartReleaseReadinessResponse(ContractModel):
+    contract_version: str = "hotmart-release-readiness.v1"
+    workspace_id: UUID
+    environment: Literal["sandbox", "production"] = "sandbox"
+    generated_at: datetime = PydanticField(default_factory=utc_now)
+    overall_status: Literal["blocked", "needs_attention", "ready"] = "needs_attention"
+    release_candidate: bool = False
+    metrics: dict[str, int] = PydanticField(default_factory=dict)
+    checklist: list[HotmartReleaseChecklistItemResponse] = PydanticField(default_factory=list)
+    alerts: list[HotmartOperationalAlertResponse] = PydanticField(default_factory=list)
+    runbook: list[HotmartRunbookSectionResponse] = PydanticField(default_factory=list)
+
+
+class HotmartWebhookIngestResponse(ContractModel):
+    contract_version: str = "hotmart-webhook-ingest.v1"
+    event_id: str
+    event_type: str = ""
+    transaction: str = ""
+    processing_status: str = "received"
+    duplicate: bool = False
+    workspace_id: UUID | None = None
+    order_id: UUID | None = None
+    payment_id: UUID | None = None
+    entitlement_id: UUID | None = None
+    message: str = ""
+
+
 class AccessRequestCreateRequest(ContractModel):
     session_id: UUID
     capability: str
@@ -5028,6 +5892,10 @@ class AccessRequestResponse(ContractModel):
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None = None
+    project_title: str = ""
+    workspace_name: str = ""
+    requester_name: str = ""
+    requester_email: str = ""
 
 
 class ProductOverviewItem(ContractModel):
@@ -5062,6 +5930,9 @@ class ProductOverviewResponse(ContractModel):
     attention: list[ProductAttentionItem] = PydanticField(default_factory=list)
     exports: list[ProductOverviewItem] = PydanticField(default_factory=list)
     navigation: list[ProductOverviewItem] = PydanticField(default_factory=list)
+    canonical_overview_contract: str = ""
+    recommended_next_action: dict[str, Any] = PydanticField(default_factory=dict)
+    source_contracts: list[str] = PydanticField(default_factory=list)
     generated_at: datetime = PydanticField(default_factory=utc_now)
 
 
@@ -5315,6 +6186,18 @@ class AttentionOptionV2(ContractModel):
     source_refs: list[str] = PydanticField(default_factory=list)
 
 
+class AttentionDiagnosticsV2(ContractModel):
+    summary: str = ""
+    technical_message: str = ""
+    error_kind: str = ""
+    capability: str = ""
+    capability_label: str = ""
+    operation_id: str = ""
+    retry_policy: str = ""
+    repair_hint: str = ""
+    trace_refs: list[str] = PydanticField(default_factory=list)
+
+
 class AttentionActionV2(ContractModel):
     kind: Literal["navigate", "answer", "approve", "reject", "confirm", "regenerate", "retry"]
     label: str
@@ -5353,8 +6236,11 @@ class AttentionItemV2(ContractModel):
     owner_user_id: str = ""
     options: list[AttentionOptionV2] = PydanticField(default_factory=list)
     suggested_answer: str = ""
+    unblocks: str = ""
+    resume_action: str = ""
     action: AttentionActionV2
     affected_artifact_refs: list[str] = PydanticField(default_factory=list)
+    diagnostics: AttentionDiagnosticsV2 | None = None
     detected_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -5833,3 +6719,50 @@ class UserLanguageResponse(ContractModel):
     user_id: UUID
     preferred_language: str
     updated_at: datetime
+
+
+class InitiativeEvaluationRequest(ContractModel):
+    initiative_text: str = PydanticField(
+        ...,
+        min_length=5,
+        max_length=4000,
+        description="Descripcion de la iniciativa o caso de uso a evaluar para construccion de agente.",
+    )
+    language: str = PydanticField(default="es", description="Idioma preferido para la respuesta (es, en, pt).")
+    business_context: str | None = PydanticField(default=None, max_length=1000)
+    expected_users: str | None = PydanticField(default=None, max_length=500)
+
+
+class InitiativeDimensionScore(ContractModel):
+    dimension_key: str
+    dimension_name: str
+    score: int = PydanticField(ge=0, le=100)
+    weight: float = PydanticField(ge=0.0, le=1.0)
+    justification: str
+    status: Literal["optimal", "acceptable", "critical"] = "optimal"
+
+
+class InitiativeAlternativeRecommendation(ContractModel):
+    recommended_technology: str
+    technology_category: Literal["rpa", "deterministic_script", "traditional_software", "workflow_webhook", "prompt_chain"] = "deterministic_script"
+    why_not_agent: str
+    estimated_cost_risk: str
+    suggested_next_step: str
+
+
+class InitiativeEvaluationResponse(ContractModel):
+    is_viable: bool
+    readiness_score: int = PydanticField(ge=0, le=100)
+    verdict_badge: Literal["viable", "partially_viable", "not_recommended"]
+    verdict_title: str
+    verdict_summary: str
+    suggested_archetype: str | None = None
+    suggested_tier: CommercialTier | None = None
+    dimensions: list[InitiativeDimensionScore] = PydanticField(default_factory=list)
+    key_strengths: list[str] = PydanticField(default_factory=list)
+    key_risks_or_gaps: list[str] = PydanticField(default_factory=list)
+    alternative: InitiativeAlternativeRecommendation | None = None
+    prefilled_project_data: dict[str, Any] = PydanticField(default_factory=dict)
+    token_usage: dict[str, int] = PydanticField(default_factory=dict)
+    evaluation_id: str = ""
+

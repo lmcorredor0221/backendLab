@@ -4,12 +4,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
+    admin_console,
     auth,
     commerce,
+    deliverable_catalog,
     diagram_center,
     estimation_calibration,
     health,
+    hotmart_admin,
+    hotmart_webhooks,
     knowledge_memory,
+    llm_finops,
     platform_runtime,
     productization,
     runtime_settings,
@@ -49,15 +54,20 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix=settings.api_v1_prefix)
+app.include_router(admin_console.router, prefix=settings.api_v1_prefix)
 app.include_router(commerce.router, prefix=settings.api_v1_prefix)
+app.include_router(deliverable_catalog.router, prefix=settings.api_v1_prefix.removesuffix("/v1"))
 app.include_router(diagram_center.router, prefix=settings.api_v1_prefix.removesuffix("/v1"))
 app.include_router(health.router)
+app.include_router(hotmart_admin.router, prefix=settings.api_v1_prefix)
+app.include_router(hotmart_webhooks.router, prefix=settings.api_v1_prefix)
 app.include_router(platform_runtime.router, prefix=settings.api_v1_prefix)
 app.include_router(productization.router, prefix=settings.api_v1_prefix)
 app.include_router(runtime_settings.router, prefix=settings.api_v1_prefix)
 app.include_router(runtime_status.router, prefix=settings.api_v1_prefix)
 app.include_router(estimation_calibration.router, prefix=settings.api_v1_prefix)
 app.include_router(knowledge_memory.router, prefix=settings.api_v1_prefix)
+app.include_router(llm_finops.router, prefix=settings.api_v1_prefix)
 app.include_router(sessions.router, prefix=settings.api_v1_prefix)
 app.include_router(session_operations.router, prefix=settings.api_v1_prefix)
 app.include_router(session_acp.router, prefix=settings.api_v1_prefix)

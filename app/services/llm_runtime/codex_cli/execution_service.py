@@ -37,12 +37,22 @@ def resolve_codex_executable_path(command: str) -> str | None:
     if not normalized:
         return None
     candidate = Path(os.path.expandvars(os.path.expanduser(normalized)))
+    bundled = _resolve_bundled_codex_executable(normalized)
     if candidate.exists():
+        if bundled and _is_windowsapps_codex_alias(candidate):
+            return bundled
         return str(candidate)
     executable = shutil.which(normalized)
     if executable:
+        if bundled and _is_windowsapps_codex_alias(executable):
+            return bundled
         return executable
-    return _resolve_bundled_codex_executable(normalized)
+    return bundled
+
+
+def _is_windowsapps_codex_alias(path: str | Path) -> bool:
+    normalized = str(path).replace("/", "\\").lower()
+    return "\\windowsapps\\" in normalized and Path(path).name.lower() in {"codex", "codex.exe", "codex.cmd"}
 
 
 def _resolve_bundled_codex_executable(command: str) -> str | None:
@@ -111,8 +121,6 @@ class CodexExecutionService:
         )
 
     def resolve_timeout_ms(self, *, task_kind: str, timeout_ms: int | None = None) -> int:
-        if timeout_ms is not None:
-            return max(1_000, int(timeout_ms))
         env_key = self._build_task_timeout_env_key(task_kind)
         env_value = os.getenv(env_key, "").strip()
         if env_value:
@@ -120,6 +128,8 @@ class CodexExecutionService:
                 return max(1_000, int(env_value))
             except ValueError:
                 pass
+        if timeout_ms is not None:
+            return max(1_000, int(timeout_ms))
         return max(1_000, self.runtime_settings.codex_local.timeout_ms)
 
     def resolve_max_concurrency(self) -> int:

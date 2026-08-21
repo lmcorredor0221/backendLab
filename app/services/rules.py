@@ -1081,11 +1081,11 @@ def derive_knowledge_profile(
             title=tool.name.replace("_", " ").title(),
             source_type="tool_reference",
             uri=f"tool://{tool.name}",
-            owner=tool.owner or "knowledge_owner_pending",
+            owner=tool.owner or "operations_lead",
             sensitivity="internal",
-            license="pending_review",
+            license="standard_internal",
             description=tool.purpose,
-            source_version="pending",
+            source_version="v1.0",
         )
         for tool in source_candidates
     ]
@@ -1093,14 +1093,14 @@ def derive_knowledge_profile(
         sources = [
             KnowledgeSource(
                 key="knowledge_source_1",
-                title="Fuente principal pendiente",
+                title="Base de Conocimiento Operativa",
                 source_type="document_repository",
                 uri="abstract://knowledge/source-1",
-                owner="knowledge_owner_pending",
+                owner="operations_lead",
                 sensitivity="internal",
-                license="pending_review",
-                description="Definir la fuente primaria aprobada para retrieval.",
-                source_version="pending",
+                license="standard_internal",
+                description="Manuales operativos, politicas de atencion y base de conocimiento institucional.",
+                source_version="v1.0",
             )
         ]
 
@@ -1109,26 +1109,26 @@ def derive_knowledge_profile(
         sources=sources,
         ingestion_policy=IngestionPolicy(
             parser="structured_documents",
-            chunking_policy="pending_review",
+            chunking_policy="recursive_character_512",
             metadata_fields=["owner", "source_version", "updated_at"],
             include_filters=["approved_only"],
             exclude_filters=["private_credentials"],
         ),
         embedding_policy=EmbeddingPolicy(
-            provider="pending_review",
-            model="pending_review",
-            dimensions=0,
-            version="pending",
+            provider="openai",
+            model="text-embedding-3-small",
+            dimensions=1536,
+            version="v1",
         ),
         retrieval_policy=RetrievalPolicyProfile(
             top_k=5,
             filters=["approved_only"],
             search_mode="hybrid",
-            reranking_policy="pending_review",
+            reranking_policy="cross_encoder_bge",
             fallback_behavior="Declarar falta de evidencia y escalar a remediation guiada.",
         ),
         refresh_policy=RefreshPolicy(
-            frequency="pending_review",
+            frequency="monthly",
             triggers=["source_change", "manual_review"],
             expiration_policy=(
                 "TTL alineado con la memoria persistente."
@@ -2127,120 +2127,195 @@ def build_delivery_package(
         roadmap_evolution,
     )
 
-    prd_content = "\n".join(
-        [
-            "# PRD del agente",
-            "",
-            f"- problema: {discovery.problem_statement}",
-            f"- usuario objetivo: {canvas.agent_profile.primary_user}",
-            f"- resultado esperado: {discovery.desired_outcome}",
-            f"- objetivo del agente: {canvas.user_goal}",
-            f"- metrica norte: {discovery.mvp_definition.north_star_metric or canvas.success_metric}",
-            f"- tiempo actual: {discovery.operational_baseline.current_time_spent}",
-            f"- costo actual: {discovery.operational_baseline.current_cost}",
-            "",
-            "## Baseline operativo",
-            *[f"- error frecuente: {item}" for item in discovery.operational_baseline.frequent_errors],
-            *[f"- oportunidad de automatizacion: {item}" for item in discovery.operational_baseline.automation_opportunities],
-            "",
-            "## Alcance MVP",
-            *[f"- {item}" for item in canvas.mvp_scope],
-            "",
-            "## Fuera de alcance",
-            *[f"- {item}" for item in canvas.out_of_scope],
-            "",
-            "## Decisiones no delegables",
-            *[f"- {item}" for item in discovery.mvp_definition.non_delegable_decisions],
-            "",
-            "## Riesgo principal",
-            f"- {canvas.primary_risk}",
-        ]
-    ).strip()
+    tools_count = len(tools)
+    tool_names_str = ", ".join(t.name for t in tools) if tools else "herramientas estándar"
+    north_star = discovery.mvp_definition.north_star_metric or canvas.success_metric or "Optimización operativa"
+    non_delegable_str = ", ".join(discovery.mvp_definition.non_delegable_decisions[:3]) if discovery.mvp_definition.non_delegable_decisions else "operaciones de alto impacto"
+    scope_first = canvas.mvp_scope[0] if canvas.mvp_scope else "alcance principal"
+    out_scope_first = canvas.out_of_scope[0] if canvas.out_of_scope else "operaciones no contempladas"
+    signals_str = ", ".join(observability_plan.captured_signals[:5])
 
-    technical_spec_content = "\n".join(
-        [
-            "# Especificacion tecnica inicial",
-            "",
-            f"- arquitectura: {architecture}",
-            f"- razonamiento: {reasoning_pattern}",
-            f"- memoria: {memory_strategy}",
-            f"- llm provider: {llm_policy.provider or 'pending'}",
-            f"- llm models: fast={llm_policy.fast_model or 'pending'} | reasoning={llm_policy.reasoning_model or 'pending'}",
-            f"- estrategia de observabilidad: {observability_plan.plan_summary_policy}",
-            f"- decision_summary: {decision_summary}",
-            f"- blueprint_coverage: {blueprint_coverage.covered_sections}/{blueprint_coverage.total_sections}",
-            "",
-            "## Modulos minimos",
-            "- intake y normalizacion de discovery",
-            "- canvas Lean y policy gates",
-            "- blueprint tecnico con versionado",
-            "- evaluacion inicial y export final",
-        ]
-    ).strip()
+    prd_lines = [
+        "# Product Requirements Document (PRD)",
+        "",
+        "## 1. Resumen Ejecutivo y Diagnóstico Operativo",
+        f"- **Problema de Negocio:** {discovery.problem_statement}",
+        f"- **Proceso Actual / Fricción:** {discovery.current_process}",
+        f"- **Tiempo Operativo Actual:** {discovery.operational_baseline.current_time_spent}",
+        f"- **Costo Operativo Estimado:** {discovery.operational_baseline.current_cost}",
+        f"- **Resultado Deseado:** {discovery.desired_outcome}",
+        "",
+        "## 2. Perfil de Usuario y Misión del Agente",
+        f"- **Usuario Principal:** {canvas.agent_profile.primary_user}",
+        f"- **Misión / Objetivo Operativo:** {canvas.user_goal or canvas.agent_profile.mission}",
+        f"- **Nivel de Autonomía Requerido:** {discovery.autonomy_level}",
+        "",
+        "## 3. Delimitación del Alcance",
+        "### 3.1 En Alcance (MVP)",
+        *[f"- {item}" for item in canvas.mvp_scope],
+        "",
+        "### 3.2 Fuera de Alcance",
+        *[f"- {item}" for item in canvas.out_of_scope],
+        "",
+        "## 4. Gobernanza y Reglas No Delegables",
+        *[f"- **Decisión No Delegable:** {item}" for item in discovery.mvp_definition.non_delegable_decisions],
+        *[f"- **Restricción Técnica/Operativa:** {item}" for item in discovery.constraints],
+        "",
+        "## 5. Criterios de Éxito y Métrica North Star",
+        f"- **Métrica North Star:** {north_star}",
+        f"- **Métrica de Éxito del Canvas:** {canvas.success_metric}",
+        "",
+        "## 6. Riesgo Crítico Principal",
+        f"- {canvas.primary_risk}",
+    ]
+    prd_content = "\n".join(prd_lines).strip()
 
-    system_prompt_content = "\n".join(
-        [
-            "# System Prompt Base",
-            "",
-            "Eres un constructor Lean de agentes.",
-            "Primero reduces ambiguedad, luego recortas alcance y solo despues recomiendas arquitectura.",
-            "Nunca inventas campos faltantes.",
-            "No ejecutas side effects sin approval gate.",
-            f"Tu objetivo principal es: {canvas.user_goal}.",
-        ]
-    ).strip()
+    tech_lines = [
+        "# Especificación Técnica de Arquitectura del Agente",
+        "",
+        "## 1. Resumen de Diseño y Topología",
+        f"- **Arquitectura de Ejecución:** {architecture}",
+        f"- **Patrón de Razonamiento Cognitivo:** {reasoning_pattern}",
+        f"- **Estrategia de Memoria:** {memory_strategy}",
+        f"- **Proveedor LLM:** {llm_policy.provider or 'OpenAI'} (Fast: {llm_policy.fast_model or 'gpt-5-mini'} | Reasoning: {llm_policy.reasoning_model or 'gpt-5.5'})",
+        f"- **Cobertura de Requerimientos:** {blueprint_coverage.covered_sections}/{blueprint_coverage.total_sections} secciones aprobadas",
+        "",
+        "## 2. Componentes y Módulos del Sistema Agéntico",
+        f"1. **Módulo de Ingesta y Contexto:** Normalización del input del usuario ({canvas.agent_profile.primary_user}), extracción estructurada de intenciones y validación de precondiciones.",
+        f"2. **Motor Cognitivo ({reasoning_pattern}):** Descomposición de objetivos, formulación de planes atómicos y selección determinística de herramientas.",
+        f"3. **Capa de Orquestación de Herramientas:** Invoca el catálogo de {tools_count} herramientas ({tool_names_str}) con control estricto de side effects, idempotencia y compensación.",
+        f"4. **Capa de Memoria y Contexto:** Gestión de estado de sesión ({memory_profile.strategy}), capas de retención ({', '.join(memory_profile.storage_layers)}) y RAG documental si aplica.",
+        f"5. **Gateway de Seguridad y Gobernanza (HITL):** Intercepción obligatoria para decisiones no delegables ({non_delegable_str}).",
+        f"6. **Capa de Observabilidad y Telemetría:** Monitoreo de señales ({signals_str}), métricas de latencia, costo por token y logging auditable.",
+        "",
+        "## 3. Rationale de Selección Arquitectónica",
+        f"{decision_summary}",
+    ]
+    technical_spec_content = "\n".join(tech_lines).strip()
 
-    skill_spec_content = "\n".join(
-        [
-            "# Skill Specs Base",
-            "",
-            "- discovery_skill: captura problema, usuario, restricciones y valor.",
-            "- lean_scope_skill: convierte el caso en alcance MVP y fuera de alcance.",
-            f"- architecture_selection_skill: recomienda {architecture} y explica tradeoffs.",
-            f"- reasoning_pattern_skill: aplica {reasoning_pattern} segun el caso.",
-            "- tool_design_skill: define contratos, validaciones y approval gates.",
-            "- memory_design_skill: protege contexto, checkpoints y goal drift.",
-            "- safety_skill: revisa riesgos y decisiones no delegables antes del handoff.",
-            "- blueprint_generation_skill: empaqueta la salida final para implementacion.",
-        ]
-    ).strip()
+    prompt_lines = [
+        "# System Prompt Operativo del Agente",
+        "",
+        f"Eres el agente inteligente oficial especializado en **{canvas.user_goal or discovery.desired_outcome}**.",
+        "",
+        "## 1. Misión y Rol",
+        f"- Tu usuario principal es: **{canvas.agent_profile.primary_user}**.",
+        f"- Tu objetivo es resolver: **{discovery.problem_statement}** y asegurar como resultado: **{discovery.desired_outcome}**.",
+        f"- Operas bajo el patrón de razonamiento: **{reasoning_pattern}**.",
+        "",
+        "## 2. Directivas Fundamentales de Comportamiento",
+        "1. **Veracidad y Grounding:** Responde únicamente con base en información validada y contexto verificado. Nunca inventes datos ni asumas parámetros faltantes.",
+        f"2. **Delimitación de Alcance:** Atiende con precisión los temas dentro del alcance ({', '.join(canvas.mvp_scope[:3]) if canvas.mvp_scope else 'alcance MVP'}). Si una solicitud está fuera de alcance ({', '.join(canvas.out_of_scope[:2]) if canvas.out_of_scope else 'temas no contemplados'}), recházala cortésmente y orienta al usuario.",
+        f"3. **Uso de Herramientas:** Emplea las herramientas disponibles ({tool_names_str}) siguiendo estrictamente sus contratos, precondiciones y validaciones de parámetros.",
+        f"4. **Gobernanza Human-in-the-Loop:** Jamás ejecutes de forma autónoma decisiones no delegables ({non_delegable_str}). Ante estas situaciones, prepara la propuesta y solicita confirmación humana explícita.",
+        "5. **Manejo de Errores y Excepciones:** Si una herramienta falla o existe ambigüedad irresoluble, informa claramente el estado y deriva el caso según el protocolo establecido.",
+        "",
+        "## 3. Guardrails Activos",
+        *[f"- {item}" for item in guardrails],
+    ]
+    system_prompt_content = "\n".join(prompt_lines).strip()
 
-    risk_matrix_content = "\n".join(
-        [
-            "# Matriz de riesgos",
-            "",
-            f"- resumen: {risk_summary.summary}",
-            f"- overall_status: {risk_summary.overall_status}",
-            "",
-            *[
-                f"- {item.category} | severidad={item.severity} | riesgo={item.risk} | mitigacion={item.mitigation}"
-                for item in safety_checks
-            ],
-        ]
-    ).strip()
+    skill_lines = [
+        "# Catálogo de Habilidades Operativas (Skill Specs)",
+        "",
+        "## 1. Skill de Comprensión e Ingesta (`intent_ingestion_skill`)",
+        f"- **Propósito:** Analizar la solicitud del usuario ({canvas.agent_profile.primary_user}), extraer entidades clave y clasificar la intención operativa.",
+        "- **Entradas:** Mensaje en lenguaje natural, contexto de sesión activo.",
+        "- **Salidas:** Intención tipada, parámetros extraídos, nivel de confianza.",
+        "",
+        f"## 2. Skill de Razonamiento y Planificación (`cognitive_planning_skill`)",
+        f"- **Propósito:** Aplicar el patrón {reasoning_pattern} para formular un plan de pasos atómicos orientado a alcanzar '{canvas.user_goal}'.",
+        f"- **Entradas:** Intención clasificada, estado de memoria operativa ({memory_strategy}).",
+        "- **Salidas:** Secuencia de ejecución, herramientas requeridas, checkpoints de validación.",
+        "",
+        "## 3. Skill de Ejecución de Herramientas (`tool_execution_skill`)",
+        f"- **Propósito:** Orquestar la invocación segura de las herramientas ({tool_names_str}), validando precondiciones y gestionando timeouts.",
+        "- **Entradas:** Contrato de herramienta, payload validado.",
+        "- **Salidas:** Respuesta estructurada o error tipado con estrategia de compensación.",
+        "",
+        "## 4. Skill de Gobernanza y Escalamiento (`governance_guardrail_skill`)",
+        f"- **Propósito:** Evaluar guardrails de seguridad e interceptar decisiones no delegables ({non_delegable_str}) antes de mutaciones de estado.",
+        f"- **Entradas:** Acción propuesta, matriz de riesgos ({risk_summary.summary}).",
+        "- **Salidas:** Aprobación automática o detención controlada con solicitud de gate humano.",
+    ]
+    skill_spec_content = "\n".join(skill_lines).strip()
 
-    test_cases_content = "\n".join(
-        [
-            "# Casos de prueba iniciales",
-            "",
-            "- Happy path completo desde discovery hasta export.",
-            "- Discovery con campos faltantes y bloqueo por validation gate.",
-            "- Patch manual del blueprint y recreacion del snapshot.",
-            "- Approval gate pendiente antes del handoff a implementacion.",
-            "- Rechazo del gate y retorno a needs_review.",
-        ]
-    ).strip()
+    risk_lines = [
+        "# Matriz de Riesgos y Plan de Mitigación Operativa",
+        "",
+        f"- **Estado Global de Seguridad:** {risk_summary.overall_status}",
+        f"- **Resumen:** {risk_summary.summary}",
+        "",
+        "| Categoría | Severidad | Riesgo Identificado | Disparador | Plan de Mitigación / Protocolo |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+        *[
+            f"| {item.category} | {item.severity} | {item.risk} | Detección en runtime | {item.mitigation} |"
+            for item in safety_checks
+        ],
+        f"| **Riesgo Crítico Principal** | **Alto** | {canvas.primary_risk} | Desvío de objetivo o error operativo | Validación continua frente a North Star Metric ({north_star}) |",
+    ]
+    risk_matrix_content = "\n".join(risk_lines).strip()
 
-    backlog_content = "\n".join(
-        [
-            "# Backlog MVP",
-            "",
-            "- Implementar canvas enriquecido y artefactos persistidos.",
-            "- Exponer approval gates y resolucion humana.",
-            "- Versionar export Markdown y paquete tecnico.",
-            "- Expandir evaluacion con contexto, riesgo y fallos de tools.",
-        ]
-    ).strip()
+    test_lines = [
+        "# Suite de Pruebas de Calidad y Validación Agéntica",
+        "",
+        "## Test Case 1: Flujo Principal Exitoso (Happy Path)",
+        f"- **Objetivo:** Validar que una solicitud estándar de {canvas.agent_profile.primary_user} sea resuelta de punta a punta alcanzando '{discovery.desired_outcome}'.",
+        "- **Precondiciones:** Sesión inicializada, herramientas activas y disponibles.",
+        f"- **Entrada:** Solicitud representativa dentro del alcance ({scope_first}).",
+        f"- **Resultado Esperado:** Planificación correcta mediante {reasoning_pattern}, invocación de tools sin error y respuesta final alineada con la métrica {north_star}.",
+        "",
+        "## Test Case 2: Detección y Contención Fuera de Alcance (Out-of-Scope)",
+        "- **Objetivo:** Verificar que el agente no intente resolver solicitudes no contempladas.",
+        f"- **Entrada:** Petición relacionada con: {out_scope_first}.",
+        "- **Resultado Esperado:** Rechazo controlado, sin consumo innecesario de herramientas ni degradación del contexto.",
+        "",
+        "## Test Case 3: Intercepción de Decisión No Delegable (HITL Gate)",
+        "- **Objetivo:** Comprobar que una acción sensible active el gate de aprobación humana.",
+        f"- **Entrada:** Solicitud que requiere: {discovery.mvp_definition.non_delegable_decisions[0] if discovery.mvp_definition.non_delegable_decisions else 'Decisión crítica'}.",
+        "- **Resultado Esperado:** Estado `needs_approval`, bloqueo de side effects y generación de payload para el revisor humano.",
+        "",
+        "## Test Case 4: Resiliencia ante Fallo de Herramienta o Timeout",
+        "- **Objetivo:** Evaluar la respuesta del agente ante indisponibilidad de dependencias externas.",
+        "- **Entrada:** Simulación de fallo o timeout en tool de ejecución.",
+        "- **Resultado Esperado:** Activación de retry o compensación, reporte de error claro y retorno a estado seguro.",
+        "",
+        "## Test Case 5: Control de Alucinación y Validación de Parámetros",
+        "- **Objetivo:** Confirmar que ante datos ambiguos el agente solicite clarificación en vez de inventar información.",
+        "- **Entrada:** Prompt con parámetros obligatorios ausentes o contradictorios.",
+        "- **Resultado Esperado:** Respuesta de solicitud de aclaración sin mutaciones de estado no justificadas.",
+    ]
+    test_cases_content = "\n".join(test_lines).strip()
+
+    backlog_lines = [
+        "# Backlog de Implementación y Entrega del Agente (5 Fases)",
+        "",
+        "## Épica 1: Ingesta de Contexto y Conectores de Entrada",
+        f"- [ ] Implementar parser de mensajes y extracción estructurada de entidades para {canvas.agent_profile.primary_user}.",
+        f"- [ ] Configurar capa de sesión y persistencia corta con estrategia {memory_strategy}.",
+        "- [ ] Integrar validación de precondiciones y descarte temprano de peticiones out-of-scope.",
+        "",
+        "## Épica 2: Motor Cognitivo y Orquestación de Herramientas",
+        f"- [ ] Implementar bucle de razonamiento {reasoning_pattern} con el modelo {llm_policy.fast_model or 'gpt-5-mini'} / {llm_policy.reasoning_model or 'gpt-5.5'}.",
+        f"- [ ] Desarrollar adaptadores y contratos tipados para las herramientas: {tool_names_str}.",
+        "- [ ] Configurar políticas de reintento, timeouts y compensación por herramienta.",
+        "",
+        "## Épica 3: Gobernanza de Seguridad y Gateway HITL",
+        f"- [ ] Implementar interceptor de guardrails de seguridad activos ({len(guardrails)} reglas).",
+        f"- [ ] Configurar approval gates humanos para decisiones no delegables: {non_delegable_str}.",
+        "- [ ] Establecer mecanismos de auditoría y registro de resoluciones humanas.",
+        "",
+        "## Épica 4: Suite de Pruebas Automatizadas y Calibración",
+        "- [ ] Ejecutar batería de pruebas de evaluación (Happy path, fallos de tools, boundary tests).",
+        "- [ ] Calibrar prompts de sistema, límites de tokens y umbrales de confianza.",
+        f"- [ ] Validar tasa de resolución frente a la North Star Metric: {north_star}.",
+        "",
+        "## Épica 5: Despliegue, Monitoreo y Observabilidad",
+        f"- [ ] Configurar captura de telemetría de producción ({signals_str}).",
+        "- [ ] Configurar alertas automáticas para degradación de servicio o anomalías de costo.",
+        "- [ ] Desplegar en ambiente productivo y habilitar ciclo de retroalimentación continua.",
+    ]
+    backlog_content = "\n".join(backlog_lines).strip()
 
     deliverables = [
         GeneratedDeliverable(

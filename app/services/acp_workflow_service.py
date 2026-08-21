@@ -314,6 +314,24 @@ def _phase_status(
     return ACPWorkflowRunStatus.completed
 
 
+class ACPPhaseSequenceError(ValueError):
+    def __init__(
+        self,
+        *,
+        phase_key: str,
+        blocking_phase_key: str,
+        blocking_phase_status: str,
+        next_action: str,
+    ):
+        self.phase_key = phase_key
+        self.blocking_phase_key = blocking_phase_key
+        self.blocking_phase_status = blocking_phase_status
+        self.next_action = next_action
+        super().__init__(
+            f"Cannot execute ACP phase '{phase_key}'. Previous phase '{blocking_phase_key}' must be completed first (current status: {blocking_phase_status}). Next action: {next_action}"
+        )
+
+
 def run_acp_phase(
     db: Session,
     *,
@@ -332,6 +350,24 @@ def run_acp_phase(
         phase = db.exec(
             select(ACPPhaseRunRecord).where(ACPPhaseRunRecord.run_id == run.id, ACPPhaseRunRecord.phase_key == phase_key)
         ).one()
+
+    # FIFO sequence enforcement: phase N requires phase N-1 to be completed
+    if definition.order > 1 and not payload.force:
+        previous_phase_def = next(d for d in ACP_PHASES if d.order == definition.order - 1)
+        prev_phase = db.exec(
+            select(ACPPhaseRunRecord).where(
+                ACPPhaseRunRecord.run_id == run.id,
+                ACPPhaseRunRecord.phase_key == previous_phase_def.key,
+            )
+        ).first()
+        if prev_phase is None or prev_phase.status not in COMPLETED_STATUSES:
+            prev_status = prev_phase.status.value if prev_phase is not None else "not_started"
+            raise ACPPhaseSequenceError(
+                phase_key=phase_key,
+                blocking_phase_key=previous_phase_def.key,
+                blocking_phase_status=prev_status,
+                next_action=f"Run and complete phase '{previous_phase_def.key}' before attempting '{phase_key}'.",
+            )
 
     if phase.status in COMPLETED_STATUSES and not payload.force:
         return phase

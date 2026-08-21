@@ -70,7 +70,10 @@ from app.services.llm_runtime.codex_cli.provider_facade import CodexLocalBuilder
 from app.services.llm_runtime.antigravity_cli.execution_service import resolve_agy_executable
 from app.services.llm_runtime.antigravity_cli.provider_facade import AntigravityLocalBuilderService
 from app.services.llm_runtime.provider_router import BuilderProviderFacade
-from app.services.llm_runtime.stage_context_types import StageContextBundle
+from app.services.llm_runtime.stage_context_types import StageContextBundle, build_llm_call_context
+from app.services.llm_finops.ledger_service import LLMUsageLedgerService
+from app.services.llm_finops.provider_instrumentation import FinOpsSessionFactory, record_provider_call
+from app.services.llm_finops.usage_normalization import normalize_deepseek_usage, normalize_openai_usage
 from app.services.rules import normalize_text
 
 try:
@@ -130,33 +133,6 @@ class _APIContextAwareBuilderMixin:
         result.context_used_sources = list(context_envelope.used_sources)
         result.context_stats = dict(context_envelope.context_stats)
         return result
-
-
-def _token_usage_payload(raw_usage: Any) -> dict[str, int]:
-    if raw_usage is None:
-        return {}
-    if isinstance(raw_usage, dict):
-        prompt_tokens = int(raw_usage.get("input_tokens", raw_usage.get("prompt_tokens", 0)) or 0)
-        completion_tokens = int(raw_usage.get("output_tokens", raw_usage.get("completion_tokens", 0)) or 0)
-        total_tokens = int(raw_usage.get("total_tokens", prompt_tokens + completion_tokens) or 0)
-        return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
-
-    prompt_tokens = int(
-        getattr(raw_usage, "input_tokens", getattr(raw_usage, "prompt_tokens", 0)) or 0
-    )
-    completion_tokens = int(
-        getattr(raw_usage, "output_tokens", getattr(raw_usage, "completion_tokens", 0)) or 0
-    )
-    total_tokens = int(getattr(raw_usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
-    return {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-    }
 
 
 def _capability_policy_payload(spec: BuilderCapabilitySpec) -> dict[str, object]:
@@ -730,10 +706,18 @@ def build_builder_service(runtime_settings: LLMRuntimeSettings) -> BuilderProvid
 
 
 class OpenAIBuilderService(_APIContextAwareBuilderMixin):
-    def __init__(self, runtime_settings: LLMRuntimeSettings | None = None) -> None:
+    def __init__(
+        self,
+        runtime_settings: LLMRuntimeSettings | None = None,
+        *,
+        finops_session_factory: FinOpsSessionFactory | None = None,
+        finops_ledger_service: LLMUsageLedgerService | None = None,
+    ) -> None:
         self.settings = get_settings()
         self.runtime_settings = runtime_settings or load_llm_runtime_settings()
         self._context_adapter = APIProviderContextAdapter()
+        self._finops_session_factory = finops_session_factory
+        self._finops_ledger_service = finops_ledger_service
         self._client = None
         if OpenAI is not None and self.settings.openai_api_key:
             self._client = OpenAI(api_key=self.settings.openai_api_key)
@@ -787,80 +771,116 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
             if spec.preferred_model == "reasoning"
             else self.runtime_settings.openai.fast_model
         )
+        call_context = build_llm_call_context(
+            context_bundle,
+            capability=capability.value,
+            provider_key=LLMProviderKey.openai.value,
+            execution_backend=AgentExecutionBackend.provider_native.value,
+            metadata={
+                "prompt_version": spec.prompt_version,
+                "preferred_model": spec.preferred_model,
+                "task_kind": spec.task_kind,
+            },
+        )
         base_result = LLMArtifactResult(
             artifact=None,
             provider_key=LLMProviderKey.openai.value,
+            execution_backend=AgentExecutionBackend.provider_native.value,
+            execution_mode=call_context.execution_mode,
             capability_key=capability.value,
             model_name=model_name,
             prompt_version=spec.prompt_version,
             schema_validation_status="not_attempted",
+            finops_context=call_context,
             capability_policy=_capability_policy_payload(spec),
         )
-        if not self.is_available():
-            return self._attach_context_metadata(
-                replace(
-                    base_result,
-                    warning=f"OpenAI no esta disponible para {capability.value}; policy={spec.fallback_policy}.",
-                    finish_reason="provider_unavailable",
-                    failure_kind="provider_unavailable",
-                    degraded=True,
-                ),
-                context_envelope=context_envelope,
-            )
 
-        request_kwargs: dict[str, Any] = {
-            "model": model_name,
-            "input": [
-                {"role": "system", "content": _localized_instruction(spec.system_instruction, context_bundle)},
-                {"role": "user", "content": context_envelope.user_payload},
-            ],
-            "text_format": spec.output_model,
-        }
-        if spec.preferred_model == "reasoning":
-            request_kwargs["reasoning"] = {"effort": self.runtime_settings.openai.reasoning_effort}
-
-        try:
-            response = self._client.responses.parse(**request_kwargs)
-            parsed = response.output_parsed
-            if parsed is None:
+        def _call_openai() -> LLMArtifactResult:
+            if not self.is_available():
                 return self._attach_context_metadata(
                     replace(
                         base_result,
-                        warning=f"OpenAI no devolvio salida estructurada para {capability.value}; policy={spec.fallback_policy}.",
-                        request_id=str(getattr(response, "id", "") or ""),
-                        finish_reason=str(getattr(response, "status", "missing_output") or "missing_output"),
-                        schema_validation_status="missing_output",
-                        failure_kind="schema_missing_output",
+                        warning=f"OpenAI no esta disponible para {capability.value}; policy={spec.fallback_policy}.",
+                        finish_reason="provider_unavailable",
+                        failure_kind="provider_unavailable",
                         degraded=True,
-                        token_usage=_token_usage_payload(getattr(response, "usage", None)),
                     ),
                     context_envelope=context_envelope,
                 )
-            normalized = spec.output_model.model_validate(parsed.model_dump(mode="json"))
-            return self._attach_context_metadata(
-                replace(
-                    base_result,
-                    artifact=normalized,
-                    request_id=str(getattr(response, "id", "") or ""),
-                    finish_reason=str(getattr(response, "status", "completed") or "completed"),
-                    schema_validation_status="valid",
-                    token_usage=_token_usage_payload(getattr(response, "usage", None)),
-                ),
-                context_envelope=context_envelope,
-            )
-        except Exception as exc:
-            return self._attach_context_metadata(
-                replace(
-                    base_result,
-                    warning=f"OpenAI no pudo ejecutar {capability.value}; policy={spec.fallback_policy}.",
-                    finish_reason="exception",
-                    schema_validation_status="invalid",
-                    failure_kind="provider_error",
-                    failure_detail=str(exc)[:400],
-                    degraded=True,
-                ),
-                context_envelope=context_envelope,
-            )
+
+            request_kwargs: dict[str, Any] = {
+                "model": model_name,
+                "input": [
+                    {"role": "system", "content": _localized_instruction(spec.system_instruction, context_bundle)},
+                    {"role": "user", "content": context_envelope.user_payload},
+                ],
+                "text_format": spec.output_model,
+            }
+            if spec.preferred_model == "reasoning":
+                request_kwargs["reasoning"] = {"effort": self.runtime_settings.openai.reasoning_effort}
+
+            try:
+                response = self._client.responses.parse(**request_kwargs)
+                parsed = response.output_parsed
+                usage = normalize_openai_usage(getattr(response, "usage", None))
+                if parsed is None:
+                    return self._attach_context_metadata(
+                        replace(
+                            base_result,
+                            warning=f"OpenAI no devolvio salida estructurada para {capability.value}; policy={spec.fallback_policy}.",
+                            request_id=str(getattr(response, "id", "") or ""),
+                            finish_reason=str(getattr(response, "status", "missing_output") or "missing_output"),
+                            schema_validation_status="missing_output",
+                            failure_kind="schema_missing_output",
+                            degraded=True,
+                            token_usage=usage.compatibility_token_usage(),
+                            normalized_usage=usage,
+                        ),
+                        context_envelope=context_envelope,
+                    )
+                normalized = spec.output_model.model_validate(parsed.model_dump(mode="json"))
+                return self._attach_context_metadata(
+                    replace(
+                        base_result,
+                        artifact=normalized,
+                        request_id=str(getattr(response, "id", "") or ""),
+                        finish_reason=str(getattr(response, "status", "completed") or "completed"),
+                        schema_validation_status="valid",
+                        token_usage=usage.compatibility_token_usage(),
+                        normalized_usage=usage,
+                    ),
+                    context_envelope=context_envelope,
+                )
+            except Exception as exc:
+                return self._attach_context_metadata(
+                    replace(
+                        base_result,
+                        warning=f"OpenAI no pudo ejecutar {capability.value}; policy={spec.fallback_policy}.",
+                        finish_reason="exception",
+                        schema_validation_status="invalid",
+                        failure_kind="provider_error",
+                        failure_detail=str(exc)[:400],
+                        degraded=True,
+                    ),
+                    context_envelope=context_envelope,
+                )
+
+        return record_provider_call(
+            call=_call_openai,
+            call_context=call_context,
+            provider_key=LLMProviderKey.openai,
+            model_name=model_name,
+            requested_model=model_name,
+            execution_backend=AgentExecutionBackend.provider_native.value,
+            execution_mode=call_context.execution_mode,
+            ledger_service=self._finops_ledger_service,
+            session_factory=self._finops_session_factory,
+            metadata={
+                "capability": capability.value,
+                "prompt_version": spec.prompt_version,
+                "preferred_model": spec.preferred_model,
+            },
+        )
 
     def normalize_discovery(
         self,
@@ -1361,10 +1381,18 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
 
 
 class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
-    def __init__(self, runtime_settings: LLMRuntimeSettings | None = None) -> None:
+    def __init__(
+        self,
+        runtime_settings: LLMRuntimeSettings | None = None,
+        *,
+        finops_session_factory: FinOpsSessionFactory | None = None,
+        finops_ledger_service: LLMUsageLedgerService | None = None,
+    ) -> None:
         self.settings = get_settings()
         self.runtime_settings = runtime_settings or load_llm_runtime_settings()
         self._context_adapter = APIProviderContextAdapter()
+        self._finops_session_factory = finops_session_factory
+        self._finops_ledger_service = finops_ledger_service
         self._client = None
         self._last_completion_metadata: dict[str, Any] = {}
         if OpenAI is not None and self.settings.deepseek_api_key:
@@ -1447,10 +1475,12 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         if not content.strip():
             raise ValueError("DeepSeek devolvio contenido vacio.")
         payload = _extract_json_payload(content)
+        usage = normalize_deepseek_usage(getattr(response, "usage", None))
         metadata = {
             "request_id": str(getattr(response, "id", "") or ""),
             "finish_reason": str(finish_reason or "completed"),
-            "token_usage": _token_usage_payload(getattr(response, "usage", None)),
+            "token_usage": usage.compatibility_token_usage(),
+            "normalized_usage": usage,
             "model_name": model,
             "output_model": output_model.__name__,
         }
@@ -1501,65 +1531,104 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             if spec.preferred_model == "reasoning"
             else self.runtime_settings.deepseek.fast_model
         )
+        call_context = build_llm_call_context(
+            context_bundle,
+            capability=capability.value,
+            provider_key=LLMProviderKey.deepseek.value,
+            execution_backend=AgentExecutionBackend.provider_native.value,
+            metadata={
+                "base_url": self.runtime_settings.deepseek.base_url,
+                "prompt_version": spec.prompt_version,
+                "preferred_model": spec.preferred_model,
+                "task_kind": spec.task_kind,
+            },
+        )
         base_result = LLMArtifactResult(
             artifact=None,
             provider_key=LLMProviderKey.deepseek.value,
+            execution_backend=AgentExecutionBackend.provider_native.value,
+            execution_mode=call_context.execution_mode,
             capability_key=capability.value,
             model_name=model_name,
             prompt_version=spec.prompt_version,
             schema_validation_status="not_attempted",
+            finops_context=call_context,
             capability_policy=_capability_policy_payload(spec),
         )
-        if not self.is_available():
-            return self._attach_context_metadata(
-                replace(
-                    base_result,
-                    warning=f"DeepSeek no esta disponible para {capability.value}; policy={spec.fallback_policy}.",
-                    finish_reason="provider_unavailable",
-                    failure_kind="provider_unavailable",
-                    degraded=True,
-                ),
-                context_envelope=context_envelope,
-            )
 
-        try:
-            raw_payload, metadata = self._request_structured_completion_payload(
-                model=model_name,
-                system_instruction=_localized_instruction(spec.system_instruction, context_bundle),
-                user_payload=context_envelope.user_payload,
-                thinking_mode="enabled" if spec.preferred_model == "reasoning" else "disabled",
-                reasoning_effort=self.runtime_settings.deepseek.reasoning_effort if spec.preferred_model == "reasoning" else None,
-                max_tokens=4096,
-                output_model=spec.output_model,
-            )
-            normalized, schema_status = validate_or_repair_structured_payload(raw_payload, spec.output_model)
-            return self._attach_context_metadata(
-                replace(
-                    base_result,
-                    artifact=normalized,
-                    request_id=str(metadata.get("request_id", "")),
-                    finish_reason=str(metadata.get("finish_reason", "completed")),
-                    schema_validation_status=schema_status,
-                    token_usage=dict(metadata.get("token_usage", {})),
-                ),
-                context_envelope=context_envelope,
-            )
-        except Exception as exc:
-            failure_kind = "schema_invalid" if exc.__class__.__name__ == "ValidationError" else "provider_error"
-            return self._attach_context_metadata(
-                replace(
-                    base_result,
-                    warning=f"DeepSeek no pudo ejecutar {capability.value}; policy={spec.fallback_policy}.",
-                    request_id=str(self._last_completion_metadata.get("request_id", "")),
-                    finish_reason=str(self._last_completion_metadata.get("finish_reason", "exception")),
-                    schema_validation_status=str(self._last_completion_metadata.get("schema_validation_status", "invalid")),
-                    token_usage=dict(self._last_completion_metadata.get("token_usage", {})),
-                    failure_kind=failure_kind,
-                    failure_detail=str(exc)[:400],
-                    degraded=True,
-                ),
-                context_envelope=context_envelope,
-            )
+        def _call_deepseek() -> LLMArtifactResult:
+            if not self.is_available():
+                return self._attach_context_metadata(
+                    replace(
+                        base_result,
+                        warning=f"DeepSeek no esta disponible para {capability.value}; policy={spec.fallback_policy}.",
+                        finish_reason="provider_unavailable",
+                        failure_kind="provider_unavailable",
+                        degraded=True,
+                    ),
+                    context_envelope=context_envelope,
+                )
+
+            try:
+                raw_payload, metadata = self._request_structured_completion_payload(
+                    model=model_name,
+                    system_instruction=_localized_instruction(spec.system_instruction, context_bundle),
+                    user_payload=context_envelope.user_payload,
+                    thinking_mode="enabled" if spec.preferred_model == "reasoning" else "disabled",
+                    reasoning_effort=self.runtime_settings.deepseek.reasoning_effort if spec.preferred_model == "reasoning" else None,
+                    max_tokens=4096,
+                    output_model=spec.output_model,
+                )
+                normalized, schema_status = validate_or_repair_structured_payload(raw_payload, spec.output_model)
+                usage = metadata.get("normalized_usage")
+                return self._attach_context_metadata(
+                    replace(
+                        base_result,
+                        artifact=normalized,
+                        request_id=str(metadata.get("request_id", "")),
+                        finish_reason=str(metadata.get("finish_reason", "completed")),
+                        schema_validation_status=schema_status,
+                        token_usage=dict(metadata.get("token_usage", {})),
+                        normalized_usage=usage if isinstance(usage, type(base_result.normalized_usage)) else usage,
+                    ),
+                    context_envelope=context_envelope,
+                )
+            except Exception as exc:
+                failure_kind = "schema_invalid" if exc.__class__.__name__ == "ValidationError" else "provider_error"
+                usage = self._last_completion_metadata.get("normalized_usage")
+                return self._attach_context_metadata(
+                    replace(
+                        base_result,
+                        warning=f"DeepSeek no pudo ejecutar {capability.value}; policy={spec.fallback_policy}.",
+                        request_id=str(self._last_completion_metadata.get("request_id", "")),
+                        finish_reason=str(self._last_completion_metadata.get("finish_reason", "exception")),
+                        schema_validation_status=str(self._last_completion_metadata.get("schema_validation_status", "invalid")),
+                        token_usage=dict(self._last_completion_metadata.get("token_usage", {})),
+                        normalized_usage=usage if isinstance(usage, type(base_result.normalized_usage)) else usage,
+                        failure_kind=failure_kind,
+                        failure_detail=str(exc)[:400],
+                        degraded=True,
+                    ),
+                    context_envelope=context_envelope,
+                )
+
+        return record_provider_call(
+            call=_call_deepseek,
+            call_context=call_context,
+            provider_key=LLMProviderKey.deepseek,
+            model_name=model_name,
+            requested_model=model_name,
+            execution_backend=AgentExecutionBackend.provider_native.value,
+            execution_mode=call_context.execution_mode,
+            ledger_service=self._finops_ledger_service,
+            session_factory=self._finops_session_factory,
+            metadata={
+                "capability": capability.value,
+                "prompt_version": spec.prompt_version,
+                "preferred_model": spec.preferred_model,
+                "base_url": self.runtime_settings.deepseek.base_url,
+            },
+        )
 
     def normalize_discovery(
         self,

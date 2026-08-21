@@ -6,7 +6,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from app.models import CanvasArtifact, DiscoveryArtifact, ToolRecommendationLLMOutput
-from app.services.diagram_center.contracts import DiagramModel
+from app.services.diagram_center.contracts import StructuredDiagramModel
 from app.services.llm_runtime.builder_contracts import (
     AgentDesignProposalOutput,
     BlueprintNarrativeOutput,
@@ -160,11 +160,16 @@ CAPABILITY_ALIASES: dict[BuilderCapability, set[str]] = {
 
 GUIDED_QUESTION_INSTRUCTION = (
     "Si generas preguntas, primero intenta inferir la respuesta con el contexto y las fuentes aprobadas. "
-    "Formula solo preguntas indispensables para la etapa actual. Cada pregunta nueva debe incluir "
-    "`suggested_answer`; si existen varias rutas validas, agrega `answer_options` con 2 a 4 opciones, "
-    "maximo una marcada como recommended, e incluye description, impact, example, confidence y source_refs "
-    "cuando haya evidencia. Si la pregunta es tecnica de implementacion temprana, no la hagas al usuario: "
-    "registrala como riesgo, supuesto o diferida hacia ACP."
+    "Formula solo preguntas indispensables para el objetivo funcional de la etapa actual y no adelantes "
+    "decisiones de etapas posteriores. Antes de preguntar, documenta implicitamente que intentaste inferir "
+    "la respuesta; si la confianza es razonable, usa la inferencia como supuesto trazable en vez de preguntar. "
+    "Cada pregunta nueva debe incluir `suggested_answer`; si existen varias rutas validas, agrega "
+    "`answer_options` con 2 a 4 opciones, maximo una marcada como recommended, e incluye description, impact, "
+    "example, confidence y source_refs cuando haya evidencia. Las opciones deben ser comprensibles para el "
+    "owner funcional, no para un administrador tecnico. Si la pregunta es tecnica de implementacion temprana "
+    "(framework, base de datos, credenciales, despliegue, endpoints finales, configuracion de entorno o "
+    "contratos fisicos), no la hagas al usuario durante Blueprint: registrala como supuesto, riesgo o "
+    "decision diferida hacia ACP con impacto y momento de cierre."
 )
 
 DISCOVERY_SCOPE_INSTRUCTION = (
@@ -341,7 +346,7 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
         preferred_model="reasoning",
         llm_required=True,
         critic_required=True,
-        timeout_ms=120000,
+        timeout_ms=300000,
         max_retries=0,
         fallback_policy="blocked_until_critique_or_user_review",
     ),
@@ -363,7 +368,7 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
         preferred_model="reasoning",
         llm_required=True,
         critic_required=False,
-        timeout_ms=90000,
+        timeout_ms=240000,
         max_retries=0,
         fallback_policy="needs_review_if_critique_missing",
     ),
@@ -534,15 +539,18 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
             "DiagramModel v1 válido y trazable. Usa solo el contexto aprobado; no inventes componentes, actores, "
             "tecnologías, cardinalidades ni decisiones. El campo notation debe respetar la notación solicitada. "
             "Los ids deben iniciar con letra y usar solo letras, números, punto, dos puntos, guion o guion bajo. "
-            "Toda arista debe referenciar nodos existentes. Nunca incluyas secretos o datos personales."
+            "Toda arista debe referenciar nodos existentes. Si la notación es BPMN, infiere pools y lanes desde "
+            "participantes, áreas, roles o sistemas aprobados, decláralos en `pools` y asigna cada nodo con "
+            "`metadata.pool_id` y `metadata.lane_id`. Nunca incluyas secretos o datos personales."
         ),
         task_instruction=(
             "Construye el modelo solicitado en `diagram_generation_input`. Aplica objetivo, reglas semánticas y "
             "exclusiones del PromptSpec. Mantén el nivel de detalle solicitado, agrega source_refs y registra como "
             "assumptions solo inferencias indispensables claramente identificadas. No devuelvas Mermaid, SVG ni texto "
-            "explicativo fuera del contrato JSON."
+            "explicativo fuera del contrato JSON. Para BPMN usa sequence_flow dentro del mismo pool y message_flow "
+            "entre pools; no sustituyas BPMN por un grafo dirigido genérico."
         ),
-        output_model=DiagramModel,
+        output_model=StructuredDiagramModel,
         preferred_model="reasoning",
         llm_required=True,
         critic_required=False,

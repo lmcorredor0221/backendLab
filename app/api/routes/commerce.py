@@ -43,10 +43,12 @@ from app.services.commerce_service import (
     build_product_response,
     complete_sandbox_checkout,
     create_checkout_session,
+    get_access_requests_count,
     get_active_product,
     get_base_prices_summary,
     get_today_trm_data,
     list_active_products,
+    list_all_access_requests,
     request_access,
     resolve_access_request,
     resolve_effective_entitlement_state,
@@ -56,6 +58,13 @@ from app.services.commerce_service import (
 )
 from app.services.commercial_access import build_commercial_access_snapshot_v2, build_entitlement_context
 from app.services.diagram_catalog_service import build_diagram_catalog
+from app.services.product_processing import (
+    ProductBuildLifecycle,
+    ProductBuildProductKey,
+    ProductJourneyOverview,
+    ProductJourneyProductSummary,
+    build_product_journey_overview,
+)
 from app.core.config import get_settings
 
 
@@ -78,14 +87,6 @@ def _get_record_or_404(db: Session, session_id: UUID, user_id: UUID) -> SessionR
     return record
 
 
-def _stage_progress(stage: str) -> int:
-    order = ["draft_capture", "input_validation", "normalize_discovery", "build_canvas", "build_blueprint", "post_validation", "ready_for_export"]
-    try:
-        return round((order.index(stage) + 1) / len(order) * 100)
-    except ValueError:
-        return 0
-
-
 def _route_item(key: str, label: str, href: str, *, detail: str = "", access_state: str = "allowed") -> ProductOverviewItem:
     return ProductOverviewItem(
         key=key,
@@ -102,42 +103,107 @@ def _blocked_attention(key: str, title: str, reason: str, href: str) -> ProductA
     return ProductAttentionItem(key=key, title=title, severity="blocking", reason=reason, href=href)
 
 
+def _legacy_product_key(product_key: ProductBuildProductKey) -> str:
+    if product_key == ProductBuildProductKey.blueprint_basic:
+        return "blueprint"
+    return product_key.value
+
+
+def _legacy_product_status(product: ProductJourneyProductSummary) -> str:
+    if product.purchase_required:
+        return "locked"
+    if product.lifecycle == ProductBuildLifecycle.completed:
+        return "generated"
+    if product.lifecycle in {
+        ProductBuildLifecycle.queued,
+        ProductBuildLifecycle.preparing,
+        ProductBuildLifecycle.running,
+    }:
+        return "running"
+    if product.lifecycle == ProductBuildLifecycle.requires_attention:
+        return "requires_attention"
+    if product.lifecycle == ProductBuildLifecycle.partial:
+        return "partial"
+    if product.lifecycle == ProductBuildLifecycle.error:
+        return "error"
+    return "available"
+
+
+def _legacy_product_access_state(product: ProductJourneyProductSummary) -> str:
+    if product.access_state == "allowed":
+        return "allowed"
+    if product.access_state == "payment_pending":
+        return "payment_pending"
+    return "requires_purchase" if product.purchase_required else product.access_state
+
+
+def _legacy_product_cta(product: ProductJourneyProductSummary) -> str:
+    if product.primary_action is not None and product.primary_action.label:
+        return product.primary_action.label
+    if product.purchase_required:
+        return f"Adquirir {product.product_label}"
+    return f"Ver {product.product_label}"
+
+
+def _legacy_product_href(product: ProductJourneyProductSummary, base: str) -> str:
+    if product.primary_action is not None and product.primary_action.href:
+        return product.primary_action.href
+    if product.product_key == ProductBuildProductKey.blueprint_pro:
+        return f"{base}/blueprint/pro"
+    if product.product_key == ProductBuildProductKey.acp:
+        return f"{base}/acp"
+    return f"{base}/blueprint"
+
+
+def _legacy_products(overview: ProductJourneyOverview, base: str) -> list[ProductOverviewItem]:
+    items: list[ProductOverviewItem] = []
+    for product in overview.products:
+        items.append(
+            ProductOverviewItem(
+                key=_legacy_product_key(product.product_key),
+                label=product.product_label,
+                href=_legacy_product_href(product, base),
+                status=_legacy_product_status(product),
+                access_state=_legacy_product_access_state(product),
+                cta_label=_legacy_product_cta(product),
+                progress_percent=product.progress_percent,
+                detail=(
+                    f"{product.available_deliverable_count}/{product.total_deliverable_count} entregables disponibles. "
+                    f"Estado: {product.lifecycle.value}."
+                ),
+            )
+        )
+    return items
+
+
+def _legacy_attention(overview: ProductJourneyOverview) -> list[ProductAttentionItem]:
+    attention: list[ProductAttentionItem] = []
+    if overview.blocking_attention_count and overview.recommended_next_action is not None:
+        attention.append(
+            _blocked_attention(
+                "canonical_blocking_attention",
+                "Hay decisiones pendientes",
+                overview.recommended_next_action.reason or "El journey requiere intervencion antes de avanzar.",
+                overview.recommended_next_action.href,
+            )
+        )
+    if overview.technical_error_count and not attention:
+        attention.append(
+            _blocked_attention(
+                "canonical_technical_error",
+                "Hay un error recuperable",
+                "Revisa la actividad o atencion antes de continuar.",
+                overview.recommended_next_action.href if overview.recommended_next_action is not None else "",
+            )
+        )
+    return attention
+
+
 def _product_overview(db: Session, record: SessionRecord, current_user: UserRecord) -> ProductOverviewResponse:
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
+    overview = build_product_journey_overview(db, record=record, current_user=current_user)
     base = f"/projects/{record.id}"
-    products = [
-        ProductOverviewItem(
-            key="blueprint",
-            label="Blueprint",
-            href=f"{base}/blueprint",
-            status="generated" if access.tier in {CommercialTier.blueprint, CommercialTier.blueprint_pro, CommercialTier.acp} else "available",
-            access_state="allowed",
-            cta_label="Ver Blueprint",
-            progress_percent=min(100, _stage_progress(record.current_stage.value)),
-            detail="Visualizacion protegida del diseno integral.",
-        ),
-        ProductOverviewItem(
-            key="blueprint_pro",
-            label="Blueprint Profesional",
-            href=f"{base}/blueprint/pro",
-            status="active" if tier_rank(access.tier) >= tier_rank(CommercialTier.blueprint_pro) else "locked",
-            access_state="allowed" if tier_rank(access.tier) >= tier_rank(CommercialTier.blueprint_pro) else "requires_purchase",
-            cta_label="Descargar" if tier_rank(access.tier) >= tier_rank(CommercialTier.blueprint_pro) else "Adquirir",
-            progress_percent=100 if tier_rank(access.tier) >= tier_rank(CommercialTier.blueprint_pro) else 0,
-            detail="Documento profesional y exportables autorizados.",
-        ),
-        ProductOverviewItem(
-            key="acp",
-            label="Agent Construction Package",
-            href=f"{base}/acp",
-            status="active" if access.tier == CommercialTier.acp else "locked",
-            access_state="allowed" if access.tier == CommercialTier.acp else "requires_purchase",
-            cta_label="Abrir ACP" if access.tier == CommercialTier.acp else "Ver valor ACP",
-            progress_percent=100 if access.tier == CommercialTier.acp else 0,
-            detail="Paquete portable de construccion y validacion tecnica.",
-        ),
-    ]
-    attention: list[ProductAttentionItem] = []
+    attention = _legacy_attention(overview)
     if access.checkout_state == "pending":
         attention.append(
             _blocked_attention(
@@ -147,7 +213,7 @@ def _product_overview(db: Session, record: SessionRecord, current_user: UserReco
                 f"{base}/blueprint/pro",
             )
         )
-    if access.tier != CommercialTier.acp:
+    if access.tier != CommercialTier.acp and not overview.blocking_attention_count:
         attention.append(
             ProductAttentionItem(
                 key="acp_upsell",
@@ -161,10 +227,10 @@ def _product_overview(db: Session, record: SessionRecord, current_user: UserReco
         session_id=record.id,
         workspace_id=record.workspace_id,
         project_title=record.title,
-        active_stage=record.current_stage.value,
-        lean_progress_percent=_stage_progress(record.current_stage.value),
+        active_stage=overview.current_stage.stage_key,
+        lean_progress_percent=overview.current_stage.progress_percent,
         access=access,
-        products=products,
+        products=_legacy_products(overview, base),
         attention=attention,
         exports=[
             _route_item("artifacts", "Artefactos", f"{base}/artifacts", detail="Centro de exportaciones autorizado."),
@@ -177,6 +243,11 @@ def _product_overview(db: Session, record: SessionRecord, current_user: UserReco
             _route_item("attention", "Atencion", f"{base}/attention"),
             _route_item("activity", "Actividad", f"{base}/activity"),
         ],
+        canonical_overview_contract=overview.contract_version,
+        recommended_next_action=overview.recommended_next_action.model_dump(mode="json")
+        if overview.recommended_next_action is not None
+        else {},
+        source_contracts=overview.source_contracts,
     )
 
 
@@ -361,7 +432,8 @@ def get_acp_invitation_route(
             "automation_readiness_lift_percent": 22,
         },
         comparison={
-            "blueprint_only": "Diseno integral para aprobacion y comprension.",
+            "blueprint_basic": "Producto de entrada: inferir, registrar supuestos y mostrar valor con bajo costo.",
+            "blueprint_premium": "Blueprint enriquecido con preguntas resueltas y reprocesamiento selectivo.",
             "acp": "Paquete tecnico portable para iniciar construccion con menos friccion.",
             "acp_agentic": "Prompts, contratos y pruebas preparados para herramientas agenticas.",
         },
@@ -435,3 +507,23 @@ def resolve_access_request_route(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     db.commit()
     return response
+
+
+@router.get("/commerce/access-requests", response_model=list[AccessRequestResponse])
+def list_access_requests_route(
+    status: str | None = None,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> list[AccessRequestResponse]:
+    try:
+        return list_all_access_requests(db, status_filter=status, current_user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.get("/commerce/access-requests/count")
+def get_access_requests_count_route(
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> dict[str, int]:
+    return get_access_requests_count(db, current_user=current_user)

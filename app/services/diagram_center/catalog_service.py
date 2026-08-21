@@ -10,14 +10,73 @@ from app.services.diagram_center.contracts import (
     DiagramCatalogItemV3,
     DiagramCatalogV3Response,
     DiagramDetailV3Response,
+    DiagramNotation,
     DiagramModel,
     DiagramQualityReport,
     DiagramVersionSummary,
 )
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord, DiagramVersionRecord
 from app.services.diagram_center.policy_service import effective_registry_policy, resolve_diagram_policy, resolve_project_stage
-from app.services.diagram_center.registry_service import get_registry_entry, list_registry_entries
+from app.services.diagram_center.quality_service import evaluate_diagram_quality
+from app.services.diagram_center.registry_service import build_prompt_spec, get_registry_entry, list_registry_entries
+from app.services.diagram_center.renderer_service import RENDERER_REVISION, render_diagram
 from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
+
+
+_PLANTUML_NOTATIONS = {
+    "uml_use_case",
+    "uml_activity",
+    "uml_component",
+    "sequence",
+    "class",
+    "state",
+    "deployment",
+    "package",
+    "c4",
+}
+
+_SPECIALIZED_SVG_NOTATIONS = {
+    "uml_use_case",
+    "uml_activity",
+    "uml_component",
+    "bpmn",
+    "deployment",
+    "package",
+}
+
+
+def _svg_renderer_revision(svg: str) -> str:
+    marker = 'data-renderer-revision="'
+    start = svg.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    end = svg.find('"', start)
+    return svg[start:end] if end >= start else ""
+
+
+def _notation_value(value: DiagramNotation | str | object) -> str:
+    if isinstance(value, DiagramNotation):
+        return value.value
+    return str(value or "")
+
+
+def _current_policy_metadata(item: DiagramCatalogItemV3) -> dict[str, str]:
+    return {
+        "standard": item.standard,
+        "source_contract": item.source_contract,
+        "presentation_contract": item.presentation_contract,
+        "renderer_key": item.renderer_key,
+        "validator_key": item.validator_key,
+    }
+
+
+def _metadata_conflicts_with_policy(metadata: dict[str, object], item: DiagramCatalogItemV3) -> bool:
+    for key, expected in _current_policy_metadata(item).items():
+        stored = str(metadata.get(key) or "")
+        if stored and stored != expected:
+            return True
+    return False
 
 
 def _version_summary(record: DiagramVersionRecord) -> DiagramVersionSummary:
@@ -59,7 +118,28 @@ def _available_actions(item: DiagramCatalogItemV3, version_count: int) -> list[s
         actions.append("download")
     if item.access.can_compare and version_count > 1:
         actions.append("compare")
+    if item.needs_layout_upgrade and item.access.can_generate:
+        actions.append("layout_upgrade")
     return actions
+
+
+def _layout_upgrade_reason(
+    latest_version: DiagramVersionRecord | None,
+    item: DiagramCatalogItemV3,
+) -> str:
+    if latest_version is None:
+        return ""
+    renderings = latest_version.renderings if isinstance(latest_version.renderings, dict) else {}
+    svg = str(renderings.get("svg") or "")
+    current_revision = _svg_renderer_revision(svg)
+    if not current_revision:
+        return "La version actual no declara revision de renderer; conviene regenerar para aplicar sizing, routing y split legible."
+    if current_revision != RENDERER_REVISION:
+        return (
+            f"La version actual usa {current_revision}; la politica vigente usa {RENDERER_REVISION} "
+            "con mejoras de legibilidad, espaciado y ruteo."
+        )
+    return ""
 
 
 def build_catalog_v3(
@@ -89,7 +169,9 @@ def build_catalog_v3(
     tier = record.commercial_tier.value
     items: list[DiagramCatalogItemV3] = []
     for entry in list_registry_entries():
-        enabled, generation_enabled, required_tier, preview_mode, _ = effective_registry_policy(db, entry)
+        enabled, generation_enabled, required_tier, preview_mode, governance = effective_registry_policy(db, entry)
+        prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
+        effective_notation = DiagramNotation(str(prompt_spec.get("notation") or entry.notation.value))
         access = resolve_diagram_policy(
             entry=entry,
             project_stage=project_stage,
@@ -110,7 +192,12 @@ def build_catalog_v3(
             category=entry.category,
             type=entry.type,
             family=entry.family,
-            notation=entry.notation,
+            notation=effective_notation,
+            standard=str(prompt_spec.get("standard") or entry.standard),
+            source_contract=str(prompt_spec.get("source_contract") or entry.source_contract),
+            presentation_contract=str(prompt_spec.get("presentation_contract") or entry.presentation_contract),
+            renderer_key=str(prompt_spec.get("renderer_key") or entry.renderer_key),
+            validator_key=str(prompt_spec.get("validator_key") or entry.validator_key),
             complexity=entry.complexity,
             stage=entry.stage,
             required_tier=required_tier,
@@ -120,6 +207,8 @@ def build_catalog_v3(
             updated_at=latest_version.created_at if latest_version is not None else None,
             current_version=_version_summary(latest_version) if latest_version is not None else None,
         )
+        item.layout_upgrade_reason = _layout_upgrade_reason(latest_version, item)
+        item.needs_layout_upgrade = bool(item.layout_upgrade_reason)
         item.available_actions = _available_actions(item, len(versions_by_key[entry.key]))
         items.append(item)
 
@@ -152,6 +241,57 @@ def _limited_preview(model: DiagramModel) -> DiagramModel:
     )
 
 
+def _hydrate_model_for_current_registry(model: DiagramModel, item: DiagramCatalogItemV3) -> DiagramModel:
+    metadata = dict(model.metadata or {})
+    stored_notation = _notation_value(model.notation)
+    current_notation = _notation_value(item.notation)
+    policy_changed = stored_notation != current_notation or _metadata_conflicts_with_policy(metadata, item)
+    refreshed_metadata = dict(metadata)
+    for key, expected in _current_policy_metadata(item).items():
+        previous = refreshed_metadata.get(key)
+        if policy_changed or not previous:
+            if previous and str(previous) != expected and f"legacy_{key}" not in refreshed_metadata:
+                refreshed_metadata[f"legacy_{key}"] = previous
+            refreshed_metadata[key] = expected
+    refreshed_metadata["compatibility_hydrated"] = True
+    refreshed_metadata["effective_notation"] = current_notation
+    if policy_changed:
+        refreshed_metadata["policy_rehydrated"] = True
+        refreshed_metadata["policy_rehydrated_reason"] = "registry_or_governance_changed"
+        if stored_notation and stored_notation != current_notation and "legacy_notation" not in refreshed_metadata:
+            refreshed_metadata["legacy_notation"] = stored_notation
+    return model.model_copy(
+        update={
+            "diagram_key": item.key,
+            "title": model.title or item.title,
+            "notation": item.notation,
+            "metadata": refreshed_metadata,
+        }
+    )
+
+
+def _renderings_need_refresh(renderings: dict[str, str], model: DiagramModel, item: DiagramCatalogItemV3) -> bool:
+    svg = renderings.get("svg") or ""
+    if not svg:
+        return True
+    if not renderings.get("presentation"):
+        return True
+    if model.metadata.get("renderer_key") != item.renderer_key:
+        return True
+    if _svg_renderer_revision(svg) != RENDERER_REVISION:
+        return True
+    notation = item.notation.value
+    if notation in _SPECIALIZED_SVG_NOTATIONS and f'data-diagram-notation="{notation}"' not in svg:
+        return True
+    if notation == "bpmn":
+        expected_source_keys = {"bpmn_xml"}
+    elif notation in _PLANTUML_NOTATIONS:
+        expected_source_keys = {"plantuml"}
+    else:
+        expected_source_keys = {"mermaid"}
+    return not bool(expected_source_keys.intersection(renderings))
+
+
 def build_diagram_detail_v3(
     db: Session,
     *,
@@ -175,19 +315,39 @@ def build_diagram_detail_v3(
     selected = next((version for version in versions if version.id == version_id), None) if version_id else (versions[0] if versions else None)
     if selected is None or not item.access.can_view:
         return DiagramDetailV3Response(project_id=record.id, item=item, versions=[_version_summary(value) for value in versions])
-    model = DiagramModel.model_validate(selected.diagram_model)
+    model = _hydrate_model_for_current_registry(DiagramModel.model_validate(selected.diagram_model), item)
     renderings = dict(selected.renderings)
+    quality = DiagramQualityReport.model_validate(selected.quality_report)
+    should_persist_refresh = False
+    if selected.diagram_model != model.model_dump(mode="json"):
+        should_persist_refresh = True
     if item.access.access_state == "preview":
         model = _limited_preview(model)
-        from app.services.diagram_center.renderer_service import render_diagram
 
         renderings = render_diagram(model)
+    elif _renderings_need_refresh(renderings, model, item) and not item.needs_layout_upgrade:
+        metadata = dict(model.metadata or {})
+        previous_revision = _svg_renderer_revision(renderings.get("svg") or "")
+        if previous_revision and previous_revision != RENDERER_REVISION:
+            metadata["legacy_renderer_revision"] = previous_revision
+            metadata["layout_upgrade_reason"] = "layout_upgrade"
+        metadata["renderer_revision"] = RENDERER_REVISION
+        model = model.model_copy(update={"metadata": metadata})
+        renderings = render_diagram(model)
+        should_persist_refresh = True
+    if item.access.access_state != "preview" and should_persist_refresh:
+        quality = evaluate_diagram_quality(model)
+        selected.diagram_model = model.model_dump(mode="json")
+        selected.renderings = renderings
+        selected.quality_report = quality.model_dump(mode="json")
+        db.add(selected)
+        db.commit()
+        db.refresh(selected)
     return DiagramDetailV3Response(
         project_id=record.id,
         item=item,
         model=model,
         renderings=renderings,
-        quality=DiagramQualityReport.model_validate(selected.quality_report),
+        quality=quality,
         versions=[_version_summary(value) for value in versions],
     )
-

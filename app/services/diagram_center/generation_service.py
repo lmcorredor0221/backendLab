@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine
 
 from app.db import engine
 from app.models import ArtifactRegistryRecord, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord, utc_now
-from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramGenerationJobResponse, DiagramModel
+from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramGenerationJobResponse, DiagramModel, DiagramNotation
 from app.services.diagram_center.persistence import (
     DiagramGenerationJobRecord,
     DiagramGovernanceRecord,
@@ -17,7 +17,7 @@ from app.services.diagram_center.persistence import (
 )
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
 from app.services.diagram_center.registry_service import build_prompt_spec, get_registry_entry
-from app.services.diagram_center.renderer_service import render_diagram
+from app.services.diagram_center.renderer_service import RENDERER_REVISION, render_diagram
 from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
 from app.services.openai_builder import build_builder_service
 
@@ -92,13 +92,24 @@ def _source_context(db: Session, record: SessionRecord) -> tuple[dict[str, objec
                 "metadata": _compact(artifact.artifact_metadata),
             }
         )
+    if not sources:
+        ref = f"session:{record.id}"
+        source_refs.append(ref)
+        sources.append(
+            {
+                "key": "session.baseline",
+                "stage": getattr(record.current_stage, "value", str(record.current_stage or "discover")),
+                "ref": ref,
+                "content": f"Project baseline for {record.title}",
+            }
+        )
     return (
         {
             "project": {
                 "id": str(record.id),
                 "title": record.title,
-                "current_stage": record.current_stage.value,
-                "commercial_tier": record.commercial_tier.value,
+                "current_stage": getattr(record.current_stage, "value", str(record.current_stage or "discover")),
+                "commercial_tier": getattr(record.commercial_tier, "value", str(record.commercial_tier or "blueprint")),
             },
             "approved_artifacts": sources[:MAX_CONTEXT_ITEMS],
         },
@@ -149,7 +160,9 @@ def create_generation_job(
         )
     ).first()
     if existing is not None:
-        return existing
+        if existing.status != "error":
+            return existing
+        resolved_idempotency_key = f"{resolved_idempotency_key}:retry:{uuid4()}"
     has_existing_version = db.exec(
         select(DiagramVersionRecord.id).where(
             DiagramVersionRecord.session_id == record.id,
@@ -164,7 +177,7 @@ def create_generation_job(
         detail_level=detail_level,
         reason=reason,
         idempotency_key=resolved_idempotency_key,
-        status="updating" if reason == "regenerate" and has_existing_version is not None else "queued",
+        status="updating" if reason in {"regenerate", "layout_upgrade"} and has_existing_version is not None else "queued",
     )
     db.add(job)
     db.commit()
@@ -205,9 +218,11 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
         db.add(job)
         db.commit()
 
-        prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
         source_context, source_refs = _source_context(db, record)
-        if not source_context.get("approved_artifacts"):
+        approved_items = [
+            s for s in source_context.get("approved_artifacts", []) if s.get("key") != "session.baseline"
+        ]
+        if not approved_items:
             _fail_job(
                 db,
                 job,
@@ -216,15 +231,29 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
             )
             return
 
+        prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
+        effective_notation = DiagramNotation(str(prompt_spec.get("notation") or entry.notation.value))
+
         generation_input = DiagramGenerationInput(
             diagram_key=entry.key,
             title=entry.title,
             objective=str(prompt_spec["objective"]),
-            notation=entry.notation,
+            notation=effective_notation,
+            standard=str(prompt_spec.get("standard") or entry.standard),
             detail_level=job.detail_level,
             required_inputs=list(prompt_spec["required_inputs"]),
             source_context=source_context,
             source_refs=source_refs,
+            source_contract=str(prompt_spec.get("source_contract") or entry.source_contract),
+            presentation_contract=str(prompt_spec.get("presentation_contract") or entry.presentation_contract),
+            renderer_key=str(prompt_spec.get("renderer_key") or entry.renderer_key),
+            validator_key=str(prompt_spec.get("validator_key") or entry.validator_key),
+            allowed_elements=list(prompt_spec.get("allowed_elements") or entry.allowed_elements),
+            allowed_relationships=list(prompt_spec.get("allowed_relationships") or entry.allowed_relationships),
+            forbidden_mixes=list(prompt_spec.get("forbidden_mixes") or entry.forbidden_mixes),
+            inherits_from=list(prompt_spec.get("inherits_from") or entry.inherits_from),
+            transform_rules=list(prompt_spec.get("transform_rules") or entry.transform_rules),
+            generation_permissions=dict(prompt_spec.get("generation_permissions") or entry.generation_permissions),
             semantic_rules=list(prompt_spec["semantic_rules"]),
             exclusions=list(prompt_spec["exclusions"]),
             prompt_spec_version=str(prompt_spec["version"]),
@@ -253,12 +282,43 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
 
         try:
             raw_model = result.artifact.model_dump(mode="json")
+            existing_metadata = raw_model.get("metadata", {})
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+            previous_version_number = db.exec(
+                select(func.max(DiagramVersionRecord.version_number)).where(
+                    DiagramVersionRecord.session_id == record.id,
+                    DiagramVersionRecord.diagram_key == entry.key,
+                )
+            ).one()
+            metadata = {
+                **existing_metadata,
+                "standard": generation_input.standard,
+                "source_contract": generation_input.source_contract,
+                "presentation_contract": generation_input.presentation_contract,
+                "renderer_key": generation_input.renderer_key,
+                "validator_key": generation_input.validator_key,
+                "renderer_revision": RENDERER_REVISION,
+                "generation_reason": job.reason,
+                "allowed_elements": list(generation_input.allowed_elements),
+                "allowed_relationships": list(generation_input.allowed_relationships),
+                "forbidden_mixes": list(generation_input.forbidden_mixes),
+                "inherits_from": list(generation_input.inherits_from),
+                "transform_rules": list(generation_input.transform_rules),
+                "generation_permissions": dict(generation_input.generation_permissions),
+                "prompt_spec_version": str(prompt_spec["version"]),
+                "source_fingerprint": _fingerprint(source_context),
+            }
+            if job.reason == "layout_upgrade":
+                metadata["layout_upgrade_reason"] = "layout_upgrade"
+                metadata["previous_version_number"] = int(previous_version_number or 0)
             raw_model.update(
                 {
                     "diagram_key": entry.key,
                     "title": entry.title,
-                    "notation": entry.notation.value,
+                    "notation": effective_notation.value,
                     "source_refs": list(dict.fromkeys([*raw_model.get("source_refs", []), *source_refs])),
+                    "metadata": metadata,
                 }
             )
             model = DiagramModel.model_validate(raw_model)
@@ -303,3 +363,14 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
         job.updated_at = utc_now()
         db.add(job)
         db.commit()
+        if record is not None:
+            try:
+                from app.services.product_processing.product_build_orchestrator import reconcile_product_build_run
+                from app.services.product_processing.contracts import ProductBuildProductKey
+
+                reconcile_product_build_run(db, record=record, product_key=ProductBuildProductKey.blueprint_basic)
+                reconcile_product_build_run(db, record=record, product_key=ProductBuildProductKey.blueprint_pro)
+                db.commit()
+            except Exception:
+                pass
+

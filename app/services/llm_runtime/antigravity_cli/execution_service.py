@@ -2,11 +2,32 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+def _extract_json_payload(raw: str) -> Any:
+    text = raw.strip()
+    if not text:
+        raise ValueError("Salida vacia recibida de Antigravity CLI")
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if match:
+        return json.loads(match.group(1).strip())
+    start_brace = text.find("{")
+    start_bracket = text.find("[")
+    if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
+        end_brace = text.rfind("}")
+        if end_brace != -1:
+            return json.loads(text[start_brace : end_brace + 1])
+    elif start_bracket != -1:
+        end_bracket = text.rfind("]")
+        if end_bracket != -1:
+            return json.loads(text[start_bracket : end_bracket + 1])
+    return json.loads(text)
+
 
 from pydantic import BaseModel, ValidationError
 
@@ -151,25 +172,34 @@ class AgyExecutionService:
         Detecta el modo de autenticacion activo en orden de prioridad:
         1. auth_mode configurado explicitamente en runtime_settings
         2. Variable de entorno ANTIGRAVITY_API_KEY
-        3. Archivo ~/.antigravity/credentials.json
-        4. Fallback: 'unknown'
+        3. Archivos de sesion/credenciales ~/.antigravity/credentials.json o ~/.gemini
+        4. Deteccion del ejecutable agy autenticado en la plataforma
+        5. Fallback: 'unknown'
         """
         configured_mode = (self._agy_cfg.auth_mode or "auto").strip()
 
+        has_api_key = bool(os.getenv("ANTIGRAVITY_API_KEY", "").strip())
+        has_credentials = (
+            (self.resolve_agy_home() / "credentials.json").exists()
+            or (Path.home() / ".gemini" / "oauth_creds.json").exists()
+            or (Path.home() / ".gemini" / "google_accounts.json").exists()
+            or (Path.home() / ".antigravity" / "argv.json").exists()
+        )
+        has_executable = resolve_agy_executable(self._agy_cfg.executable) is not None
+
         if configured_mode not in {"", "auto", "unknown"}:
-            # Modo forzado por configuracion; verificar si esta disponible
-            has_api_key = bool(os.getenv("ANTIGRAVITY_API_KEY", "").strip())
-            has_credentials = (self.resolve_agy_home() / "credentials.json").exists()
-            is_available = has_api_key or has_credentials
+            is_available = (
+                has_api_key
+                or has_credentials
+                or (configured_mode in {"platform", "session", "auto"} and has_executable)
+            )
             return configured_mode, is_available
 
         # Deteccion automatica
-        has_api_key = bool(os.getenv("ANTIGRAVITY_API_KEY", "").strip())
         if has_api_key:
             return "api_key", True
 
-        credentials_path = self.resolve_agy_home() / "credentials.json"
-        if credentials_path.exists():
+        if has_credentials or has_executable:
             return "session", True
 
         return "unknown", False
@@ -275,36 +305,41 @@ class AgyExecutionService:
         self,
         *,
         workspace: AgyRunWorkspace,
+        prompt: str = "",
         model: str | None = None,
         enable_web_search: bool = False,
     ) -> list[str]:
         """
-        Construye la lista de argumentos para invocar agy:
-
-          agy run
-            --dir <workspace_root>
-            --output <output_path>
-            --non-interactive
-            [--model <model_id> --effort <effort>]
-            [--web-search]
+        Construye la lista de argumentos para invocar agy en modo print estructurado.
+        Si el prompt es extenso (> 3500 caracteres), se referencia el archivo prompt.md
+        en el workspace para evitar límites de longitud en la línea de comandos de Windows (WinError 206).
         """
         executable = self.resolve_executable()
-        effective_model = (model or self._agy_cfg.model).strip() or None
-        effort = self._agy_cfg.effort.strip() or "high"
+        effective_model = (model if model is not None else self._agy_cfg.model).strip() or None
+        effort = (self._agy_cfg.effort or "high").strip() or "high"
+
+        # Escribir siempre el prompt completo en el archivo prompt.md del workspace
+        workspace.prompt_path.write_text(prompt, encoding="utf-8")
+
+        if len(prompt) > 3500:
+            cli_prompt = (
+                f"Lee detalladamente el archivo {workspace.prompt_path.name} dentro del workspace "
+                "y genera exclusivamente el JSON solicitado que cumpla con el schema especificado en dicho archivo."
+            )
+        else:
+            cli_prompt = prompt
 
         args = [
             executable,
-            "run",
-            "--dir", str(workspace.root_dir),
-            "--output", str(workspace.output_path),
-            "--non-interactive",
+            "--dangerously-skip-permissions",
+            "--add-dir",
+            str(workspace.root_dir),
+            "--print",
+            cli_prompt,
         ]
 
         if effective_model:
             args.extend(["--model", effective_model, "--effort", effort])
-
-        if enable_web_search:
-            args.append("--web-search")
 
         return args
 
@@ -334,11 +369,12 @@ class AgyExecutionService:
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
                 creationflags=creationflags,
             )
         except FileNotFoundError as exc:
             raise AgyExecutionError(
-                "No se encontro el ejecutable agy configurado.",
+                f"No se encontro el ejecutable agy o fallo al crearse el proceso: {exc}",
                 code=AgyRuntimeErrorCode.binary_not_found,
                 detail={"command": command[0], "workdir": str(workdir)},
             ) from exc
@@ -564,6 +600,7 @@ class AgyExecutionService:
 
                         command = self.build_execution_args(
                             workspace=workspace,
+                            prompt=prompt,
                             model=model,
                             enable_web_search=enable_web_search,
                         )
@@ -716,10 +753,10 @@ class AgyExecutionService:
                             selected_model = model
                             break
 
-                        # Parsear y validar JSON
+                        # Parsear y validar JSON con extractor tolerante
                         try:
-                            payload = json.loads(output_text)
-                        except json.JSONDecodeError as exc:
+                            payload = _extract_json_payload(output_text)
+                        except (json.JSONDecodeError, ValueError, Exception) as exc:
                             attempts.append(
                                 self._build_attempt_record(
                                     attempt_number=attempt_number,

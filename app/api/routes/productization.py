@@ -3,13 +3,14 @@ from __future__ import annotations
 import io
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
 from app.api.routes.sessions import (
     build_construction_readiness_view,
     build_snapshot,
+    define_requirements_route,
     ensure_commercial_capability,
     get_or_404,
     resolve_acp_preview,
@@ -32,13 +33,17 @@ from app.models import (
     ExportCatalogResponse,
     ExportJobCreateRequest,
     ExportJobResponse,
+    InitiativeEvaluationRequest,
+    InitiativeEvaluationResponse,
     LauncherMetadataResponse,
     LauncherReportResponse,
     LauncherReportSubmitRequest,
     PlanAccessResponse,
     SessionRecord,
+    StageOperationRecord,
     UserRecord,
 )
+from app.services.initiative_evaluator import evaluate_initiative_service
 from app.services.acp_continuity import load_construction_question_response_records
 from app.services.acp_launcher_service import build_launcher_metadata, submit_launcher_report
 from app.services.acp_workflow_service import build_acp_workspace_response, ensure_acp_run, run_acp_phase
@@ -48,6 +53,7 @@ from app.services.attention_service import (
     build_attention_metrics_v2,
     build_attention_response_v2,
 )
+from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
 from app.services.auth_service import get_current_user
 from app.services.commerce_service import list_active_products, serialize_access_request
 from app.services.commercial_access import build_commercial_access_snapshot_v2, resolve_session_entitlement_context
@@ -61,9 +67,22 @@ from app.services.export_delivery_service import (
     read_export_job_bytes,
     retry_export_job_response,
 )
+from app.services.product_processing import (
+    ProductBuildCommandRequest,
+    ProductBuildProductKey,
+    ProductBuildStatus,
+    ProductBuildTelemetryReport,
+    ProductJourneyOverview,
+    build_all_product_build_statuses,
+    build_product_build_status,
+    build_product_build_telemetry_report,
+    build_product_journey_overview,
+    sync_product_builds_after_attention_action,
+)
 
 
 router = APIRouter(prefix="/sessions", tags=["productization"])
+PRODUCT_SURFACE_STAGE = "package"
 
 
 def _context(
@@ -122,8 +141,23 @@ def run_acp_workspace_phase_route(
             preview=preview,
             readiness=readiness,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.services.acp_workflow_service import ACPPhaseSequenceError
+        if isinstance(exc, ACPPhaseSequenceError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "phase_sequence_violation",
+                    "message": str(exc),
+                    "phase_key": exc.phase_key,
+                    "blocking_phase_key": exc.blocking_phase_key,
+                    "blocking_phase_status": exc.blocking_phase_status,
+                    "next_action": exc.next_action,
+                },
+            ) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise
     response = build_acp_workspace_response(
         db,
         record=record,
@@ -157,6 +191,111 @@ def resume_acp_workspace_route(
     )
     db.commit()
     return response
+
+
+@router.get("/{session_id}/product-journey-overview", response_model=ProductJourneyOverview)
+def get_product_journey_overview_route(
+    session_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> ProductJourneyOverview:
+    record = get_or_404(db, session_id, current_user.id)
+    return build_product_journey_overview(db, record=record, current_user=current_user)
+
+
+@router.get("/{session_id}/product-builds", response_model=list[ProductBuildStatus])
+def list_product_build_statuses_route(
+    session_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> list[ProductBuildStatus]:
+    record = get_or_404(db, session_id, current_user.id)
+    return build_all_product_build_statuses(db, record=record, current_user=current_user)
+
+
+@router.get("/{session_id}/product-builds/telemetry", response_model=ProductBuildTelemetryReport)
+def get_product_build_telemetry_route(
+    session_id: UUID,
+    limit: int = Query(default=100, ge=1, le=250),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> ProductBuildTelemetryReport:
+    record = get_or_404(db, session_id, current_user.id)
+    return build_product_build_telemetry_report(db, record=record, current_user=current_user, limit=limit)
+
+
+@router.get("/{session_id}/product-builds/{product_key}", response_model=ProductBuildStatus)
+def get_product_build_status_route(
+    session_id: UUID,
+    product_key: ProductBuildProductKey,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> ProductBuildStatus:
+    from app.services.product_processing.product_build_orchestrator import reconcile_product_build_run
+
+    record = get_or_404(db, session_id, current_user.id)
+    return reconcile_product_build_run(
+        db,
+        record=record,
+        product_key=product_key,
+        current_user=current_user,
+        catalog_stage_override=PRODUCT_SURFACE_STAGE,
+    )
+
+
+@router.post("/{session_id}/product-builds/{product_key}/actions", response_model=ProductBuildStatus)
+def post_product_build_action_route(
+    session_id: UUID,
+    product_key: ProductBuildProductKey,
+    payload: ProductBuildCommandRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> ProductBuildStatus:
+    from app.services.product_processing.blueprint_basic_service import execute_blueprint_basic_action
+    from app.services.product_processing.product_build_orchestrator import (
+        ProductBuildOrchestrationOptions,
+        ensure_product_build_orchestration,
+        reconcile_product_build_run,
+    )
+
+    record = get_or_404(db, session_id, current_user.id)
+    if product_key == ProductBuildProductKey.blueprint_basic:
+        execute_blueprint_basic_action(
+            db,
+            record=record,
+            current_user=current_user,
+            payload=payload,
+            background_tasks=background_tasks,
+        )
+        return build_product_build_status(
+            db,
+            record=record,
+            product_key=product_key,
+            current_user=current_user,
+            catalog_stage_override=PRODUCT_SURFACE_STAGE,
+        )
+    if payload.action in {"start", "resume", "retry"}:
+        return ensure_product_build_orchestration(
+            db,
+            record=record,
+            product_key=product_key,
+            current_user=current_user,
+            options=ProductBuildOrchestrationOptions(
+                execute_jobs=True,
+                allow_llm=payload.allow_llm,
+                idempotency_key=payload.idempotency_key,
+            ),
+            catalog_stage_override=PRODUCT_SURFACE_STAGE,
+        )
+    return reconcile_product_build_run(
+        db,
+        record=record,
+        product_key=product_key,
+        current_user=current_user,
+        catalog_stage_override=PRODUCT_SURFACE_STAGE,
+    )
+
 
 
 @router.get("/{session_id}/attention", response_model=AttentionResponse)
@@ -243,6 +382,56 @@ def post_attention_v2_action_route(
         item_key=item_key,
         payload=payload,
     )
+    if result.status == "applied" and result.resume_eligible:
+        resumed_state = BuilderReActCheckpointStore.mark_resume_requested(
+            db,
+            session_id=record.id,
+            action=payload.action_kind,
+            scope=current_stage or "stage",
+        )
+        if resumed_state is None:
+            result = type(result)(
+                status=result.status,
+                message=(
+                    f"{result.message} No se encontro un checkpoint ReAct activo para reanudar automaticamente; "
+                    "vuelve a ejecutar la etapa desde su pantalla para regenerar con trazabilidad."
+                ),
+                resume_eligible=result.resume_eligible,
+            )
+        else:
+            resume_message = (
+                f"{result.message} Checkpoint {resumed_state.checkpoint_id} listo para reanudar "
+                f"la etapa {resumed_state.stage}."
+            )
+            if resumed_state.stage == "define":
+                try:
+                    define_requirements_route(
+                        session_id=record.id,
+                        resume_checkpoint_id=resumed_state.checkpoint_id,
+                        db=db,
+                        current_user=current_user,
+                    )
+                    resume_message = (
+                        f"{result.message} La etapa {resumed_state.stage} se reanudo desde el checkpoint "
+                        f"{resumed_state.checkpoint_id}."
+                    )
+                except Exception:  # noqa: BLE001
+                    resume_message = (
+                        f"{result.message} El checkpoint {resumed_state.checkpoint_id} quedo listo para "
+                        "reanudar cuando el runtime este disponible."
+                    )
+            result = type(result)(
+                status=result.status,
+                message=resume_message,
+                resume_eligible=result.resume_eligible,
+            )
+    if result.status == "applied":
+        sync_product_builds_after_attention_action(
+            db,
+            record=record,
+            snapshot=snapshot,
+            current_user=current_user,
+        )
     db.commit()
     snapshot, _, readiness, access = _context(db, record, current_user)
     attention = build_attention_response_v2(
@@ -435,6 +624,12 @@ def get_activity_route(
         .order_by(CommercialEventRecord.created_at.desc())
         .limit(limit)
     ).all()
+    operations = db.exec(
+        select(StageOperationRecord)
+        .where(StageOperationRecord.workspace_id == record.workspace_id, StageOperationRecord.session_id == record.id)
+        .order_by(StageOperationRecord.updated_at.desc(), StageOperationRecord.created_at.desc())
+        .limit(limit)
+    ).all()
     timeline = [
         ActivityTimelineEntry(
             key=str(item.id),
@@ -450,12 +645,35 @@ def get_activity_route(
         )
         for item in events
     ]
+    timeline.extend(
+        ActivityTimelineEntry(
+            key=str(item.id),
+            type="workflow",
+            title=item.action.replace("_", " ").title(),
+            product_key="blueprint",
+            source="stage_operation",
+            status=item.status.value,
+            created_at=item.updated_at,
+            metadata={
+                "operation_id": str(item.id),
+                "operation_action": item.action,
+                "operation_stage": item.stage_key,
+                "current_step": item.current_step,
+                "message": item.detail,
+                "error_message": item.error_message,
+                "technical_detail": item.technical_detail,
+                "result_artifact_id": str(item.result_artifact_id) if item.result_artifact_id else "",
+            },
+        )
+        for item in operations
+    )
+    timeline.sort(key=lambda item: item.created_at, reverse=True)
     return ActivityResponse(
         session_id=record.id,
         workspace_id=record.workspace_id,
         metrics=audit.metrics,
         funnel=audit.funnel,
-        timeline=timeline,
+        timeline=timeline[:limit],
     )
 
 
@@ -532,3 +750,10 @@ def get_diagram_catalog_v2_route(
         next_cursor=str(next_index) if next_index < len(entries) else None,
         has_more=next_index < len(entries),
     )
+
+
+@router.post("/evaluate-initiative", response_model=InitiativeEvaluationResponse)
+def evaluate_initiative_route(
+    request: InitiativeEvaluationRequest,
+) -> InitiativeEvaluationResponse:
+    return evaluate_initiative_service(request)

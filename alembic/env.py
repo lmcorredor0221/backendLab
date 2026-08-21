@@ -8,7 +8,9 @@ from sqlmodel import SQLModel
 
 from app.core.config import get_settings
 from app import models  # noqa: F401
+from app.services.deliverable_catalog import persistence as deliverable_catalog_persistence  # noqa: F401
 from app.services.diagram_center import persistence as diagram_center_persistence  # noqa: F401
+from app.services.product_processing import persistence as product_processing_persistence  # noqa: F401
 
 
 config = context.config

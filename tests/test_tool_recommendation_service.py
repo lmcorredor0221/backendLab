@@ -1,13 +1,25 @@
 from uuid import uuid4
 
-from app.models import BlueprintArtifact, CanvasArtifact, DiscoveryArtifact, ReviewState
+from app.models import (
+    BlueprintArtifact,
+    CanvasArtifact,
+    DesignAlternative,
+    DesignRecommendationArtifact,
+    DesignRole,
+    DiscoveryArtifact,
+    JourneyStageArtifactRecord,
+    ReviewState,
+    SessionRecord,
+)
 from app.services.llm_runtime.builder_contracts import NonFunctionalRequirement, RequirementsDefinitionOutput
 from app.services.knowledge_tool_policy import build_memory_tool_dependencies
 from app.services.rules import derive_memory_profile
+from app.services.stage_proposal_service import StageProposalService
 from app.services.tool_recommendation_service import (
     annotate_tool_recommendation_status,
     build_approved_tools_digest_from_blueprint_tools,
     build_placeholder_tool_recommendation,
+    ensure_document_ingestion_for_knowledge_retrieval,
     evaluate_tool_recommendation_artifact,
     promote_tool_recommendation_to_blueprint_tools,
 )
@@ -118,15 +130,9 @@ def test_enterprise_copilot_shortlists_lookup_without_extra_tools() -> None:
             problem_statement="Ayudar a soporte a responder usando datos operativos reales.",
             current_process="Consultar CRM y tickets abiertos del cliente antes de responder.",
             desired_outcome="Responder estado del caso sin actualizar registros.",
-            constraints=[
-                "Mantener MVP simple",
-                "No ejecutar side effects irreversibles sin aprobacion humana",
-            ],
         ),
         canvas=build_canvas(user_goal="Consultar CRM y tickets para responder con grounding."),
-        blueprint=build_blueprint(
-            guardrails=["Solo lectura sobre sistemas operativos", "Mantener trazabilidad"]
-        ),
+        blueprint=build_blueprint(guardrails=["Solo lectura sobre sistemas operativos", "Mantener trazabilidad"]),
         blueprint_version_number=1,
     )
 
@@ -175,10 +181,90 @@ def test_knowledge_assistant_requires_retrieval_and_ingestion_for_rag_sources() 
 
     assert artifact.preflight.case_classification == "knowledge_assistant"
     assert [item.tool_key for item in artifact.recommended_tools] == ["knowledge_retrieval", "document_ingestion"]
+    assert all(item.contract_seed is not None for item in artifact.recommended_tools)
+    assert {item.tool_key: item.contract_seed.tool_type for item in artifact.recommended_tools if item.contract_seed} == {
+        "knowledge_retrieval": "internal",
+        "document_ingestion": "external",
+    }
     assert artifact.optional_tools == []
     assert candidate_map["retrieval"].status == "required"
     assert candidate_map["document_ingestion"].status == "required"
     assert artifact.needs_information == []
+
+
+def test_rag_without_final_sources_still_requires_ingestion_capability() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder preguntas usando politicas, manuales y FAQ aprobadas.",
+            current_process="Hoy el equipo consulta politicas internas antes de responder.",
+            desired_outcome="Responder con evidencia y citas cuando exista soporte documental.",
+        ),
+        canvas=build_canvas(
+            user_goal="Responder con grounding documental y trazabilidad.",
+            expected_outputs=["Respuesta con citas", "Evidencia consultada"],
+        ),
+        blueprint=build_blueprint(knowledge_mode="rag"),
+        blueprint_version_number=21,
+    )
+
+    candidate_map = {item.family_key: item for item in artifact.preflight.candidate_tool_families}
+
+    assert [item.tool_key for item in artifact.recommended_tools] == [
+        "knowledge_retrieval",
+        "document_ingestion",
+    ]
+    assert candidate_map["document_ingestion"].status == "required"
+    assert artifact.needs_information == []
+
+
+def test_auto_remediation_adds_ingestion_for_legacy_retrieval_digest() -> None:
+    base_artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder preguntas con conocimiento aprobado.",
+            current_process="Consulta politicas internas.",
+            desired_outcome="Responder con evidencia.",
+        ),
+        canvas=build_canvas(user_goal="Responder con conocimiento aprobado."),
+        blueprint=build_blueprint(knowledge_mode="rag"),
+        blueprint_version_number=22,
+    )
+    legacy_artifact = base_artifact.model_copy(
+        update={
+            "recommended_tools": [
+                item for item in base_artifact.recommended_tools if item.tool_key == "knowledge_retrieval"
+            ],
+            "optional_tools": [],
+            "rejected_tools": [],
+        },
+        deep=True,
+    )
+    retrieval_only_tool = legacy_artifact.recommended_tools[0].contract_seed
+    assert retrieval_only_tool is not None
+    legacy_digest = build_approved_tools_digest_from_blueprint_tools(
+        [retrieval_only_tool],
+        source_session_id=legacy_artifact.source_session_id,
+        source_blueprint_version=legacy_artifact.source_blueprint_version,
+        mandatory_tool_keys=["knowledge_retrieval"],
+    )
+    legacy_artifact = legacy_artifact.model_copy(update={"approved_tools_digest": legacy_digest})
+
+    remediated, changed = ensure_document_ingestion_for_knowledge_retrieval(
+        artifact=legacy_artifact,
+        blueprint=build_blueprint(knowledge_mode="rag"),
+    )
+
+    assert changed is True
+    assert [item.tool_key for item in remediated.recommended_tools] == [
+        "knowledge_retrieval",
+        "document_ingestion",
+    ]
+    assert any(item.capability_key == "document_ingestion" for item in remediated.preflight.mandatory_capabilities)
+    assert remediated.evaluation.promotion_blocked is False
+    approved_tools, _, digest = promote_tool_recommendation_to_blueprint_tools(remediated)
+    assert [item.name for item in approved_tools] == ["knowledge_retrieval", "document_ingestion"]
+    assert digest.knowledge_tool_keys == ["knowledge_retrieval", "document_ingestion"]
 
 
 def test_scheduled_rag_refresh_requires_scheduler() -> None:
@@ -570,6 +656,146 @@ def test_evaluator_clears_happy_path_for_approval_gated_operator() -> None:
     assert evaluated.evaluation.findings == []
     assert evaluated.evaluation.overall_status == ReviewState.complete
     assert evaluated.review_state == ReviewState.complete
+
+
+def test_internal_design_roles_do_not_block_tool_promotion() -> None:
+    selected_design = DesignAlternative(
+        alternative_key="supervisor_with_subagents",
+        label="Supervisor con especialistas internos",
+        architecture="supervisor_with_subagents",
+        reasoning_pattern="ReAct",
+        coordination_model="Supervisor enruta a especialistas de dominio internos.",
+        roles=[
+            DesignRole(
+                key="domain_specialists",
+                title="Especialistas de dominio",
+                responsibility="Resolver criterios internos por dominio usando routing del supervisor.",
+            )
+        ],
+        fit_score=80,
+    )
+    design_artifact = DesignRecommendationArtifact(
+        alternatives=[selected_design],
+        recommended_alternative_key=selected_design.alternative_key,
+        selected_design=selected_design,
+        review_state=ReviewState.complete,
+        summary="Diseno aprobado con roles internos.",
+    )
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Atender solicitudes de empleados con politicas internas y datos del portal HR.",
+            current_process="Consulta portal HR y manuales antes de actualizar el estado aprobado.",
+            desired_outcome="Responder y actualizar solicitudes aprobadas con trazabilidad.",
+            autonomy_level="high",
+            constraints=["No ejecutar side effects irreversibles sin aprobacion humana"],
+            non_delegable_decisions=["Aprobar la solicitud final"],
+        ),
+        canvas=build_canvas(
+            user_goal="Consultar portal HR, recuperar politicas y ejecutar la actualizacion aprobada.",
+            expected_outputs=["Respuesta trazable", "Estado actualizado"],
+            human_approvals=["Lider RH aprueba antes de escribir."],
+        ),
+        blueprint=build_blueprint(
+            architecture="supervisor_with_subagents",
+            guardrails=["Toda escritura requiere aprobacion humana y audit trail"],
+            knowledge_mode="rag",
+            knowledge_sources=[
+                {
+                    "key": "manual-rh",
+                    "title": "Manual RH",
+                    "description": "Politicas internas",
+                    "source_type": "document",
+                    "uri": "kb://manual-rh",
+                    "owner": "People Ops",
+                    "license": "internal",
+                    "sensitivity": "internal",
+                    "source_version": "2026-07",
+                }
+            ],
+            workflow_steps=[
+                {
+                    "name": "Consultar solicitud",
+                    "objective": "Leer estado actual desde portal HR",
+                    "actor": "agent",
+                    "outputs": ["estado actual"],
+                    "fallback": "escalar",
+                    "requires_approval": False,
+                },
+                {
+                    "name": "Actualizar estado",
+                    "objective": "Escribir el resultado aprobado",
+                    "actor": "agent",
+                    "outputs": ["estado actualizado"],
+                    "fallback": "detener",
+                    "requires_approval": True,
+                },
+            ],
+        ),
+        design_artifact=design_artifact,
+        blueprint_version_number=101,
+    )
+
+    evaluated = evaluate_tool_recommendation_artifact(artifact)
+    finding = next(
+        item
+        for item in evaluated.evaluation.findings
+        if item.finding_key == "design-role-coverage:domain_specialists"
+    )
+
+    assert finding.severity == "warning"
+    assert evaluated.evaluation.promotion_blocked is False
+    assert all(item.contract_seed is not None for item in evaluated.recommended_tools)
+
+
+def test_stage_proposal_approval_reevaluates_persisted_tools_payload_before_promotion() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Ayudar a soporte a responder usando datos operativos reales.",
+            current_process="Consultar CRM y tickets abiertos del cliente antes de responder.",
+            desired_outcome="Responder estado del caso sin actualizar registros.",
+        ),
+        canvas=build_canvas(user_goal="Consultar CRM y tickets para responder con grounding."),
+        blueprint=build_blueprint(
+            guardrails=["Solo lectura sobre sistemas operativos", "Mantener trazabilidad"]
+        ),
+        blueprint_version_number=102,
+    )
+    evaluated = evaluate_tool_recommendation_artifact(artifact)
+    persisted_stale_blocked = evaluated.model_copy(
+        update={
+            "evaluation": evaluated.evaluation.model_copy(update={"promotion_blocked": True}),
+            "review_state": ReviewState.blocked,
+        }
+    )
+    workspace_id = uuid4()
+    session_id = uuid4()
+    artifact_record = JourneyStageArtifactRecord(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        artifact_kind="tool_recommendation_artifact",
+        stage_key="tools",
+        schema_version="tool-recommendation.v1",
+        proposal_payload=persisted_stale_blocked.model_dump(mode="json"),
+    )
+    session_record = SessionRecord(
+        id=session_id,
+        user_id=uuid4(),
+        workspace_id=workspace_id,
+    )
+
+    approved_tools, digest, promoted_payload, recommendation = StageProposalService()._resolve_tools_projection_payload(
+        artifact_record=artifact_record,
+        decision_payload={"include_optional_tool_keys": []},
+        session_record=session_record,
+    )
+
+    assert approved_tools
+    assert digest.tool_count == len(approved_tools)
+    assert recommendation is not None
+    assert promoted_payload["evaluation"]["promotion_blocked"] is False
+    assert promoted_payload["review_state"] == ReviewState.complete
 
 
 def test_promote_tool_recommendation_builds_blueprint_tools_and_digest() -> None:

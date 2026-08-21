@@ -41,7 +41,7 @@ def _question_options(question: Any) -> list[dict[str, Any]]:
     data = _mapping(question)
     raw_options = data.get("answer_options") or data.get("options") or []
     if not isinstance(raw_options, list):
-        return []
+        raw_options = []
     options: list[dict[str, Any]] = []
     for index, raw_option in enumerate(raw_options, start=1):
         option = _mapping(raw_option)
@@ -63,7 +63,37 @@ def _question_options(question: Any) -> list[dict[str, Any]]:
                 "source_refs": list(option.get("source_refs") or []),
             }
         )
-    return options
+    return options or _fallback_question_options(question)
+
+
+def _fallback_question_options(question: Any) -> list[dict[str, Any]]:
+    data = _mapping(question)
+    suggested_answer = _value(data.get("suggested_answer"))
+    if not suggested_answer:
+        return []
+    source_refs = list(data.get("source_refs") or ["guided_question.suggested_answer"])
+    return [
+        {
+            "key": "accept_suggested_answer",
+            "label": "Usar respuesta sugerida",
+            "description": suggested_answer[:220],
+            "impact": _value(data.get("impact")) or "Permite cerrar la pregunta con la inferencia trazada por el sistema.",
+            "example": suggested_answer[:220],
+            "recommended": True,
+            "confidence": _float_value(data.get("confidence")) or 0.7,
+            "source_refs": source_refs,
+        },
+        {
+            "key": "provide_custom_answer",
+            "label": "Responder manualmente",
+            "description": "Reemplazar la sugerencia con una respuesta propia del owner.",
+            "impact": "Mantiene control humano cuando la inferencia no refleja la realidad del negocio.",
+            "example": "Escribe la decision final y el motivo.",
+            "recommended": False,
+            "confidence": 0.55,
+            "source_refs": source_refs,
+        },
+    ]
 
 
 def _question_source_ref_entity(question: Any, index: int) -> str:

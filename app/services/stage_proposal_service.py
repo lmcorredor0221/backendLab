@@ -18,6 +18,7 @@ from app.models import (
     BlueprintVersionRecord,
     CanvasArtifact,
     CanvasRecord,
+    CommercialTier,
     DesignRecommendationArtifact,
     DiscoveryArtifact,
     EstimationReportArtifact,
@@ -45,6 +46,8 @@ from app.models import (
     utc_now,
 )
 from app.services.llm_runtime.builder_contracts import DiscoveryAnalysisOutput, RequirementsDefinitionOutput
+from app.services.product_processing.policy import resolve_product_processing_mode
+from app.services.product_processing.contracts import ProductProcessingMode
 from app.services.skill_runtime import validate_definition_artifact
 from app.services.estimation_calibration import persist_estimation_run
 from app.services.journey_stage_contract import get_journey_stage_boundary, list_journey_stage_boundaries
@@ -52,6 +55,7 @@ from app.services.blueprint_hydration import hydrate_blueprint_record
 from app.services.operations_service import record_estimation_artifact
 from app.services.tool_recommendation_service import (
     build_approved_tools_digest_from_blueprint_tools,
+    evaluate_tool_recommendation_artifact,
     promote_tool_recommendation_to_blueprint_tools,
 )
 
@@ -163,6 +167,8 @@ def _resolve_discovery_artifact_payload(artifact_record: JourneyStageArtifactRec
 
 def _resolve_definition_artifact_payload(
     artifact_record: JourneyStageArtifactRecord,
+    *,
+    commercial_tier: CommercialTier | str = CommercialTier.blueprint,
 ) -> tuple[CanvasArtifact, RequirementsDefinitionOutput | None, dict[str, Any]]:
     if artifact_record.schema_version == "definition-artifact.v1" or "functional_requirements" in artifact_record.proposal_payload:
         definition_payload = copy.deepcopy(artifact_record.proposal_payload)
@@ -170,15 +176,17 @@ def _resolve_definition_artifact_payload(
         if isinstance(patched_definition, dict) and patched_definition:
             definition_payload = patched_definition
         definition = validate_definition_artifact(RequirementsDefinitionOutput.model_validate(definition_payload))
-        if definition.validation.blocking_issues:
+        approval_blockers = _definition_approval_blocking_issues(definition, commercial_tier)
+        if approval_blockers:
             raise StageProposalConflictError(
-                "Define still has blocking issues. Resolve questions, acceptance criteria or contradictions before approval."
+                "Define still has blocking issues for the active product tier. Resolve questions, acceptance criteria or contradictions before approval."
             )
         canvas_projection = CanvasArtifact.model_validate(definition.canvas_projection.model_dump(mode="json"))
         return canvas_projection, definition, {
             "definition_confidence": definition.confidence,
             "functional_requirement_count": len(definition.functional_requirements),
             "blocking_issue_count": len(definition.validation.blocking_issues),
+            "approval_blocking_issue_count": len(approval_blockers),
             "open_question_count": len(definition.open_questions),
         }
 
@@ -186,9 +194,28 @@ def _resolve_definition_artifact_payload(
     return artifact, None, {}
 
 
+def _definition_approval_blocking_issues(
+    definition: RequirementsDefinitionOutput,
+    commercial_tier: CommercialTier | str,
+) -> list[str]:
+    """Apply product-tier approval semantics to Define validation findings.
+
+    Blueprint Basico is intentionally an infer/defer/continue product. Quality
+    gaps detected during Define remain traceable in the artifact and can feed
+    Premium enrichment, but they must not block the first-value funnel unless
+    the artifact itself is invalid, which is handled before this function.
+    """
+    issues = list(definition.validation.blocking_issues)
+    mode = resolve_product_processing_mode(commercial_tier)
+    if mode == ProductProcessingMode.basic_free:
+        return []
+    return issues
+
+
 def _resolve_design_artifact_payload(
     artifact_record: JourneyStageArtifactRecord,
     *,
+    commercial_tier: CommercialTier | str = CommercialTier.blueprint,
     decision_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], DesignRecommendationArtifact | None, dict[str, Any]]:
     if artifact_record.schema_version == "design-recommendation.v1" or "alternatives" in artifact_record.proposal_payload:
@@ -207,10 +234,10 @@ def _resolve_design_artifact_payload(
             raise StageProposalConflictError(
                 "Design must keep at least one selectable alternative before approval."
             )
-        blocking_findings = [item for item in artifact.critic_findings if item.severity == "blocking"]
-        if artifact.review_state == ReviewState.blocked or blocking_findings:
+        approval_blockers = _design_approval_blocking_issues(artifact, commercial_tier)
+        if approval_blockers:
             raise StageProposalConflictError(
-                "Design still has blocking findings. Resolve them before approval."
+                "Design still has blocking issues for the active product tier. Resolve them before approval."
             )
         projection = selected_design.blueprint_projection.model_dump(mode="json")
         promoted = artifact.model_copy(
@@ -223,6 +250,7 @@ def _resolve_design_artifact_payload(
             "selected_alternative_key": selected_design.alternative_key,
             "alternative_count": len(artifact.alternatives),
             "critic_finding_count": len(artifact.critic_findings),
+            "approval_blocking_issue_count": len(approval_blockers),
             "review_state": artifact.review_state,
         }
 
@@ -233,6 +261,58 @@ def _resolve_design_artifact_payload(
         if key in payload
     }
     return projection, None, {"projection_mode": "legacy_design_sections"}
+
+
+def _design_approval_blocking_issues(
+    artifact: DesignRecommendationArtifact,
+    commercial_tier: CommercialTier | str,
+) -> list[str]:
+    mode = resolve_product_processing_mode(commercial_tier)
+    if mode == ProductProcessingMode.basic_free:
+        return []
+
+    issues: list[str] = []
+    if artifact.review_state == ReviewState.blocked:
+        issues.append("design_review_state:blocked")
+    issues.extend(
+        f"blocking_finding:{item.finding_key or item.title}"
+        for item in artifact.critic_findings
+        if item.severity == "blocking"
+    )
+    issues.extend(f"open_question:{item}" for item in artifact.open_questions if item)
+    issues.extend(f"missing_information:{item}" for item in artifact.missing_information if item)
+    return issues
+
+
+def _memory_approval_blocking_issues(
+    artifact: MemoryRecommendationArtifact,
+    commercial_tier: CommercialTier | str,
+) -> list[str]:
+    issues: list[str] = []
+    if artifact.dry_compile_status.status == "blocked":
+        issues.extend(f"dry_compile:{item}" for item in artifact.dry_compile_status.blocking_issues)
+        if not artifact.dry_compile_status.blocking_issues:
+            issues.append("dry_compile:blocked")
+    issues.extend(
+        f"missing_required_tool:{item.tool_key}"
+        for item in artifact.tool_dependencies
+        if item.required and item.status == "missing"
+    )
+
+    mode = resolve_product_processing_mode(commercial_tier)
+    if mode == ProductProcessingMode.basic_free:
+        return issues
+
+    if artifact.review_state == ReviewState.blocked:
+        issues.append("memory_review_state:blocked")
+    issues.extend(
+        f"blocking_finding:{item.finding_key or item.title}"
+        for item in artifact.critic_findings
+        if item.severity == "blocking"
+    )
+    issues.extend(f"open_question:{item}" for item in artifact.open_questions if item)
+    issues.extend(f"missing_information:{item}" for item in artifact.missing_information if item)
+    return issues
 
 
 class StageProposalService:
@@ -301,6 +381,25 @@ class StageProposalService:
     ) -> JourneyStageArtifactEntry | None:
         record = self._latest_record(session, session_record=session_record, stage_key=stage_key)
         return self._build_artifact_entry(session, record) if record is not None else None
+
+    def get(
+        self,
+        session: Session,
+        *,
+        session_record: SessionRecord,
+        stage_key: str,
+        artifact_id: UUID,
+    ) -> JourneyStageArtifactEntry:
+        record = self._artifact_or_raise(
+            session,
+            session_record=session_record,
+            stage_key=stage_key,
+            artifact_id=artifact_id,
+        )
+        entry = self._build_artifact_entry(session, record)
+        if entry is None:
+            raise StageProposalNotFoundError("Journey stage artifact not found.")
+        return entry
 
     def create(
         self,
@@ -753,7 +852,10 @@ class StageProposalService:
             }
 
         if artifact_record.stage_key == "define":
-            artifact, definition, projection_meta = _resolve_definition_artifact_payload(artifact_record)
+            artifact, definition, projection_meta = _resolve_definition_artifact_payload(
+                artifact_record,
+                commercial_tier=session_record.commercial_tier,
+            )
             record = session.exec(select(CanvasRecord).where(CanvasRecord.session_id == session_record.id)).first() or CanvasRecord(
                 session_id=session_record.id,
                 user_goal="",
@@ -842,6 +944,7 @@ class StageProposalService:
         if artifact_record.stage_key == "design":
             projected_design, promoted_design_artifact, projection_meta = _resolve_design_artifact_payload(
                 artifact_record,
+                commercial_tier=session_record.commercial_tier,
                 decision_payload=decision_payload,
             )
             for key in DESIGN_BLUEPRINT_FIELDS:
@@ -866,6 +969,7 @@ class StageProposalService:
         elif artifact_record.stage_key == "memory":
             projected_memory, promoted_memory_artifact, projection_meta = self._resolve_memory_projection_payload(
                 artifact_record=artifact_record,
+                commercial_tier=session_record.commercial_tier,
             )
             for key in MEMORY_BLUEPRINT_FIELDS:
                 if key in projected_memory:
@@ -972,7 +1076,9 @@ class StageProposalService:
         session_record: SessionRecord,
     ) -> tuple[list[BlueprintTool], ApprovedToolsDigest, dict[str, Any], ToolRecommendationArtifact | None]:
         if artifact_record.proposal_payload.get("schema_version") == "tool-recommendation.v1":
-            artifact = ToolRecommendationArtifact.model_validate(artifact_record.proposal_payload)
+            artifact = evaluate_tool_recommendation_artifact(
+                ToolRecommendationArtifact.model_validate(artifact_record.proposal_payload)
+            )
             approved_tools, review_decisions, digest = promote_tool_recommendation_to_blueprint_tools(
                 artifact,
                 include_optional_tool_keys=list(decision_payload.get("include_optional_tool_keys", [])),
@@ -1008,24 +1114,14 @@ class StageProposalService:
         self,
         *,
         artifact_record: JourneyStageArtifactRecord,
+        commercial_tier: CommercialTier | str = CommercialTier.blueprint,
     ) -> tuple[dict[str, Any], MemoryRecommendationArtifact | None, dict[str, Any]]:
         if artifact_record.proposal_payload.get("schema_version") == "memory-recommendation.v1":
             artifact = MemoryRecommendationArtifact.model_validate(artifact_record.proposal_payload)
-            blocking_findings = [item for item in artifact.critic_findings if item.severity == "blocking"]
-            missing_required_tools = [
-                item.tool_key for item in artifact.tool_dependencies if item.required and item.status == "missing"
-            ]
-            if artifact.dry_compile_status.status == "blocked":
+            approval_blockers = _memory_approval_blocking_issues(artifact, commercial_tier)
+            if approval_blockers:
                 raise StageProposalConflictError(
-                    "Memory dry compile is blocked. Resolve the Stage4 compatibility issues before approval."
-                )
-            if missing_required_tools:
-                raise StageProposalConflictError(
-                    "Memory still depends on unapproved tools: " + ", ".join(missing_required_tools)
-                )
-            if artifact.review_state == ReviewState.blocked or blocking_findings:
-                raise StageProposalConflictError(
-                    "Memory still has blocking findings. Resolve them before approval."
+                    "Memory still has blocking issues for the active product tier. Resolve them before approval."
                 )
             projection = {
                 "memory_strategy": artifact.proposed_memory_profile.strategy,
@@ -1044,6 +1140,7 @@ class StageProposalService:
                 "critic_finding_count": len(artifact.critic_findings),
                 "tool_dependency_count": len(artifact.tool_dependencies),
                 "dry_compile_status": artifact.dry_compile_status.status,
+                "approval_blocking_issue_count": len(approval_blockers),
             }
 
         payload = artifact_record.proposal_payload

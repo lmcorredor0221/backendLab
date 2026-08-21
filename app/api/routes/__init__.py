@@ -1,7 +1,12 @@
 from app.api.routes import (
     auth,
+    commerce,
+    deliverable_catalog,
+    diagram_center,
     estimation_calibration,
     health,
+    hotmart_admin,
+    hotmart_webhooks,
     knowledge_memory,
     platform_runtime,
     runtime_settings,
@@ -14,8 +19,13 @@ from app.api.routes import (
 
 __all__ = [
     "auth",
+    "commerce",
+    "deliverable_catalog",
+    "diagram_center",
     "estimation_calibration",
     "health",
+    "hotmart_admin",
+    "hotmart_webhooks",
     "knowledge_memory",
     "platform_runtime",
     "runtime_settings",

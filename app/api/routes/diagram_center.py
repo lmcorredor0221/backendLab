@@ -11,6 +11,7 @@ from app.api.routes.sessions import get_or_404
 from app.db import get_session
 from app.models import UserRecord
 from app.services.auth_service import get_current_user
+from app.services.artifact_diagram_taxonomy import get_diagram_taxonomy_by_key
 from app.services.diagram_center.catalog_service import build_catalog_v3, build_diagram_detail_v3
 from app.services.diagram_center.contracts import (
     DiagramCatalogV3Response,
@@ -261,9 +262,22 @@ def _governance_entry(db: Session, diagram_key: str) -> DiagramGovernanceEntry:
         raise LookupError("Diagram type not found")
     enabled, generation_enabled, required_tier, preview_mode, governance = effective_registry_policy(db, entry)
     prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
+    taxonomy = get_diagram_taxonomy_by_key().get(entry.key, {})
     return DiagramGovernanceEntry(
         diagram_key=entry.key,
         title=entry.title,
+        description=str(taxonomy.get("description") or entry.description),
+        category=str(taxonomy.get("category") or entry.category),
+        diagram_surface=str(taxonomy.get("diagram_surface") or entry.type),
+        notation=str(prompt_spec.get("notation") or entry.notation.value),
+        product_scope=[str(value) for value in (taxonomy.get("product_scope") or entry.products)],
+        enabled_from_stage=str(taxonomy.get("enabled_from_stage") or entry.stage),
+        access_level=str(taxonomy.get("access_level") or ""),
+        default_generation_state=str(taxonomy.get("default_generation_state") or ""),
+        formats=dict(taxonomy.get("formats") or {}),
+        source_artifact_keys=[str(value) for value in taxonomy.get("source_artifact_keys", [])],
+        portable_paths=[str(value) for value in taxonomy.get("portable_paths", [])],
+        active=bool(taxonomy.get("is_active", entry.active)),
         enabled=enabled,
         generation_enabled=generation_enabled,
         required_tier=required_tier,
@@ -302,6 +316,10 @@ def _audit_safe_payload(entry: DiagramGovernanceEntry) -> dict[str, object]:
         "prompt_status": entry.prompt_status,
         "prompt_override_hash": prompt_hash,
         "prompt_spec_version": entry.prompt_spec_version,
+        "notation": str(entry.prompt_spec.get("notation") or ""),
+        "standard": str(entry.prompt_spec.get("standard") or ""),
+        "renderer_key": str(entry.prompt_spec.get("renderer_key") or ""),
+        "validator_key": str(entry.prompt_spec.get("validator_key") or ""),
     }
 
 
@@ -401,20 +419,7 @@ def update_diagram_governance_v3(
     governance.updated_at = utc_now()
     db.add(governance)
     db.flush()
-    after_entry = DiagramGovernanceEntry(
-        diagram_key=entry.key,
-        title=entry.title,
-        enabled=governance.enabled,
-        generation_enabled=governance.generation_enabled,
-        required_tier=governance.required_tier_override or entry.required_tier,
-        preview_mode=governance.preview_mode_override or entry.preview_mode,
-        prompt_spec_version=build_prompt_spec(entry, override=governance.prompt_override)["version"],
-        prompt_status=governance.prompt_status,
-        prompt_override=governance.prompt_override,
-        prompt_spec=build_prompt_spec(entry, override=governance.prompt_override),
-        notes=governance.notes,
-        updated_at=governance.updated_at,
-    )
+    after_entry = _governance_entry(db, entry.key)
     before_payload = _audit_safe_payload(before_entry)
     after_payload = _audit_safe_payload(after_entry)
     changed_fields = [key for key in after_payload if before_payload.get(key) != after_payload.get(key)]

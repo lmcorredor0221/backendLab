@@ -121,6 +121,30 @@ def test_resolve_codex_executable_path_finds_vscode_extension_without_path(
     assert resolve_codex_executable_path("codex") == str(executable)
 
 
+def test_resolve_codex_executable_path_prefers_bundled_binary_over_windowsapps_alias(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    extension_bin = (
+        tmp_path
+        / ".vscode"
+        / "extensions"
+        / "openai.chatgpt-26.818.31338-win32-x64"
+        / "bin"
+        / "windows-x86_64"
+    )
+    extension_bin.mkdir(parents=True)
+    executable = extension_bin / "codex.exe"
+    executable.write_text("", encoding="utf-8")
+    windowsapps_alias = (
+        "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.818.3698.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _: windowsapps_alias)
+
+    assert resolve_codex_executable_path("codex") == str(executable)
+
+
 def test_build_execution_args_includes_profile_and_schema(tmp_path: Path) -> None:
     with build_workspace(tmp_path) as (builder, workspace):
         service = CodexExecutionService(
@@ -235,6 +259,19 @@ def test_resolve_timeout_ms_prefers_task_override_env() -> None:
             os.environ["BLUEPRINT_NARRATIVE_RUN_TIMEOUT_MS"] = original
 
 
+def test_resolve_timeout_ms_task_override_env_wins_over_capability_timeout() -> None:
+    service = CodexExecutionService(build_runtime_settings())
+    original = os.environ.get("AGENT_DESIGN_PROPOSAL_RUN_TIMEOUT_MS")
+    os.environ["AGENT_DESIGN_PROPOSAL_RUN_TIMEOUT_MS"] = "360000"
+    try:
+        assert service.resolve_timeout_ms(task_kind="agent_design_proposal", timeout_ms=120000) == 360000
+    finally:
+        if original is None:
+            os.environ.pop("AGENT_DESIGN_PROPOSAL_RUN_TIMEOUT_MS", None)
+        else:
+            os.environ["AGENT_DESIGN_PROPOSAL_RUN_TIMEOUT_MS"] = original
+
+
 def test_execute_structured_prompt_persists_workspace_artifacts_and_uses_workspace_cwd(tmp_path: Path) -> None:
     runtime_root = tmp_path / "codex-workspaces"
     builder = CodexPromptWorkspaceBuilder(runtime_root=runtime_root)
@@ -334,6 +371,7 @@ def test_execute_structured_prompt_stages_context_sources_and_declares_audit_met
 
     service.run_process = fake_run_process  # type: ignore[method-assign]
 
+    staged_marker = "REQUIRED_STAGED_PAYLOAD_END_MARKER"
     result = service.execute_structured_prompt(
         task_kind="dummy_task",
         prompt="Normaliza la captura staged.",
@@ -345,7 +383,10 @@ def test_execute_structured_prompt_stages_context_sources_and_declares_audit_met
                 CodexContextInlineSource(
                     key="discovery_capture",
                     title="Discovery capture",
-                    content=json.dumps({"problem": "drift", "notes": ["a" * 8000]}, ensure_ascii=True),
+                    content=json.dumps(
+                        {"problem": "drift", "notes": ["a" * 8000], "marker": staged_marker},
+                        ensure_ascii=True,
+                    ),
                     required=True,
                     summary="Captura cruda de discovery para la corrida actual.",
                 )
@@ -366,7 +407,12 @@ def test_execute_structured_prompt_stages_context_sources_and_declares_audit_met
     assert manifest["context_stats"]["reduction_estimated_tokens"] > 0
     assert manifest["context_stats"]["used_full_documents"] is False
     assert staged_file.exists()
-    assert "Discovery capture" in staged_file.read_text(encoding="utf-8")
+    staged_text = staged_file.read_text(encoding="utf-8")
+    assert "Discovery capture" in staged_text
+    assert staged_marker in staged_text
+    assert manifest["required_sources"][0]["prompt_truncated"] is True
+    assert manifest["required_sources"][0]["staged_file_truncated"] is False
+    assert manifest["required_sources"][0]["delivery_mode"] == "filesystem_full_required"
     assert "input/knowledge_manifest.json" in str(captured["stdin_text"])
     assert "discovery_capture" in str(captured["stdin_text"])
     assert invocation["metadata"]["context"]["used_sources"][0]["key"] == "discovery_capture"

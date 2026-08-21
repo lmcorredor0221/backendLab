@@ -318,13 +318,15 @@ class KnowledgeMemoryService:
             if stale_path in current_paths:
                 continue
             changed_paths.append(f"deleted::{stale_path}")
-            for section in session.exec(
-                select(KnowledgeSectionRecord).where(KnowledgeSectionRecord.document_id == stale_record.id)
-            ).all():
+            with session.no_autoflush:
+                stale_sections = session.exec(
+                    select(KnowledgeSectionRecord).where(KnowledgeSectionRecord.document_id == stale_record.id)
+                ).all()
+            for section in stale_sections:
                 session.delete(section)
+            session.flush()
             session.delete(stale_record)
-
-        session.flush()
+            session.flush()
         now = utc_now()
 
         for parsed_document in parsed_documents:

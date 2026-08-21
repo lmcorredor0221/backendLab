@@ -201,12 +201,33 @@ def test_build_estimation_report_returns_deterministic_comparative_projection() 
     assert artifact.agentic.automation_coverage_percent >= 15
     assert [item.scenario_key for item in artifact.construction_scenarios] == [
         "traditional_blueprint",
+        "blueprint_basic",
+        "blueprint_premium",
         "agentic_blueprint",
         "acp_manual",
         "acp_agentic",
+        "done_for_you_factory",
     ]
-    assert artifact.construction_scenarios[-1].estimated_hours_total == artifact.agentic.estimated_hours_total
-    assert artifact.construction_scenarios[-1].cost_savings_vs_traditional == artifact.agentic.net_savings_vs_traditional
+    blueprint_basic = next(item for item in artifact.construction_scenarios if item.scenario_key == "blueprint_basic")
+    blueprint_premium = next(item for item in artifact.construction_scenarios if item.scenario_key == "blueprint_premium")
+    agentic_blueprint = next(item for item in artifact.construction_scenarios if item.scenario_key == "agentic_blueprint")
+    acp_manual = next(item for item in artifact.construction_scenarios if item.scenario_key == "acp_manual")
+    acp_agentic = next(item for item in artifact.construction_scenarios if item.scenario_key == "acp_agentic")
+    done_for_you_factory = next(item for item in artifact.construction_scenarios if item.scenario_key == "done_for_you_factory")
+    assert blueprint_basic.estimated_hours_total < artifact.traditional.estimated_hours_total
+    assert blueprint_premium.estimated_hours_total < blueprint_basic.estimated_hours_total
+    assert agentic_blueprint.estimated_hours_total < blueprint_premium.estimated_hours_total
+    assert agentic_blueprint.estimated_cost < blueprint_premium.estimated_cost
+    assert done_for_you_factory.estimated_hours_total == acp_manual.estimated_hours_total
+    assert done_for_you_factory.estimated_duration_weeks == artifact.traditional.estimated_duration_weeks
+    assert done_for_you_factory.estimated_cost == round(acp_agentic.estimated_cost * 0.9, 2)
+    assert blueprint_basic.automation_leverage_percent < blueprint_premium.automation_leverage_percent
+    assert any("Inferir + registrar + continuar" in note for note in blueprint_basic.notes)
+    assert any("Pregunta + resolver + enriquecer" in note for note in blueprint_premium.notes)
+    assert any("mejorar el esfuerzo frente a Blueprint Premium" in note for note in agentic_blueprint.notes)
+    assert any("cotizacion separada" in note for note in done_for_you_factory.notes)
+    assert acp_agentic.estimated_hours_total == artifact.agentic.estimated_hours_total
+    assert acp_agentic.cost_savings_vs_traditional == artifact.agentic.net_savings_vs_traditional
     assert artifact.agentic.automation_assessments
     assert artifact.agentic.pricing_snapshot is not None
     assert artifact.agentic.pricing_snapshot.provider.value in {"openai", "codex_local"}

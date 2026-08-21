@@ -2,7 +2,7 @@ import io
 import hashlib
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
@@ -19,6 +19,7 @@ from app.api.routes.sessions import (
     resolve_acp_preview,
     touch_session,
     upsert_construction_question_response,
+    write_react_run,
     write_log,
 )
 from app.db import get_session
@@ -28,6 +29,7 @@ from app.models import (
     ACPValidationReport,
     BlueprintKnowledgeGraph,
     CommercialAuditReport,
+    CommercialTier,
     CommercialEventRequest,
     ConstructionGapEntry,
     ConstructionQuestionAnswerRequest,
@@ -38,6 +40,10 @@ from app.models import (
     UserRecord,
 )
 from app.services.commercial_observability_service import build_commercial_audit_report
+from app.services.blueprint_commercial_result_service import (
+    SOURCE_ACTION as BLUEPRINT_COMMERCIAL_RESULT_ACTION,
+    record_blueprint_commercial_result_artifacts,
+)
 from app.services.acp_continuity import (
     build_construction_gap_entries,
     build_continuity_answer_map,
@@ -54,6 +60,15 @@ from app.services.acp_validation import derive_acp_export_status, should_block_a
 from app.services.acp_zip_export import build_acp_zip
 from app.services.auth_service import get_current_user
 from app.services.commerce_service import record_commercial_event as record_dedicated_commercial_event
+from app.services.diagram_center.catalog_service import build_catalog_v3
+from app.services.diagram_center.generation_service import create_generation_job, run_generation_job
+from app.services.deliverable_catalog import (
+    DeliverableGenerationMode,
+    DeliverableGenerationTask,
+    DeliverableType,
+    list_registry_entries,
+    run_deliverable_generation_task,
+)
 from app.services.estimation_calibration import persist_estimation_run
 from app.services.estimation_service import build_estimation_report
 from app.services.operations_service import (
@@ -62,11 +77,113 @@ from app.services.operations_service import (
     record_estimation_artifact,
     record_export_artifact,
 )
-from app.services.stage5_service import FEATURE_FLAG_ESTIMATION, create_export_handoff, is_feature_flag_enabled
+from app.services.product_processing import (
+    AcpDirectRouteResolution,
+    ProductBuildOrchestrationOptions,
+    ProductBuildProductKey,
+    ProductProcessingMode,
+    acp_route_blocking_reasons,
+    build_acp_direct_resolution,
+    ensure_acp_product_orchestration,
+    ensure_product_build_orchestration,
+)
+from app.services.stage5_service import FEATURE_FLAG_ESTIMATION, FEATURE_FLAG_REACT_RUNTIME, create_export_handoff, is_feature_flag_enabled
+from app.services.agentic_runtime.stages.extended import ReactCapabilityOutput, run_callable_react
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+def _latest_blueprint_version(snapshot: SessionSnapshot) -> int | None:
+    if not snapshot.blueprint_versions:
+        return None
+    return snapshot.blueprint_versions[0].version_number
+
+
+def _safe_snapshot_payload(value) -> dict:
+    if value is None:
+        return {}
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return dict(value)
+    return {"value": str(value)}
+
+
+def _blueprint_commercial_deliverable_context(snapshot: SessionSnapshot) -> dict:
+    return {
+        "summary": (
+            "Resultado comercial del Blueprint preparado desde contexto aprobado. "
+            f"Proyecto: {snapshot.session.title}."
+        ),
+        "project_title": snapshot.session.title,
+        "blueprint_version_number": _latest_blueprint_version(snapshot),
+        "approved_context": {
+            "discovery": _safe_snapshot_payload(snapshot.discovery),
+            "canvas": _safe_snapshot_payload(snapshot.canvas),
+            "blueprint": _safe_snapshot_payload(snapshot.blueprint),
+            "tools": _safe_snapshot_payload(snapshot.latest_tool_recommendation),
+            "estimation": _safe_snapshot_payload(snapshot.estimation_report),
+        },
+    }
+
+
+def _is_blueprint_basic_auto_deliverable(entry) -> bool:
+    return (
+        entry.deliverable_type != DeliverableType.diagram
+        and "blueprint" in entry.product_scope
+        and entry.required_tier == CommercialTier.blueprint
+        and entry.generation_mode
+        not in {
+            DeliverableGenerationMode.llm_required,
+            DeliverableGenerationMode.manual_review_required,
+        }
+    )
+
+
+def _generate_blueprint_basic_deliverables(
+    db: Session,
+    *,
+    record,
+    snapshot: SessionSnapshot,
+    current_user: UserRecord,
+) -> tuple[list[str], list[dict[str, str]]]:
+    if record.workspace_id is None:
+        return [], [{"deliverable_key": "*", "reason": "session_without_workspace"}]
+    context_payload = _blueprint_commercial_deliverable_context(snapshot)
+    generated_keys: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for entry in list_registry_entries():
+        if not _is_blueprint_basic_auto_deliverable(entry):
+            continue
+        task = DeliverableGenerationTask(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            deliverable_key=entry.deliverable_key,
+            product_mode=ProductProcessingMode.basic_free.value,
+            current_stage="estimate",
+            tier=CommercialTier.blueprint,
+            idempotency_key=f"blueprint-commercial-result:{record.id}:deliverable:{entry.deliverable_key}",
+            requested_by_user_id=current_user.id,
+            context_payload=context_payload,
+            approved_context_refs=[
+                "session.discovery",
+                "session.canvas",
+                "session.blueprint",
+                "session.tools",
+                "session.estimation_report",
+            ],
+            allow_llm=False,
+            max_iterations=entry.prompt_policy.max_iterations or 1,
+        )
+        try:
+            job, _ = run_deliverable_generation_task(db, task)
+        except (LookupError, PermissionError, ValueError) as exc:
+            skipped.append({"deliverable_key": entry.deliverable_key, "reason": str(exc)})
+            continue
+        generated_keys.append(f"{entry.deliverable_key}:{job.status}")
+    return generated_keys, skipped
 
 
 def resolve_acp_profile(profile: str | None) -> str:
@@ -87,6 +204,31 @@ def resolve_profiled_preview(
 
 def ensure_acp_build_access(record, *, db: Session, current_user: UserRecord) -> None:
     ensure_commercial_capability(record, "acp.build", db=db, current_user=current_user)
+
+
+def ensure_acp_route_ready_for_package(
+    db: Session,
+    *,
+    record,
+    current_user: UserRecord,
+    snapshot=None,
+) -> AcpDirectRouteResolution:
+    resolved_snapshot = snapshot or build_snapshot(db, record, current_user=current_user)
+    try:
+        resolution = build_acp_direct_resolution(db, record=record, snapshot=resolved_snapshot)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    blockers = acp_route_blocking_reasons(resolution)
+    if blockers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "ACP requires completed LEAN stages or explicit justification before Package.",
+                "blocking_reasons": blockers,
+                "resolution": resolution.model_dump(mode="json"),
+            },
+        )
+    return resolution
 
 
 def record_commercial_event(
@@ -151,6 +293,25 @@ def record_commercial_event_route(
     )
 
 
+@router.post("/{session_id}/blueprint/commercial-result", response_model=SessionSnapshot)
+def prepare_blueprint_commercial_result_route(
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> SessionSnapshot:
+    from app.services.product_processing.blueprint_basic_service import prepare_blueprint_basic_commercial_result
+
+    record = get_or_404(db, session_id, current_user.id)
+    snapshot, _ = prepare_blueprint_basic_commercial_result(
+        db,
+        record=record,
+        current_user=current_user,
+        background_tasks=background_tasks,
+    )
+    return snapshot
+
+
 @router.get("/{session_id}/commercial-audit", response_model=CommercialAuditReport)
 def get_commercial_audit_report_route(
     session_id: UUID,
@@ -181,6 +342,23 @@ def record_acp_invitation_event_route(
     )
 
 
+@router.get("/{session_id}/acp/direct-resolution", response_model=AcpDirectRouteResolution)
+def get_acp_direct_resolution_route(
+    session_id: UUID,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> AcpDirectRouteResolution:
+    record = get_or_404(db, session_id, current_user.id)
+    ensure_commercial_capability(record, "acp.invite", db=db, current_user=current_user)
+    snapshot = build_snapshot(db, record, current_user=current_user)
+    try:
+        ensure_acp_product_orchestration(db, record=record, snapshot=snapshot, current_user=current_user)
+        db.commit()
+        return build_acp_direct_resolution(db, record=record, snapshot=snapshot)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.post("/{session_id}/acp/generate", response_model=ACPPreview)
 def generate_acp_route(
     session_id: UUID,
@@ -192,9 +370,31 @@ def generate_acp_route(
     record = get_or_404(db, session_id, current_user.id)
     ensure_acp_build_access(record, db=db, current_user=current_user)
     snapshot = build_snapshot(db, record, current_user=current_user)
+    ensure_acp_route_ready_for_package(db, record=record, current_user=current_user, snapshot=snapshot)
     response_records = load_construction_question_response_records(db, session_id)
     continuity_answers = build_continuity_answer_map(response_records)
-    preview = generate_acp_preview(snapshot, continuity_answers or None)
+    react_run = None
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        react_execution = run_callable_react(
+            stage="package",
+            capability="generate_acp_preview",
+            session_id=session_id,
+            workspace_id=record.workspace_id,
+            context_refs=["session.blueprint", "session.validate", "session.estimate", "knowledge.acp_portability"],
+            runner=lambda: ReactCapabilityOutput(
+                value=generate_acp_preview(snapshot, continuity_answers or None),
+                summary="Package valido readiness, preguntas de implementacion y portabilidad del ACP.",
+            ),
+            validator=lambda value: (
+                ["El ACP no contiene artefactos exportables."],
+                not bool(getattr(value, "files", [])),
+                "Package valido que el ACP tenga artefactos portables." if getattr(value, "files", []) else "Package requiere revision.",
+            ),
+        )
+        preview = react_execution.value
+        react_run = react_execution.react_run
+    else:
+        preview = generate_acp_preview(snapshot, continuity_answers or None)
     if snapshot.canvas is not None:
         apply_workspace_bootstrap(db, record.workspace_id)
         if is_feature_flag_enabled(db, FEATURE_FLAG_ESTIMATION, workspace_id=record.workspace_id):
@@ -228,6 +428,15 @@ def generate_acp_route(
         session_id=session_id,
         preview=preview,
         source_action="generate_acp_preview",
+    )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="package",
+        capability="generate_acp_preview",
+        source_action="generate_acp_preview",
+        blueprint_version_number=preview.blueprint_version_number,
     )
     write_log(
         db,
@@ -399,6 +608,13 @@ def export_acp_zip_route(
     normalized_profile = resolve_acp_profile(profile)
     record = get_or_404(db, session_id, current_user.id)
     ensure_commercial_capability(record, "acp.download", db=db, current_user=current_user)
+    export_snapshot = build_snapshot(db, record, current_user=current_user)
+    direct_resolution = ensure_acp_route_ready_for_package(
+        db,
+        record=record,
+        current_user=current_user,
+        snapshot=export_snapshot,
+    )
     preview = resolve_profiled_preview(db, record, profile=normalized_profile)
     response_records = load_construction_question_response_records(db, session_id)
     readiness = build_construction_readiness_view(preview, response_records)
@@ -437,6 +653,9 @@ def export_acp_zip_route(
             "legacy_compat_mode": legacy_compat_mode,
             "profile": normalized_profile,
             "readiness": readiness.overall_status,
+            "acp_direct_route_kind": direct_resolution.route_kind,
+            "acp_required_stage_keys": direct_resolution.required_stage_keys,
+            "acp_completed_stage_keys": direct_resolution.completed_stage_keys,
         },
     )
     create_export_handoff(
