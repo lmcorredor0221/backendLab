@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "ExportJobStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "ready",
+        "failed",
+        "canceled",
+        "expired"
+      ],
+      "title": "ExportJobStatus",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {
+      "default": "",
+      "title": "Artifact Kind",
+      "type": "string"
+    },
+    "checksum_sha256": {
+      "default": "",
+      "title": "Checksum Sha256",
+      "type": "string"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "content_type": {
+      "default": "application/json",
+      "title": "Content Type",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "download_url": {
+      "default": "",
+      "title": "Download Url",
+      "type": "string"
+    },
+    "error_message": {
+      "default": "",
+      "title": "Error Message",
+      "type": "string"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "file_name": {
+      "default": "",
+      "title": "File Name",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    },
+    "product_key": {
+      "default": "",
+      "title": "Product Key",
+      "type": "string"
+    },
+    "profile": {
+      "default": "",
+      "title": "Profile",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "size_bytes": {
+      "default": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "status": {
+      "$ref": "#/$defs/ExportJobStatus",
+      "default": "queued"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "workspace_id",
+    "session_id",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "ExportJobResponse",
+  "type": "object"
+}

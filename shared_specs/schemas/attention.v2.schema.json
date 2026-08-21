@@ -1,0 +1,494 @@
+{
+  "$defs": {
+    "AttentionActionV2": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "navigate",
+            "answer",
+            "approve",
+            "reject",
+            "confirm",
+            "regenerate",
+            "retry"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "href": {
+          "title": "Href",
+          "type": "string"
+        },
+        "return_href": {
+          "title": "Return Href",
+          "type": "string"
+        },
+        "can_resolve_inline": {
+          "default": false,
+          "title": "Can Resolve Inline",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "label",
+        "href",
+        "return_href"
+      ],
+      "title": "AttentionActionV2",
+      "type": "object"
+    },
+    "AttentionDiagnosticsV2": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "technical_message": {
+          "default": "",
+          "title": "Technical Message",
+          "type": "string"
+        },
+        "error_kind": {
+          "default": "",
+          "title": "Error Kind",
+          "type": "string"
+        },
+        "capability": {
+          "default": "",
+          "title": "Capability",
+          "type": "string"
+        },
+        "capability_label": {
+          "default": "",
+          "title": "Capability Label",
+          "type": "string"
+        },
+        "operation_id": {
+          "default": "",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "retry_policy": {
+          "default": "",
+          "title": "Retry Policy",
+          "type": "string"
+        },
+        "repair_hint": {
+          "default": "",
+          "title": "Repair Hint",
+          "type": "string"
+        },
+        "trace_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Trace Refs",
+          "type": "array"
+        }
+      },
+      "title": "AttentionDiagnosticsV2",
+      "type": "object"
+    },
+    "AttentionItemV2": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "question",
+            "gap",
+            "decision",
+            "approval",
+            "confirmation",
+            "validation",
+            "hitl",
+            "inconsistency",
+            "stale",
+            "runtime_error",
+            "access_request"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "blocking": {
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "product": {
+          "enum": [
+            "blueprint",
+            "acp",
+            "commercial"
+          ],
+          "title": "Product",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/AttentionSourceRefV2"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "impact": {
+          "title": "Impact",
+          "type": "string"
+        },
+        "consequence_if_unresolved": {
+          "title": "Consequence If Unresolved",
+          "type": "string"
+        },
+        "status": {
+          "default": "open",
+          "enum": [
+            "open",
+            "in_progress",
+            "deferred",
+            "resolved",
+            "dismissed",
+            "superseded"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "owner_role": {
+          "default": "",
+          "title": "Owner Role",
+          "type": "string"
+        },
+        "owner_user_id": {
+          "default": "",
+          "title": "Owner User Id",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/AttentionOptionV2"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "suggested_answer": {
+          "default": "",
+          "title": "Suggested Answer",
+          "type": "string"
+        },
+        "unblocks": {
+          "default": "",
+          "title": "Unblocks",
+          "type": "string"
+        },
+        "resume_action": {
+          "default": "",
+          "title": "Resume Action",
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/$defs/AttentionActionV2"
+        },
+        "affected_artifact_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Affected Artifact Refs",
+          "type": "array"
+        },
+        "diagnostics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttentionDiagnosticsV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "detected_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detected At"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "key",
+        "type",
+        "severity",
+        "blocking",
+        "product",
+        "stage",
+        "source",
+        "title",
+        "reason",
+        "impact",
+        "consequence_if_unresolved",
+        "action"
+      ],
+      "title": "AttentionItemV2",
+      "type": "object"
+    },
+    "AttentionOptionV2": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "impact": {
+          "default": "",
+          "title": "Impact",
+          "type": "string"
+        },
+        "example": {
+          "default": "",
+          "title": "Example",
+          "type": "string"
+        },
+        "recommended": {
+          "default": false,
+          "title": "Recommended",
+          "type": "boolean"
+        },
+        "confidence": {
+          "default": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "label"
+      ],
+      "title": "AttentionOptionV2",
+      "type": "object"
+    },
+    "AttentionSourceRefV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Id"
+        },
+        "artifact_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Version"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity Id"
+        },
+        "field_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field Path"
+        }
+      },
+      "title": "AttentionSourceRefV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": "attention.v2",
+      "default": "attention.v2",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    },
+    "current_stage": {
+      "default": "",
+      "title": "Current Stage",
+      "type": "string"
+    },
+    "total_count": {
+      "default": 0,
+      "title": "Total Count",
+      "type": "integer"
+    },
+    "actionable_count": {
+      "default": 0,
+      "title": "Actionable Count",
+      "type": "integer"
+    },
+    "blocking_count": {
+      "default": 0,
+      "title": "Blocking Count",
+      "type": "integer"
+    },
+    "warning_count": {
+      "default": 0,
+      "title": "Warning Count",
+      "type": "integer"
+    },
+    "info_count": {
+      "default": 0,
+      "title": "Info Count",
+      "type": "integer"
+    },
+    "counts_by_stage": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts By Stage",
+      "type": "object"
+    },
+    "counts_by_type": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts By Type",
+      "type": "object"
+    },
+    "counts_by_product": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts By Product",
+      "type": "object"
+    },
+    "primary_item": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AttentionItemV2"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/AttentionItemV2"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "cursor": {
+      "default": "",
+      "title": "Cursor",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id"
+  ],
+  "title": "AttentionResponseV2",
+  "type": "object"
+}

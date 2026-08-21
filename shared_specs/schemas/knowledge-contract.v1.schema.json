@@ -1,0 +1,350 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "KnowledgeEmbeddingPolicyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "dimensions": {
+          "default": 0,
+          "title": "Dimensions",
+          "type": "integer"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "provider": {
+          "default": "",
+          "title": "Provider",
+          "type": "string"
+        },
+        "version": {
+          "default": "",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "title": "KnowledgeEmbeddingPolicyV1",
+      "type": "object"
+    },
+    "KnowledgeIngestionPolicyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "chunking_policy": {
+          "default": "",
+          "title": "Chunking Policy",
+          "type": "string"
+        },
+        "exclude_filters": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Filters",
+          "type": "array"
+        },
+        "include_filters": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Include Filters",
+          "type": "array"
+        },
+        "metadata_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Metadata Fields",
+          "type": "array"
+        },
+        "parser": {
+          "default": "",
+          "title": "Parser",
+          "type": "string"
+        }
+      },
+      "title": "KnowledgeIngestionPolicyV1",
+      "type": "object"
+    },
+    "KnowledgeRefreshPolicyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "deletion_policy": {
+          "default": "",
+          "title": "Deletion Policy",
+          "type": "string"
+        },
+        "expiration_policy": {
+          "default": "",
+          "title": "Expiration Policy",
+          "type": "string"
+        },
+        "frequency": {
+          "default": "",
+          "title": "Frequency",
+          "type": "string"
+        },
+        "triggers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Triggers",
+          "type": "array"
+        }
+      },
+      "title": "KnowledgeRefreshPolicyV1",
+      "type": "object"
+    },
+    "KnowledgeRetrievalPolicyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "fallback_behavior": {
+          "default": "",
+          "title": "Fallback Behavior",
+          "type": "string"
+        },
+        "filters": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Filters",
+          "type": "array"
+        },
+        "reranking_policy": {
+          "default": "",
+          "title": "Reranking Policy",
+          "type": "string"
+        },
+        "search_mode": {
+          "default": "",
+          "title": "Search Mode",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 0,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "title": "KnowledgeRetrievalPolicyV1",
+      "type": "object"
+    },
+    "KnowledgeSourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "license": {
+          "default": "",
+          "title": "License",
+          "type": "string"
+        },
+        "lineage_key": {
+          "default": "",
+          "title": "Lineage Key",
+          "type": "string"
+        },
+        "owner": {
+          "default": "",
+          "title": "Owner",
+          "type": "string"
+        },
+        "sensitivity": {
+          "default": "",
+          "title": "Sensitivity",
+          "type": "string"
+        },
+        "source_type": {
+          "title": "Source Type",
+          "type": "string"
+        },
+        "source_version": {
+          "default": "",
+          "title": "Source Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "uri": {
+          "default": "",
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "source_type"
+      ],
+      "title": "KnowledgeSourceRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "embedding_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/KnowledgeEmbeddingPolicyV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "enabled": {
+      "default": false,
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "grounding_policy": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Grounding Policy",
+      "type": "object"
+    },
+    "ingestion_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/KnowledgeIngestionPolicyV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "mode": {
+      "title": "Mode",
+      "type": "string"
+    },
+    "open_questions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Open Questions",
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "refresh_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/KnowledgeRefreshPolicyV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "retrieval_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/KnowledgeRetrievalPolicyV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "knowledge-contract.v1",
+      "default": "knowledge-contract.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sensitivity_rules": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Sensitivity Rules",
+      "type": "array"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_lineage": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Source Lineage",
+      "type": "array"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/KnowledgeSourceRef"
+      },
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "mode"
+  ],
+  "title": "KnowledgeContractV1",
+  "type": "object"
+}

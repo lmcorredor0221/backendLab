@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/diagram-layout-policy.v1.schema.json",
+  "title": "Diagram Layout Policy",
+  "type": "object",
+  "required": ["schema_version", "profiles"],
+  "properties": {
+    "schema_version": { "const": "diagram-layout-policy.v1" },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "notation",
+          "layout_strategy",
+          "preferred_direction",
+          "max_nodes_before_split",
+          "max_edges_before_split",
+          "max_edge_density",
+          "enable_adaptive_sizing",
+          "enable_edge_routing",
+          "visual_quality_min_score"
+        ],
+        "properties": {
+          "notation": {
+            "enum": [
+              "flowchart",
+              "sequence",
+              "class",
+              "er",
+              "state",
+              "journey",
+              "c4",
+              "bpmn",
+              "uml_use_case",
+              "uml_activity",
+              "uml_component",
+              "deployment",
+              "package",
+              "capability"
+            ]
+          },
+          "layout_strategy": {
+            "enum": ["fixed_grid", "layered", "bpmn_swimlane", "uml_use_case", "uml_activity", "timeline", "split_required"]
+          },
+          "preferred_direction": { "enum": ["LR", "TB", "RL", "BT"] },
+          "max_nodes_before_split": { "type": "integer", "minimum": 4, "maximum": 80 },
+          "max_edges_before_split": { "type": "integer", "minimum": 4, "maximum": 160 },
+          "max_edge_density": { "type": "number", "minimum": 0.01, "maximum": 1 },
+          "enable_adaptive_sizing": { "type": "boolean" },
+          "enable_edge_routing": { "type": "boolean" },
+          "visual_quality_min_score": { "type": "integer", "minimum": 50, "maximum": 100 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

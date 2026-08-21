@@ -1,0 +1,751 @@
+{
+  "schema_version": "deliverable-catalog.v1",
+  "generated_at": "2026-08-10",
+  "lean_stage_order": [
+    "discover",
+    "define",
+    "design",
+    "tools",
+    "memory",
+    "estimate",
+    "validate",
+    "package"
+  ],
+  "products": [
+    "blueprint",
+    "blueprint_pro",
+    "acp"
+  ],
+  "deliverable_types": [
+    "artifact",
+    "diagram",
+    "document",
+    "contract",
+    "prompt",
+    "test",
+    "package",
+    "lineage"
+  ],
+  "generation_modes": [
+    "deterministic",
+    "llm_supported",
+    "llm_required",
+    "llm_with_deterministic_fallback",
+    "manual_review_required"
+  ],
+  "entries": [
+    {
+      "deliverable_key": "discovery.problem_context_brief",
+      "title": "Resumen problema-contexto",
+      "description": "Sintesis inicial del problema, actores, proceso actual, resultado esperado y supuestos usados para continuar con Blueprint Basico.",
+      "deliverable_type": "artifact",
+      "category": "functional",
+      "stage": "discover",
+      "enabled_from_stage": "discover",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint",
+      "access_level": "view_only",
+      "formats": {
+        "preferred": "markdown",
+        "available": [
+          "markdown",
+          "json"
+        ]
+      },
+      "generation_mode": "llm_with_deterministic_fallback",
+      "prompt_policy": {
+        "prompt_template_key": "deliverables.discovery.problem_context_brief.v1",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "fallback_policy": "use_structured_stage_snapshot",
+        "max_iterations": 2
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "session.discovery",
+          "session.canvas"
+        ],
+        "long_term_collections": [
+          "repo_docs.lean_methodology",
+          "repo_docs.agent_patterns"
+        ],
+        "max_context_tokens": 5000,
+        "retrieval_strategy": "stage_minimal_relevant_context"
+      },
+      "quality_policy": {
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "minimum_score": 80,
+        "checks": [
+          "has_title",
+          "has_source_refs",
+          "has_assumptions_when_inferred"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "session.discovery"
+        ],
+        "invalidates_on_change": [
+          "session.discovery",
+          "session.canvas"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "full",
+        "sample_enabled": true,
+        "content_protection": {
+          "disable_copy": true,
+          "disable_download": true,
+          "disable_context_menu": true
+        }
+      },
+      "canonical_paths": [
+        "Blueprint/discovery/problem-context-brief.md"
+      ],
+      "portable_paths": [
+        "ACP/business/problem-context-brief.yaml"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 10,
+      "active": true
+    },
+    {
+      "deliverable_key": "diagram.problem_context_map",
+      "title": "Diagrama problema-contexto",
+      "description": "Mapa visual temprano que relaciona problema, actores, proceso actual, resultado esperado, restricciones y supuestos.",
+      "deliverable_type": "diagram",
+      "category": "flow",
+      "stage": "discover",
+      "enabled_from_stage": "discover",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "sample",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "json"
+        ]
+      },
+      "generation_mode": "deterministic",
+      "prompt_policy": {
+        "prompt_template_key": "",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "fallback_policy": "deterministic_only",
+        "max_iterations": 1
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "session.discovery",
+          "session.canvas"
+        ],
+        "long_term_collections": [],
+        "max_context_tokens": 3000,
+        "retrieval_strategy": "approved_stage_snapshot_only"
+      },
+      "quality_policy": {
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "minimum_score": 85,
+        "checks": [
+          "unique_node_ids",
+          "valid_edges",
+          "source_refs_present"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "discovery.problem_context_brief"
+        ],
+        "invalidates_on_change": [
+          "session.discovery",
+          "discovery.problem_context_brief"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true,
+        "content_protection": {
+          "disable_copy": true,
+          "disable_download": true,
+          "disable_context_menu": true
+        }
+      },
+      "canonical_paths": [
+        "Blueprint/diagrams/problem-context-map.svg"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/problem-context-map.mmd"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 20,
+      "active": true
+    },
+    {
+      "deliverable_key": "discovery.stakeholder_inventory",
+      "title": "Inventario de actores y afectados",
+      "description": "Lista priorizada de actores, usuarios, owners, sistemas y areas impactadas por el problema descubierto.",
+      "deliverable_type": "artifact",
+      "category": "functional",
+      "stage": "discover",
+      "enabled_from_stage": "discover",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint",
+      "access_level": "view_only",
+      "formats": {
+        "preferred": "markdown",
+        "available": [
+          "markdown",
+          "json"
+        ]
+      },
+      "generation_mode": "llm_with_deterministic_fallback",
+      "prompt_policy": {
+        "prompt_template_key": "deliverables.discovery.stakeholder_inventory.v1",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "fallback_policy": "use_structured_stage_snapshot",
+        "max_iterations": 2
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "session.discovery"
+        ],
+        "long_term_collections": [
+          "repo_docs.lean_methodology"
+        ],
+        "max_context_tokens": 3000,
+        "retrieval_strategy": "stage_minimal_relevant_context"
+      },
+      "quality_policy": {
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "minimum_score": 80,
+        "checks": [
+          "has_title",
+          "has_stakeholders",
+          "has_source_refs"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "session.discovery"
+        ],
+        "invalidates_on_change": [
+          "session.discovery"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true
+      },
+      "canonical_paths": [
+        "Blueprint/discovery/stakeholder-inventory.md"
+      ],
+      "portable_paths": [
+        "ACP/business/stakeholder-inventory.yaml"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 30,
+      "active": true
+    },
+    {
+      "deliverable_key": "definition.requirements_brief",
+      "title": "Brief de requerimientos",
+      "description": "Resumen de objetivos, alcance, requisitos funcionales, no funcionales, reglas y criterios de aceptacion aprobables.",
+      "deliverable_type": "artifact",
+      "category": "requirements",
+      "stage": "define",
+      "enabled_from_stage": "define",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint",
+      "access_level": "view_only",
+      "formats": {
+        "preferred": "markdown",
+        "available": [
+          "markdown",
+          "json"
+        ]
+      },
+      "generation_mode": "llm_with_deterministic_fallback",
+      "prompt_policy": {
+        "prompt_template_key": "deliverables.definition.requirements_brief.v1",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "fallback_policy": "use_structured_stage_snapshot",
+        "max_iterations": 2
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "session.discovery",
+          "session.define"
+        ],
+        "long_term_collections": [
+          "repo_docs.requirements_engineering"
+        ],
+        "max_context_tokens": 5000,
+        "retrieval_strategy": "approved_stage_snapshot_only"
+      },
+      "quality_policy": {
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "minimum_score": 85,
+        "checks": [
+          "has_requirements",
+          "has_acceptance_criteria",
+          "has_traceability"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "discovery.problem_context_brief",
+          "definition.requirements"
+        ],
+        "invalidates_on_change": [
+          "session.discovery",
+          "definition.requirements"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true
+      },
+      "canonical_paths": [
+        "Blueprint/definition/requirements-brief.md"
+      ],
+      "portable_paths": [
+        "ACP/requirements/requirements-brief.yaml"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 40,
+      "active": true
+    },
+    {
+      "deliverable_key": "definition.acceptance_trace",
+      "title": "Trazabilidad de criterios de aceptacion",
+      "description": "Matriz que conecta objetivos, requisitos, reglas, criterios y fuentes aprobadas para reducir drift de diseno.",
+      "deliverable_type": "lineage",
+      "category": "traceability",
+      "stage": "define",
+      "enabled_from_stage": "define",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "premium",
+      "formats": {
+        "preferred": "json",
+        "available": [
+          "json",
+          "markdown"
+        ]
+      },
+      "generation_mode": "llm_supported",
+      "prompt_policy": {
+        "prompt_template_key": "deliverables.definition.acceptance_trace.v1",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "fallback_policy": "use_structured_stage_snapshot",
+        "max_iterations": 2
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "session.discovery",
+          "session.define"
+        ],
+        "long_term_collections": [
+          "repo_docs.traceability"
+        ],
+        "max_context_tokens": 5000,
+        "retrieval_strategy": "approved_stage_snapshot_only"
+      },
+      "quality_policy": {
+        "schema_contract": "deliverable-artifact.v1",
+        "validator_key": "artifact.markdown_json.v1",
+        "minimum_score": 85,
+        "checks": [
+          "has_source_refs",
+          "has_acceptance_criteria",
+          "has_dependency_links"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "definition.requirements_brief"
+        ],
+        "invalidates_on_change": [
+          "definition.requirements",
+          "definition.requirements_brief"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true
+      },
+      "canonical_paths": [
+        "Blueprint/definition/acceptance-trace.json"
+      ],
+      "portable_paths": [
+        "ACP/requirements/acceptance-trace.yaml"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 50,
+      "active": true
+    },
+    {
+      "deliverable_key": "diagram.stakeholder_map",
+      "title": "Diagrama de stakeholders",
+      "description": "Vista de actores, owners, sistemas y puntos de contacto que condicionan el diseno del agente.",
+      "deliverable_type": "diagram",
+      "category": "stakeholders",
+      "stage": "discover",
+      "enabled_from_stage": "discover",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "sample",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "json"
+        ]
+      },
+      "generation_mode": "deterministic",
+      "prompt_policy": {
+        "prompt_template_key": "",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "fallback_policy": "deterministic_only",
+        "max_iterations": 1
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "session.discovery",
+          "discovery.stakeholder_inventory"
+        ],
+        "long_term_collections": [],
+        "max_context_tokens": 3000,
+        "retrieval_strategy": "approved_stage_snapshot_only"
+      },
+      "quality_policy": {
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "minimum_score": 85,
+        "checks": [
+          "unique_node_ids",
+          "valid_edges",
+          "source_refs_present"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "discovery.stakeholder_inventory"
+        ],
+        "invalidates_on_change": [
+          "session.discovery",
+          "discovery.stakeholder_inventory"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true
+      },
+      "canonical_paths": [
+        "Blueprint/diagrams/stakeholder-map.svg"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/stakeholder-map.mmd"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 60,
+      "active": true
+    },
+    {
+      "deliverable_key": "diagram.current_process_map",
+      "title": "Diagrama del proceso actual",
+      "description": "Flujo visual del proceso manual o actual que permite identificar fricciones, errores y oportunidades de automatizacion.",
+      "deliverable_type": "diagram",
+      "category": "flow",
+      "stage": "discover",
+      "enabled_from_stage": "discover",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint",
+      "access_level": "sample",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "bpmn_xml",
+          "json"
+        ]
+      },
+      "generation_mode": "deterministic",
+      "prompt_policy": {
+        "prompt_template_key": "",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "bpmn-source.v1",
+        "validator_key": "bpmn.2_0.schema_semantic.v1",
+        "fallback_policy": "deterministic_only",
+        "max_iterations": 1
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "session.discovery",
+          "discovery.problem_context_brief"
+        ],
+        "long_term_collections": [],
+        "max_context_tokens": 3000,
+        "retrieval_strategy": "approved_stage_snapshot_only"
+      },
+      "quality_policy": {
+        "schema_contract": "bpmn-source.v1",
+        "validator_key": "bpmn.2_0.schema_semantic.v1",
+        "minimum_score": 85,
+        "checks": [
+          "unique_node_ids",
+          "valid_edges",
+          "source_refs_present"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "discovery.problem_context_brief"
+        ],
+        "invalidates_on_change": [
+          "session.discovery",
+          "discovery.problem_context_brief"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true
+      },
+      "canonical_paths": [
+        "Blueprint/diagrams/current-process-map.svg"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/current-process-map.bpmn"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 70,
+      "active": true
+    },
+    {
+      "deliverable_key": "diagram.traceability_matrix",
+      "title": "Diagrama de trazabilidad",
+      "description": "Mapa visual entre objetivos, requisitos, reglas, criterios, decisiones y fuentes aprobadas.",
+      "deliverable_type": "diagram",
+      "category": "traceability",
+      "stage": "define",
+      "enabled_from_stage": "define",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "premium",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "json"
+        ]
+      },
+      "generation_mode": "deterministic",
+      "prompt_policy": {
+        "prompt_template_key": "",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "fallback_policy": "deterministic_only",
+        "max_iterations": 1
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "definition.requirements_brief",
+          "definition.acceptance_trace"
+        ],
+        "long_term_collections": [],
+        "max_context_tokens": 3000,
+        "retrieval_strategy": "approved_stage_snapshot_only"
+      },
+      "quality_policy": {
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "minimum_score": 85,
+        "checks": [
+          "unique_node_ids",
+          "valid_edges",
+          "source_refs_present"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "definition.acceptance_trace"
+        ],
+        "invalidates_on_change": [
+          "definition.requirements",
+          "definition.acceptance_trace"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true
+      },
+      "canonical_paths": [
+        "Blueprint/diagrams/traceability-matrix.svg"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/traceability-matrix.mmd"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 80,
+      "active": true
+    },
+    {
+      "deliverable_key": "diagram.target_capabilities_map",
+      "title": "Diagrama de capacidades objetivo",
+      "description": "Vista temprana de capacidades esperadas del agente y sus limites antes del diseno tecnico profundo.",
+      "deliverable_type": "diagram",
+      "category": "capability",
+      "stage": "define",
+      "enabled_from_stage": "define",
+      "product_scope": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "view_only",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "json"
+        ]
+      },
+      "generation_mode": "deterministic",
+      "prompt_policy": {
+        "prompt_template_key": "",
+        "prompt_status": "active",
+        "prompt_version": "1.0.0",
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "fallback_policy": "deterministic_only",
+        "max_iterations": 1
+      },
+      "context_policy": {
+        "short_term_refs": [
+          "definition.requirements_brief"
+        ],
+        "long_term_collections": [],
+        "max_context_tokens": 3000,
+        "retrieval_strategy": "approved_stage_snapshot_only"
+      },
+      "quality_policy": {
+        "schema_contract": "diagram-model.v1",
+        "validator_key": "diagram.graph_integrity.v1",
+        "minimum_score": 85,
+        "checks": [
+          "unique_node_ids",
+          "valid_edges",
+          "source_refs_present"
+        ]
+      },
+      "dependency_policy": {
+        "depends_on": [
+          "definition.requirements_brief"
+        ],
+        "invalidates_on_change": [
+          "definition.requirements",
+          "definition.requirements_brief"
+        ]
+      },
+      "access_policy": {
+        "preview_mode": "limited",
+        "sample_enabled": true
+      },
+      "canonical_paths": [
+        "Blueprint/diagrams/target-capabilities-map.svg"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/target-capabilities-map.mmd"
+      ],
+      "exportable": true,
+      "blueprint_download": true,
+      "acp_download": true,
+      "sort_order": 90,
+      "active": true
+    }
+  ],
+  "validation_rules": [
+    "deliverable_keys_must_be_unique",
+    "llm_generation_requires_prompt_schema_validator_and_fallback",
+    "exportable_deliverables_require_canonical_or_portable_paths",
+    "diagram_deliverables_must_use_diagram_model_contract",
+    "acp_only_deliverables_must_not_be_in_blueprint_download"
+  ]
+}

@@ -1,0 +1,243 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "DecisionTraceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "decision_source": {
+          "default": "",
+          "title": "Decision Source",
+          "type": "string"
+        },
+        "dimension": {
+          "default": "",
+          "title": "Dimension",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        },
+        "recommended_label": {
+          "default": "",
+          "title": "Recommended Label",
+          "type": "string"
+        },
+        "recommended_value": {
+          "default": "",
+          "title": "Recommended Value",
+          "type": "string"
+        },
+        "review_note": {
+          "default": "",
+          "title": "Review Note",
+          "type": "string"
+        },
+        "selected_label": {
+          "default": "",
+          "title": "Selected Label",
+          "type": "string"
+        },
+        "selected_value": {
+          "default": "",
+          "title": "Selected Value",
+          "type": "string"
+        }
+      },
+      "title": "DecisionTraceEntry",
+      "type": "object"
+    },
+    "HeuristicDecisionFact": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value",
+        "source"
+      ],
+      "title": "HeuristicDecisionFact",
+      "type": "object"
+    },
+    "PatternCatalogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "default": "",
+          "title": "Family",
+          "type": "string"
+        },
+        "fit_score": {
+          "default": 0,
+          "title": "Fit Score",
+          "type": "integer"
+        },
+        "key": {
+          "default": "",
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "selected": {
+          "default": false,
+          "title": "Selected",
+          "type": "boolean"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "tradeoffs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tradeoffs",
+          "type": "array"
+        },
+        "use_when": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Use When",
+          "type": "array"
+        }
+      },
+      "title": "PatternCatalogEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate_catalog": {
+      "items": {
+        "$ref": "#/$defs/PatternCatalogEntry"
+      },
+      "title": "Candidate Catalog",
+      "type": "array"
+    },
+    "decision_summary": {
+      "title": "Decision Summary",
+      "type": "string"
+    },
+    "decision_trace": {
+      "items": {
+        "$ref": "#/$defs/DecisionTraceEntry"
+      },
+      "title": "Decision Trace",
+      "type": "array"
+    },
+    "facts": {
+      "items": {
+        "$ref": "#/$defs/HeuristicDecisionFact"
+      },
+      "title": "Facts",
+      "type": "array"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "recommended_prompts": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Recommended Prompts",
+      "type": "array"
+    },
+    "review_notes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Review Notes",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "heuristic-decision.v1",
+      "default": "heuristic-decision.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "decision_summary"
+  ],
+  "title": "HeuristicDecisionV1",
+  "type": "object"
+}

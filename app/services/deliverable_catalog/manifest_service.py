@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from app.services.deliverable_catalog.contracts import DeliverableCatalog
+from app.services.shared_specs import resolve_shared_spec_path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-DELIVERABLE_CATALOG_PATH = REPO_ROOT / "shared_specs" / "deliverable-catalog.v1.json"
+DELIVERABLE_CATALOG_PATH = resolve_shared_spec_path("deliverable-catalog.v1.json")
 
 
 class DeliverableCatalogValidationError(ValueError):

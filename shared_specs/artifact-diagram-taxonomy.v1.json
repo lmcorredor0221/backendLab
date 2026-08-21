@@ -1,0 +1,1362 @@
+{
+  "schema_version": "artifact-diagram-taxonomy.v1",
+  "generated_at": "2026-08-02",
+  "products": [
+    "blueprint",
+    "acp",
+    "shared"
+  ],
+  "access_levels": [
+    "sample",
+    "view_only",
+    "downloadable",
+    "premium",
+    "restricted"
+  ],
+  "artifact_categories": [
+    "functional",
+    "technical",
+    "commercial",
+    "diagram",
+    "prompt",
+    "tool",
+    "memory",
+    "contract",
+    "estimation",
+    "package",
+    "lineage"
+  ],
+  "diagram_categories": [
+    "architecture",
+    "orchestration",
+    "tools",
+    "memory",
+    "flow",
+    "knowledge",
+    "data",
+    "security",
+    "deployment",
+    "decisions",
+    "integrations",
+    "evaluation",
+    "lineage"
+  ],
+  "artifact_entries": [
+    {
+      "artifact_key": "discovery.analysis",
+      "title": "Analisis de descubrimiento",
+      "description": "Contexto de negocio, problema, objetivos, restricciones y oportunidades capturadas desde Descubrir.",
+      "category": "functional",
+      "product_owner": "blueprint",
+      "stage_owner": "discover",
+      "access_level": "view_only",
+      "formats": [
+        "json",
+        "markdown"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "agent_specification",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/discovery/analysis.md",
+        "ACP/business/discovery-analysis.yaml"
+      ]
+    },
+    {
+      "artifact_key": "definition.requirements",
+      "title": "Requerimientos definidos",
+      "description": "Requerimientos funcionales, no funcionales, alcance, fuera de alcance y reglas de negocio consolidadas.",
+      "category": "functional",
+      "product_owner": "blueprint",
+      "stage_owner": "define",
+      "access_level": "view_only",
+      "formats": [
+        "json",
+        "markdown",
+        "yaml"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "agent_specification",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/requirements/requirements.md",
+        "ACP/business/requirements.yaml"
+      ]
+    },
+    {
+      "artifact_key": "blueprint.architecture_spec",
+      "title": "Especificacion de arquitectura",
+      "description": "Arquitectura propuesta, topologia agentica, limites, responsabilidades y decisiones de diseno.",
+      "category": "technical",
+      "product_owner": "blueprint",
+      "stage_owner": "design",
+      "access_level": "view_only",
+      "formats": [
+        "json",
+        "markdown",
+        "yaml"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "agent_specification",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/architecture/architecture.md",
+        "ACP/architecture/topology.yaml"
+      ]
+    },
+    {
+      "artifact_key": "blueprint.patterns",
+      "title": "Patrones agenticos seleccionados",
+      "description": "Patrones de razonamiento, coordinacion, handoff, criticidad y colaboracion entre agentes.",
+      "category": "technical",
+      "product_owner": "blueprint",
+      "stage_owner": "design",
+      "access_level": "view_only",
+      "formats": [
+        "json",
+        "markdown",
+        "yaml"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "agent_specification",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/architecture/patterns.md",
+        "ACP/cognition/reasoning.yaml"
+      ]
+    },
+    {
+      "artifact_key": "tools.minimum_set",
+      "title": "Herramientas minimas recomendadas",
+      "description": "Conjunto minimo de herramientas obligatorias, opcionales e innecesarias con justificacion y riesgos.",
+      "category": "tool",
+      "product_owner": "blueprint",
+      "stage_owner": "tools",
+      "access_level": "view_only",
+      "formats": [
+        "json",
+        "markdown",
+        "yaml"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "agent_specification",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/tools/minimum-tools.md",
+        "ACP/tools/tool-inventory.yaml"
+      ]
+    },
+    {
+      "artifact_key": "tools.contracts",
+      "title": "Contratos de herramientas",
+      "description": "Contratos de entrada, salida, permisos, aprobaciones, side effects, retries y compensaciones.",
+      "category": "contract",
+      "product_owner": "shared",
+      "stage_owner": "tools",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/tools/contracts.md",
+        "ACP/tools/contracts/"
+      ]
+    },
+    {
+      "artifact_key": "memory.strategy",
+      "title": "Estrategia de memoria",
+      "description": "Memoria corta, memoria larga, RAG, recuperacion, compactacion, budgets de contexto y trazabilidad.",
+      "category": "memory",
+      "product_owner": "blueprint",
+      "stage_owner": "memory",
+      "access_level": "view_only",
+      "formats": [
+        "json",
+        "markdown",
+        "yaml"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "agent_specification",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/memory/strategy.md",
+        "ACP/memory/strategy.yaml"
+      ]
+    },
+    {
+      "artifact_key": "knowledge.contract",
+      "title": "Contrato de conocimiento",
+      "description": "Fuentes, ownership, sensibilidad, linaje, permisos y reglas de recuperacion para conocimiento del agente.",
+      "category": "contract",
+      "product_owner": "shared",
+      "stage_owner": "memory",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/knowledge/knowledge-contract.md",
+        "ACP/knowledge/knowledge-contract.yaml"
+      ]
+    },
+    {
+      "artifact_key": "blueprint.professional_document",
+      "title": "Blueprint Profesional",
+      "description": "Documento funcional, tecnico y comercial del sistema agentico para decision y compra.",
+      "category": "commercial",
+      "product_owner": "blueprint",
+      "stage_owner": "estimate",
+      "access_level": "downloadable",
+      "formats": [
+        "markdown",
+        "pdf",
+        "docx",
+        "json"
+      ],
+      "source_kind": "generated_blueprint_export",
+      "portable_scope": "commercial_value",
+      "blueprint_download": true,
+      "acp_download": false,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/blueprint-professional.md"
+      ]
+    },
+    {
+      "artifact_key": "estimate.comparison",
+      "title": "Estimacion y ROI",
+      "description": "Comparativa de esfuerzo, costo, tiempo, riesgo, intervencion humana y ROI entre escenarios.",
+      "category": "estimation",
+      "product_owner": "blueprint",
+      "stage_owner": "estimate",
+      "access_level": "view_only",
+      "formats": [
+        "json",
+        "markdown"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "commercial_value",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/estimate/roi.md",
+        "ACP/estimation/estimation-report.json"
+      ]
+    },
+    {
+      "artifact_key": "diagrams.blueprint_bundle",
+      "title": "Bundle de diagramas Blueprint",
+      "description": "Diagramas de arquitectura, orquestacion, herramientas, memoria, flujo, conocimiento, seguridad e integraciones.",
+      "category": "diagram",
+      "product_owner": "blueprint",
+      "stage_owner": "estimate",
+      "access_level": "downloadable",
+      "formats": [
+        "svg",
+        "mermaid",
+        "markdown"
+      ],
+      "source_kind": "generated_diagram",
+      "portable_scope": "commercial_value",
+      "blueprint_download": true,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "Blueprint/diagrams/"
+      ]
+    },
+    {
+      "artifact_key": "validation.simulation_spec",
+      "title": "Especificacion de simulacion",
+      "description": "Escenarios representativos, decisiones, herramientas, memoria y rutas esperadas para validar antes de construir.",
+      "category": "technical",
+      "product_owner": "acp",
+      "stage_owner": "validate",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml",
+        "markdown"
+      ],
+      "source_kind": "approved_journey_artifact",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/evaluation/simulation-spec.yaml"
+      ]
+    },
+    {
+      "artifact_key": "evaluation.test_suite",
+      "title": "Test Suite de implementacion",
+      "description": "Casos de prueba, criterios de aceptacion, datos esperados, quality gates y regresiones.",
+      "category": "technical",
+      "product_owner": "acp",
+      "stage_owner": "validate",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml",
+        "markdown"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/evaluation/test-suite.yaml"
+      ]
+    },
+    {
+      "artifact_key": "acp.gap_register",
+      "title": "Registro de GAPs de implementacion",
+      "description": "Brechas, severidad, owner, impacto, preguntas y criterios de cierre para la ejecucion del ACP.",
+      "category": "technical",
+      "product_owner": "acp",
+      "stage_owner": "package",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml",
+        "markdown"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/gaps/gap-register.yaml"
+      ]
+    },
+    {
+      "artifact_key": "acp.implementation_questions",
+      "title": "Preguntas de implementacion",
+      "description": "Preguntas estructuradas que deben resolverse durante implementacion, con opciones, impacto y ejemplos.",
+      "category": "technical",
+      "product_owner": "acp",
+      "stage_owner": "package",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml",
+        "markdown"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/questions/implementation-questions.yaml"
+      ]
+    },
+    {
+      "artifact_key": "acp.prompt_pack",
+      "title": "Prompt Pack",
+      "description": "Prompts, playbooks, instrucciones de razonamiento, criterios de salida y reglas de seguridad para construir el agente.",
+      "category": "prompt",
+      "product_owner": "acp",
+      "stage_owner": "package",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml",
+        "markdown"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/prompts/"
+      ]
+    },
+    {
+      "artifact_key": "acp.workflow_pack",
+      "title": "Workflow Pack portable",
+      "description": "Workflows, estados, nodos, rutas, condiciones, checkpoints y handoffs declarativos del agente objetivo.",
+      "category": "technical",
+      "product_owner": "acp",
+      "stage_owner": "package",
+      "access_level": "premium",
+      "formats": [
+        "json",
+        "yaml",
+        "mermaid"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/workflows/agent-runtime.yaml"
+      ]
+    },
+    {
+      "artifact_key": "acp.deployment_guide",
+      "title": "Guia de despliegue y decisiones de tecnologia",
+      "description": "Matriz de decision para lenguaje, framework, base de datos, vector store, hosting, CI/CD y observabilidad.",
+      "category": "technical",
+      "product_owner": "acp",
+      "stage_owner": "package",
+      "access_level": "premium",
+      "formats": [
+        "markdown",
+        "yaml"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/deployment/decision-matrix.yaml",
+        "ACP/deployment/implementation-guide.md"
+      ]
+    },
+    {
+      "artifact_key": "acp.package_manifest",
+      "title": "Manifest ACP",
+      "description": "Indice portable del paquete, perfiles exportables, checksums, versionado, archivos y compatibilidad.",
+      "category": "package",
+      "product_owner": "acp",
+      "stage_owner": "package",
+      "access_level": "premium",
+      "formats": [
+        "yaml",
+        "json"
+      ],
+      "source_kind": "generated_acp_file",
+      "portable_scope": "construction_package",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": false,
+      "canonical_paths": [
+        "ACP/manifest.yaml"
+      ]
+    },
+    {
+      "artifact_key": "provenance.producer_trace",
+      "title": "Trazabilidad del productor",
+      "description": "Metadatos opcionales de Lean Agent Builder para auditoria, aislados de los contratos portables del agente.",
+      "category": "lineage",
+      "product_owner": "shared",
+      "stage_owner": "package",
+      "access_level": "restricted",
+      "formats": [
+        "json",
+        "yaml"
+      ],
+      "source_kind": "producer_provenance",
+      "portable_scope": "producer_lineage",
+      "blueprint_download": false,
+      "acp_download": true,
+      "internal_lean_refs_allowed": true,
+      "canonical_paths": [
+        "ACP/provenance/producer-metadata.yaml"
+      ]
+    }
+  ],
+  "diagram_entries": [
+    {
+      "diagram_key": "architecture_overview",
+      "title": "Arquitectura propuesta",
+      "description": "Vista ejecutiva de capas, limites, responsabilidades y principales capacidades del sistema agentico.",
+      "category": "architecture",
+      "diagram_surface": "agent_design",
+      "product_scope": [
+        "blueprint"
+      ],
+      "required_tier": "blueprint",
+      "access_level": "sample",
+      "enabled_from_stage": "design",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "blueprint.architecture_spec",
+        "blueprint.patterns"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/architecture-overview.svg"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_blueprint_message": "Este diagrama forma parte del Blueprint. Adquierelo para acceder a la documentacion completa, los diagramas detallados y el diseno integral de la solucion.",
+        "locked_acp_message": "Este diagrama esta incluido en el Blueprint y tambien puede referenciarse desde el ACP adquirido."
+      },
+      "sort_order": 1,
+      "is_active": true
+    },
+    {
+      "diagram_key": "c4_context",
+      "title": "C4 Context",
+      "description": "Contexto del agente frente a usuarios, sistemas externos, fuentes de conocimiento y boundaries.",
+      "category": "architecture",
+      "diagram_surface": "agent_design",
+      "product_scope": [
+        "blueprint"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "design",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "svg",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "definition.requirements",
+        "blueprint.architecture_spec"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/c4-context.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 2,
+      "is_active": true
+    },
+    {
+      "diagram_key": "c4_container",
+      "title": "C4 Container",
+      "description": "Contenedores logicos del agente, runtime, herramientas, memoria, conocimiento e interfaces.",
+      "category": "architecture",
+      "diagram_surface": "agent_design",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "design",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "svg",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "blueprint.architecture_spec",
+        "tools.minimum_set",
+        "memory.strategy"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/c4-container.mmd",
+        "ACP/diagrams/agent-runtime/c4-container.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 3,
+      "is_active": true
+    },
+    {
+      "diagram_key": "agent_orchestration",
+      "title": "Orquestacion agentica",
+      "description": "Agentes, subagentes, handoffs, rutas de decision y patrones de coordinacion.",
+      "category": "orchestration",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint",
+      "access_level": "sample",
+      "enabled_from_stage": "design",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "yaml"
+        ]
+      },
+      "source_artifact_keys": [
+        "blueprint.architecture_spec",
+        "blueprint.patterns"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/agent-orchestration.svg",
+        "ACP/diagrams/agent-runtime/orchestration.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_blueprint_message": "Este diagrama forma parte del Blueprint. Adquierelo en Blueprint Pro para descargarlo en alta resolucion y acceder a toda la suite de diagramas.",
+        "locked_acp_message": "Este diagrama esta incluido en el Blueprint y tambien puede referenciarse desde el ACP adquirido."
+      },
+      "sort_order": 4,
+      "is_active": true
+    },
+    {
+      "diagram_key": "runtime_workflow",
+      "title": "Flujo runtime del agente",
+      "description": "State machine portable del agente objetivo, con nodos, condiciones y transiciones.",
+      "category": "flow",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "memory",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "svg",
+          "yaml"
+        ]
+      },
+      "source_artifact_keys": [
+        "blueprint.architecture_spec",
+        "tools.minimum_set",
+        "memory.strategy"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/runtime-workflow.mmd",
+        "ACP/workflows/agent-runtime.yaml"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 5,
+      "is_active": true
+    },
+    {
+      "diagram_key": "decision_model",
+      "title": "Modelo de decisiones",
+      "description": "Decisiones permitidas, prohibidas, criterios, approvals y escalamiento humano.",
+      "category": "decisions",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "design",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "svg",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "definition.requirements",
+        "blueprint.patterns"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/decision-model.mmd",
+        "ACP/cognition/decision-model.yaml"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 6,
+      "is_active": true
+    },
+    {
+      "diagram_key": "tool_capability_map",
+      "title": "Mapa de herramientas",
+      "description": "Herramientas minimas, capacidades, obligatoriedad, riesgos, side effects y reemplazos.",
+      "category": "tools",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "tools",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "yaml"
+        ]
+      },
+      "source_artifact_keys": [
+        "tools.minimum_set",
+        "tools.contracts"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/tool-capability-map.svg",
+        "ACP/diagrams/agent-runtime/tool-map.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 7,
+      "is_active": true
+    },
+    {
+      "diagram_key": "tool_contract_sequence",
+      "title": "Secuencia de contratos de herramientas",
+      "description": "Orden de llamadas, payloads, permisos, retries, compensaciones y validaciones por herramienta.",
+      "category": "tools",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "validate",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "yaml",
+          "svg"
+        ]
+      },
+      "source_artifact_keys": [
+        "tools.contracts",
+        "acp.workflow_pack"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/implementation/tool-contract-sequence.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama hace parte del Agent Construction Package (ACP). Adquiere el ACP para acceder a los artefactos de implementacion y construccion del sistema agentico."
+      },
+      "sort_order": 8,
+      "is_active": true
+    },
+    {
+      "diagram_key": "memory_rag_architecture",
+      "title": "Memoria y RAG",
+      "description": "Memoria corta, memoria larga, fuentes, recuperacion, compactacion y prevencion de saturacion de contexto.",
+      "category": "memory",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "memory",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "json"
+        ]
+      },
+      "source_artifact_keys": [
+        "memory.strategy",
+        "knowledge.contract"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/memory-rag.svg",
+        "ACP/diagrams/agent-runtime/memory-rag.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 9,
+      "is_active": true
+    },
+    {
+      "diagram_key": "knowledge_graph",
+      "title": "Grafo de conocimiento",
+      "description": "Fuentes, decisiones, evidencia aprobada, linaje y relacion entre conocimiento y comportamiento del agente.",
+      "category": "knowledge",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "memory",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "json",
+        "available": [
+          "json",
+          "svg",
+          "graphml",
+          "cypher"
+        ]
+      },
+      "source_artifact_keys": [
+        "memory.strategy",
+        "knowledge.contract"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/knowledge-graph.json",
+        "ACP/knowledge/graph.json"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 10,
+      "is_active": true
+    },
+    {
+      "diagram_key": "data_contracts",
+      "title": "Datos y contratos",
+      "description": "Entidades, payloads, schemas, eventos, payload validation y contratos para implementacion.",
+      "category": "data",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "validate",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "json_schema",
+          "yaml"
+        ]
+      },
+      "source_artifact_keys": [
+        "tools.contracts",
+        "knowledge.contract",
+        "acp.package_manifest"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/implementation/data-contracts.svg",
+        "ACP/contracts/"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama hace parte del ACP y traduce el Blueprint en contratos tecnicos para construir."
+      },
+      "sort_order": 11,
+      "is_active": true
+    },
+    {
+      "diagram_key": "security_guardrails",
+      "title": "Seguridad y guardrails",
+      "description": "Aprobaciones, limites de autonomia, controles de acceso, politicas y manejo de side effects.",
+      "category": "security",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint",
+      "access_level": "sample",
+      "enabled_from_stage": "tools",
+      "default_generation_state": "generated",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "definition.requirements",
+        "tools.minimum_set",
+        "blueprint.patterns"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/security-guardrails.svg",
+        "ACP/security/guardrails.yaml"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_blueprint_message": "Este diagrama forma parte del Blueprint. Adquierelo en Blueprint Pro para descargarlo y acceder a las politicas completas de guardrails.",
+        "locked_acp_message": "Este diagrama esta incluido en el Blueprint y tambien puede referenciarse desde el ACP adquirido."
+      },
+      "sort_order": 12,
+      "is_active": true
+    },
+    {
+      "diagram_key": "integration_boundaries",
+      "title": "Fronteras de integracion",
+      "description": "Sistemas externos, APIs, permisos, ownership y boundaries entre agente, herramientas y datos.",
+      "category": "integrations",
+      "diagram_surface": "agent_design",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "tools",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "svg",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "tools.minimum_set",
+        "tools.contracts",
+        "definition.requirements"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/integration-boundaries.mmd",
+        "ACP/integrations/boundaries.yaml"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 13,
+      "is_active": true
+    },
+    {
+      "diagram_key": "deployment_decision_matrix",
+      "title": "Despliegue y stack",
+      "description": "Opciones y matriz de decision para lenguaje, framework, base de datos, vector store, hosting, CI/CD y observabilidad.",
+      "category": "deployment",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "package",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "yaml",
+        "available": [
+          "yaml",
+          "markdown",
+          "svg"
+        ]
+      },
+      "source_artifact_keys": [
+        "acp.deployment_guide",
+        "acp.package_manifest"
+      ],
+      "portable_paths": [
+        "ACP/deployment/decision-matrix.yaml",
+        "ACP/diagrams/implementation/deployment-options.svg"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama hace parte del ACP. No impone tecnologia; guia al equipo para elegir stack y entorno durante la implementacion."
+      },
+      "sort_order": 14,
+      "is_active": true
+    },
+    {
+      "diagram_key": "evaluation_test_suite",
+      "title": "Test Suite y validacion",
+      "description": "Escenarios, casos, criterios de aceptacion, quality gates y pruebas de regresion para construccion.",
+      "category": "evaluation",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "validate",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "yaml",
+        "available": [
+          "yaml",
+          "svg",
+          "mermaid"
+        ]
+      },
+      "source_artifact_keys": [
+        "validation.simulation_spec",
+        "evaluation.test_suite"
+      ],
+      "portable_paths": [
+        "ACP/evaluation/test-suite.yaml",
+        "ACP/diagrams/implementation/evaluation-flow.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama hace parte del ACP y convierte el diseno en pruebas concretas de implementacion."
+      },
+      "sort_order": 15,
+      "is_active": true
+    },
+    {
+      "diagram_key": "producer_lineage",
+      "title": "Lineage del productor",
+      "description": "Trazabilidad opcional de Lean Agent Builder como plataforma generadora; no describe el runtime del agente.",
+      "category": "lineage",
+      "diagram_surface": "builder_provenance",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "restricted",
+      "enabled_from_stage": "package",
+      "default_generation_state": "planned",
+      "formats": {
+        "preferred": "json",
+        "available": [
+          "json",
+          "graphml",
+          "cypher"
+        ]
+      },
+      "source_artifact_keys": [
+        "provenance.producer_trace",
+        "acp.package_manifest"
+      ],
+      "portable_paths": [
+        "ACP/provenance/lineage/producer-lineage.json"
+      ],
+      "contains_internal_lean_model": true,
+      "upsell": {},
+      "sort_order": 16,
+      "is_active": true
+    },
+    {
+      "diagram_key": "prompt_reasoning_playbook",
+      "title": "Playbook de razonamiento",
+      "description": "Prompts, reglas de razonamiento, criterios de salida, rutas de autocorreccion y limites de autonomia.",
+      "category": "orchestration",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "package",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "markdown",
+          "yaml"
+        ]
+      },
+      "source_artifact_keys": [
+        "acp.prompt_pack",
+        "blueprint.patterns"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/implementation/prompt-reasoning-playbook.mmd",
+        "ACP/prompts/"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama pertenece al ACP y muestra como los prompts se traducen en comportamiento ejecutable."
+      },
+      "sort_order": 17,
+      "is_active": true
+    },
+    {
+      "diagram_key": "human_intervention_flow",
+      "title": "Intervencion humana y aprobaciones",
+      "description": "Preguntas, decisiones humanas, aprobaciones, responsables, bloqueo del flujo y criterios de desbloqueo.",
+      "category": "decisions",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "memory",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "svg",
+          "yaml"
+        ]
+      },
+      "source_artifact_keys": [
+        "acp.implementation_questions",
+        "acp.gap_register",
+        "blueprint.patterns"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/human-intervention-flow.mmd",
+        "ACP/workflows/human-intervention.yaml"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 18,
+      "is_active": true
+    },
+    {
+      "diagram_key": "rag_ingestion_pipeline",
+      "title": "Pipeline de ingesta RAG",
+      "description": "Fuentes, particionado, embeddings, refresh, linaje, permisos y recuperacion selectiva de conocimiento.",
+      "category": "knowledge",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "validate",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "yaml",
+          "svg"
+        ]
+      },
+      "source_artifact_keys": [
+        "knowledge.contract",
+        "memory.strategy"
+      ],
+      "portable_paths": [
+        "ACP/knowledge/rag-ingestion-pipeline.yaml",
+        "ACP/diagrams/implementation/rag-ingestion-pipeline.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama hace parte del ACP y convierte la estrategia de memoria en una guia tecnica de ingesta y recuperacion."
+      },
+      "sort_order": 19,
+      "is_active": true
+    },
+    {
+      "diagram_key": "short_term_context_budget",
+      "title": "Budget de contexto corto",
+      "description": "Resumenes, paginacion, referencias a artefactos, ventanas por etapa y reglas para evitar saturacion de contexto.",
+      "category": "memory",
+      "diagram_surface": "agent_runtime",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "memory",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "json",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "memory.strategy",
+        "knowledge.contract"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/context-budget.mmd",
+        "ACP/memory/context-budget.yaml"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 20,
+      "is_active": true
+    },
+    {
+      "diagram_key": "observability_event_model",
+      "title": "Modelo de observabilidad",
+      "description": "Eventos, trazas, metricas, errores, reintentos, alertas y evidencia operacional del agente construido.",
+      "category": "evaluation",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "package",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "yaml",
+        "available": [
+          "yaml",
+          "mermaid",
+          "json"
+        ]
+      },
+      "source_artifact_keys": [
+        "evaluation.test_suite",
+        "acp.workflow_pack",
+        "acp.package_manifest"
+      ],
+      "portable_paths": [
+        "ACP/observability/event-model.yaml",
+        "ACP/diagrams/implementation/observability-event-model.mmd"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama esta en el ACP y ayuda al equipo a instrumentar la solucion sin redefinir trazabilidad."
+      },
+      "sort_order": 21,
+      "is_active": true
+    },
+    {
+      "diagram_key": "api_integration_sequence",
+      "title": "Secuencia de APIs e integraciones",
+      "description": "Orden de llamadas, contratos, permisos, fallbacks, idempotencia y compensaciones entre agente y sistemas externos.",
+      "category": "integrations",
+      "diagram_surface": "implementation_guide",
+      "product_scope": [
+        "acp"
+      ],
+      "required_tier": "acp",
+      "access_level": "premium",
+      "enabled_from_stage": "validate",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "mermaid",
+        "available": [
+          "mermaid",
+          "yaml",
+          "svg"
+        ]
+      },
+      "source_artifact_keys": [
+        "tools.contracts",
+        "acp.workflow_pack"
+      ],
+      "portable_paths": [
+        "ACP/diagrams/implementation/api-integration-sequence.mmd",
+        "ACP/integrations/api-contracts.yaml"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_acp_message": "Este diagrama pertenece al ACP y reduce ambiguedad tecnica en la integracion."
+      },
+      "sort_order": 22,
+      "is_active": true
+    },
+    {
+      "diagram_key": "data_lineage_map",
+      "title": "Linaje de datos y evidencia",
+      "description": "Relacion entre entradas aprobadas, decisiones, fuentes de conocimiento, artefactos generados y salidas del agente.",
+      "category": "data",
+      "diagram_surface": "agent_design",
+      "product_scope": [
+        "blueprint",
+        "acp"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "estimate",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "json",
+        "available": [
+          "json",
+          "graphml",
+          "mermaid"
+        ]
+      },
+      "source_artifact_keys": [
+        "discovery.analysis",
+        "definition.requirements",
+        "knowledge.contract",
+        "estimate.comparison"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/data-lineage-map.json",
+        "ACP/knowledge/data-lineage-map.json"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {},
+      "sort_order": 23,
+      "is_active": true
+    },
+    {
+      "diagram_key": "commercial_value_flow",
+      "title": "Flujo de valor comercial",
+      "description": "Comparativa Blueprint, ACP y herramientas agenticas: ahorro, ROI, riesgo, time to market e intervencion humana.",
+      "category": "flow",
+      "diagram_surface": "agent_design",
+      "product_scope": [
+        "blueprint"
+      ],
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
+      "enabled_from_stage": "estimate",
+      "default_generation_state": "not_generated",
+      "formats": {
+        "preferred": "svg",
+        "available": [
+          "svg",
+          "mermaid",
+          "markdown"
+        ]
+      },
+      "source_artifact_keys": [
+        "blueprint.professional_document",
+        "estimate.comparison"
+      ],
+      "portable_paths": [
+        "Blueprint/diagrams/commercial-value-flow.svg"
+      ],
+      "contains_internal_lean_model": false,
+      "upsell": {
+        "locked_blueprint_message": "Este diagrama hace parte del Blueprint Profesional y evidencia el valor economico del diseno antes de construir."
+      },
+      "sort_order": 24,
+      "is_active": true
+    }
+  ],
+  "validation_rules": [
+    "artifact_keys_must_be_unique",
+    "diagram_keys_must_be_unique",
+    "every_diagram_source_artifact_key_must_exist",
+    "blueprint_product_diagrams_must_not_contain_internal_lean_model",
+    "agent_runtime_diagrams_must_not_contain_session_canvas_or_discovery_as_runtime_nodes",
+    "restricted_internal_lineage_must_use_builder_provenance_surface",
+    "acp_only_artifacts_must_not_be_in_blueprint_download",
+    "every_artifact_must_have_product_owner_stage_access_and_format"
+  ]
+}

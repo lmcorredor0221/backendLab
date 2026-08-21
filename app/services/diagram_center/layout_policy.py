@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from app.services.diagram_center.contracts import DiagramNotation
-
-
-SPEC_ROOT = Path(__file__).resolve().parents[4] / "shared_specs"
-LAYOUT_POLICY_PATH = SPEC_ROOT / "diagram-layout-policy.v1.json"
+from app.services.shared_specs import resolve_shared_spec_path
 
 DEFAULT_LAYOUT_POLICY: dict[str, Any] = {
     "schema_version": "diagram-layout-guidance.v1",
@@ -29,7 +25,7 @@ DEFAULT_LAYOUT_POLICY: dict[str, Any] = {
 
 @lru_cache(maxsize=1)
 def load_layout_policy_profiles() -> dict[str, dict[str, Any]]:
-    payload = json.loads(LAYOUT_POLICY_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(resolve_shared_spec_path("diagram-layout-policy.v1.json").read_text(encoding="utf-8"))
     return {
         str(profile["notation"]): profile
         for profile in payload.get("profiles", [])

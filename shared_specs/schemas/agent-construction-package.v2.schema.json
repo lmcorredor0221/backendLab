@@ -1,0 +1,2610 @@
+{
+  "$defs": {
+    "AcpV2AgentRuntime": {
+      "additionalProperties": false,
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/$defs/AcpV2RuntimeAgent"
+          },
+          "title": "Agents",
+          "type": "array"
+        },
+        "execution_budget": {
+          "additionalProperties": true,
+          "title": "Execution Budget",
+          "type": "object"
+        },
+        "failure_modes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Failure Modes",
+          "type": "array"
+        },
+        "orchestration_pattern": {
+          "title": "Orchestration Pattern",
+          "type": "string"
+        },
+        "routing_rules": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Routing Rules",
+          "type": "array"
+        },
+        "runtime_model": {
+          "title": "Runtime Model",
+          "type": "string"
+        },
+        "state_machine": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "State Machine",
+          "type": "array"
+        }
+      },
+      "required": [
+        "runtime_model",
+        "orchestration_pattern",
+        "state_machine",
+        "routing_rules",
+        "agents",
+        "failure_modes"
+      ],
+      "title": "AcpV2AgentRuntime",
+      "type": "object"
+    },
+    "AcpV2BuildPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "completion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completion Criteria",
+          "type": "array"
+        },
+        "entrypoint": {
+          "title": "Entrypoint",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/AcpV2BuildStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entrypoint",
+        "steps",
+        "completion_criteria"
+      ],
+      "title": "AcpV2BuildPlan",
+      "type": "object"
+    },
+    "AcpV2BuildStep": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "inputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "objective": {
+          "title": "Objective",
+          "type": "string"
+        },
+        "outputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Outputs",
+          "type": "array"
+        },
+        "step_key": {
+          "title": "Step Key",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "validation": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Validation",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_key",
+        "title",
+        "objective",
+        "depends_on",
+        "inputs",
+        "outputs",
+        "actions",
+        "validation"
+      ],
+      "title": "AcpV2BuildStep",
+      "type": "object"
+    },
+    "AcpV2CapabilityContract": {
+      "additionalProperties": false,
+      "properties": {
+        "abstract_inputs": {
+          "additionalProperties": true,
+          "title": "Abstract Inputs",
+          "type": "object"
+        },
+        "abstract_outputs": {
+          "additionalProperties": true,
+          "title": "Abstract Outputs",
+          "type": "object"
+        },
+        "capability_key": {
+          "title": "Capability Key",
+          "type": "string"
+        },
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "memory_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Memory Refs",
+          "type": "array"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "replacement_options": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Replacement Options",
+          "type": "array"
+        },
+        "required_permissions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Permissions",
+          "type": "array"
+        },
+        "requirement_level": {
+          "enum": [
+            "required",
+            "optional",
+            "replaceable",
+            "not_recommended"
+          ],
+          "title": "Requirement Level",
+          "type": "string"
+        },
+        "side_effect_profile": {
+          "title": "Side Effect Profile",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "tool_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tool Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "capability_key",
+        "title",
+        "description",
+        "requirement_level",
+        "rationale",
+        "consumers",
+        "abstract_inputs",
+        "abstract_outputs",
+        "required_permissions",
+        "side_effect_profile",
+        "memory_refs",
+        "tool_refs",
+        "replacement_options",
+        "source_refs"
+      ],
+      "title": "AcpV2CapabilityContract",
+      "type": "object"
+    },
+    "AcpV2CheckpointSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_key": {
+          "title": "Checkpoint Key",
+          "type": "string"
+        },
+        "portable_ref": {
+          "title": "Portable Ref",
+          "type": "string"
+        },
+        "required_artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Artifacts",
+          "type": "array"
+        },
+        "resume_strategy": {
+          "title": "Resume Strategy",
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "construction",
+            "runtime",
+            "human_decision"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "storage_hint": {
+          "title": "Storage Hint",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        },
+        "validation": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Validation",
+          "type": "array"
+        }
+      },
+      "required": [
+        "checkpoint_key",
+        "title",
+        "scope",
+        "trigger",
+        "required_artifacts",
+        "validation",
+        "resume_strategy",
+        "storage_hint",
+        "portable_ref"
+      ],
+      "title": "AcpV2CheckpointSpec",
+      "type": "object"
+    },
+    "AcpV2CompatibilityRule": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Adapter Notes",
+          "type": "array"
+        },
+        "support_level": {
+          "title": "Support Level",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "unsupported_features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unsupported Features",
+          "type": "array"
+        }
+      },
+      "required": [
+        "target",
+        "support_level",
+        "adapter_notes",
+        "unsupported_features"
+      ],
+      "title": "AcpV2CompatibilityRule",
+      "type": "object"
+    },
+    "AcpV2ConformanceRule": {
+      "additionalProperties": false,
+      "properties": {
+        "requirement": {
+          "title": "Requirement",
+          "type": "string"
+        },
+        "rule_key": {
+          "title": "Rule Key",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "validation_method": {
+          "title": "Validation Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule_key",
+        "severity",
+        "requirement",
+        "validation_method"
+      ],
+      "title": "AcpV2ConformanceRule",
+      "type": "object"
+    },
+    "AcpV2ContextWindowPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "anti_redundancy_rules": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Anti Redundancy Rules",
+          "type": "array"
+        },
+        "artifact_reference_policy": {
+          "title": "Artifact Reference Policy",
+          "type": "string"
+        },
+        "compaction_trigger": {
+          "title": "Compaction Trigger",
+          "type": "string"
+        },
+        "max_context_utilization_percent": {
+          "default": 85,
+          "title": "Max Context Utilization Percent",
+          "type": "integer"
+        },
+        "pagination_policy": {
+          "title": "Pagination Policy",
+          "type": "string"
+        },
+        "retrieval_context_policy": {
+          "title": "Retrieval Context Policy",
+          "type": "string"
+        },
+        "short_term_budget_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Short Term Budget Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "short_term_budget_refs",
+        "compaction_trigger",
+        "anti_redundancy_rules",
+        "retrieval_context_policy",
+        "pagination_policy",
+        "artifact_reference_policy"
+      ],
+      "title": "AcpV2ContextWindowPolicy",
+      "type": "object"
+    },
+    "AcpV2DecisionOption": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "option_key": {
+          "title": "Option Key",
+          "type": "string"
+        },
+        "recommended": {
+          "default": false,
+          "title": "Recommended",
+          "type": "boolean"
+        },
+        "tradeoffs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tradeoffs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "option_key",
+        "label",
+        "description",
+        "tradeoffs"
+      ],
+      "title": "AcpV2DecisionOption",
+      "type": "object"
+    },
+    "AcpV2DecisionRegistryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking_scope": {
+          "enum": [
+            "package",
+            "implementation",
+            "none"
+          ],
+          "title": "Blocking Scope",
+          "type": "string"
+        },
+        "classification": {
+          "enum": [
+            "mandatory",
+            "optional",
+            "deferable",
+            "environment_dependent"
+          ],
+          "title": "Classification",
+          "type": "string"
+        },
+        "context": {
+          "title": "Context",
+          "type": "string"
+        },
+        "decision_key": {
+          "title": "Decision Key",
+          "type": "string"
+        },
+        "examples": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Examples",
+          "type": "array"
+        },
+        "impact": {
+          "title": "Impact",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/AcpV2DecisionOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "recommended_moment": {
+          "title": "Recommended Moment",
+          "type": "string"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_key",
+        "classification",
+        "blocking_scope",
+        "question",
+        "context",
+        "owner",
+        "recommended_moment",
+        "impact",
+        "options",
+        "examples",
+        "source_ref"
+      ],
+      "title": "AcpV2DecisionRegistryEntry",
+      "type": "object"
+    },
+    "AcpV2DeploymentGuide": {
+      "additionalProperties": false,
+      "properties": {
+        "deployment_decision_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Deployment Decision Refs",
+          "type": "array"
+        },
+        "environment_prerequisites": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Environment Prerequisites",
+          "type": "array"
+        },
+        "guide_key": {
+          "title": "Guide Key",
+          "type": "string"
+        },
+        "mode": {
+          "const": "guidance_only",
+          "default": "guidance_only",
+          "title": "Mode",
+          "type": "string"
+        },
+        "observability_considerations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Observability Considerations",
+          "type": "array"
+        },
+        "required_script": {
+          "default": false,
+          "title": "Required Script",
+          "type": "boolean"
+        },
+        "rollback_guidance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Rollback Guidance",
+          "type": "array"
+        },
+        "security_considerations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Security Considerations",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/AcpV2DeploymentGuideStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "guide_key",
+        "deployment_decision_refs",
+        "environment_prerequisites",
+        "steps",
+        "rollback_guidance",
+        "security_considerations",
+        "observability_considerations"
+      ],
+      "title": "AcpV2DeploymentGuide",
+      "type": "object"
+    },
+    "AcpV2DeploymentGuideStep": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "objective": {
+          "title": "Objective",
+          "type": "string"
+        },
+        "optional": {
+          "default": false,
+          "title": "Optional",
+          "type": "boolean"
+        },
+        "prerequisites": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Prerequisites",
+          "type": "array"
+        },
+        "step_key": {
+          "title": "Step Key",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "validation": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Validation",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_key",
+        "title",
+        "objective",
+        "prerequisites",
+        "actions",
+        "validation"
+      ],
+      "title": "AcpV2DeploymentGuideStep",
+      "type": "object"
+    },
+    "AcpV2ImplementationDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "decision_key": {
+          "title": "Decision Key",
+          "type": "string"
+        },
+        "decision_type": {
+          "title": "Decision Type",
+          "type": "string"
+        },
+        "default_option": {
+          "default": "",
+          "title": "Default Option",
+          "type": "string"
+        },
+        "impact": {
+          "title": "Impact",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "timing": {
+          "title": "Timing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_key",
+        "decision_type",
+        "question",
+        "owner",
+        "timing",
+        "required",
+        "options",
+        "impact",
+        "source_ref"
+      ],
+      "title": "AcpV2ImplementationDecision",
+      "type": "object"
+    },
+    "AcpV2KnowledgeArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_key": {
+          "title": "Artifact Key",
+          "type": "string"
+        },
+        "expiration_policy": {
+          "title": "Expiration Policy",
+          "type": "string"
+        },
+        "indexing_required": {
+          "title": "Indexing Required",
+          "type": "boolean"
+        },
+        "ingestion_capability_ref": {
+          "title": "Ingestion Capability Ref",
+          "type": "string"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        },
+        "location_hint": {
+          "title": "Location Hint",
+          "type": "string"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Permissions",
+          "type": "array"
+        },
+        "reason_to_index": {
+          "title": "Reason To Index",
+          "type": "string"
+        },
+        "refresh_triggers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Refresh Triggers",
+          "type": "array"
+        },
+        "retrieval_capability_ref": {
+          "title": "Retrieval Capability Ref",
+          "type": "string"
+        },
+        "sensitivity": {
+          "title": "Sensitivity",
+          "type": "string"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "source_type": {
+          "title": "Source Type",
+          "type": "string"
+        },
+        "source_version": {
+          "title": "Source Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_key",
+        "title",
+        "source_type",
+        "location_hint",
+        "owner",
+        "sensitivity",
+        "license",
+        "source_version",
+        "indexing_required",
+        "reason_to_index",
+        "ingestion_capability_ref",
+        "retrieval_capability_ref",
+        "permissions",
+        "refresh_triggers",
+        "expiration_policy",
+        "source_ref"
+      ],
+      "title": "AcpV2KnowledgeArtifactRef",
+      "type": "object"
+    },
+    "AcpV2KnowledgeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "freshness": {
+          "title": "Freshness",
+          "type": "string"
+        },
+        "ingestion_required": {
+          "title": "Ingestion Required",
+          "type": "boolean"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "location_hint": {
+          "title": "Location Hint",
+          "type": "string"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "source_key": {
+          "title": "Source Key",
+          "type": "string"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_key",
+        "title",
+        "kind",
+        "location_hint",
+        "ingestion_required",
+        "freshness",
+        "owner",
+        "source_ref"
+      ],
+      "title": "AcpV2KnowledgeSource",
+      "type": "object"
+    },
+    "AcpV2ManifestContractEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "checksum_sha256": {
+          "title": "Checksum Sha256",
+          "type": "string"
+        },
+        "contract_key": {
+          "title": "Contract Key",
+          "type": "string"
+        },
+        "relative_path": {
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_key",
+        "schema_version",
+        "relative_path",
+        "checksum_sha256"
+      ],
+      "title": "AcpV2ManifestContractEntry",
+      "type": "object"
+    },
+    "AcpV2MemoryKnowledgePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Capability Dependencies",
+          "type": "array"
+        },
+        "context_window_policy": {
+          "$ref": "#/$defs/AcpV2ContextWindowPolicy"
+        },
+        "knowledge_artifacts": {
+          "items": {
+            "$ref": "#/$defs/AcpV2KnowledgeArtifactRef"
+          },
+          "title": "Knowledge Artifacts",
+          "type": "array"
+        },
+        "namespaces": {
+          "items": {
+            "$ref": "#/$defs/AcpV2MemoryNamespace"
+          },
+          "title": "Namespaces",
+          "type": "array"
+        },
+        "rag_pipeline": {
+          "$ref": "#/$defs/AcpV2RagPipelineSpec"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "namespaces",
+        "knowledge_artifacts",
+        "rag_pipeline",
+        "context_window_policy",
+        "capability_dependencies",
+        "source_refs"
+      ],
+      "title": "AcpV2MemoryKnowledgePlan",
+      "type": "object"
+    },
+    "AcpV2MemoryNamespace": {
+      "additionalProperties": false,
+      "properties": {
+        "compaction_policy": {
+          "title": "Compaction Policy",
+          "type": "string"
+        },
+        "freshness_policy": {
+          "title": "Freshness Policy",
+          "type": "string"
+        },
+        "memory_type": {
+          "enum": [
+            "short_term",
+            "long_term",
+            "documentary_knowledge",
+            "rag_index",
+            "audit"
+          ],
+          "title": "Memory Type",
+          "type": "string"
+        },
+        "namespace_key": {
+          "title": "Namespace Key",
+          "type": "string"
+        },
+        "portable_ref": {
+          "title": "Portable Ref",
+          "type": "string"
+        },
+        "privacy_policy": {
+          "title": "Privacy Policy",
+          "type": "string"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "read_roles": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Read Roles",
+          "type": "array"
+        },
+        "retention_policy": {
+          "title": "Retention Policy",
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "agent",
+            "tenant",
+            "workspace",
+            "session_portable"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "write_roles": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Write Roles",
+          "type": "array"
+        }
+      },
+      "required": [
+        "namespace_key",
+        "memory_type",
+        "purpose",
+        "scope",
+        "read_roles",
+        "write_roles",
+        "retention_policy",
+        "compaction_policy",
+        "privacy_policy",
+        "freshness_policy",
+        "portable_ref"
+      ],
+      "title": "AcpV2MemoryNamespace",
+      "type": "object"
+    },
+    "AcpV2MemoryStrategy": {
+      "additionalProperties": false,
+      "properties": {
+        "context_budget": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Context Budget",
+          "type": "array"
+        },
+        "long_term": {
+          "additionalProperties": true,
+          "title": "Long Term",
+          "type": "object"
+        },
+        "persistence": {
+          "additionalProperties": true,
+          "title": "Persistence",
+          "type": "object"
+        },
+        "retrieval": {
+          "additionalProperties": true,
+          "title": "Retrieval",
+          "type": "object"
+        },
+        "short_term": {
+          "additionalProperties": true,
+          "title": "Short Term",
+          "type": "object"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "short_term",
+        "long_term",
+        "retrieval",
+        "context_budget",
+        "persistence",
+        "source_refs"
+      ],
+      "title": "AcpV2MemoryStrategy",
+      "type": "object"
+    },
+    "AcpV2MigrationInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "breaking_changes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Breaking Changes",
+          "type": "array"
+        },
+        "compatibility_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Compatibility Notes",
+          "type": "array"
+        },
+        "from_schema_version": {
+          "title": "From Schema Version",
+          "type": "string"
+        },
+        "migration_strategy": {
+          "title": "Migration Strategy",
+          "type": "string"
+        },
+        "source_checksum_sha256": {
+          "title": "Source Checksum Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from_schema_version",
+        "source_checksum_sha256",
+        "migration_strategy",
+        "breaking_changes",
+        "compatibility_notes"
+      ],
+      "title": "AcpV2MigrationInfo",
+      "type": "object"
+    },
+    "AcpV2PortableManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "checksum_algorithm": {
+          "const": "sha256",
+          "default": "sha256",
+          "title": "Checksum Algorithm",
+          "type": "string"
+        },
+        "compatibility_targets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Compatibility Targets",
+          "type": "array"
+        },
+        "contract_version": {
+          "const": "agent-construction-package.v2",
+          "default": "agent-construction-package.v2",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "contracts": {
+          "items": {
+            "$ref": "#/$defs/AcpV2ManifestContractEntry"
+          },
+          "title": "Contracts",
+          "type": "array"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "manifest_version": {
+          "const": "acp-portable-manifest.v1",
+          "default": "acp-portable-manifest.v1",
+          "title": "Manifest Version",
+          "type": "string"
+        },
+        "package_id": {
+          "title": "Package Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "created_at",
+        "compatibility_targets",
+        "contracts"
+      ],
+      "title": "AcpV2PortableManifest",
+      "type": "object"
+    },
+    "AcpV2ProducerMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "generated_from_contracts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Generated From Contracts",
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "producer_contract_version": {
+          "const": "agent-construction-package.v2",
+          "default": "agent-construction-package.v2",
+          "title": "Producer Contract Version",
+          "type": "string"
+        },
+        "producer_name": {
+          "title": "Producer Name",
+          "type": "string"
+        },
+        "separated_from_system_spec": {
+          "default": true,
+          "title": "Separated From System Spec",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "producer_name",
+        "generated_from_contracts",
+        "notes"
+      ],
+      "title": "AcpV2ProducerMetadata",
+      "type": "object"
+    },
+    "AcpV2PromptRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "context_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Sources",
+          "type": "array"
+        },
+        "guardrails": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Guardrails",
+          "type": "array"
+        },
+        "input_contracts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Contracts",
+          "type": "array"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "Output Schema",
+          "type": "object"
+        },
+        "prompt_key": {
+          "title": "Prompt Key",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "usage": {
+          "title": "Usage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_key",
+        "role",
+        "title",
+        "content",
+        "required",
+        "usage",
+        "context_sources",
+        "input_contracts",
+        "output_schema",
+        "guardrails",
+        "source_ref"
+      ],
+      "title": "AcpV2PromptRef",
+      "type": "object"
+    },
+    "AcpV2RagCapabilityDependency": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_key": {
+          "title": "Capability Key",
+          "type": "string"
+        },
+        "fallback": {
+          "title": "Fallback",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "capability_key",
+        "required",
+        "reason",
+        "fallback"
+      ],
+      "title": "AcpV2RagCapabilityDependency",
+      "type": "object"
+    },
+    "AcpV2RagPipelineSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_dependencies": {
+          "items": {
+            "$ref": "#/$defs/AcpV2RagCapabilityDependency"
+          },
+          "title": "Capability Dependencies",
+          "type": "array"
+        },
+        "citation_policy": {
+          "title": "Citation Policy",
+          "type": "string"
+        },
+        "deletion_policy": {
+          "title": "Deletion Policy",
+          "type": "string"
+        },
+        "embedding_policy": {
+          "additionalProperties": true,
+          "title": "Embedding Policy",
+          "type": "object"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "fallback_policy": {
+          "title": "Fallback Policy",
+          "type": "string"
+        },
+        "grounding_policy": {
+          "additionalProperties": true,
+          "title": "Grounding Policy",
+          "type": "object"
+        },
+        "ingestion_policy": {
+          "additionalProperties": true,
+          "title": "Ingestion Policy",
+          "type": "object"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "refresh_policy": {
+          "additionalProperties": true,
+          "title": "Refresh Policy",
+          "type": "object"
+        },
+        "retrieval_policy": {
+          "additionalProperties": true,
+          "title": "Retrieval Policy",
+          "type": "object"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "vector_store_decision_ref": {
+          "title": "Vector Store Decision Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "mode",
+        "capability_dependencies",
+        "vector_store_decision_ref",
+        "ingestion_policy",
+        "embedding_policy",
+        "retrieval_policy",
+        "refresh_policy",
+        "grounding_policy",
+        "citation_policy",
+        "deletion_policy",
+        "fallback_policy",
+        "source_refs"
+      ],
+      "title": "AcpV2RagPipelineSpec",
+      "type": "object"
+    },
+    "AcpV2RuntimeAgent": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_key": {
+          "title": "Agent Key",
+          "type": "string"
+        },
+        "failure_mode": {
+          "default": "",
+          "title": "Failure Mode",
+          "type": "string"
+        },
+        "goal": {
+          "title": "Goal",
+          "type": "string"
+        },
+        "handoff_targets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Handoff Targets",
+          "type": "array"
+        },
+        "inputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "memory_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Memory Refs",
+          "type": "array"
+        },
+        "outputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Outputs",
+          "type": "array"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "runtime_mode": {
+          "default": "",
+          "title": "Runtime Mode",
+          "type": "string"
+        },
+        "success_signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Success Signals",
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        }
+      },
+      "required": [
+        "agent_key",
+        "role",
+        "goal",
+        "inputs",
+        "outputs",
+        "tools",
+        "memory_refs",
+        "handoff_targets",
+        "success_signals"
+      ],
+      "title": "AcpV2RuntimeAgent",
+      "type": "object"
+    },
+    "AcpV2RuntimeTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Adapter Notes",
+          "type": "array"
+        },
+        "category": {
+          "enum": [
+            "agentic_ide",
+            "agent_framework",
+            "orchestration_runtime",
+            "custom_runtime"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "prerequisites": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Prerequisites",
+          "type": "array"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "recommendation_level": {
+          "enum": [
+            "recommended",
+            "compatible",
+            "optional",
+            "not_recommended"
+          ],
+          "title": "Recommendation Level",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "selection_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selection Criteria",
+          "type": "array"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "target_key": {
+          "title": "Target Key",
+          "type": "string"
+        },
+        "tradeoffs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tradeoffs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "target_key",
+        "label",
+        "category",
+        "recommendation_level",
+        "rationale",
+        "selection_criteria",
+        "prerequisites",
+        "tradeoffs",
+        "adapter_notes",
+        "source_ref"
+      ],
+      "title": "AcpV2RuntimeTarget",
+      "type": "object"
+    },
+    "AcpV2RuntimeTargetPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "override_policy": {
+          "title": "Override Policy",
+          "type": "string"
+        },
+        "recommended_runtime": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recommended Runtime",
+          "type": "array"
+        },
+        "required_runtime": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Runtime",
+          "type": "array"
+        },
+        "selection_policy": {
+          "title": "Selection Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recommended_runtime",
+        "required_runtime",
+        "selection_policy",
+        "override_policy"
+      ],
+      "title": "AcpV2RuntimeTargetPolicy",
+      "type": "object"
+    },
+    "AcpV2TechnologyDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "language",
+            "framework",
+            "database",
+            "vector_store",
+            "hosting",
+            "ci_cd",
+            "observability"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "decision_key": {
+          "title": "Decision Key",
+          "type": "string"
+        },
+        "default_guidance": {
+          "title": "Default Guidance",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/AcpV2TechnologyOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "required_for_implementation": {
+          "default": true,
+          "title": "Required For Implementation",
+          "type": "boolean"
+        },
+        "required_for_package": {
+          "default": false,
+          "title": "Required For Package",
+          "type": "boolean"
+        },
+        "selection_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selection Criteria",
+          "type": "array"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_key",
+        "category",
+        "question",
+        "selection_criteria",
+        "options",
+        "default_guidance",
+        "source_ref"
+      ],
+      "title": "AcpV2TechnologyDecision",
+      "type": "object"
+    },
+    "AcpV2TechnologyOption": {
+      "additionalProperties": false,
+      "properties": {
+        "examples": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Examples",
+          "type": "array"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "option_key": {
+          "title": "Option Key",
+          "type": "string"
+        },
+        "prerequisites": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Prerequisites",
+          "type": "array"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "recommendation_level": {
+          "enum": [
+            "recommended",
+            "compatible",
+            "optional",
+            "not_recommended"
+          ],
+          "title": "Recommendation Level",
+          "type": "string"
+        },
+        "tradeoffs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tradeoffs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "option_key",
+        "label",
+        "recommendation_level",
+        "rationale",
+        "prerequisites",
+        "tradeoffs",
+        "examples"
+      ],
+      "title": "AcpV2TechnologyOption",
+      "type": "object"
+    },
+    "AcpV2TestAsset": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
+        "expected_result": {
+          "title": "Expected Result",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "scenario": {
+          "title": "Scenario",
+          "type": "string"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "test_key": {
+          "title": "Test Key",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "test_key",
+        "kind",
+        "title",
+        "scenario",
+        "expected_result",
+        "required",
+        "acceptance_criteria",
+        "source_ref"
+      ],
+      "title": "AcpV2TestAsset",
+      "type": "object"
+    },
+    "AcpV2ToolAnalysis": {
+      "additionalProperties": false,
+      "properties": {
+        "incompatibility_findings": {
+          "items": {
+            "$ref": "#/$defs/AcpV2ToolIncompatibility"
+          },
+          "title": "Incompatibility Findings",
+          "type": "array"
+        },
+        "minimal_tooling_policy": {
+          "title": "Minimal Tooling Policy",
+          "type": "string"
+        },
+        "not_recommended_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Recommended Tools",
+          "type": "array"
+        },
+        "overprovisioning_policy": {
+          "title": "Overprovisioning Policy",
+          "type": "string"
+        },
+        "redundancy_findings": {
+          "items": {
+            "$ref": "#/$defs/AcpV2ToolRedundancy"
+          },
+          "title": "Redundancy Findings",
+          "type": "array"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary",
+        "overprovisioning_policy",
+        "minimal_tooling_policy"
+      ],
+      "title": "AcpV2ToolAnalysis",
+      "type": "object"
+    },
+    "AcpV2ToolBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "binding_key": {
+          "title": "Binding Key",
+          "type": "string"
+        },
+        "binding_type": {
+          "enum": [
+            "producer_internal_tool",
+            "external_api",
+            "abstract_contract",
+            "runtime_adapter"
+          ],
+          "title": "Binding Type",
+          "type": "string"
+        },
+        "capability_key": {
+          "title": "Capability Key",
+          "type": "string"
+        },
+        "cost_profile": {
+          "title": "Cost Profile",
+          "type": "string"
+        },
+        "credentials_policy": {
+          "title": "Credentials Policy",
+          "type": "string"
+        },
+        "external_contract_hint": {
+          "title": "External Contract Hint",
+          "type": "string"
+        },
+        "fallback_strategy": {
+          "title": "Fallback Strategy",
+          "type": "string"
+        },
+        "idempotent": {
+          "title": "Idempotent",
+          "type": "boolean"
+        },
+        "permissions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Permissions",
+          "type": "array"
+        },
+        "provider_boundary": {
+          "enum": [
+            "producer_internal",
+            "customer_external",
+            "framework_runtime",
+            "abstract"
+          ],
+          "title": "Provider Boundary",
+          "type": "string"
+        },
+        "replaceable": {
+          "title": "Replaceable",
+          "type": "boolean"
+        },
+        "replacement_strategy": {
+          "title": "Replacement Strategy",
+          "type": "string"
+        },
+        "requirement_level": {
+          "enum": [
+            "required",
+            "optional",
+            "replaceable",
+            "not_recommended"
+          ],
+          "title": "Requirement Level",
+          "type": "string"
+        },
+        "risk_profile": {
+          "title": "Risk Profile",
+          "type": "string"
+        },
+        "side_effects": {
+          "title": "Side Effects",
+          "type": "boolean"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "tool_key": {
+          "title": "Tool Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding_key",
+        "capability_key",
+        "tool_key",
+        "binding_type",
+        "provider_boundary",
+        "requirement_level",
+        "replaceable",
+        "replacement_strategy",
+        "external_contract_hint",
+        "credentials_policy",
+        "permissions",
+        "side_effects",
+        "idempotent",
+        "cost_profile",
+        "risk_profile",
+        "fallback_strategy",
+        "source_ref"
+      ],
+      "title": "AcpV2ToolBinding",
+      "type": "object"
+    },
+    "AcpV2ToolContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "auth_requirements": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Auth Requirements",
+          "type": "array"
+        },
+        "capability": {
+          "title": "Capability",
+          "type": "string"
+        },
+        "compensation_strategy": {
+          "default": "",
+          "title": "Compensation Strategy",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "idempotent": {
+          "title": "Idempotent",
+          "type": "boolean"
+        },
+        "input_schema": {
+          "additionalProperties": true,
+          "title": "Input Schema",
+          "type": "object"
+        },
+        "integration_kind": {
+          "title": "Integration Kind",
+          "type": "string"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "Output Schema",
+          "type": "object"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "requirement_level": {
+          "enum": [
+            "required",
+            "optional",
+            "conditional",
+            "replaceable",
+            "not_recommended"
+          ],
+          "title": "Requirement Level",
+          "type": "string"
+        },
+        "retry_strategy": {
+          "default": "",
+          "title": "Retry Strategy",
+          "type": "string"
+        },
+        "side_effects": {
+          "title": "Side Effects",
+          "type": "boolean"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "tool_key": {
+          "title": "Tool Key",
+          "type": "string"
+        },
+        "validations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Validations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tool_key",
+        "display_name",
+        "purpose",
+        "requirement_level",
+        "capability",
+        "integration_kind",
+        "auth_requirements",
+        "side_effects",
+        "idempotent",
+        "input_schema",
+        "output_schema",
+        "validations",
+        "source_ref"
+      ],
+      "title": "AcpV2ToolContractRef",
+      "type": "object"
+    },
+    "AcpV2ToolIncompatibility": {
+      "additionalProperties": false,
+      "properties": {
+        "incompatibility_key": {
+          "title": "Incompatibility Key",
+          "type": "string"
+        },
+        "mitigation": {
+          "title": "Mitigation",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "tool_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tool Keys",
+          "type": "array"
+        }
+      },
+      "required": [
+        "incompatibility_key",
+        "tool_keys",
+        "severity",
+        "reason",
+        "mitigation"
+      ],
+      "title": "AcpV2ToolIncompatibility",
+      "type": "object"
+    },
+    "AcpV2ToolRedundancy": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_key": {
+          "title": "Capability Key",
+          "type": "string"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "recommendation": {
+          "title": "Recommendation",
+          "type": "string"
+        },
+        "redundancy_key": {
+          "title": "Redundancy Key",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "tool_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tool Keys",
+          "type": "array"
+        }
+      },
+      "required": [
+        "redundancy_key",
+        "capability_key",
+        "tool_keys",
+        "severity",
+        "rationale",
+        "recommendation"
+      ],
+      "title": "AcpV2ToolRedundancy",
+      "type": "object"
+    },
+    "AcpV2WorkflowNode": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "checkpoint_ref": {
+          "default": "",
+          "title": "Checkpoint Ref",
+          "type": "string"
+        },
+        "context_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Refs",
+          "type": "array"
+        },
+        "decision_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Decision Refs",
+          "type": "array"
+        },
+        "inputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "node_key": {
+          "title": "Node Key",
+          "type": "string"
+        },
+        "objective": {
+          "title": "Objective",
+          "type": "string"
+        },
+        "outputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Outputs",
+          "type": "array"
+        },
+        "portable_state": {
+          "title": "Portable State",
+          "type": "string"
+        },
+        "retry_policy": {
+          "default": "",
+          "title": "Retry Policy",
+          "type": "string"
+        },
+        "timeout_policy": {
+          "default": "",
+          "title": "Timeout Policy",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workflow_role": {
+          "enum": [
+            "construction",
+            "runtime",
+            "human_decision"
+          ],
+          "title": "Workflow Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_key",
+        "title",
+        "workflow_role",
+        "objective",
+        "actor",
+        "inputs",
+        "outputs",
+        "portable_state"
+      ],
+      "title": "AcpV2WorkflowNode",
+      "type": "object"
+    },
+    "AcpV2WorkflowSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "entry_node": {
+          "title": "Entry Node",
+          "type": "string"
+        },
+        "handoff_contract_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Handoff Contract Refs",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/AcpV2WorkflowNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "portable_state_policy": {
+          "title": "Portable State Policy",
+          "type": "string"
+        },
+        "terminal_nodes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Terminal Nodes",
+          "type": "array"
+        },
+        "topology": {
+          "enum": [
+            "sequential",
+            "hierarchical",
+            "event_driven",
+            "consensus",
+            "mixed"
+          ],
+          "title": "Topology",
+          "type": "string"
+        },
+        "transitions": {
+          "items": {
+            "$ref": "#/$defs/AcpV2WorkflowTransition"
+          },
+          "title": "Transitions",
+          "type": "array"
+        },
+        "workflow_key": {
+          "title": "Workflow Key",
+          "type": "string"
+        },
+        "workflow_type": {
+          "enum": [
+            "construction",
+            "runtime_operational",
+            "human_decision_resolution"
+          ],
+          "title": "Workflow Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_key",
+        "workflow_type",
+        "topology",
+        "entry_node",
+        "terminal_nodes",
+        "nodes",
+        "transitions",
+        "portable_state_policy"
+      ],
+      "title": "AcpV2WorkflowSpec",
+      "type": "object"
+    },
+    "AcpV2WorkflowTransition": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_ref": {
+          "default": "",
+          "title": "Checkpoint Ref",
+          "type": "string"
+        },
+        "condition": {
+          "title": "Condition",
+          "type": "string"
+        },
+        "failure_behavior": {
+          "default": "",
+          "title": "Failure Behavior",
+          "type": "string"
+        },
+        "from_node": {
+          "title": "From Node",
+          "type": "string"
+        },
+        "requires_decision": {
+          "default": false,
+          "title": "Requires Decision",
+          "type": "boolean"
+        },
+        "routing_rule": {
+          "default": "",
+          "title": "Routing Rule",
+          "type": "string"
+        },
+        "to_node": {
+          "title": "To Node",
+          "type": "string"
+        },
+        "transition_key": {
+          "title": "Transition Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "transition_key",
+        "from_node",
+        "to_node",
+        "condition"
+      ],
+      "title": "AcpV2WorkflowTransition",
+      "type": "object"
+    },
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_runtime": {
+      "$ref": "#/$defs/AcpV2AgentRuntime"
+    },
+    "build_plan": {
+      "$ref": "#/$defs/AcpV2BuildPlan"
+    },
+    "capability_catalog": {
+      "items": {
+        "$ref": "#/$defs/AcpV2CapabilityContract"
+      },
+      "title": "Capability Catalog",
+      "type": "array"
+    },
+    "checkpoints": {
+      "items": {
+        "$ref": "#/$defs/AcpV2CheckpointSpec"
+      },
+      "title": "Checkpoints",
+      "type": "array"
+    },
+    "compatibility": {
+      "items": {
+        "$ref": "#/$defs/AcpV2CompatibilityRule"
+      },
+      "title": "Compatibility",
+      "type": "array"
+    },
+    "conformance": {
+      "items": {
+        "$ref": "#/$defs/AcpV2ConformanceRule"
+      },
+      "title": "Conformance",
+      "type": "array"
+    },
+    "decision_registry": {
+      "items": {
+        "$ref": "#/$defs/AcpV2DecisionRegistryEntry"
+      },
+      "title": "Decision Registry",
+      "type": "array"
+    },
+    "deployment_guide": {
+      "$ref": "#/$defs/AcpV2DeploymentGuide"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "implementation_decisions": {
+      "items": {
+        "$ref": "#/$defs/AcpV2ImplementationDecision"
+      },
+      "title": "Implementation Decisions",
+      "type": "array"
+    },
+    "knowledge_sources": {
+      "items": {
+        "$ref": "#/$defs/AcpV2KnowledgeSource"
+      },
+      "title": "Knowledge Sources",
+      "type": "array"
+    },
+    "memory_knowledge_plan": {
+      "$ref": "#/$defs/AcpV2MemoryKnowledgePlan"
+    },
+    "memory_strategy": {
+      "$ref": "#/$defs/AcpV2MemoryStrategy"
+    },
+    "migration": {
+      "$ref": "#/$defs/AcpV2MigrationInfo"
+    },
+    "portable_manifest": {
+      "$ref": "#/$defs/AcpV2PortableManifest"
+    },
+    "producer_metadata": {
+      "$ref": "#/$defs/AcpV2ProducerMetadata"
+    },
+    "prompts": {
+      "items": {
+        "$ref": "#/$defs/AcpV2PromptRef"
+      },
+      "title": "Prompts",
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "runtime_target_policy": {
+      "$ref": "#/$defs/AcpV2RuntimeTargetPolicy"
+    },
+    "runtime_targets": {
+      "items": {
+        "$ref": "#/$defs/AcpV2RuntimeTarget"
+      },
+      "title": "Runtime Targets",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "agent-construction-package.v2",
+      "default": "agent-construction-package.v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "system_specification": {
+      "additionalProperties": true,
+      "title": "System Specification",
+      "type": "object"
+    },
+    "technology_decisions": {
+      "items": {
+        "$ref": "#/$defs/AcpV2TechnologyDecision"
+      },
+      "title": "Technology Decisions",
+      "type": "array"
+    },
+    "tests": {
+      "items": {
+        "$ref": "#/$defs/AcpV2TestAsset"
+      },
+      "title": "Tests",
+      "type": "array"
+    },
+    "tool_analysis": {
+      "$ref": "#/$defs/AcpV2ToolAnalysis"
+    },
+    "tool_bindings": {
+      "items": {
+        "$ref": "#/$defs/AcpV2ToolBinding"
+      },
+      "title": "Tool Bindings",
+      "type": "array"
+    },
+    "tool_contracts": {
+      "items": {
+        "$ref": "#/$defs/AcpV2ToolContractRef"
+      },
+      "title": "Tool Contracts",
+      "type": "array"
+    },
+    "workflows": {
+      "items": {
+        "$ref": "#/$defs/AcpV2WorkflowSpec"
+      },
+      "title": "Workflows",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "producer_metadata",
+    "portable_manifest",
+    "migration",
+    "system_specification",
+    "build_plan",
+    "agent_runtime",
+    "implementation_decisions",
+    "workflows",
+    "checkpoints",
+    "decision_registry",
+    "runtime_target_policy",
+    "runtime_targets",
+    "technology_decisions",
+    "deployment_guide",
+    "capability_catalog",
+    "tool_contracts",
+    "tool_bindings",
+    "tool_analysis",
+    "memory_strategy",
+    "memory_knowledge_plan",
+    "knowledge_sources",
+    "prompts",
+    "tests",
+    "conformance",
+    "compatibility"
+  ],
+  "title": "AgentConstructionPackageV2",
+  "type": "object"
+}

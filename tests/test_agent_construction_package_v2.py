@@ -10,13 +10,14 @@ import pytest
 
 from app.contracts import CANONICAL_CONTRACT_MODELS, AgentConstructionPackageV2
 from app.services.canonical_exports import build_agent_construction_package_v2
+from app.services.shared_specs import resolve_shared_specs_dir
 from tests.api_testkit import build_test_client
 from tests.canonical_fixture_builder import build_full_session_snapshot
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_ROOT = REPO_ROOT / "shared_specs" / "schemas"
-REFERENCE_CONSUMER_ROOT = REPO_ROOT / "shared_specs" / "reference_consumers" / "python"
-SAMPLE_PATH = REPO_ROOT / "shared_specs" / "examples" / "agent-construction-package.v2.sample.json"
+SHARED_SPECS_ROOT = resolve_shared_specs_dir()
+SCHEMA_ROOT = SHARED_SPECS_ROOT / "schemas"
+REFERENCE_CONSUMER_ROOT = SHARED_SPECS_ROOT / "reference_consumers" / "python"
+SAMPLE_PATH = SHARED_SPECS_ROOT / "examples" / "agent-construction-package.v2.sample.json"
 
 if str(REFERENCE_CONSUMER_ROOT) not in sys.path:
     sys.path.insert(0, str(REFERENCE_CONSUMER_ROOT))

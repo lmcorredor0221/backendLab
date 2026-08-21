@@ -1,0 +1,551 @@
+{
+  "$defs": {
+    "CommercialAccessSnapshotV2": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/CommercialCapabilityDecisionEntry"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "checkout_state": {
+          "default": "not_started",
+          "title": "Checkout State",
+          "type": "string"
+        },
+        "contract_version": {
+          "default": "commercial-access.v2",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "entitlements": {
+          "items": {
+            "$ref": "#/$defs/CommercialEntitlementSummary"
+          },
+          "title": "Entitlements",
+          "type": "array"
+        },
+        "purchase_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Purchase Refs",
+          "type": "array"
+        },
+        "reason_code": {
+          "default": "free_access",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "tier_label": {
+          "default": "Blueprint",
+          "title": "Tier Label",
+          "type": "string"
+        },
+        "user_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Id"
+        },
+        "workspace_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Id"
+        }
+      },
+      "title": "CommercialAccessSnapshotV2",
+      "type": "object"
+    },
+    "CommercialCapabilityDecisionEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "default": false,
+          "title": "Allowed",
+          "type": "boolean"
+        },
+        "capability": {
+          "default": "",
+          "title": "Capability",
+          "type": "string"
+        },
+        "cta_label": {
+          "default": "",
+          "title": "Cta Label",
+          "type": "string"
+        },
+        "current_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "product": {
+          "default": "",
+          "title": "Product",
+          "type": "string"
+        },
+        "reason_code": {
+          "default": "allowed",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "required_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        }
+      },
+      "title": "CommercialCapabilityDecisionEntry",
+      "type": "object"
+    },
+    "CommercialEntitlementSource": {
+      "enum": [
+        "checkout",
+        "admin_grant",
+        "legacy_backfill",
+        "legacy_migration"
+      ],
+      "title": "CommercialEntitlementSource",
+      "type": "string"
+    },
+    "CommercialEntitlementStatus": {
+      "enum": [
+        "pending_activation",
+        "active",
+        "suspended",
+        "expired",
+        "revoked",
+        "refunded"
+      ],
+      "title": "CommercialEntitlementStatus",
+      "type": "string"
+    },
+    "CommercialEntitlementSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "ends_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ends At"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "non_revenue": {
+          "default": false,
+          "title": "Non Revenue",
+          "type": "boolean"
+        },
+        "product_key": {
+          "default": "",
+          "title": "Product Key",
+          "type": "string"
+        },
+        "purchase_ref": {
+          "default": "",
+          "title": "Purchase Ref",
+          "type": "string"
+        },
+        "scope": {
+          "default": "project",
+          "title": "Scope",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CommercialEntitlementSource",
+          "default": "checkout"
+        },
+        "starts_at": {
+          "format": "date-time",
+          "title": "Starts At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CommercialEntitlementStatus",
+          "default": "active"
+        },
+        "tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint_pro"
+        }
+      },
+      "required": [
+        "id",
+        "starts_at"
+      ],
+      "title": "CommercialEntitlementSummary",
+      "type": "object"
+    },
+    "CommercialTier": {
+      "enum": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "title": "CommercialTier",
+      "type": "string"
+    },
+    "DiagramCatalogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "access_state": {
+          "default": "locked_blueprint",
+          "enum": [
+            "unlocked",
+            "sample",
+            "locked_blueprint",
+            "locked_acp",
+            "stage_locked",
+            "not_generated"
+          ],
+          "title": "Access State",
+          "type": "string"
+        },
+        "available_content_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Available Content Formats",
+          "type": "array"
+        },
+        "available_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Available Formats",
+          "type": "array"
+        },
+        "category": {
+          "default": "",
+          "title": "Category",
+          "type": "string"
+        },
+        "diagram_key": {
+          "default": "",
+          "title": "Diagram Key",
+          "type": "string"
+        },
+        "diagram_surface": {
+          "default": "",
+          "title": "Diagram Surface",
+          "type": "string"
+        },
+        "enabled_from_stage": {
+          "default": "",
+          "title": "Enabled From Stage",
+          "type": "string"
+        },
+        "generation_state": {
+          "default": "pending_generation",
+          "enum": [
+            "generated",
+            "planned",
+            "pending_generation",
+            "not_generated"
+          ],
+          "title": "Generation State",
+          "type": "string"
+        },
+        "locked_reason": {
+          "default": "",
+          "title": "Locked Reason",
+          "type": "string"
+        },
+        "preferred_format": {
+          "default": "",
+          "title": "Preferred Format",
+          "type": "string"
+        },
+        "preview_thumbnail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview Thumbnail"
+        },
+        "product_scope": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Product Scope",
+          "type": "array"
+        },
+        "protection": {
+          "$ref": "#/$defs/DiagramContentProtection"
+        },
+        "required_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "source_artifact_count": {
+          "default": 0,
+          "title": "Source Artifact Count",
+          "type": "integer"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "upgrade_cta_label": {
+          "default": "",
+          "title": "Upgrade Cta Label",
+          "type": "string"
+        },
+        "upsell": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiagramUpsellMessage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "DiagramCatalogEntry",
+      "type": "object"
+    },
+    "DiagramContentProtection": {
+      "additionalProperties": false,
+      "properties": {
+        "disable_context_menu": {
+          "default": true,
+          "title": "Disable Context Menu",
+          "type": "boolean"
+        },
+        "disable_copy": {
+          "default": true,
+          "title": "Disable Copy",
+          "type": "boolean"
+        },
+        "disable_download": {
+          "default": true,
+          "title": "Disable Download",
+          "type": "boolean"
+        },
+        "watermark_sample": {
+          "default": true,
+          "title": "Watermark Sample",
+          "type": "boolean"
+        }
+      },
+      "title": "DiagramContentProtection",
+      "type": "object"
+    },
+    "DiagramUpsellMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "cta_label": {
+          "default": "",
+          "title": "Cta Label",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "product": {
+          "default": "blueprint",
+          "title": "Product",
+          "type": "string"
+        },
+        "target_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint_pro"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "DiagramUpsellMessage",
+      "type": "object"
+    },
+    "WorkspaceRole": {
+      "enum": [
+        "owner",
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "title": "WorkspaceRole",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "access": {
+      "$ref": "#/$defs/CommercialAccessSnapshotV2"
+    },
+    "architecture_sample": {
+      "default": "",
+      "title": "Architecture Sample",
+      "type": "string"
+    },
+    "contract_version": {
+      "default": "blueprint-result.v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "diagrams": {
+      "items": {
+        "$ref": "#/$defs/DiagramCatalogEntry"
+      },
+      "title": "Diagrams",
+      "type": "array"
+    },
+    "estimation": {
+      "additionalProperties": true,
+      "title": "Estimation",
+      "type": "object"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "protection": {
+      "additionalProperties": true,
+      "title": "Protection",
+      "type": "object"
+    },
+    "sections": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Sections",
+      "type": "array"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "stale": {
+      "default": false,
+      "title": "Stale",
+      "type": "boolean"
+    },
+    "state": {
+      "default": "not_generated",
+      "title": "State",
+      "type": "string"
+    },
+    "summary": {
+      "default": "",
+      "title": "Summary",
+      "type": "string"
+    },
+    "title": {
+      "default": "",
+      "title": "Title",
+      "type": "string"
+    },
+    "version_number": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Version Number"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id",
+    "access"
+  ],
+  "title": "BlueprintResultResponse",
+  "type": "object"
+}

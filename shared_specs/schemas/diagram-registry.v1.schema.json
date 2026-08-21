@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/diagram-registry.v1.schema.json",
+  "title": "Diagram registry v1",
+  "type": "object",
+  "required": ["schema_version", "prompt_spec_version", "entries"],
+  "properties": {
+    "schema_version": { "const": "diagram-registry.v1" },
+    "prompt_spec_version": { "type": "string", "minLength": 1 },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["key", "title", "description", "benefit", "category", "type", "family", "notation", "stage", "required_tier", "required_inputs", "objective", "semantic_rules", "exclusions"],
+        "properties": {
+          "key": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" }, "benefit": { "type": "string" },
+          "category": { "type": "string" }, "type": { "type": "string" }, "family": { "type": "string" },
+          "notation": { "enum": ["flowchart", "sequence", "class", "er", "state", "journey", "c4", "bpmn", "uml_use_case", "uml_activity", "uml_component", "deployment", "package", "capability"] },
+          "standard": { "type": "string" },
+          "source_contract": { "type": "string" },
+          "presentation_contract": { "type": "string" },
+          "renderer_key": { "type": "string" },
+          "validator_key": { "type": "string" },
+          "allowed_elements": { "type": "array", "items": { "type": "string" } },
+          "allowed_relationships": { "type": "array", "items": { "type": "string" } },
+          "forbidden_mixes": { "type": "array", "items": { "type": "string" } },
+          "inherits_from": { "type": "array", "items": { "type": "string" } },
+          "transform_rules": { "type": "array", "items": { "type": "string" } },
+          "generation_permissions": { "type": "object" },
+          "complexity": { "enum": ["basic", "intermediate", "advanced"] }, "stage": { "type": "string" }, "required_tier": { "type": "string" },
+          "preview_mode": { "enum": ["full", "limited", "none"] }, "products": { "type": "array", "items": { "type": "string" } },
+          "required_inputs": { "type": "array", "items": { "type": "string" } }, "actions": { "type": "array", "items": { "type": "string" } },
+          "objective": { "type": "string" }, "semantic_rules": { "type": "array", "items": { "type": "string" } }, "exclusions": { "type": "array", "items": { "type": "string" } },
+          "sort_order": { "type": "integer" }, "active": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

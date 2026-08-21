@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/plantuml-source.v1.schema.json",
+  "title": "PlantUML Source v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "diagram_key", "standard", "source", "traceability_refs"],
+  "properties": {
+    "schema_version": { "const": "plantuml-source.v1" },
+    "diagram_key": { "type": "string", "minLength": 1 },
+    "standard": { "type": "string", "minLength": 1 },
+    "source": { "type": "string", "pattern": "@start[a-zA-Z]*[\\s\\S]*@end[a-zA-Z]*" },
+    "traceability_refs": { "type": "array", "items": { "type": "string" } },
+    "assumptions": { "type": "array", "items": { "type": "string" } }
+  }
+}

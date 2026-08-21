@@ -1,0 +1,60 @@
+{
+  "schema_version": "diagram-layout-policy.v1",
+  "profiles": [
+    {
+      "notation": "flowchart",
+      "layout_strategy": "layered",
+      "preferred_direction": "LR",
+      "max_nodes_before_split": 16,
+      "max_edges_before_split": 22,
+      "max_edge_density": 0.16,
+      "enable_adaptive_sizing": true,
+      "enable_edge_routing": true,
+      "visual_quality_min_score": 82
+    },
+    {
+      "notation": "bpmn",
+      "layout_strategy": "bpmn_swimlane",
+      "preferred_direction": "LR",
+      "max_nodes_before_split": 14,
+      "max_edges_before_split": 20,
+      "max_edge_density": 0.12,
+      "enable_adaptive_sizing": true,
+      "enable_edge_routing": true,
+      "visual_quality_min_score": 86
+    },
+    {
+      "notation": "uml_use_case",
+      "layout_strategy": "uml_use_case",
+      "preferred_direction": "TB",
+      "max_nodes_before_split": 18,
+      "max_edges_before_split": 24,
+      "max_edge_density": 0.14,
+      "enable_adaptive_sizing": true,
+      "enable_edge_routing": true,
+      "visual_quality_min_score": 84
+    },
+    {
+      "notation": "uml_activity",
+      "layout_strategy": "uml_activity",
+      "preferred_direction": "TB",
+      "max_nodes_before_split": 14,
+      "max_edges_before_split": 22,
+      "max_edge_density": 0.12,
+      "enable_adaptive_sizing": true,
+      "enable_edge_routing": true,
+      "visual_quality_min_score": 86
+    },
+    {
+      "notation": "sequence",
+      "layout_strategy": "timeline",
+      "preferred_direction": "TB",
+      "max_nodes_before_split": 12,
+      "max_edges_before_split": 28,
+      "max_edge_density": 0.2,
+      "enable_adaptive_sizing": true,
+      "enable_edge_routing": false,
+      "visual_quality_min_score": 82
+    }
+  ]
+}

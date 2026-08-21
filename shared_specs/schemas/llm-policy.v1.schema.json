@@ -1,0 +1,199 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "LLMFunctionPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "context_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Sources",
+          "type": "array"
+        },
+        "fallback_model": {
+          "default": "",
+          "title": "Fallback Model",
+          "type": "string"
+        },
+        "function_key": {
+          "title": "Function Key",
+          "type": "string"
+        },
+        "intent": {
+          "title": "Intent",
+          "type": "string"
+        },
+        "max_tokens": {
+          "default": 0,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "default": "medium",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "tool_availability": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tool Availability",
+          "type": "array"
+        }
+      },
+      "required": [
+        "function_key",
+        "role",
+        "provider",
+        "model",
+        "intent"
+      ],
+      "title": "LLMFunctionPolicy",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "budget_policy": {
+      "title": "Budget Policy",
+      "type": "string"
+    },
+    "circuit_breaker_policy": {
+      "title": "Circuit Breaker Policy",
+      "type": "string"
+    },
+    "context_policy": {
+      "title": "Context Policy",
+      "type": "string"
+    },
+    "fallback_model": {
+      "title": "Fallback Model",
+      "type": "string"
+    },
+    "fallback_policy": {
+      "title": "Fallback Policy",
+      "type": "string"
+    },
+    "fast_model": {
+      "title": "Fast Model",
+      "type": "string"
+    },
+    "functions": {
+      "items": {
+        "$ref": "#/$defs/LLMFunctionPolicy"
+      },
+      "title": "Functions",
+      "type": "array"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "log_redaction_policy": {
+      "title": "Log Redaction Policy",
+      "type": "string"
+    },
+    "output_validation_policy": {
+      "title": "Output Validation Policy",
+      "type": "string"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "reasoning_model": {
+      "title": "Reasoning Model",
+      "type": "string"
+    },
+    "sampling_policy": {
+      "title": "Sampling Policy",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "llm-policy.v1",
+      "default": "llm-policy.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "provider",
+    "fast_model",
+    "reasoning_model",
+    "fallback_model",
+    "context_policy",
+    "sampling_policy",
+    "fallback_policy",
+    "circuit_breaker_policy",
+    "budget_policy",
+    "output_validation_policy",
+    "log_redaction_policy"
+  ],
+  "title": "LLMPolicyV1",
+  "type": "object"
+}

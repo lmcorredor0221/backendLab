@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/deliverable-prompt-spec.v2.schema.json",
+  "title": "Deliverable PromptSpec v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "deliverable_key",
+    "deliverable_family",
+    "standard",
+    "source_contract",
+    "presentation_contract",
+    "renderer_key",
+    "validator_key",
+    "allowed_elements",
+    "allowed_relationships",
+    "forbidden_mixes",
+    "inherits_from",
+    "transform_rules",
+    "generation_permissions",
+    "quality_gates"
+  ],
+  "properties": {
+    "version": { "type": "string" },
+    "deliverable_key": { "type": "string", "minLength": 1 },
+    "deliverable_family": { "type": "string", "minLength": 1 },
+    "standard": { "type": "string", "minLength": 1 },
+    "source_contract": { "type": "string", "minLength": 1 },
+    "presentation_contract": { "type": "string", "minLength": 1 },
+    "renderer_key": { "type": "string", "minLength": 1 },
+    "validator_key": { "type": "string", "minLength": 1 },
+    "allowed_elements": { "type": "array", "items": { "type": "string" } },
+    "allowed_relationships": { "type": "array", "items": { "type": "string" } },
+    "forbidden_mixes": { "type": "array", "items": { "type": "string" } },
+    "inherits_from": { "type": "array", "items": { "type": "string" } },
+    "transform_rules": { "type": "array", "items": { "type": "string" } },
+    "generation_permissions": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "quality_gates": { "type": "array", "items": { "type": "string" } },
+    "legacy_output_contract": { "const": "diagram-model.v1" }
+  }
+}

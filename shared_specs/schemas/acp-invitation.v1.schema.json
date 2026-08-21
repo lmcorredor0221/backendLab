@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "CommercialAccessSnapshotV2": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/CommercialCapabilityDecisionEntry"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "checkout_state": {
+          "default": "not_started",
+          "title": "Checkout State",
+          "type": "string"
+        },
+        "contract_version": {
+          "default": "commercial-access.v2",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "entitlements": {
+          "items": {
+            "$ref": "#/$defs/CommercialEntitlementSummary"
+          },
+          "title": "Entitlements",
+          "type": "array"
+        },
+        "purchase_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Purchase Refs",
+          "type": "array"
+        },
+        "reason_code": {
+          "default": "free_access",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "tier_label": {
+          "default": "Blueprint",
+          "title": "Tier Label",
+          "type": "string"
+        },
+        "user_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Id"
+        },
+        "workspace_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Id"
+        }
+      },
+      "title": "CommercialAccessSnapshotV2",
+      "type": "object"
+    },
+    "CommercialCapabilityDecisionEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "default": false,
+          "title": "Allowed",
+          "type": "boolean"
+        },
+        "capability": {
+          "default": "",
+          "title": "Capability",
+          "type": "string"
+        },
+        "cta_label": {
+          "default": "",
+          "title": "Cta Label",
+          "type": "string"
+        },
+        "current_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "product": {
+          "default": "",
+          "title": "Product",
+          "type": "string"
+        },
+        "reason_code": {
+          "default": "allowed",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "required_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        }
+      },
+      "title": "CommercialCapabilityDecisionEntry",
+      "type": "object"
+    },
+    "CommercialEntitlementSource": {
+      "enum": [
+        "checkout",
+        "admin_grant",
+        "legacy_backfill",
+        "legacy_migration"
+      ],
+      "title": "CommercialEntitlementSource",
+      "type": "string"
+    },
+    "CommercialEntitlementStatus": {
+      "enum": [
+        "pending_activation",
+        "active",
+        "suspended",
+        "expired",
+        "revoked",
+        "refunded"
+      ],
+      "title": "CommercialEntitlementStatus",
+      "type": "string"
+    },
+    "CommercialEntitlementSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "ends_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ends At"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "non_revenue": {
+          "default": false,
+          "title": "Non Revenue",
+          "type": "boolean"
+        },
+        "product_key": {
+          "default": "",
+          "title": "Product Key",
+          "type": "string"
+        },
+        "purchase_ref": {
+          "default": "",
+          "title": "Purchase Ref",
+          "type": "string"
+        },
+        "scope": {
+          "default": "project",
+          "title": "Scope",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CommercialEntitlementSource",
+          "default": "checkout"
+        },
+        "starts_at": {
+          "format": "date-time",
+          "title": "Starts At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CommercialEntitlementStatus",
+          "default": "active"
+        },
+        "tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint_pro"
+        }
+      },
+      "required": [
+        "id",
+        "starts_at"
+      ],
+      "title": "CommercialEntitlementSummary",
+      "type": "object"
+    },
+    "CommercialTier": {
+      "enum": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "title": "CommercialTier",
+      "type": "string"
+    },
+    "WorkspaceRole": {
+      "enum": [
+        "owner",
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "title": "WorkspaceRole",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "access": {
+      "$ref": "#/$defs/CommercialAccessSnapshotV2"
+    },
+    "benefits": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Benefits",
+      "type": "array"
+    },
+    "comparison": {
+      "additionalProperties": true,
+      "title": "Comparison",
+      "type": "object"
+    },
+    "contract_version": {
+      "default": "acp-invitation.v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "metrics": {
+      "additionalProperties": true,
+      "title": "Metrics",
+      "type": "object"
+    },
+    "next_action": {
+      "default": "checkout",
+      "title": "Next Action",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "state": {
+      "default": "purchase_required",
+      "title": "State",
+      "type": "string"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id",
+    "access"
+  ],
+  "title": "AcpInvitationResponse",
+  "type": "object"
+}

@@ -1,0 +1,1389 @@
+{
+  "$defs": {
+    "AgenticEstimate": {
+      "additionalProperties": false,
+      "properties": {
+        "acp_package_readiness_percent": {
+          "default": 0,
+          "title": "Acp Package Readiness Percent",
+          "type": "integer"
+        },
+        "active_provider": {
+          "$ref": "#/$defs/LLMProviderKey",
+          "default": "openai"
+        },
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "automation_assessments": {
+          "items": {
+            "$ref": "#/$defs/AutomationFamilyAssessment"
+          },
+          "title": "Automation Assessments",
+          "type": "array"
+        },
+        "automation_coverage_by_artifact_family": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Automation Coverage By Artifact Family",
+          "type": "object"
+        },
+        "automation_coverage_by_workstream": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Automation Coverage By Workstream",
+          "type": "object"
+        },
+        "automation_coverage_percent": {
+          "default": 0,
+          "title": "Automation Coverage Percent",
+          "type": "integer"
+        },
+        "blueprint_design_coverage_percent": {
+          "default": 0,
+          "title": "Blueprint Design Coverage Percent",
+          "type": "integer"
+        },
+        "economic_model": {
+          "default": "",
+          "title": "Economic Model",
+          "type": "string"
+        },
+        "estimated_cost": {
+          "default": 0,
+          "title": "Estimated Cost",
+          "type": "number"
+        },
+        "estimated_duration_weeks": {
+          "default": 0,
+          "title": "Estimated Duration Weeks",
+          "type": "number"
+        },
+        "estimated_hours_total": {
+          "default": 0,
+          "title": "Estimated Hours Total",
+          "type": "number"
+        },
+        "human_delivery_cost": {
+          "default": 0,
+          "title": "Human Delivery Cost",
+          "type": "number"
+        },
+        "human_supervision_cost": {
+          "default": 0,
+          "title": "Human Supervision Cost",
+          "type": "number"
+        },
+        "human_supervision_hours": {
+          "default": 0,
+          "title": "Human Supervision Hours",
+          "type": "number"
+        },
+        "implementation_scope_coverage_percent": {
+          "default": 0,
+          "title": "Implementation Scope Coverage Percent",
+          "type": "integer"
+        },
+        "llm_runtime_cost_usd": {
+          "default": 0,
+          "title": "Llm Runtime Cost Usd",
+          "type": "number"
+        },
+        "net_savings_vs_traditional": {
+          "default": 0,
+          "title": "Net Savings Vs Traditional",
+          "type": "number"
+        },
+        "platform_cost_usd": {
+          "default": 0,
+          "title": "Platform Cost Usd",
+          "type": "number"
+        },
+        "platform_overhead_cost_usd": {
+          "default": 0,
+          "title": "Platform Overhead Cost Usd",
+          "type": "number"
+        },
+        "pricing_assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Pricing Assumptions",
+          "type": "array"
+        },
+        "pricing_policy": {
+          "default": "",
+          "title": "Pricing Policy",
+          "type": "string"
+        },
+        "pricing_snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EstimationPricingSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "provider_model": {
+          "default": "",
+          "title": "Provider Model",
+          "type": "string"
+        },
+        "provider_runtime_cost_total_cop": {
+          "default": 0,
+          "title": "Provider Runtime Cost Total Cop",
+          "type": "number"
+        },
+        "provider_runtime_cost_total_usd": {
+          "default": 0,
+          "title": "Provider Runtime Cost Total Usd",
+          "type": "number"
+        },
+        "scenario_type": {
+          "$ref": "#/$defs/EstimationScenarioType",
+          "default": "agentic"
+        },
+        "team_shape": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Team Shape",
+          "type": "array"
+        },
+        "tool_runtime_cost_usd": {
+          "default": 0,
+          "title": "Tool Runtime Cost Usd",
+          "type": "number"
+        },
+        "tooling_cost_usd": {
+          "default": 0,
+          "title": "Tooling Cost Usd",
+          "type": "number"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "workstream_breakdown": {
+          "items": {
+            "$ref": "#/$defs/WorkstreamEstimate"
+          },
+          "title": "Workstream Breakdown",
+          "type": "array"
+        }
+      },
+      "title": "AgenticEstimate",
+      "type": "object"
+    },
+    "AutomationFamilyAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking_conditions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocking Conditions",
+          "type": "array"
+        },
+        "bonuses_applied": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Bonuses Applied",
+          "type": "array"
+        },
+        "complexity": {
+          "$ref": "#/$defs/EstimationComplexityLevel",
+          "default": "simple"
+        },
+        "coverage_percent": {
+          "default": 0,
+          "title": "Coverage Percent",
+          "type": "integer"
+        },
+        "family_key": {
+          "default": "",
+          "title": "Family Key",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "mandatory_human_review": {
+          "default": false,
+          "title": "Mandatory Human Review",
+          "type": "boolean"
+        },
+        "non_automatable_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Non Automatable Reasons",
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "penalties_applied": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Penalties Applied",
+          "type": "array"
+        },
+        "risk_tier": {
+          "default": "",
+          "title": "Risk Tier",
+          "type": "string"
+        }
+      },
+      "title": "AutomationFamilyAssessment",
+      "type": "object"
+    },
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "CodexLocalCostPolicy": {
+      "enum": [
+        "marginal_only",
+        "fully_loaded",
+        "hybrid"
+      ],
+      "title": "CodexLocalCostPolicy",
+      "type": "string"
+    },
+    "ConfidenceBreakdown": {
+      "additionalProperties": false,
+      "properties": {
+        "assumptions_count": {
+          "default": 0,
+          "title": "Assumptions Count",
+          "type": "integer"
+        },
+        "blocking_gaps": {
+          "default": 0,
+          "title": "Blocking Gaps",
+          "type": "integer"
+        },
+        "design_gap_count": {
+          "default": 0,
+          "title": "Design Gap Count",
+          "type": "integer"
+        },
+        "design_open_questions": {
+          "default": 0,
+          "title": "Design Open Questions",
+          "type": "integer"
+        },
+        "implementation_gap_count": {
+          "default": 0,
+          "title": "Implementation Gap Count",
+          "type": "integer"
+        },
+        "implementation_open_questions": {
+          "default": 0,
+          "title": "Implementation Open Questions",
+          "type": "integer"
+        },
+        "label": {
+          "$ref": "#/$defs/EstimationConfidenceLabel",
+          "default": "low"
+        },
+        "negative_signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Negative Signals",
+          "type": "array"
+        },
+        "open_questions": {
+          "default": 0,
+          "title": "Open Questions",
+          "type": "integer"
+        },
+        "positive_signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Positive Signals",
+          "type": "array"
+        },
+        "recommended_next_actions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recommended Next Actions",
+          "type": "array"
+        },
+        "score": {
+          "default": 0,
+          "title": "Score",
+          "type": "integer"
+        },
+        "subscores": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Subscores",
+          "type": "object"
+        },
+        "uncertainty_band_percent": {
+          "default": 0,
+          "title": "Uncertainty Band Percent",
+          "type": "integer"
+        }
+      },
+      "title": "ConfidenceBreakdown",
+      "type": "object"
+    },
+    "ContractReference": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_kind": {
+          "title": "Contract Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_blueprint_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Blueprint Version"
+        }
+      },
+      "required": [
+        "contract_kind",
+        "schema_version"
+      ],
+      "title": "ContractReference",
+      "type": "object"
+    },
+    "EstimationAnalysisArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "benchmark_refs": {
+          "items": {
+            "$ref": "#/$defs/EstimationBenchmarkRef"
+          },
+          "title": "Benchmark Refs",
+          "type": "array"
+        },
+        "complexity_drivers": {
+          "items": {
+            "$ref": "#/$defs/EstimationComplexityDriver"
+          },
+          "title": "Complexity Drivers",
+          "type": "array"
+        },
+        "confidence_adjustment_proposal": {
+          "$ref": "#/$defs/EstimationConfidenceAdjustmentProposal"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/EstimationQuestion"
+          },
+          "title": "Questions",
+          "type": "array"
+        },
+        "risk_register": {
+          "items": {
+            "$ref": "#/$defs/EstimationRiskRegisterEntry"
+          },
+          "title": "Risk Register",
+          "type": "array"
+        },
+        "savings_opportunities": {
+          "items": {
+            "$ref": "#/$defs/EstimationSavingsOpportunity"
+          },
+          "title": "Savings Opportunities",
+          "type": "array"
+        },
+        "scenario_adjustments": {
+          "items": {
+            "$ref": "#/$defs/EstimationScenarioAdjustment"
+          },
+          "title": "Scenario Adjustments",
+          "type": "array"
+        },
+        "schema_version": {
+          "default": "estimation-analysis.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "uncertainty_factors": {
+          "items": {
+            "$ref": "#/$defs/EstimationUncertaintyFactor"
+          },
+          "title": "Uncertainty Factors",
+          "type": "array"
+        }
+      },
+      "title": "EstimationAnalysisArtifact",
+      "type": "object"
+    },
+    "EstimationBenchmarkRef": {
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_key": {
+          "default": "",
+          "title": "Benchmark Key",
+          "type": "string"
+        },
+        "captured_at": {
+          "default": "",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "freshness": {
+          "default": "",
+          "title": "Freshness",
+          "type": "string"
+        },
+        "sample_size": {
+          "default": 0,
+          "title": "Sample Size",
+          "type": "integer"
+        },
+        "source_kind": {
+          "default": "knowledge_document",
+          "enum": [
+            "workspace_actuals",
+            "pricing_catalog",
+            "knowledge_document",
+            "platform_benchmark"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "source_ref": {
+          "default": "",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "workspace_scoped": {
+          "default": false,
+          "title": "Workspace Scoped",
+          "type": "boolean"
+        }
+      },
+      "title": "EstimationBenchmarkRef",
+      "type": "object"
+    },
+    "EstimationComplexityDriver": {
+      "additionalProperties": false,
+      "properties": {
+        "driver_key": {
+          "default": "",
+          "title": "Driver Key",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "impact_level": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Impact Level",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "workstream_key": {
+          "default": "",
+          "title": "Workstream Key",
+          "type": "string"
+        }
+      },
+      "title": "EstimationComplexityDriver",
+      "type": "object"
+    },
+    "EstimationComplexityLevel": {
+      "enum": [
+        "simple",
+        "moderate",
+        "complex",
+        "critical"
+      ],
+      "title": "EstimationComplexityLevel",
+      "type": "string"
+    },
+    "EstimationConfidenceAdjustmentProposal": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "proposed_score_delta": {
+          "default": 0,
+          "title": "Proposed Score Delta",
+          "type": "integer"
+        },
+        "proposed_uncertainty_band_delta": {
+          "default": 0,
+          "title": "Proposed Uncertainty Band Delta",
+          "type": "integer"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        }
+      },
+      "title": "EstimationConfidenceAdjustmentProposal",
+      "type": "object"
+    },
+    "EstimationConfidenceLabel": {
+      "enum": [
+        "low",
+        "medium_low",
+        "medium",
+        "medium_high",
+        "high"
+      ],
+      "title": "EstimationConfidenceLabel",
+      "type": "string"
+    },
+    "EstimationDeterministicInputs": {
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_corpus_hash": {
+          "default": "",
+          "title": "Benchmark Corpus Hash",
+          "type": "string"
+        },
+        "benchmark_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Benchmark Ids",
+          "type": "array"
+        },
+        "calibration_sample_size": {
+          "default": 0,
+          "title": "Calibration Sample Size",
+          "type": "integer"
+        },
+        "catalogs_used": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Catalogs Used",
+          "type": "array"
+        },
+        "formula_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Formula Notes",
+          "type": "array"
+        },
+        "pricing_catalog_signature": {
+          "default": "",
+          "title": "Pricing Catalog Signature",
+          "type": "string"
+        },
+        "validation_fingerprint": {
+          "default": "",
+          "title": "Validation Fingerprint",
+          "type": "string"
+        }
+      },
+      "title": "EstimationDeterministicInputs",
+      "type": "object"
+    },
+    "EstimationMaturityStage": {
+      "enum": [
+        "canvas",
+        "blueprint",
+        "ready_to_build"
+      ],
+      "title": "EstimationMaturityStage",
+      "type": "string"
+    },
+    "EstimationPricingSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "cop_per_usd": {
+          "default": 0,
+          "title": "Cop Per Usd",
+          "type": "number"
+        },
+        "effective_from": {
+          "default": "",
+          "title": "Effective From",
+          "type": "string"
+        },
+        "is_local_inference": {
+          "default": false,
+          "title": "Is Local Inference",
+          "type": "boolean"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "local_cost_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodexLocalCostPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "pricing_mode": {
+          "default": "",
+          "title": "Pricing Mode",
+          "type": "string"
+        },
+        "profile_key": {
+          "default": "",
+          "title": "Profile Key",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/LLMProviderKey",
+          "default": "openai"
+        },
+        "rates": {
+          "items": {
+            "$ref": "#/$defs/LLMPricingRateEntry"
+          },
+          "title": "Rates",
+          "type": "array"
+        }
+      },
+      "title": "EstimationPricingSnapshot",
+      "type": "object"
+    },
+    "EstimationQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "question": {
+          "default": "",
+          "title": "Question",
+          "type": "string"
+        },
+        "question_key": {
+          "default": "",
+          "title": "Question Key",
+          "type": "string"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        }
+      },
+      "title": "EstimationQuestion",
+      "type": "object"
+    },
+    "EstimationRiskRegisterEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "impact": {
+          "default": "",
+          "title": "Impact",
+          "type": "string"
+        },
+        "likelihood": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Likelihood",
+          "type": "string"
+        },
+        "mitigation": {
+          "default": "",
+          "title": "Mitigation",
+          "type": "string"
+        },
+        "risk_key": {
+          "default": "",
+          "title": "Risk Key",
+          "type": "string"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "EstimationRiskRegisterEntry",
+      "type": "object"
+    },
+    "EstimationRunEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "active_provider": {
+          "$ref": "#/$defs/LLMProviderKey",
+          "default": "openai"
+        },
+        "agentic_cost_total": {
+          "default": 0,
+          "title": "Agentic Cost Total",
+          "type": "number"
+        },
+        "agentic_duration_weeks": {
+          "default": 0,
+          "title": "Agentic Duration Weeks",
+          "type": "number"
+        },
+        "agentic_hours_total": {
+          "default": 0,
+          "title": "Agentic Hours Total",
+          "type": "number"
+        },
+        "automation_coverage_percent": {
+          "default": 0,
+          "title": "Automation Coverage Percent",
+          "type": "integer"
+        },
+        "blueprint_version_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blueprint Version Number"
+        },
+        "confidence_label": {
+          "$ref": "#/$defs/EstimationConfidenceLabel",
+          "default": "low"
+        },
+        "confidence_score": {
+          "default": 0,
+          "title": "Confidence Score",
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "maturity_stage": {
+          "$ref": "#/$defs/EstimationMaturityStage",
+          "default": "canvas"
+        },
+        "pricing_policy": {
+          "default": "",
+          "title": "Pricing Policy",
+          "type": "string"
+        },
+        "source_action": {
+          "default": "",
+          "title": "Source Action",
+          "type": "string"
+        },
+        "traditional_cost_total": {
+          "default": 0,
+          "title": "Traditional Cost Total",
+          "type": "number"
+        },
+        "traditional_duration_weeks": {
+          "default": 0,
+          "title": "Traditional Duration Weeks",
+          "type": "number"
+        },
+        "traditional_hours_total": {
+          "default": 0,
+          "title": "Traditional Hours Total",
+          "type": "number"
+        },
+        "uncertainty_band_percent": {
+          "default": 0,
+          "title": "Uncertainty Band Percent",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "created_at"
+      ],
+      "title": "EstimationRunEntry",
+      "type": "object"
+    },
+    "EstimationSavingsOpportunity": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "expected_impact": {
+          "default": "",
+          "title": "Expected Impact",
+          "type": "string"
+        },
+        "opportunity_key": {
+          "default": "",
+          "title": "Opportunity Key",
+          "type": "string"
+        },
+        "prerequisites": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Prerequisites",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "EstimationSavingsOpportunity",
+      "type": "object"
+    },
+    "EstimationScenarioAdjustment": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_multiplier": {
+          "default": 1.0,
+          "title": "Cost Multiplier",
+          "type": "number"
+        },
+        "duration_multiplier": {
+          "default": 1.0,
+          "title": "Duration Multiplier",
+          "type": "number"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "hours_multiplier": {
+          "default": 1.0,
+          "title": "Hours Multiplier",
+          "type": "number"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        },
+        "scenario_key": {
+          "default": "base",
+          "enum": [
+            "optimistic",
+            "base",
+            "conservative"
+          ],
+          "title": "Scenario Key",
+          "type": "string"
+        }
+      },
+      "title": "EstimationScenarioAdjustment",
+      "type": "object"
+    },
+    "EstimationScenarioType": {
+      "enum": [
+        "traditional",
+        "agentic"
+      ],
+      "title": "EstimationScenarioType",
+      "type": "string"
+    },
+    "EstimationSensitivityDriver": {
+      "additionalProperties": false,
+      "properties": {
+        "impact": {
+          "title": "Impact",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "summary",
+        "impact"
+      ],
+      "title": "EstimationSensitivityDriver",
+      "type": "object"
+    },
+    "EstimationUncertaintyFactor": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "default": "",
+          "title": "Category",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "factor_key": {
+          "default": "",
+          "title": "Factor Key",
+          "type": "string"
+        },
+        "impact_area": {
+          "default": "confidence",
+          "enum": [
+            "scope",
+            "schedule",
+            "cost",
+            "confidence",
+            "operations"
+          ],
+          "title": "Impact Area",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "EstimationUncertaintyFactor",
+      "type": "object"
+    },
+    "LLMPricingRateEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "amount_usd": {
+          "default": 0,
+          "title": "Amount Usd",
+          "type": "number"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "metric_key": {
+          "default": "",
+          "title": "Metric Key",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "title": "LLMPricingRateEntry",
+      "type": "object"
+    },
+    "LLMProviderKey": {
+      "enum": [
+        "openai",
+        "deepseek",
+        "codex_local"
+      ],
+      "title": "LLMProviderKey",
+      "type": "string"
+    },
+    "TraditionalEstimate": {
+      "additionalProperties": false,
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "estimated_cost": {
+          "default": 0,
+          "title": "Estimated Cost",
+          "type": "number"
+        },
+        "estimated_duration_weeks": {
+          "default": 0,
+          "title": "Estimated Duration Weeks",
+          "type": "number"
+        },
+        "estimated_hours_total": {
+          "default": 0,
+          "title": "Estimated Hours Total",
+          "type": "number"
+        },
+        "scenario_type": {
+          "$ref": "#/$defs/EstimationScenarioType",
+          "default": "traditional"
+        },
+        "team_shape": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Team Shape",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "workstream_breakdown": {
+          "items": {
+            "$ref": "#/$defs/WorkstreamEstimate"
+          },
+          "title": "Workstream Breakdown",
+          "type": "array"
+        }
+      },
+      "title": "TraditionalEstimate",
+      "type": "object"
+    },
+    "WorkstreamEstimate": {
+      "additionalProperties": false,
+      "properties": {
+        "automation_percent": {
+          "default": 0,
+          "title": "Automation Percent",
+          "type": "integer"
+        },
+        "duration_days": {
+          "default": 0,
+          "title": "Duration Days",
+          "type": "number"
+        },
+        "estimated_cost": {
+          "default": 0,
+          "title": "Estimated Cost",
+          "type": "number"
+        },
+        "estimated_hours": {
+          "default": 0,
+          "title": "Estimated Hours",
+          "type": "number"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "workstream_key": {
+          "default": "",
+          "title": "Workstream Key",
+          "type": "string"
+        }
+      },
+      "title": "WorkstreamEstimate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "actuals_count": {
+      "default": 0,
+      "title": "Actuals Count",
+      "type": "integer"
+    },
+    "agentic": {
+      "$ref": "#/$defs/AgenticEstimate"
+    },
+    "analysis": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EstimationAnalysisArtifact"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "assumptions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Assumptions",
+      "type": "array"
+    },
+    "base_confidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ConfidenceBreakdown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "blueprint_ref": {
+      "$ref": "#/$defs/ContractReference"
+    },
+    "confidence": {
+      "$ref": "#/$defs/ConfidenceBreakdown"
+    },
+    "deterministic_inputs": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EstimationDeterministicInputs"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "estimation_runs": {
+      "items": {
+        "$ref": "#/$defs/EstimationRunEntry"
+      },
+      "title": "Estimation Runs",
+      "type": "array"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "maturity_stage": {
+      "title": "Maturity Stage",
+      "type": "string"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "risk_drivers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Risk Drivers",
+      "type": "array"
+    },
+    "roi_summary": {
+      "title": "Roi Summary",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "estimation-pack.v1",
+      "default": "estimation-pack.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sensitivity_drivers": {
+      "items": {
+        "$ref": "#/$defs/EstimationSensitivityDriver"
+      },
+      "title": "Sensitivity Drivers",
+      "type": "array"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "traditional": {
+      "$ref": "#/$defs/TraditionalEstimate"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "blueprint_ref",
+    "maturity_stage",
+    "traditional",
+    "agentic",
+    "confidence",
+    "roi_summary"
+  ],
+  "title": "EstimationPackV1",
+  "type": "object"
+}

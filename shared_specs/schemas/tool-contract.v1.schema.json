@@ -1,0 +1,271 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "ToolSchemaField": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "type": {
+          "default": "string",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "ToolSchemaField",
+      "type": "object"
+    },
+    "ToolSchemaShape": {
+      "additionalProperties": false,
+      "properties": {
+        "properties": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ToolSchemaField"
+          },
+          "title": "Properties",
+          "type": "object"
+        },
+        "required": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required",
+          "type": "array"
+        },
+        "type": {
+          "const": "object",
+          "default": "object",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "ToolSchemaShape",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_policy": {
+      "default": "",
+      "title": "Approval Policy",
+      "type": "string"
+    },
+    "approval_reason": {
+      "default": "",
+      "title": "Approval Reason",
+      "type": "string"
+    },
+    "archetype": {
+      "title": "Archetype",
+      "type": "string"
+    },
+    "audit_rules": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Audit Rules",
+      "type": "array"
+    },
+    "auth_reference": {
+      "title": "Auth Reference",
+      "type": "string"
+    },
+    "compensation_strategy": {
+      "default": "",
+      "title": "Compensation Strategy",
+      "type": "string"
+    },
+    "contract_review_state": {
+      "default": "",
+      "title": "Contract Review State",
+      "type": "string"
+    },
+    "endpoint_reference": {
+      "title": "Endpoint Reference",
+      "type": "string"
+    },
+    "execution_mode": {
+      "title": "Execution Mode",
+      "type": "string"
+    },
+    "failure_mode": {
+      "default": "",
+      "title": "Failure Mode",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "idempotency_strategy": {
+      "default": "",
+      "title": "Idempotency Strategy",
+      "type": "string"
+    },
+    "idempotent": {
+      "default": false,
+      "title": "Idempotent",
+      "type": "boolean"
+    },
+    "input_schema": {
+      "$ref": "#/$defs/ToolSchemaShape"
+    },
+    "integration_kind": {
+      "title": "Integration Kind",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "output_schema": {
+      "$ref": "#/$defs/ToolSchemaShape"
+    },
+    "owner": {
+      "title": "Owner",
+      "type": "string"
+    },
+    "permissions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Permissions",
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "purpose": {
+      "title": "Purpose",
+      "type": "string"
+    },
+    "rate_limit_policy": {
+      "default": "",
+      "title": "Rate Limit Policy",
+      "type": "string"
+    },
+    "requires_approval": {
+      "default": false,
+      "title": "Requires Approval",
+      "type": "boolean"
+    },
+    "retry_strategy": {
+      "default": "",
+      "title": "Retry Strategy",
+      "type": "string"
+    },
+    "risk_level": {
+      "title": "Risk Level",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "tool-contract.v1",
+      "default": "tool-contract.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scopes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Scopes",
+      "type": "array"
+    },
+    "sensitive_data": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Sensitive Data",
+      "type": "array"
+    },
+    "side_effects": {
+      "default": false,
+      "title": "Side Effects",
+      "type": "boolean"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "timeout_policy": {
+      "default": "",
+      "title": "Timeout Policy",
+      "type": "string"
+    },
+    "typed_errors": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Typed Errors",
+      "type": "array"
+    },
+    "validations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Validations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "name",
+    "purpose",
+    "owner",
+    "archetype",
+    "integration_kind",
+    "endpoint_reference",
+    "auth_reference",
+    "risk_level",
+    "execution_mode"
+  ],
+  "title": "ToolContractV1",
+  "type": "object"
+}

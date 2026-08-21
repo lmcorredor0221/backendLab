@@ -1,0 +1,283 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "ShortTermMemoryCompactionV1": {
+      "additionalProperties": false,
+      "properties": {
+        "eviction_policy": {
+          "default": "",
+          "title": "Eviction Policy",
+          "type": "string"
+        },
+        "invalidation_policy": {
+          "default": "",
+          "title": "Invalidation Policy",
+          "type": "string"
+        },
+        "last_compacted_at": {
+          "default": "",
+          "title": "Last Compacted At",
+          "type": "string"
+        },
+        "summary_policy": {
+          "default": "",
+          "title": "Summary Policy",
+          "type": "string"
+        }
+      },
+      "title": "ShortTermMemoryCompactionV1",
+      "type": "object"
+    },
+    "ShortTermMemoryNamespaceV1": {
+      "additionalProperties": false,
+      "properties": {
+        "freshness": {
+          "default": "",
+          "title": "Freshness",
+          "type": "string"
+        },
+        "namespace": {
+          "title": "Namespace",
+          "type": "string"
+        },
+        "read_roles": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Read Roles",
+          "type": "array"
+        },
+        "ref_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Ref Keys",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "write_roles": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Write Roles",
+          "type": "array"
+        }
+      },
+      "required": [
+        "namespace"
+      ],
+      "title": "ShortTermMemoryNamespaceV1",
+      "type": "object"
+    },
+    "ShortTermMemoryRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "blueprint_version_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blueprint Version Number"
+        },
+        "created_at": {
+          "default": "",
+          "title": "Created At",
+          "type": "string"
+        },
+        "evidence_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Paths",
+          "type": "array"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "title": "Source",
+          "type": "string"
+        },
+        "stage": {
+          "default": "",
+          "title": "Stage",
+          "type": "string"
+        },
+        "status": {
+          "default": "",
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "kind"
+      ],
+      "title": "ShortTermMemoryRefV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "active_goal": {
+      "title": "Active Goal",
+      "type": "string"
+    },
+    "active_stage": {
+      "title": "Active Stage",
+      "type": "string"
+    },
+    "artifact_refs": {
+      "items": {
+        "$ref": "#/$defs/ShortTermMemoryRefV1"
+      },
+      "title": "Artifact Refs",
+      "type": "array"
+    },
+    "branch_refs": {
+      "items": {
+        "$ref": "#/$defs/ShortTermMemoryRefV1"
+      },
+      "title": "Branch Refs",
+      "type": "array"
+    },
+    "checkpoint_refs": {
+      "items": {
+        "$ref": "#/$defs/ShortTermMemoryRefV1"
+      },
+      "title": "Checkpoint Refs",
+      "type": "array"
+    },
+    "compaction": {
+      "$ref": "#/$defs/ShortTermMemoryCompactionV1"
+    },
+    "current_focus": {
+      "default": "",
+      "title": "Current Focus",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "namespaces": {
+      "items": {
+        "$ref": "#/$defs/ShortTermMemoryNamespaceV1"
+      },
+      "title": "Namespaces",
+      "type": "array"
+    },
+    "open_handoffs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Open Handoffs",
+      "type": "array"
+    },
+    "pending_approvals": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Pending Approvals",
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "recent_decisions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Recent Decisions",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "short-term-memory.v1",
+      "default": "short-term-memory.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "skill_run_refs": {
+      "items": {
+        "$ref": "#/$defs/ShortTermMemoryRefV1"
+      },
+      "title": "Skill Run Refs",
+      "type": "array"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "active_stage",
+    "active_goal"
+  ],
+  "title": "ShortTermMemoryV1",
+  "type": "object"
+}

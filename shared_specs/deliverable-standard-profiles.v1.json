@@ -1,0 +1,149 @@
+{
+  "schema_version": "deliverable-standard-profiles.v1",
+  "profiles": [
+    {
+      "profile_key": "uml.use_case.v1",
+      "notation": "uml_use_case",
+      "standard": "UML Use Case Diagram",
+      "source_contract": "plantuml-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.plantuml.v1",
+      "validator_key": "uml.use_case.semantic.v1",
+      "allowed_elements": ["actor", "system_boundary", "use_case", "package"],
+      "allowed_relationships": ["association", "include", "extend", "generalization"],
+      "forbidden_mixes": ["bpmn_task", "sequence_message", "deployment_node", "class_attribute"]
+    },
+    {
+      "profile_key": "uml.activity.v1",
+      "notation": "uml_activity",
+      "standard": "UML Activity Diagram",
+      "source_contract": "plantuml-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.plantuml.v1",
+      "validator_key": "uml.activity.semantic.v1",
+      "allowed_elements": ["initial_node", "action", "decision", "merge", "fork", "join", "final_node", "swimlane"],
+      "allowed_relationships": ["control_flow", "object_flow", "guard"],
+      "forbidden_mixes": ["bpmn_pool", "bpmn_message_flow", "sequence_message", "component_interface"]
+    },
+    {
+      "profile_key": "bpmn.2_0.v1",
+      "notation": "bpmn",
+      "standard": "BPMN 2.0",
+      "source_contract": "bpmn-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.bpmn_js.v1",
+      "validator_key": "bpmn.2_0.schema_semantic.v1",
+      "allowed_elements": ["pool", "lane", "start_event", "intermediate_event", "end_event", "task", "subprocess", "exclusive_gateway", "parallel_gateway", "data_object"],
+      "allowed_relationships": ["sequence_flow", "message_flow", "association"],
+      "forbidden_mixes": ["uml_actor", "uml_use_case", "class", "deployment_node"]
+    },
+    {
+      "profile_key": "uml.sequence.v1",
+      "notation": "sequence",
+      "standard": "UML Sequence Diagram",
+      "source_contract": "plantuml-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.plantuml.v1",
+      "validator_key": "uml.sequence.semantic.v1",
+      "allowed_elements": ["actor", "participant", "lifeline", "activation", "message", "return", "alt", "opt", "loop"],
+      "allowed_relationships": ["sync_message", "async_message", "return_message"],
+      "forbidden_mixes": ["bpmn_gateway", "use_case_association", "class_inheritance"]
+    },
+    {
+      "profile_key": "uml.component.v1",
+      "notation": "uml_component",
+      "standard": "UML Component Diagram",
+      "source_contract": "plantuml-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.plantuml.v1",
+      "validator_key": "uml.component.semantic.v1",
+      "allowed_elements": ["component", "interface", "port", "provided_interface", "required_interface", "package"],
+      "allowed_relationships": ["dependency", "realization", "interface_usage"],
+      "forbidden_mixes": ["class_attribute", "bpmn_task", "activity_action"]
+    },
+    {
+      "profile_key": "uml.class.v1",
+      "notation": "class",
+      "standard": "UML Class Diagram",
+      "source_contract": "plantuml-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.plantuml.v1",
+      "validator_key": "uml.class.semantic.v1",
+      "allowed_elements": ["class", "interface", "enum", "attribute", "operation"],
+      "allowed_relationships": ["association", "aggregation", "composition", "inheritance", "dependency"],
+      "forbidden_mixes": ["bpmn_event", "activity_action", "deployment_node"]
+    },
+    {
+      "profile_key": "uml.state.v1",
+      "notation": "state",
+      "standard": "UML State Machine",
+      "source_contract": "plantuml-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.plantuml.v1",
+      "validator_key": "uml.state.semantic.v1",
+      "allowed_elements": ["initial_state", "state", "composite_state", "final_state"],
+      "allowed_relationships": ["transition", "event_guard_action"],
+      "forbidden_mixes": ["bpmn_task", "sequence_participant", "use_case"]
+    },
+    {
+      "profile_key": "c4.context.v1",
+      "notation": "c4",
+      "standard": "C4 Context",
+      "source_contract": "c4-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.c4.v1",
+      "validator_key": "c4.context.semantic.v1",
+      "allowed_elements": ["person", "software_system", "external_system", "system_boundary"],
+      "allowed_relationships": ["uses", "depends_on", "sends_to", "receives_from"],
+      "forbidden_mixes": ["container", "component", "class", "bpmn_gateway"]
+    },
+    {
+      "profile_key": "c4.container.v1",
+      "notation": "c4",
+      "standard": "C4 Container",
+      "source_contract": "c4-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.c4.v1",
+      "validator_key": "c4.container.semantic.v1",
+      "allowed_elements": ["person", "software_system", "container", "database", "external_system", "boundary"],
+      "allowed_relationships": ["uses", "reads_from", "writes_to", "publishes", "subscribes"],
+      "forbidden_mixes": ["component_internal", "class_attribute", "bpmn_task"]
+    },
+    {
+      "profile_key": "data.erd.v1",
+      "notation": "er",
+      "standard": "Entity Relationship Diagram",
+      "source_contract": "mermaid-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.mermaid.v1",
+      "validator_key": "data.erd.semantic.v1",
+      "allowed_elements": ["entity", "attribute", "primary_key", "foreign_key"],
+      "allowed_relationships": ["one_to_one", "one_to_many", "many_to_many", "optional"],
+      "forbidden_mixes": ["physical_index_without_engine", "sequence_message", "deployment_node"]
+    },
+    {
+      "profile_key": "agentic.workflow.v1",
+      "notation": "flowchart",
+      "standard": "Agentic Workflow DAG",
+      "source_contract": "mermaid-source.v1",
+      "presentation_contract": "diagram-presentation.v1",
+      "renderer_key": "renderer.agentic_graph.v1",
+      "validator_key": "agentic.workflow.semantic.v1",
+      "allowed_elements": ["agent", "tool", "decision_gate", "hitl", "memory", "checkpoint", "fallback"],
+      "allowed_relationships": ["handoff", "tool_call", "decision", "retry", "escalation", "checkpoint_resume"],
+      "forbidden_mixes": ["lean_builder_internal_stage", "provider_secret", "platform_internal_id"]
+    },
+    {
+      "profile_key": "professional.document.v1",
+      "notation": "flowchart",
+      "standard": "Professional Business Document",
+      "source_contract": "deliverable-artifact.v1",
+      "presentation_contract": "professional-document.v1",
+      "renderer_key": "renderer.business_document.v1",
+      "validator_key": "artifact.commercial_consistency.v1",
+      "allowed_elements": ["cover", "executive_summary", "metric", "section", "table", "assumption", "conclusion", "cta", "traceability_ref"],
+      "allowed_relationships": ["inherits_from", "summarizes", "compares", "supports"],
+      "forbidden_mixes": ["invented_cost", "invented_hours", "source_code_as_primary_view", "unapproved_provider_claim"]
+    }
+  ]
+}

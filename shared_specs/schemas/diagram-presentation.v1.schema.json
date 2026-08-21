@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/diagram-presentation.v1.schema.json",
+  "title": "Diagram Presentation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "diagram_key", "title", "standard", "rendering_format", "protected_view"],
+  "properties": {
+    "schema_version": { "const": "diagram-presentation.v1" },
+    "diagram_key": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "standard": { "type": "string" },
+    "rendering_format": { "enum": ["svg", "html", "canvas", "image"] },
+    "protected_view": { "type": "boolean" },
+    "summary": { "type": "string" },
+    "legend": { "type": "array", "items": { "type": "object" } },
+    "traceability_refs": { "type": "array", "items": { "type": "string" } }
+  }
+}

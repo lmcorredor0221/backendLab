@@ -1,0 +1,477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/deliverable-catalog.v1.schema.json",
+  "title": "Lean Agent Builder Deliverable Catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "lean_stage_order",
+    "products",
+    "deliverable_types",
+    "generation_modes",
+    "entries",
+    "validation_rules"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "deliverable-catalog.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "lean_stage_order": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/stage"
+      },
+      "minItems": 8,
+      "uniqueItems": true
+    },
+    "products": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/product"
+      },
+      "minItems": 3,
+      "uniqueItems": true
+    },
+    "deliverable_types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/deliverableType"
+      },
+      "minItems": 8,
+      "uniqueItems": true
+    },
+    "generation_modes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/generationMode"
+      },
+      "minItems": 5,
+      "uniqueItems": true
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/deliverableEntry"
+      },
+      "minItems": 1
+    },
+    "validation_rules": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "stage": {
+      "enum": ["discover", "define", "design", "tools", "memory", "estimate", "validate", "package"]
+    },
+    "product": {
+      "enum": ["blueprint", "blueprint_pro", "acp"]
+    },
+    "tier": {
+      "enum": ["blueprint", "blueprint_pro", "acp"]
+    },
+    "deliverableType": {
+      "enum": ["artifact", "diagram", "document", "contract", "prompt", "test", "package", "lineage"]
+    },
+    "generationMode": {
+      "enum": [
+        "deterministic",
+        "llm_supported",
+        "llm_required",
+        "llm_with_deterministic_fallback",
+        "manual_review_required"
+      ]
+    },
+    "accessLevel": {
+      "enum": ["sample", "view_only", "downloadable", "premium", "restricted"]
+    },
+    "format": {
+      "type": "string",
+      "pattern": "^[a-z0-9_+.-]+$"
+    },
+    "contentProtection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disable_copy", "disable_download", "disable_context_menu"],
+      "properties": {
+        "disable_copy": {
+          "type": "boolean"
+        },
+        "disable_download": {
+          "type": "boolean"
+        },
+        "disable_context_menu": {
+          "type": "boolean"
+        }
+      }
+    },
+    "formats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preferred", "available"],
+      "properties": {
+        "preferred": {
+          "$ref": "#/$defs/format"
+        },
+        "available": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/format"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "promptPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt_template_key",
+        "prompt_status",
+        "prompt_version",
+        "schema_contract",
+        "validator_key",
+        "fallback_policy",
+        "max_iterations"
+      ],
+      "properties": {
+        "prompt_template_key": {
+          "type": "string"
+        },
+        "prompt_status": {
+          "enum": ["active", "draft", "deprecated", "paused", "needs_review"]
+        },
+        "prompt_version": {
+          "type": "string"
+        },
+        "schema_contract": {
+          "type": "string"
+        },
+        "validator_key": {
+          "type": "string"
+        },
+        "fallback_policy": {
+          "type": "string"
+        },
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        }
+      }
+    },
+    "contextPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["short_term_refs", "long_term_collections", "max_context_tokens", "retrieval_strategy"],
+      "properties": {
+        "short_term_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "long_term_collections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "max_context_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retrieval_strategy": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "qualityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_contract", "validator_key", "minimum_score", "checks"],
+      "properties": {
+        "schema_contract": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validator_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minimum_score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "dependencyPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["depends_on", "invalidates_on_change"],
+      "properties": {
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "invalidates_on_change": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "accessPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview_mode", "sample_enabled", "content_protection"],
+      "properties": {
+        "preview_mode": {
+          "enum": ["full", "limited", "none"]
+        },
+        "sample_enabled": {
+          "type": "boolean"
+        },
+        "content_protection": {
+          "$ref": "#/$defs/contentProtection"
+        }
+      }
+    },
+    "deliverableEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deliverable_key",
+        "title",
+        "description",
+        "deliverable_type",
+        "category",
+        "stage",
+        "enabled_from_stage",
+        "product_scope",
+        "required_tier",
+        "access_level",
+        "formats",
+        "generation_mode",
+        "prompt_policy",
+        "context_policy",
+        "quality_policy",
+        "dependency_policy",
+        "access_policy",
+        "canonical_paths",
+        "portable_paths",
+        "exportable",
+        "blueprint_download",
+        "acp_download",
+        "sort_order",
+        "active"
+      ],
+      "properties": {
+        "deliverable_key": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.:-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deliverable_type": {
+          "$ref": "#/$defs/deliverableType"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "$ref": "#/$defs/stage"
+        },
+        "enabled_from_stage": {
+          "$ref": "#/$defs/stage"
+        },
+        "product_scope": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/product"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "required_tier": {
+          "$ref": "#/$defs/tier"
+        },
+        "access_level": {
+          "$ref": "#/$defs/accessLevel"
+        },
+        "formats": {
+          "$ref": "#/$defs/formats"
+        },
+        "generation_mode": {
+          "$ref": "#/$defs/generationMode"
+        },
+        "prompt_policy": {
+          "$ref": "#/$defs/promptPolicy"
+        },
+        "context_policy": {
+          "$ref": "#/$defs/contextPolicy"
+        },
+        "quality_policy": {
+          "$ref": "#/$defs/qualityPolicy"
+        },
+        "dependency_policy": {
+          "$ref": "#/$defs/dependencyPolicy"
+        },
+        "access_policy": {
+          "$ref": "#/$defs/accessPolicy"
+        },
+        "canonical_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "portable_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "exportable": {
+          "type": "boolean"
+        },
+        "blueprint_download": {
+          "type": "boolean"
+        },
+        "acp_download": {
+          "type": "boolean"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "active": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "generation_mode": {
+                "enum": ["llm_supported", "llm_required", "llm_with_deterministic_fallback"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "prompt_policy": {
+                "properties": {
+                  "prompt_template_key": {
+                    "minLength": 1
+                  },
+                  "schema_contract": {
+                    "minLength": 1
+                  },
+                  "validator_key": {
+                    "minLength": 1
+                  },
+                  "fallback_policy": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exportable": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "canonical_paths": {
+                    "minItems": 1
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "portable_paths": {
+                    "minItems": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deliverable_type": {
+                "const": "diagram"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "quality_policy": {
+                "properties": {
+                  "schema_contract": {
+                    "enum": [
+                      "diagram-model.v1",
+                      "diagram-presentation.v1",
+                      "plantuml-source.v1",
+                      "bpmn-source.v1",
+                      "c4-source.v1",
+                      "mermaid-source.v1",
+                      "data-lineage-source.v1"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

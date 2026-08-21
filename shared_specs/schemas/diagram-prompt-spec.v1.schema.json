@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/diagram-prompt-spec.v1.schema.json",
+  "title": "Diagram PromptSpec v1",
+  "type": "object",
+  "required": ["version", "diagram_key", "objective", "notation", "required_inputs", "semantic_rules", "exclusions", "output_contract", "quality_gates"],
+  "properties": {
+    "version": { "type": "string" },
+    "diagram_key": { "type": "string" },
+    "objective": { "type": "string" },
+    "notation": { "type": "string" },
+    "standard": { "type": "string" },
+    "required_inputs": { "type": "array", "items": { "type": "string" } },
+    "semantic_rules": { "type": "array", "items": { "type": "string" } },
+    "exclusions": { "type": "array", "items": { "type": "string" } },
+    "output_contract": {
+      "enum": [
+        "diagram-model.v1",
+        "plantuml-source.v1",
+        "bpmn-source.v1",
+        "c4-source.v1",
+        "mermaid-source.v1",
+        "professional-document.v1",
+        "diagram-presentation.v1"
+      ]
+    },
+    "legacy_output_contract": { "const": "diagram-model.v1" },
+    "source_contract": { "type": "string" },
+    "presentation_contract": { "type": "string" },
+    "renderer_key": { "type": "string" },
+    "validator_key": { "type": "string" },
+    "allowed_elements": { "type": "array", "items": { "type": "string" } },
+    "allowed_relationships": { "type": "array", "items": { "type": "string" } },
+    "forbidden_mixes": { "type": "array", "items": { "type": "string" } },
+    "inherits_from": { "type": "array", "items": { "type": "string" } },
+    "transform_rules": { "type": "array", "items": { "type": "string" } },
+    "generation_permissions": { "type": "object" },
+    "quality_gates": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

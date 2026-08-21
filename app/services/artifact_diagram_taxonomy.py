@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-TAXONOMY_MANIFEST_PATH = REPO_ROOT / "shared_specs" / "artifact-diagram-taxonomy.v1.json"
+from app.services.shared_specs import resolve_shared_spec_path
 
 ALLOWED_PRODUCTS = {"blueprint", "acp", "shared"}
 ALLOWED_DIAGRAM_PRODUCTS = {"blueprint", "acp"}
@@ -214,7 +212,7 @@ def validate_artifact_diagram_taxonomy(payload: dict[str, Any]) -> list[str]:
 
 @lru_cache(maxsize=1)
 def load_artifact_diagram_taxonomy() -> dict[str, Any]:
-    payload = json.loads(TAXONOMY_MANIFEST_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(resolve_shared_spec_path("artifact-diagram-taxonomy.v1.json").read_text(encoding="utf-8"))
     errors = validate_artifact_diagram_taxonomy(payload)
     if errors:
         raise TaxonomyValidationError("; ".join(errors))

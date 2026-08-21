@@ -1,0 +1,237 @@
+{
+  "$defs": {
+    "ActivityTimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "currency": {
+          "default": "",
+          "title": "Currency",
+          "type": "string"
+        },
+        "key": {
+          "default": "",
+          "title": "Key",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "product_key": {
+          "default": "",
+          "title": "Product Key",
+          "type": "string"
+        },
+        "revenue_cents": {
+          "default": 0,
+          "title": "Revenue Cents",
+          "type": "integer"
+        },
+        "source": {
+          "default": "",
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "default": "",
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "default": "commercial",
+          "enum": [
+            "commercial",
+            "execution",
+            "export",
+            "workflow"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_at"
+      ],
+      "title": "ActivityTimelineEntry",
+      "type": "object"
+    },
+    "CommercialAuditFunnelStep": {
+      "additionalProperties": false,
+      "properties": {
+        "completed": {
+          "default": false,
+          "title": "Completed",
+          "type": "boolean"
+        },
+        "conversion_percent": {
+          "default": 0,
+          "title": "Conversion Percent",
+          "type": "integer"
+        },
+        "count": {
+          "default": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "event_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Event Keys",
+          "type": "array"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "latest_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latest At"
+        },
+        "product": {
+          "default": "",
+          "title": "Product",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label"
+      ],
+      "title": "CommercialAuditFunnelStep",
+      "type": "object"
+    },
+    "CommercialAuditMetric": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "tone": {
+          "default": "slate",
+          "enum": [
+            "blue",
+            "green",
+            "orange",
+            "red",
+            "slate",
+            "violet"
+          ],
+          "title": "Tone",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "title": "Unit",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "value"
+      ],
+      "title": "CommercialAuditMetric",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "default": "activity.v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "funnel": {
+      "items": {
+        "$ref": "#/$defs/CommercialAuditFunnelStep"
+      },
+      "title": "Funnel",
+      "type": "array"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "metrics": {
+      "items": {
+        "$ref": "#/$defs/CommercialAuditMetric"
+      },
+      "title": "Metrics",
+      "type": "array"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "timeline": {
+      "items": {
+        "$ref": "#/$defs/ActivityTimelineEntry"
+      },
+      "title": "Timeline",
+      "type": "array"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id"
+  ],
+  "title": "ActivityResponse",
+  "type": "object"
+}

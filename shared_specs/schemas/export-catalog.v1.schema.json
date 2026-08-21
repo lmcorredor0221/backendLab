@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "ExportCatalogItemResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "access_state": {
+          "default": "locked",
+          "enum": [
+            "allowed",
+            "locked",
+            "blocked"
+          ],
+          "title": "Access State",
+          "type": "string"
+        },
+        "content_type": {
+          "default": "application/json",
+          "title": "Content Type",
+          "type": "string"
+        },
+        "cta_label": {
+          "default": "",
+          "title": "Cta Label",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "file_extension": {
+          "default": "json",
+          "title": "File Extension",
+          "type": "string"
+        },
+        "key": {
+          "default": "",
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "locked_reason": {
+          "default": "",
+          "title": "Locked Reason",
+          "type": "string"
+        },
+        "product_key": {
+          "default": "",
+          "title": "Product Key",
+          "type": "string"
+        },
+        "profile": {
+          "default": "",
+          "title": "Profile",
+          "type": "string"
+        },
+        "required_capability": {
+          "default": "",
+          "title": "Required Capability",
+          "type": "string"
+        }
+      },
+      "title": "ExportCatalogItemResponse",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "default": "export-catalog.v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ExportCatalogItemResponse"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id"
+  ],
+  "title": "ExportCatalogResponse",
+  "type": "object"
+}

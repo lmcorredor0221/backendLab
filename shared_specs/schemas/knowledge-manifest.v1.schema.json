@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "KnowledgeManifestSourceV1": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_affinity": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Agent Affinity",
+          "type": "array"
+        },
+        "authority_level": {
+          "default": "",
+          "title": "Authority Level",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "memory_usage": {
+          "default": "",
+          "title": "Memory Usage",
+          "type": "string"
+        },
+        "owner": {
+          "default": "",
+          "title": "Owner",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "source_type": {
+          "title": "Source Type",
+          "type": "string"
+        },
+        "source_version": {
+          "default": "",
+          "title": "Source Version",
+          "type": "string"
+        },
+        "stage_affinity": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Stage Affinity",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "uri": {
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "uri",
+        "source_type"
+      ],
+      "title": "KnowledgeManifestSourceV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate_sources": {
+      "items": {
+        "$ref": "#/$defs/KnowledgeManifestSourceV1"
+      },
+      "title": "Candidate Sources",
+      "type": "array"
+    },
+    "fallback_policy": {
+      "default": "",
+      "title": "Fallback Policy",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "knowledge_backend_mode": {
+      "title": "Knowledge Backend Mode",
+      "type": "string"
+    },
+    "operating_summary": {
+      "default": "",
+      "title": "Operating Summary",
+      "type": "string"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "required_sources": {
+      "items": {
+        "$ref": "#/$defs/KnowledgeManifestSourceV1"
+      },
+      "title": "Required Sources",
+      "type": "array"
+    },
+    "retrieval_scopes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Retrieval Scopes",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "knowledge-manifest.v1",
+      "default": "knowledge-manifest.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selection_policy": {
+      "default": "",
+      "title": "Selection Policy",
+      "type": "string"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "knowledge_backend_mode"
+  ],
+  "title": "KnowledgeManifestV1",
+  "type": "object"
+}

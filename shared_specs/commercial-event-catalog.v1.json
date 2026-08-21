@@ -1,0 +1,263 @@
+{
+  "contract_version": "commercial-event-catalog.v1",
+  "generated_at": "2026-08-02T00:00:00Z",
+  "description": "Catalogo formal de eventos SaaS usados para actividad, auditoria comercial, conversion, revenue y proteccion de contenido.",
+  "redaction_policy": {
+    "metadata_must_be_sanitized": true,
+    "forbidden_metadata_fragments": [
+      "api_key",
+      "authorization",
+      "content",
+      "credential",
+      "html",
+      "markdown",
+      "password",
+      "prompt",
+      "secret",
+      "svg",
+      "token"
+    ],
+    "max_string_length": 240
+  },
+  "event_key_patterns": [
+    {
+      "pattern": "^access_request_(approved|rejected|canceled)$",
+      "schema_version": "commercial-event.v1",
+      "category": "access",
+      "product": "commercial",
+      "description": "Resolucion de solicitudes de acceso por owners o admins del workspace."
+    },
+    {
+      "pattern": "^.*_clicked$",
+      "schema_version": "commercial-event.v1",
+      "category": "cta",
+      "product": "commercial",
+      "description": "Interaccion con CTA comercial o de navegacion productiva."
+    },
+    {
+      "pattern": "^.*_viewed$",
+      "schema_version": "commercial-event.v1",
+      "category": "view",
+      "product": "commercial",
+      "description": "Visualizacion de superficie comercial o resultado protegido."
+    }
+  ],
+  "events": [
+    {
+      "event_key": "blueprint_results_viewed",
+      "schema_version": "commercial-event.v1",
+      "category": "view",
+      "product": "blueprint",
+      "source": "blueprint_result",
+      "revenue_semantics": "none",
+      "description": "El usuario visualizo el resultado gratuito del Blueprint dentro de la plataforma."
+    },
+    {
+      "event_key": "invitation_viewed",
+      "schema_version": "commercial-event.v1",
+      "category": "view",
+      "product": "acp",
+      "source": "acp_invitation",
+      "revenue_semantics": "none",
+      "description": "El usuario visualizo la invitacion comercial del ACP."
+    },
+    {
+      "event_key": "diagram_readable_selected",
+      "schema_version": "commercial-event.v1",
+      "category": "diagram",
+      "product": "blueprint",
+      "source": "diagram_browser",
+      "revenue_semantics": "none",
+      "description": "Seleccion de un diagrama que el usuario puede visualizar."
+    },
+    {
+      "event_key": "diagram_locked_selected",
+      "schema_version": "commercial-event.v1",
+      "category": "diagram",
+      "product": "commercial",
+      "source": "diagram_browser",
+      "revenue_semantics": "none",
+      "description": "Seleccion de un diagrama visible en catalogo pero bloqueado por etapa, plan o generacion."
+    },
+    {
+      "event_key": "diagram_protected_action_blocked",
+      "schema_version": "commercial-event.v1",
+      "category": "content_protection",
+      "product": "commercial",
+      "source": "diagram_browser",
+      "revenue_semantics": "none",
+      "description": "Intento bloqueado de copiar, descargar, arrastrar o usar menu contextual sobre contenido protegido."
+    },
+    {
+      "event_key": "diagram_download_blocked",
+      "schema_version": "commercial-event.v1",
+      "category": "content_protection",
+      "product": "commercial",
+      "source": "diagram_browser",
+      "revenue_semantics": "none",
+      "description": "Intento de descarga bloqueado por licenciamiento o policy."
+    },
+    {
+      "event_key": "diagram_upsell_clicked",
+      "schema_version": "commercial-event.v1",
+      "category": "cta",
+      "product": "commercial",
+      "source": "diagram_browser",
+      "revenue_semantics": "none",
+      "description": "CTA de upgrade abierto desde un diagrama bloqueado."
+    },
+    {
+      "event_key": "blueprint_pro_acquire_clicked",
+      "schema_version": "commercial-event.v1",
+      "category": "cta",
+      "product": "blueprint_pro",
+      "source": "estimate_stage",
+      "revenue_semantics": "pre_purchase",
+      "description": "CTA para adquirir Blueprint Profesional."
+    },
+    {
+      "event_key": "checkout_started",
+      "schema_version": "commercial-event.v1",
+      "category": "checkout",
+      "product": "commercial",
+      "source": "commerce_checkout",
+      "revenue_semantics": "pending",
+      "description": "Sesion de checkout iniciada."
+    },
+    {
+      "event_key": "checkout_canceled",
+      "schema_version": "commercial-event.v1",
+      "category": "checkout",
+      "product": "commercial",
+      "source": "commerce_checkout",
+      "revenue_semantics": "none",
+      "description": "Checkout cancelado por el usuario o proveedor."
+    },
+    {
+      "event_key": "payment_failed",
+      "schema_version": "commercial-event.v1",
+      "category": "checkout",
+      "product": "commercial",
+      "source": "commerce_checkout",
+      "revenue_semantics": "failed",
+      "description": "Pago fallido o rechazado."
+    },
+    {
+      "event_key": "payment_confirmed",
+      "schema_version": "commercial-event.v1",
+      "category": "revenue",
+      "product": "commercial",
+      "source": "commerce_checkout",
+      "revenue_semantics": "recognized",
+      "description": "Pago confirmado y entitlement asociado."
+    },
+    {
+      "event_key": "access_request_created",
+      "schema_version": "commercial-event.v1",
+      "category": "access",
+      "product": "commercial",
+      "source": "access_request",
+      "revenue_semantics": "none",
+      "description": "Solicitud de acceso o compra creada por un usuario sin permiso directo."
+    },
+    {
+      "event_key": "tier_updated",
+      "schema_version": "commercial-event.v1",
+      "category": "entitlement",
+      "product": "commercial",
+      "source": "commercial_tier",
+      "revenue_semantics": "none",
+      "description": "Cambio legacy o administrativo del tier comercial."
+    },
+    {
+      "event_key": "legacy_demo_tier_updated",
+      "schema_version": "commercial-event.v1",
+      "category": "entitlement",
+      "product": "commercial",
+      "source": "legacy_demo",
+      "revenue_semantics": "none",
+      "description": "Cambio demo heredado; debe retirarse antes de release productiva."
+    },
+    {
+      "event_key": "blueprint_exported",
+      "schema_version": "commercial-event.v1",
+      "category": "export",
+      "product": "blueprint_pro",
+      "source": "canonical_export",
+      "revenue_semantics": "post_purchase",
+      "description": "Exportacion Blueprint generada o descargada."
+    },
+    {
+      "event_key": "canonical_exported",
+      "schema_version": "commercial-event.v1",
+      "category": "export",
+      "product": "commercial",
+      "source": "canonical_export",
+      "revenue_semantics": "post_purchase",
+      "description": "Exportacion canonica versionada generada."
+    },
+    {
+      "event_key": "canonical_export_blocked",
+      "schema_version": "commercial-event.v1",
+      "category": "conformance",
+      "product": "commercial",
+      "source": "canonical_export",
+      "revenue_semantics": "none",
+      "description": "Exportacion canonica bloqueada por readiness o conformance."
+    },
+    {
+      "event_key": "acp_preview_generated",
+      "schema_version": "commercial-event.v1",
+      "category": "acp",
+      "product": "acp",
+      "source": "acp_preview",
+      "revenue_semantics": "none",
+      "description": "Preview ACP generado dentro del runtime."
+    },
+    {
+      "event_key": "acp_exported",
+      "schema_version": "commercial-event.v1",
+      "category": "export",
+      "product": "acp",
+      "source": "acp_export",
+      "revenue_semantics": "post_purchase",
+      "description": "ACP exportado desde endpoint legacy o canonico."
+    },
+    {
+      "event_key": "export_job_ready",
+      "schema_version": "commercial-event.v1",
+      "category": "export_job",
+      "product": "commercial",
+      "source": "export_delivery",
+      "revenue_semantics": "post_purchase",
+      "description": "Job durable de exportacion listo para descarga autorizada."
+    },
+    {
+      "event_key": "export_job_canceled",
+      "schema_version": "commercial-event.v1",
+      "category": "export_job",
+      "product": "commercial",
+      "source": "export_delivery",
+      "revenue_semantics": "none",
+      "description": "Job durable de exportacion cancelado."
+    },
+    {
+      "event_key": "export_job_retry_requested",
+      "schema_version": "commercial-event.v1",
+      "category": "export_job",
+      "product": "commercial",
+      "source": "export_delivery",
+      "revenue_semantics": "none",
+      "description": "Reintento solicitado para un job de exportacion."
+    },
+    {
+      "event_key": "acp_launcher_report_received",
+      "schema_version": "commercial-event.v1",
+      "category": "launcher",
+      "product": "acp",
+      "source": "acp_launcher",
+      "revenue_semantics": "post_purchase",
+      "description": "Reporte de uso externo del launcher ACP recibido y auditado."
+    }
+  ]
+}

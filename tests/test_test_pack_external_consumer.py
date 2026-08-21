@@ -9,11 +9,12 @@ from typing import Any
 import pytest
 
 from app.services.canonical_exports import build_contract_bundle
+from app.services.shared_specs import resolve_shared_specs_dir
 from tests.api_testkit import build_test_client
 from tests.canonical_fixture_builder import FIXTURE_CASES, build_full_session_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REFERENCE_CONSUMER = REPO_ROOT / "shared_specs" / "reference_consumers" / "python" / "reference_consumer.py"
+REFERENCE_CONSUMER = resolve_shared_specs_dir() / "reference_consumers" / "python" / "reference_consumer.py"
 CONTRACT_KEYS = (
     "blueprint-core.v1",
     "construction-pack.v1",

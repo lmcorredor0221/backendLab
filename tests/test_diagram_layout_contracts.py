@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from app.services.diagram_center.layout_contracts import (
     DiagramLayoutEdgeRoute,
@@ -12,9 +11,10 @@ from app.services.diagram_center.layout_contracts import (
     DiagramLayoutStrategy,
     DiagramLayoutViewport,
 )
+from app.services.shared_specs import resolve_shared_spec_path
 
 
-SCHEMA_PATH = Path(__file__).parents[2] / "shared_specs" / "schemas" / "diagram-layout-plan.v1.schema.json"
+SCHEMA_PATH = resolve_shared_spec_path("schemas", "diagram-layout-plan.v1.schema.json")
 
 
 def test_dlg1_layout_plan_contract_round_trips() -> None:

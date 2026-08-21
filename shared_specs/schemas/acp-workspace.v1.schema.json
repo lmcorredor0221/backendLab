@@ -1,0 +1,904 @@
+{
+  "$defs": {
+    "ACPBuildRunResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "additionalProperties": true,
+          "title": "Artifacts",
+          "type": "object"
+        },
+        "blockers": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "blueprint_version_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blueprint Version Number"
+        },
+        "checkpoints": {
+          "additionalProperties": true,
+          "title": "Checkpoints",
+          "type": "object"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "current_phase_key": {
+          "default": "",
+          "title": "Current Phase Key",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "phase_order": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Phase Order",
+          "type": "array"
+        },
+        "progress_percent": {
+          "default": 0,
+          "title": "Progress Percent",
+          "type": "integer"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ACPWorkflowRunStatus",
+          "default": "not_started"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "workspace_id": {
+          "format": "uuid",
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "workspace_id",
+        "session_id",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "ACPBuildRunResponse",
+      "type": "object"
+    },
+    "ACPPhaseDefinitionResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "default": "",
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "objective": {
+          "default": "",
+          "title": "Objective",
+          "type": "string"
+        },
+        "order": {
+          "default": 0,
+          "title": "Order",
+          "type": "integer"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "title": "ACPPhaseDefinitionResponse",
+      "type": "object"
+    },
+    "ACPPhaseRunResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_count": {
+          "default": 0,
+          "title": "Attempt Count",
+          "type": "integer"
+        },
+        "blockers": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Blockers",
+          "type": "array"
+        },
+        "checkpoints": {
+          "additionalProperties": true,
+          "title": "Checkpoints",
+          "type": "object"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "input_refs": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Input Refs",
+          "type": "array"
+        },
+        "output_refs": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Output Refs",
+          "type": "array"
+        },
+        "phase_key": {
+          "default": "",
+          "title": "Phase Key",
+          "type": "string"
+        },
+        "phase_label": {
+          "default": "",
+          "title": "Phase Label",
+          "type": "string"
+        },
+        "phase_order": {
+          "default": 0,
+          "title": "Phase Order",
+          "type": "integer"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "status": {
+          "$ref": "#/$defs/ACPWorkflowRunStatus",
+          "default": "not_started"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "title": "ACPPhaseRunResponse",
+      "type": "object"
+    },
+    "ACPValidationIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "code": {
+          "default": "",
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        },
+        "remediation": {
+          "default": "",
+          "title": "Remediation",
+          "type": "string"
+        },
+        "severity": {
+          "default": "warning",
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "source_sections": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Sections",
+          "type": "array"
+        }
+      },
+      "title": "ACPValidationIssue",
+      "type": "object"
+    },
+    "ACPValidationReport": {
+      "additionalProperties": false,
+      "properties": {
+        "can_export_zip": {
+          "default": false,
+          "title": "Can Export Zip",
+          "type": "boolean"
+        },
+        "completeness_percent": {
+          "default": 0,
+          "title": "Completeness Percent",
+          "type": "integer"
+        },
+        "issues": {
+          "items": {
+            "$ref": "#/$defs/ACPValidationIssue"
+          },
+          "title": "Issues",
+          "type": "array"
+        },
+        "overall_status": {
+          "default": "needs_review",
+          "enum": [
+            "complete",
+            "incomplete",
+            "needs_review"
+          ],
+          "title": "Overall Status",
+          "type": "string"
+        }
+      },
+      "title": "ACPValidationReport",
+      "type": "object"
+    },
+    "ACPWorkflowRunStatus": {
+      "enum": [
+        "not_started",
+        "running",
+        "waiting_user",
+        "blocked",
+        "completed",
+        "completed_with_observations",
+        "failed",
+        "stale",
+        "canceled"
+      ],
+      "title": "ACPWorkflowRunStatus",
+      "type": "string"
+    },
+    "CommercialAccessSnapshotV2": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/CommercialCapabilityDecisionEntry"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "checkout_state": {
+          "default": "not_started",
+          "title": "Checkout State",
+          "type": "string"
+        },
+        "contract_version": {
+          "default": "commercial-access.v2",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "entitlements": {
+          "items": {
+            "$ref": "#/$defs/CommercialEntitlementSummary"
+          },
+          "title": "Entitlements",
+          "type": "array"
+        },
+        "purchase_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Purchase Refs",
+          "type": "array"
+        },
+        "reason_code": {
+          "default": "free_access",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "tier_label": {
+          "default": "Blueprint",
+          "title": "Tier Label",
+          "type": "string"
+        },
+        "user_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Id"
+        },
+        "workspace_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Id"
+        }
+      },
+      "title": "CommercialAccessSnapshotV2",
+      "type": "object"
+    },
+    "CommercialCapabilityDecisionEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "default": false,
+          "title": "Allowed",
+          "type": "boolean"
+        },
+        "capability": {
+          "default": "",
+          "title": "Capability",
+          "type": "string"
+        },
+        "cta_label": {
+          "default": "",
+          "title": "Cta Label",
+          "type": "string"
+        },
+        "current_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "product": {
+          "default": "",
+          "title": "Product",
+          "type": "string"
+        },
+        "reason_code": {
+          "default": "allowed",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "required_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        }
+      },
+      "title": "CommercialCapabilityDecisionEntry",
+      "type": "object"
+    },
+    "CommercialEntitlementSource": {
+      "enum": [
+        "checkout",
+        "admin_grant",
+        "legacy_backfill",
+        "legacy_migration"
+      ],
+      "title": "CommercialEntitlementSource",
+      "type": "string"
+    },
+    "CommercialEntitlementStatus": {
+      "enum": [
+        "pending_activation",
+        "active",
+        "suspended",
+        "expired",
+        "revoked",
+        "refunded"
+      ],
+      "title": "CommercialEntitlementStatus",
+      "type": "string"
+    },
+    "CommercialEntitlementSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "ends_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ends At"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "non_revenue": {
+          "default": false,
+          "title": "Non Revenue",
+          "type": "boolean"
+        },
+        "product_key": {
+          "default": "",
+          "title": "Product Key",
+          "type": "string"
+        },
+        "purchase_ref": {
+          "default": "",
+          "title": "Purchase Ref",
+          "type": "string"
+        },
+        "scope": {
+          "default": "project",
+          "title": "Scope",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CommercialEntitlementSource",
+          "default": "checkout"
+        },
+        "starts_at": {
+          "format": "date-time",
+          "title": "Starts At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CommercialEntitlementStatus",
+          "default": "active"
+        },
+        "tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint_pro"
+        }
+      },
+      "required": [
+        "id",
+        "starts_at"
+      ],
+      "title": "CommercialEntitlementSummary",
+      "type": "object"
+    },
+    "CommercialTier": {
+      "enum": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "title": "CommercialTier",
+      "type": "string"
+    },
+    "ConstructionGapEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking_stage": {
+          "default": "",
+          "title": "Blocking Stage",
+          "type": "string"
+        },
+        "closure_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Closure Criteria",
+          "type": "array"
+        },
+        "current_assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Current Assumptions",
+          "type": "array"
+        },
+        "domain": {
+          "default": "",
+          "title": "Domain",
+          "type": "string"
+        },
+        "evidence_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Paths",
+          "type": "array"
+        },
+        "gap_key": {
+          "default": "",
+          "title": "Gap Key",
+          "type": "string"
+        },
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/ConstructionQuestionEntry"
+          },
+          "title": "Questions",
+          "type": "array"
+        },
+        "remediation": {
+          "default": "",
+          "title": "Remediation",
+          "type": "string"
+        },
+        "severity": {
+          "default": "warning",
+          "enum": [
+            "info",
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "source_sections": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Sections",
+          "type": "array"
+        },
+        "status": {
+          "default": "open",
+          "enum": [
+            "open",
+            "answered",
+            "waived",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "ConstructionGapEntry",
+      "type": "object"
+    },
+    "ConstructionQuestionEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "expected_answer_format": {
+          "default": "",
+          "title": "Expected Answer Format",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ConstructionQuestionOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "purpose": {
+          "default": "",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "question_key": {
+          "default": "",
+          "title": "Question Key",
+          "type": "string"
+        },
+        "question_text": {
+          "default": "",
+          "title": "Question Text",
+          "type": "string"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        },
+        "target_owner": {
+          "default": "",
+          "title": "Target Owner",
+          "type": "string"
+        }
+      },
+      "title": "ConstructionQuestionEntry",
+      "type": "object"
+    },
+    "ConstructionQuestionOption": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "example": {
+          "default": "",
+          "title": "Example",
+          "type": "string"
+        },
+        "impact": {
+          "default": "",
+          "title": "Impact",
+          "type": "string"
+        },
+        "key": {
+          "default": "",
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "title": "ConstructionQuestionOption",
+      "type": "object"
+    },
+    "ConstructionReadinessReport": {
+      "additionalProperties": false,
+      "properties": {
+        "assumptions_count": {
+          "default": 0,
+          "title": "Assumptions Count",
+          "type": "integer"
+        },
+        "blocking_gaps": {
+          "default": 0,
+          "title": "Blocking Gaps",
+          "type": "integer"
+        },
+        "can_start_build": {
+          "default": false,
+          "title": "Can Start Build",
+          "type": "boolean"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/ConstructionGapEntry"
+          },
+          "title": "Gaps",
+          "type": "array"
+        },
+        "next_recommended_action": {
+          "default": "",
+          "title": "Next Recommended Action",
+          "type": "string"
+        },
+        "open_questions": {
+          "default": 0,
+          "title": "Open Questions",
+          "type": "integer"
+        },
+        "overall_status": {
+          "default": "not_started",
+          "enum": [
+            "not_started",
+            "needs_questions",
+            "blocked",
+            "ready_to_build"
+          ],
+          "title": "Overall Status",
+          "type": "string"
+        }
+      },
+      "title": "ConstructionReadinessReport",
+      "type": "object"
+    },
+    "WorkspaceRole": {
+      "enum": [
+        "owner",
+        "admin",
+        "editor",
+        "viewer"
+      ],
+      "title": "WorkspaceRole",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "access": {
+      "$ref": "#/$defs/CommercialAccessSnapshotV2"
+    },
+    "contract_version": {
+      "default": "acp-workspace.v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "next_action": {
+      "default": "",
+      "title": "Next Action",
+      "type": "string"
+    },
+    "phase_definitions": {
+      "items": {
+        "$ref": "#/$defs/ACPPhaseDefinitionResponse"
+      },
+      "title": "Phase Definitions",
+      "type": "array"
+    },
+    "phases": {
+      "items": {
+        "$ref": "#/$defs/ACPPhaseRunResponse"
+      },
+      "title": "Phases",
+      "type": "array"
+    },
+    "readiness": {
+      "$ref": "#/$defs/ConstructionReadinessReport"
+    },
+    "run": {
+      "$ref": "#/$defs/ACPBuildRunResponse"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "validation": {
+      "$ref": "#/$defs/ACPValidationReport"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id",
+    "access",
+    "run"
+  ],
+  "title": "ACPWorkspaceResponse",
+  "type": "object"
+}

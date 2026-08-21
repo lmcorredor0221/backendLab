@@ -1,0 +1,273 @@
+{
+  "actionable_count": 2,
+  "blocking_count": 1,
+  "contract_version": "attention.v2",
+  "counts_by_product": {
+    "acp": 1,
+    "blueprint": 5
+  },
+  "counts_by_stage": {
+    "define": 1,
+    "design": 1,
+    "memory": 1,
+    "package": 1,
+    "tools": 1,
+    "validate": 1
+  },
+  "counts_by_type": {
+    "approval": 1,
+    "decision": 1,
+    "gap": 1,
+    "inconsistency": 1,
+    "question": 1,
+    "stale": 1
+  },
+  "current_stage": "tools",
+  "cursor": "",
+  "generated_at": "2026-08-03T15:20:43.459319",
+  "info_count": 3,
+  "items": [
+    {
+      "action": {
+        "can_resolve_inline": false,
+        "href": "/projects/11111111-1111-4111-8111-111111111111/tools",
+        "kind": "navigate",
+        "label": "Abrir",
+        "return_href": "/projects/11111111-1111-4111-8111-111111111111/tools"
+      },
+      "affected_artifact_refs": [],
+      "blocking": true,
+      "consequence_if_unresolved": "El usuario no tendria claridad sobre la accion esperada.",
+      "detected_at": null,
+      "impact": "Permite validar render, orden y acciones del Segmento de Atencion.",
+      "key": "attention.v2:gap:tools:tool_recommendation:tool_recommendation-2:2:in_progress:examples:falta-aprobar-document_ingestion",
+      "options": [],
+      "owner_role": "business_owner",
+      "owner_user_id": "",
+      "product": "blueprint",
+      "reason": "Ejemplo contractual para estado in_progress.",
+      "severity": "blocking",
+      "source": "tool_recommendation",
+      "source_ref": {
+        "artifact_id": "tool_recommendation-2",
+        "artifact_version": 2,
+        "entity_id": "in_progress",
+        "field_path": "examples"
+      },
+      "stage": "tools",
+      "status": "in_progress",
+      "suggested_answer": "",
+      "title": "Falta aprobar document_ingestion",
+      "type": "gap",
+      "updated_at": null
+    },
+    {
+      "action": {
+        "can_resolve_inline": true,
+        "href": "/projects/11111111-1111-4111-8111-111111111111/define",
+        "kind": "answer",
+        "label": "Responder",
+        "return_href": "/projects/11111111-1111-4111-8111-111111111111/define"
+      },
+      "affected_artifact_refs": [],
+      "blocking": false,
+      "consequence_if_unresolved": "El usuario no tendria claridad sobre la accion esperada.",
+      "detected_at": null,
+      "impact": "Permite validar render, orden y acciones del Segmento de Atencion.",
+      "key": "attention.v2:question:define:definition_artifact:definition_artifact-1:1:open:examples:pregunta-abierta-de-alcance",
+      "options": [],
+      "owner_role": "business_owner",
+      "owner_user_id": "",
+      "product": "blueprint",
+      "reason": "Ejemplo contractual para estado open.",
+      "severity": "warning",
+      "source": "definition_artifact",
+      "source_ref": {
+        "artifact_id": "definition_artifact-1",
+        "artifact_version": 1,
+        "entity_id": "open",
+        "field_path": "examples"
+      },
+      "stage": "define",
+      "status": "open",
+      "suggested_answer": "",
+      "title": "Pregunta abierta de alcance",
+      "type": "question",
+      "updated_at": null
+    },
+    {
+      "action": {
+        "can_resolve_inline": true,
+        "href": "/projects/11111111-1111-4111-8111-111111111111/package",
+        "kind": "navigate",
+        "label": "Abrir",
+        "return_href": "/projects/11111111-1111-4111-8111-111111111111/package"
+      },
+      "affected_artifact_refs": [],
+      "blocking": false,
+      "consequence_if_unresolved": "El usuario no tendria claridad sobre la accion esperada.",
+      "detected_at": null,
+      "impact": "Permite validar render, orden y acciones del Segmento de Atencion.",
+      "key": "attention.v2:decision:package:acp_questions:acp_questions-3:3:deferred:examples:seleccionar-stack-durante-implementacion",
+      "options": [],
+      "owner_role": "business_owner",
+      "owner_user_id": "",
+      "product": "acp",
+      "reason": "Ejemplo contractual para estado deferred.",
+      "severity": "warning",
+      "source": "acp_questions",
+      "source_ref": {
+        "artifact_id": "acp_questions-3",
+        "artifact_version": 3,
+        "entity_id": "deferred",
+        "field_path": "examples"
+      },
+      "stage": "package",
+      "status": "deferred",
+      "suggested_answer": "",
+      "title": "Seleccionar stack durante implementacion",
+      "type": "decision",
+      "updated_at": null
+    },
+    {
+      "action": {
+        "can_resolve_inline": false,
+        "href": "/projects/11111111-1111-4111-8111-111111111111/design",
+        "kind": "navigate",
+        "label": "Abrir",
+        "return_href": "/projects/11111111-1111-4111-8111-111111111111/design"
+      },
+      "affected_artifact_refs": [],
+      "blocking": false,
+      "consequence_if_unresolved": "El usuario no tendria claridad sobre la accion esperada.",
+      "detected_at": null,
+      "impact": "Permite validar render, orden y acciones del Segmento de Atencion.",
+      "key": "attention.v2:approval:design:approval_gate:approval_gate-4:4:resolved:examples:diseno-aprobado-por-owner",
+      "options": [],
+      "owner_role": "business_owner",
+      "owner_user_id": "",
+      "product": "blueprint",
+      "reason": "Ejemplo contractual para estado resolved.",
+      "severity": "info",
+      "source": "approval_gate",
+      "source_ref": {
+        "artifact_id": "approval_gate-4",
+        "artifact_version": 4,
+        "entity_id": "resolved",
+        "field_path": "examples"
+      },
+      "stage": "design",
+      "status": "resolved",
+      "suggested_answer": "",
+      "title": "Diseno aprobado por owner",
+      "type": "approval",
+      "updated_at": null
+    },
+    {
+      "action": {
+        "can_resolve_inline": false,
+        "href": "/projects/11111111-1111-4111-8111-111111111111/memory",
+        "kind": "navigate",
+        "label": "Abrir",
+        "return_href": "/projects/11111111-1111-4111-8111-111111111111/memory"
+      },
+      "affected_artifact_refs": [],
+      "blocking": false,
+      "consequence_if_unresolved": "El usuario no tendria claridad sobre la accion esperada.",
+      "detected_at": null,
+      "impact": "Permite validar render, orden y acciones del Segmento de Atencion.",
+      "key": "attention.v2:inconsistency:memory:memory_recommendation:memory_recommendation-5:5:dismissed:examples:advertencia-descartada-por-evidencia",
+      "options": [],
+      "owner_role": "business_owner",
+      "owner_user_id": "",
+      "product": "blueprint",
+      "reason": "Ejemplo contractual para estado dismissed.",
+      "severity": "info",
+      "source": "memory_recommendation",
+      "source_ref": {
+        "artifact_id": "memory_recommendation-5",
+        "artifact_version": 5,
+        "entity_id": "dismissed",
+        "field_path": "examples"
+      },
+      "stage": "memory",
+      "status": "dismissed",
+      "suggested_answer": "",
+      "title": "Advertencia descartada por evidencia",
+      "type": "inconsistency",
+      "updated_at": null
+    },
+    {
+      "action": {
+        "can_resolve_inline": false,
+        "href": "/projects/11111111-1111-4111-8111-111111111111/validate",
+        "kind": "navigate",
+        "label": "Abrir",
+        "return_href": "/projects/11111111-1111-4111-8111-111111111111/validate"
+      },
+      "affected_artifact_refs": [],
+      "blocking": false,
+      "consequence_if_unresolved": "El usuario no tendria claridad sobre la accion esperada.",
+      "detected_at": null,
+      "impact": "Permite validar render, orden y acciones del Segmento de Atencion.",
+      "key": "attention.v2:stale:validate:journey_artifact:journey_artifact-6:6:superseded:examples:artefacto-reemplazado-por-version-nueva",
+      "options": [],
+      "owner_role": "business_owner",
+      "owner_user_id": "",
+      "product": "blueprint",
+      "reason": "Ejemplo contractual para estado superseded.",
+      "severity": "info",
+      "source": "journey_artifact",
+      "source_ref": {
+        "artifact_id": "journey_artifact-6",
+        "artifact_version": 6,
+        "entity_id": "superseded",
+        "field_path": "examples"
+      },
+      "stage": "validate",
+      "status": "superseded",
+      "suggested_answer": "",
+      "title": "Artefacto reemplazado por version nueva",
+      "type": "stale",
+      "updated_at": null
+    }
+  ],
+  "primary_item": {
+    "action": {
+      "can_resolve_inline": false,
+      "href": "/projects/11111111-1111-4111-8111-111111111111/tools",
+      "kind": "navigate",
+      "label": "Abrir",
+      "return_href": "/projects/11111111-1111-4111-8111-111111111111/tools"
+    },
+    "affected_artifact_refs": [],
+    "blocking": true,
+    "consequence_if_unresolved": "El usuario no tendria claridad sobre la accion esperada.",
+    "detected_at": null,
+    "impact": "Permite validar render, orden y acciones del Segmento de Atencion.",
+    "key": "attention.v2:gap:tools:tool_recommendation:tool_recommendation-2:2:in_progress:examples:falta-aprobar-document_ingestion",
+    "options": [],
+    "owner_role": "business_owner",
+    "owner_user_id": "",
+    "product": "blueprint",
+    "reason": "Ejemplo contractual para estado in_progress.",
+    "severity": "blocking",
+    "source": "tool_recommendation",
+    "source_ref": {
+      "artifact_id": "tool_recommendation-2",
+      "artifact_version": 2,
+      "entity_id": "in_progress",
+      "field_path": "examples"
+    },
+    "stage": "tools",
+    "status": "in_progress",
+    "suggested_answer": "",
+    "title": "Falta aprobar document_ingestion",
+    "type": "gap",
+    "updated_at": null
+  },
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "total_count": 6,
+  "warning_count": 2,
+  "workspace_id": "22222222-2222-4222-8222-222222222222"
+}

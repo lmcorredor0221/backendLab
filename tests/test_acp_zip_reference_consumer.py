@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from app.services.acp_export_profiles import apply_acp_export_profile
 from app.services.acp_generator import generate_acp_preview
 from app.services.acp_zip_export import build_acp_zip
+from app.services.shared_specs import resolve_shared_specs_dir
 from tests.test_acp_generator import build_ready_snapshot
 
 
-REFERENCE_CONSUMER_PATH = Path(__file__).resolve().parents[2] / "shared_specs" / "reference_consumers" / "python"
+REFERENCE_CONSUMER_PATH = resolve_shared_specs_dir() / "reference_consumers" / "python"
 sys.path.insert(0, str(REFERENCE_CONSUMER_PATH))
 
 from acp_zip_reference_consumer import validate_acp_zip  # noqa: E402

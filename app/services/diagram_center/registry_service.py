@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from app.services.deliverable_catalog.contracts import DeliverableRegistryEntry, DeliverableType
 from app.services.deliverable_catalog.registry_service import list_registry_entries as list_deliverable_registry_entries
 from app.services.diagram_center.contracts import DiagramNotation, DiagramRegistry, DiagramRegistryEntry
 from app.services.diagram_center.layout_policy import layout_policy_for_notation, merge_layout_policy
+from app.services.shared_specs import resolve_shared_spec_path
 
-
-SPEC_ROOT = Path(__file__).resolve().parents[4] / "shared_specs"
-REGISTRY_PATH = SPEC_ROOT / "diagram-registry.v1.json"
-STANDARD_PROFILES_PATH = SPEC_ROOT / "deliverable-standard-profiles.v1.json"
 
 _STANDARD_BY_NOTATION: dict[DiagramNotation, str] = {
     DiagramNotation.flowchart: "Mermaid flowchart",
@@ -49,13 +45,13 @@ def _empty_profile() -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_diagram_registry() -> DiagramRegistry:
-    payload = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(resolve_shared_spec_path("diagram-registry.v1.json").read_text(encoding="utf-8"))
     return DiagramRegistry.model_validate(payload)
 
 
 @lru_cache(maxsize=1)
 def load_standard_profiles() -> dict[str, dict[str, Any]]:
-    payload = json.loads(STANDARD_PROFILES_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(resolve_shared_spec_path("deliverable-standard-profiles.v1.json").read_text(encoding="utf-8"))
     return {
         str(profile["profile_key"]): profile
         for profile in payload.get("profiles", [])

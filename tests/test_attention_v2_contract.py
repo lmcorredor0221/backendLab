@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from uuid import uuid4
 
 from app.models import (
@@ -26,16 +25,17 @@ from app.services.attention.decision_contract import (
     decision_to_attention_item_v2,
 )
 from app.services.attention.governor import govern_attention_items
+from app.services.shared_specs import resolve_shared_specs_dir
 from app.services.attention.validation_issue_normalizer import validation_issue_to_attention_item
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+SHARED_SPECS_ROOT = resolve_shared_specs_dir()
 
 
 def test_attention_v2_schema_files_match_pydantic_model() -> None:
     model_schema = AttentionResponseV2.model_json_schema()
-    top_level_schema = json.loads((REPO_ROOT / "shared_specs" / "attention.v2.schema.json").read_text(encoding="utf-8"))
+    top_level_schema = json.loads((SHARED_SPECS_ROOT / "attention.v2.schema.json").read_text(encoding="utf-8"))
     canonical_schema = json.loads(
-        (REPO_ROOT / "shared_specs" / "schemas" / "attention.v2.schema.json").read_text(encoding="utf-8")
+        (SHARED_SPECS_ROOT / "schemas" / "attention.v2.schema.json").read_text(encoding="utf-8")
     )
 
     assert top_level_schema == model_schema
@@ -48,9 +48,9 @@ def test_attention_action_v2_schema_files_match_pydantic_models() -> None:
         "attention-action-result.v2": AttentionActionResultV2,
     }.items():
         model_schema = model.model_json_schema()
-        top_level_schema = json.loads((REPO_ROOT / "shared_specs" / f"{name}.schema.json").read_text(encoding="utf-8"))
+        top_level_schema = json.loads((SHARED_SPECS_ROOT / f"{name}.schema.json").read_text(encoding="utf-8"))
         canonical_schema = json.loads(
-            (REPO_ROOT / "shared_specs" / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8")
+            (SHARED_SPECS_ROOT / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8")
         )
         assert top_level_schema == model_schema
         assert canonical_schema == model_schema
@@ -626,4 +626,3 @@ def test_attention_v2_deduplication_merges_provenance_and_preserves_distinct_que
     # The merged item must have combined provenance from both sources
     sla_item = next(item for item in response.items if "SLA" in item.title)
     assert set(sla_item.affected_artifact_refs) == {"doc-a.md", "doc-b.md"}
-

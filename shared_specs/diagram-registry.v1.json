@@ -1,0 +1,1325 @@
+{
+  "schema_version": "diagram-registry.v1",
+  "prompt_spec_version": "diagram-prompts.v1.0.0",
+  "entries": [
+    {
+      "key": "solution_architecture",
+      "title": "Arquitectura de solución",
+      "description": "Vista integral de dominios, actores, sistemas, datos y límites de la solución.",
+      "benefit": "Alinea negocio y tecnología antes de tomar decisiones de implementación.",
+      "category": "architecture",
+      "type": "solution_architecture",
+      "family": "architecture",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "full",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "blueprint.architecture_spec"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar la solución completa por dominios y responsabilidades sin introducir componentes no aprobados.",
+      "semantic_rules": [
+        "Distinguir actores, sistemas y boundaries",
+        "Etiquetar relaciones con propósito",
+        "Mantener trazabilidad a fuentes"
+      ],
+      "exclusions": [
+        "No inventar proveedores ni tecnologías",
+        "No modelar el proceso LEAN como runtime"
+      ],
+      "sort_order": 10,
+      "active": true
+    },
+    {
+      "key": "logical_architecture",
+      "title": "Arquitectura lógica",
+      "description": "Capas lógicas, servicios y responsabilidades independientes de tecnología.",
+      "benefit": "Permite validar separación de responsabilidades y acoplamiento.",
+      "category": "architecture",
+      "type": "logical_architecture",
+      "family": "architecture",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "blueprint.architecture_spec",
+        "definition.requirements"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar módulos lógicos, responsabilidades y dependencias autorizadas.",
+      "semantic_rules": [
+        "Organizar por capas",
+        "Evitar dependencias circulares",
+        "Expresar contratos entre módulos"
+      ],
+      "exclusions": [
+        "No fijar infraestructura",
+        "No mezclar despliegue"
+      ],
+      "sort_order": 20,
+      "active": true
+    },
+    {
+      "key": "physical_architecture",
+      "title": "Arquitectura física",
+      "description": "Nodos físicos, redes, zonas y ubicación de cargas.",
+      "benefit": "Expone dependencias operativas, disponibilidad y límites de red.",
+      "category": "infrastructure",
+      "type": "physical_architecture",
+      "family": "deployment",
+      "notation": "deployment",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "acp.deployment_guide",
+        "acp.package_manifest"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar topología física y zonas de confianza basada en decisiones aprobadas.",
+      "semantic_rules": [
+        "Distinguir región, red y nodo",
+        "Mostrar redundancia",
+        "Etiquetar protocolos"
+      ],
+      "exclusions": [
+        "No inventar sizing",
+        "No exponer secretos"
+      ],
+      "sort_order": 30,
+      "active": true
+    },
+    {
+      "key": "infrastructure_architecture",
+      "title": "Arquitectura de infraestructura",
+      "description": "Servicios de plataforma, cómputo, red, almacenamiento y observabilidad.",
+      "benefit": "Convierte decisiones de despliegue en una vista operable.",
+      "category": "infrastructure",
+      "type": "infrastructure_architecture",
+      "family": "deployment",
+      "notation": "deployment",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "acp.deployment_guide",
+        "acp.workflow_pack"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar servicios de infraestructura, límites y dependencias operativas.",
+      "semantic_rules": [
+        "Separar planos de datos y control",
+        "Mostrar HA y observabilidad",
+        "Identificar servicios administrados"
+      ],
+      "exclusions": [
+        "No usar logos como semántica",
+        "No asumir nube"
+      ],
+      "sort_order": 40,
+      "active": true
+    },
+    {
+      "key": "integration_architecture",
+      "title": "Arquitectura de integración",
+      "description": "Sistemas, interfaces, eventos, APIs y patrones de integración.",
+      "benefit": "Hace visibles contratos, fallbacks y puntos de acoplamiento.",
+      "category": "integrations",
+      "type": "integration_architecture",
+      "family": "integration",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "tools",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "tools.minimum_set",
+        "tools.contracts"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar integraciones con dirección, contrato, protocolo y resiliencia.",
+      "semantic_rules": [
+        "Etiquetar síncrono o asíncrono",
+        "Indicar ownership",
+        "Mostrar errores y compensaciones"
+      ],
+      "exclusions": [
+        "No exponer endpoints privados",
+        "No inventar contratos"
+      ],
+      "sort_order": 50,
+      "active": true
+    },
+    {
+      "key": "application_architecture",
+      "title": "Arquitectura de aplicaciones",
+      "description": "Aplicaciones, servicios y ownership funcional dentro del portafolio.",
+      "benefit": "Aclara qué aplicación hace qué y dónde viven las capacidades.",
+      "category": "architecture",
+      "type": "application_architecture",
+      "family": "architecture",
+      "notation": "flowchart",
+      "complexity": "intermediate",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "blueprint.architecture_spec"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Mapear aplicaciones a capacidades y dependencias aprobadas.",
+      "semantic_rules": [
+        "Una responsabilidad primaria por aplicación",
+        "Mostrar interfaces",
+        "Distinguir interno y externo"
+      ],
+      "exclusions": [
+        "No duplicar componentes",
+        "No fijar despliegue"
+      ],
+      "sort_order": 60,
+      "active": true
+    },
+    {
+      "key": "component_diagram",
+      "title": "Diagrama de componentes",
+      "description": "Componentes internos, interfaces y dependencias de una aplicación o contenedor.",
+      "benefit": "Reduce ambigüedad para equipos de construcción.",
+      "category": "software",
+      "type": "component",
+      "family": "uml",
+      "notation": "uml_component",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "blueprint.architecture_spec",
+        "acp.workflow_pack"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Descomponer un contenedor en componentes cohesivos y contratos explícitos.",
+      "semantic_rules": [
+        "Mostrar interfaces provistas y requeridas",
+        "Evitar componentes huérfanos",
+        "Trazar dependencias"
+      ],
+      "exclusions": [
+        "No modelar clases",
+        "No inventar frameworks"
+      ],
+      "sort_order": 70,
+      "active": true
+    },
+    {
+      "key": "deployment_diagram",
+      "title": "Diagrama de despliegue",
+      "description": "Artefactos desplegables, nodos, entornos y comunicaciones.",
+      "benefit": "Permite revisar operabilidad y promoción entre entornos.",
+      "category": "infrastructure",
+      "type": "deployment",
+      "family": "deployment",
+      "notation": "deployment",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "acp.deployment_guide",
+        "acp.package_manifest"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Mostrar qué se despliega, dónde y cómo se comunica.",
+      "semantic_rules": [
+        "Distinguir entorno y nodo",
+        "Etiquetar artefactos",
+        "Mostrar dependencias externas"
+      ],
+      "exclusions": [
+        "No incluir credenciales",
+        "No inventar entornos"
+      ],
+      "sort_order": 80,
+      "active": true
+    },
+    {
+      "key": "package_diagram",
+      "title": "Diagrama de paquetes",
+      "description": "Paquetes, namespaces, capas y dependencias permitidas.",
+      "benefit": "Gobierna modularidad y evita dependencias accidentales.",
+      "category": "software",
+      "type": "package",
+      "family": "uml",
+      "notation": "package",
+      "complexity": "intermediate",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "acp.package_manifest",
+        "blueprint.architecture_spec"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar estructura modular y reglas de dependencia.",
+      "semantic_rules": [
+        "Agrupar por responsabilidad",
+        "Marcar dependencias prohibidas",
+        "Evitar ciclos"
+      ],
+      "exclusions": [
+        "No listar cada archivo",
+        "No mezclar despliegue"
+      ],
+      "sort_order": 90,
+      "active": true
+    },
+    {
+      "key": "class_diagram",
+      "title": "Diagrama de clases",
+      "description": "Clases, atributos, operaciones y relaciones relevantes.",
+      "benefit": "Formaliza el diseño de dominio y contratos internos.",
+      "category": "software",
+      "type": "class",
+      "family": "uml",
+      "notation": "class",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "acp.package_manifest"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar solo clases de dominio y relaciones con valor arquitectónico.",
+      "semantic_rules": [
+        "Indicar cardinalidad",
+        "Separar entidades y servicios",
+        "Usar nombres del dominio"
+      ],
+      "exclusions": [
+        "No generar getters/setters triviales",
+        "No inventar código"
+      ],
+      "sort_order": 100,
+      "active": true
+    },
+    {
+      "key": "entity_relationship",
+      "title": "Diagrama entidad-relación",
+      "description": "Entidades, atributos clave, relaciones y cardinalidades.",
+      "benefit": "Valida integridad del dominio de datos antes del esquema físico.",
+      "category": "data",
+      "type": "entity_relationship",
+      "family": "data",
+      "notation": "er",
+      "complexity": "advanced",
+      "stage": "memory",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "memory.strategy"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar entidades y cardinalidades respaldadas por requisitos.",
+      "semantic_rules": [
+        "Definir claves conceptuales",
+        "Indicar optionalidad",
+        "Evitar entidades sin fuente"
+      ],
+      "exclusions": [
+        "No fijar tipos específicos de motor",
+        "No inventar tablas"
+      ],
+      "sort_order": 110,
+      "active": true
+    },
+    {
+      "key": "logical_data_model",
+      "title": "Modelo de datos lógico",
+      "description": "Entidades normalizadas, atributos de negocio y reglas de integridad.",
+      "benefit": "Alinea lenguaje del negocio con persistencia sin acoplarse a un motor.",
+      "category": "data",
+      "type": "logical_data_model",
+      "family": "data",
+      "notation": "er",
+      "complexity": "advanced",
+      "stage": "memory",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "memory.strategy",
+        "knowledge.contract"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Crear un modelo lógico normalizado y trazable al negocio.",
+      "semantic_rules": [
+        "Usar términos del dominio",
+        "Declarar claves y cardinalidad",
+        "Separar dato y evidencia"
+      ],
+      "exclusions": [
+        "No definir índices físicos",
+        "No asumir vendor"
+      ],
+      "sort_order": 120,
+      "active": true
+    },
+    {
+      "key": "physical_data_model",
+      "title": "Modelo de datos físico",
+      "description": "Tablas, columnas, claves, índices y restricciones del motor seleccionado.",
+      "benefit": "Convierte el modelo lógico en una base implementable y auditable.",
+      "category": "data",
+      "type": "physical_data_model",
+      "family": "data",
+      "notation": "er",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "acp.deployment_guide",
+        "memory.strategy",
+        "knowledge.contract"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Producir un modelo físico solo cuando el motor y restricciones estén aprobados.",
+      "semantic_rules": [
+        "Indicar PK, FK e índices",
+        "Trazar al modelo lógico",
+        "Declarar partición si existe"
+      ],
+      "exclusions": [
+        "No seleccionar motor",
+        "No inventar retención"
+      ],
+      "sort_order": 130,
+      "active": true
+    },
+    {
+      "key": "activity_diagram",
+      "title": "Diagrama de actividades",
+      "description": "Actividades, decisiones, paralelismo y finalización de un flujo.",
+      "benefit": "Aclara lógica operacional y excepciones.",
+      "category": "process",
+      "type": "activity",
+      "family": "behavior",
+      "notation": "uml_activity",
+      "complexity": "intermediate",
+      "stage": "define",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "full",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "discovery.analysis",
+        "definition.requirements"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar actividades y decisiones del proceso objetivo con rutas completas.",
+      "semantic_rules": [
+        "Una entrada explícita",
+        "Etiquetar decisiones",
+        "Cubrir error y cierre"
+      ],
+      "exclusions": [
+        "No mezclar arquitectura",
+        "No ocultar rutas alternas"
+      ],
+      "sort_order": 140,
+      "active": true
+    },
+    {
+      "key": "bpmn_process",
+      "title": "Proceso BPMN",
+      "description": "Participantes, eventos, tareas, gateways y mensajes del proceso.",
+      "benefit": "Entrega una vista estándar para negocio, operaciones y automatización.",
+      "category": "process",
+      "type": "bpmn",
+      "family": "behavior",
+      "notation": "bpmn",
+      "complexity": "advanced",
+      "stage": "define",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "discovery.analysis",
+        "definition.requirements"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar el proceso objetivo con semántica BPMN consistente.",
+      "semantic_rules": [
+        "Usar pools y lanes",
+        "Distinguir evento y tarea",
+        "Cerrar gateways"
+      ],
+      "exclusions": [
+        "No usar flowchart como sustituto semántico",
+        "No inventar participantes"
+      ],
+      "sort_order": 150,
+      "active": true
+    },
+    {
+      "key": "sequence_diagram",
+      "title": "Diagrama de secuencia",
+      "description": "Interacciones ordenadas entre actores, servicios y sistemas.",
+      "benefit": "Expone contratos, latencia, errores y ownership por escenario.",
+      "category": "behavior",
+      "type": "sequence",
+      "family": "uml",
+      "notation": "sequence",
+      "complexity": "advanced",
+      "stage": "tools",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "tools.contracts"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar un escenario end-to-end con llamadas, respuestas y excepciones ordenadas.",
+      "semantic_rules": [
+        "Un participante por responsabilidad",
+        "Orden temporal explícito",
+        "Incluir rutas alt y error"
+      ],
+      "exclusions": [
+        "No mezclar escenarios inconexos",
+        "No inventar APIs"
+      ],
+      "sort_order": 160,
+      "active": true
+    },
+    {
+      "key": "state_diagram",
+      "title": "Diagrama de estados",
+      "description": "Estados, transiciones, eventos, guardas y estados terminales.",
+      "benefit": "Evita ambigüedad en ciclos de vida y reglas de transición.",
+      "category": "behavior",
+      "type": "state",
+      "family": "uml",
+      "notation": "state",
+      "complexity": "intermediate",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "blueprint.patterns"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Definir una máquina de estados completa y determinista para el objeto objetivo.",
+      "semantic_rules": [
+        "Estado inicial y terminal",
+        "Etiquetar evento y guarda",
+        "Evitar transiciones imposibles"
+      ],
+      "exclusions": [
+        "No usar tareas como estados",
+        "No ocultar error"
+      ],
+      "sort_order": 170,
+      "active": true
+    },
+    {
+      "key": "use_case_diagram",
+      "title": "Casos de uso",
+      "description": "Actores, objetivos y alcance funcional del sistema.",
+      "benefit": "Resume quién obtiene qué valor del producto.",
+      "category": "functional",
+      "type": "use_case",
+      "family": "uml",
+      "notation": "uml_use_case",
+      "complexity": "basic",
+      "stage": "define",
+      "required_tier": "blueprint",
+      "preview_mode": "full",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "discovery.analysis",
+        "definition.requirements"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Relacionar actores con objetivos funcionales dentro del boundary del sistema.",
+      "semantic_rules": [
+        "Nombrar casos con verbo",
+        "Distinguir actor externo",
+        "Mostrar boundary"
+      ],
+      "exclusions": [
+        "No describir UI",
+        "No inventar actores"
+      ],
+      "sort_order": 180,
+      "active": true
+    },
+    {
+      "key": "ux_navigation_flow",
+      "title": "Flujo de navegación UX",
+      "description": "Pantallas, decisiones y rutas principales de navegación.",
+      "benefit": "Permite validar descubribilidad, continuidad y puntos de abandono.",
+      "category": "experience",
+      "type": "ux_navigation",
+      "family": "experience",
+      "notation": "flowchart",
+      "complexity": "intermediate",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "blueprint.architecture_spec"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar navegación por tareas, no por inventario de pantallas.",
+      "semantic_rules": [
+        "Marcar entrada y éxito",
+        "Mostrar decisiones",
+        "Incluir recuperación de errores"
+      ],
+      "exclusions": [
+        "No diseñar píxeles",
+        "No inventar funcionalidades"
+      ],
+      "sort_order": 190,
+      "active": true
+    },
+    {
+      "key": "user_journey",
+      "title": "Journey del usuario",
+      "description": "Etapas, acciones, necesidades, fricciones y oportunidades del usuario.",
+      "benefit": "Conecta la solución con resultados y experiencia real.",
+      "category": "experience",
+      "type": "user_journey",
+      "family": "experience",
+      "notation": "journey",
+      "complexity": "intermediate",
+      "stage": "discover",
+      "required_tier": "blueprint",
+      "preview_mode": "full",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "discovery.analysis",
+        "definition.requirements"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar etapas y fricciones usando evidencia del usuario y proceso.",
+      "semantic_rules": [
+        "Separar hecho e inferencia",
+        "Incluir objetivo por etapa",
+        "Trazar pain points"
+      ],
+      "exclusions": [
+        "No inventar investigación",
+        "No confundir con proceso interno"
+      ],
+      "sort_order": 200,
+      "active": true
+    },
+    {
+      "key": "capability_map",
+      "title": "Mapa de capacidades",
+      "description": "Capacidades de negocio organizadas por dominio y nivel.",
+      "benefit": "Ayuda a priorizar inversión y ubicar cobertura de la solución.",
+      "category": "enterprise",
+      "type": "capability_map",
+      "family": "enterprise",
+      "notation": "capability",
+      "complexity": "advanced",
+      "stage": "define",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "discovery.analysis",
+        "definition.requirements"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Organizar capacidades estables y relacionarlas con el alcance aprobado.",
+      "semantic_rules": [
+        "Nombrar capacidades como sustantivos",
+        "Jerarquía consistente",
+        "Distinguir actual y objetivo"
+      ],
+      "exclusions": [
+        "No modelar procesos",
+        "No modelar aplicaciones como capacidades"
+      ],
+      "sort_order": 210,
+      "active": true
+    },
+    {
+      "key": "context_map",
+      "title": "Mapa de contexto",
+      "description": "Bounded contexts, relaciones y patrones de integración de dominio.",
+      "benefit": "Reduce ambigüedad de lenguaje y ownership entre dominios.",
+      "category": "domain",
+      "type": "context_map",
+      "family": "domain",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "definition.requirements",
+        "blueprint.architecture_spec"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Identificar bounded contexts y relaciones explícitas de traducción u ownership.",
+      "semantic_rules": [
+        "Un lenguaje por contexto",
+        "Etiquetar relación",
+        "Mostrar upstream y downstream"
+      ],
+      "exclusions": [
+        "No usar equipos como contextos",
+        "No inventar dominios"
+      ],
+      "sort_order": 220,
+      "active": true
+    },
+    {
+      "key": "c4_context",
+      "title": "C4 · Context",
+      "description": "Personas y sistemas externos alrededor del sistema de interés.",
+      "benefit": "Entrega una vista ejecutiva clara del alcance y las dependencias.",
+      "category": "architecture",
+      "type": "c4_context",
+      "family": "c4",
+      "notation": "c4",
+      "complexity": "basic",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "full",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "discovery.analysis",
+        "definition.requirements"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar el sistema de interés, personas y sistemas externos sin detalles internos.",
+      "semantic_rules": [
+        "Un system scope",
+        "Relaciones con propósito",
+        "Sin contenedores internos"
+      ],
+      "exclusions": [
+        "No mezclar niveles C4",
+        "No modelar tecnología interna"
+      ],
+      "sort_order": 230,
+      "active": true
+    },
+    {
+      "key": "c4_container",
+      "title": "C4 · Container",
+      "description": "Aplicaciones y almacenes que conforman el sistema.",
+      "benefit": "Aclara responsabilidades de runtime y fronteras tecnológicas.",
+      "category": "architecture",
+      "type": "c4_container",
+      "family": "c4",
+      "notation": "c4",
+      "complexity": "intermediate",
+      "stage": "design",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "blueprint.architecture_spec",
+        "tools.minimum_set",
+        "memory.strategy"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar contenedores, responsabilidades y comunicaciones del sistema.",
+      "semantic_rules": [
+        "Cada contenedor tiene responsabilidad",
+        "Etiquetar tecnología solo si está aprobada",
+        "Mostrar almacenes"
+      ],
+      "exclusions": [
+        "No incluir componentes",
+        "No inventar stack"
+      ],
+      "sort_order": 240,
+      "active": true
+    },
+    {
+      "key": "c4_component",
+      "title": "C4 · Component",
+      "description": "Componentes dentro de un contenedor seleccionado.",
+      "benefit": "Conecta arquitectura con unidades implementables.",
+      "category": "architecture",
+      "type": "c4_component",
+      "family": "c4",
+      "notation": "c4",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "blueprint.architecture_spec",
+        "acp.workflow_pack"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Descomponer un contenedor elegido en componentes y dependencias relevantes.",
+      "semantic_rules": [
+        "Un solo container scope",
+        "Responsabilidad por componente",
+        "Mostrar interfaces"
+      ],
+      "exclusions": [
+        "No mezclar contenedores",
+        "No bajar a clases"
+      ],
+      "sort_order": 250,
+      "active": true
+    },
+    {
+      "key": "c4_code",
+      "title": "C4 · Code",
+      "description": "Elementos de código relevantes dentro de un componente.",
+      "benefit": "Documenta estructuras críticas sin convertir el diagrama en inventario.",
+      "category": "software",
+      "type": "c4_code",
+      "family": "c4",
+      "notation": "class",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp"
+      ],
+      "required_inputs": [
+        "acp.package_manifest",
+        "acp.workflow_pack"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar elementos de código de alto valor dentro de un componente seleccionado.",
+      "semantic_rules": [
+        "Un componente como scope",
+        "Solo elementos relevantes",
+        "Relaciones tipadas"
+      ],
+      "exclusions": [
+        "No generar todo el código",
+        "No inventar clases"
+      ],
+      "sort_order": 260,
+      "active": true
+    },
+    {
+      "key": "agent_orchestration",
+      "title": "Orquestación agentiva",
+      "description": "Agentes, handoffs, decisiones, herramientas y puntos de aprobación.",
+      "benefit": "Hace operable y auditable el comportamiento multiagente.",
+      "category": "ai",
+      "type": "agent_orchestration",
+      "family": "agentic",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "design",
+      "required_tier": "blueprint",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "blueprint.architecture_spec",
+        "blueprint.patterns",
+        "tools.minimum_set"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar agentes, responsabilidades, handoffs y guardrails del runtime objetivo.",
+      "semantic_rules": [
+        "Un owner por decisión",
+        "Mostrar human-in-the-loop",
+        "Evitar loops sin salida"
+      ],
+      "exclusions": [
+        "No modelar etapas LEAN",
+        "No inventar agentes"
+      ],
+      "sort_order": 270,
+      "active": true
+    },
+    {
+      "key": "tool_contract_flow",
+      "title": "Flujo de herramientas y contratos",
+      "description": "Invocaciones, permisos, side effects, reintentos y compensaciones.",
+      "benefit": "Reduce fallos de integración y define controles operativos.",
+      "category": "integrations",
+      "type": "tool_contract",
+      "family": "agentic",
+      "notation": "sequence",
+      "complexity": "advanced",
+      "stage": "tools",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "tools.minimum_set",
+        "tools.contracts"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Mostrar invocaciones de tools con permisos, side effects y recuperación.",
+      "semantic_rules": [
+        "Etiquetar contrato",
+        "Mostrar aprobación",
+        "Incluir timeout y compensación"
+      ],
+      "exclusions": [
+        "No exponer secretos",
+        "No inventar tools"
+      ],
+      "sort_order": 280,
+      "active": true
+    },
+    {
+      "key": "memory_rag_architecture",
+      "title": "Arquitectura de memoria y RAG",
+      "description": "Memoria corta, larga, ingestión, retrieval, retención y gobierno.",
+      "benefit": "Hace visibles calidad, costo, privacidad y trazabilidad del conocimiento.",
+      "category": "ai",
+      "type": "memory_rag",
+      "family": "agentic",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "memory",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp"
+      ],
+      "required_inputs": [
+        "memory.strategy",
+        "knowledge.contract"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Representar ciclo de vida de memoria y conocimiento con límites de seguridad.",
+      "semantic_rules": [
+        "Separar memoria y conocimiento",
+        "Mostrar write/read policy",
+        "Trazar fuentes"
+      ],
+      "exclusions": [
+        "No inventar vector store",
+        "No exponer datos sensibles"
+      ],
+      "sort_order": 290,
+      "active": true
+    },
+    {
+      "key": "security_threat_model",
+      "title": "Modelo de seguridad y amenazas",
+      "description": "Trust boundaries, activos, amenazas, controles y flujos sensibles.",
+      "benefit": "Prioriza riesgos y controles antes de desplegar.",
+      "category": "security",
+      "type": "threat_model",
+      "family": "security",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "validate",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp",
+        "enterprise"
+      ],
+      "required_inputs": [
+        "blueprint.architecture_spec",
+        "tools.contracts",
+        "knowledge.contract"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Relacionar activos, límites, amenazas y controles trazables.",
+      "semantic_rules": [
+        "Marcar trust boundaries",
+        "Etiquetar datos sensibles",
+        "Relacionar amenaza y control"
+      ],
+      "exclusions": [
+        "No declarar seguridad absoluta",
+        "No exponer secretos"
+      ],
+      "sort_order": 300,
+      "active": true
+    },
+    {
+      "key": "observability_model",
+      "title": "Modelo de observabilidad",
+      "description": "Eventos, trazas, métricas, logs, alertas y evidencia operacional.",
+      "benefit": "Permite operar, diagnosticar y auditar el agente en producción.",
+      "category": "operations",
+      "type": "observability",
+      "family": "operations",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "package",
+      "required_tier": "acp",
+      "preview_mode": "none",
+      "products": [
+        "acp",
+        "enterprise"
+      ],
+      "required_inputs": [
+        "evaluation.test_suite",
+        "acp.workflow_pack",
+        "acp.deployment_guide"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Modelar señales operativas, correlación, alertamiento y consumidores.",
+      "semantic_rules": [
+        "Distinguir logs, metrics y traces",
+        "Mostrar correlation id",
+        "Vincular alertas a owners"
+      ],
+      "exclusions": [
+        "No inventar umbrales",
+        "No exponer payload sensible"
+      ],
+      "sort_order": 310,
+      "active": true
+    },
+    {
+      "key": "data_lineage",
+      "title": "Linaje de datos y evidencia",
+      "description": "Origen, transformaciones, decisiones, artefactos y destinos de datos.",
+      "benefit": "Soporta auditoría, impacto de cambio y cumplimiento.",
+      "category": "data",
+      "type": "data_lineage",
+      "family": "data",
+      "notation": "flowchart",
+      "complexity": "advanced",
+      "stage": "estimate",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint",
+        "acp",
+        "enterprise"
+      ],
+      "required_inputs": [
+        "discovery.analysis",
+        "definition.requirements",
+        "knowledge.contract",
+        "estimate.comparison"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Mostrar linaje desde fuentes aprobadas hasta decisiones y salidas.",
+      "semantic_rules": [
+        "Etiquetar transformación",
+        "Indicar ownership",
+        "Distinguir evidencia e inferencia"
+      ],
+      "exclusions": [
+        "No incluir datos reales sensibles",
+        "No inventar fuentes"
+      ],
+      "sort_order": 320,
+      "active": true
+    },
+    {
+      "key": "commercial_value_flow",
+      "title": "Flujo de valor comercial",
+      "description": "Capacidades, resultados, métricas, costos y valor esperado.",
+      "benefit": "Conecta la arquitectura con impacto y retorno de inversión.",
+      "category": "business",
+      "type": "value_flow",
+      "family": "enterprise",
+      "notation": "flowchart",
+      "complexity": "intermediate",
+      "stage": "estimate",
+      "required_tier": "blueprint_pro",
+      "preview_mode": "limited",
+      "products": [
+        "blueprint"
+      ],
+      "required_inputs": [
+        "blueprint.professional_document",
+        "estimate.comparison"
+      ],
+      "actions": [
+        "view",
+        "download",
+        "regenerate",
+        "compare"
+      ],
+      "objective": "Relacionar cambios de capacidad con resultados y métricas aprobadas.",
+      "semantic_rules": [
+        "Distinguir output y outcome",
+        "Trazar métricas",
+        "Mostrar supuestos"
+      ],
+      "exclusions": [
+        "No inventar ROI",
+        "No presentar estimaciones como hechos"
+      ],
+      "sort_order": 330,
+      "active": true
+    }
+  ]
+}

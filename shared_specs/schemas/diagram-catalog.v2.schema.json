@@ -1,0 +1,298 @@
+{
+  "$defs": {
+    "CommercialTier": {
+      "enum": [
+        "blueprint",
+        "blueprint_pro",
+        "acp"
+      ],
+      "title": "CommercialTier",
+      "type": "string"
+    },
+    "DiagramCatalogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "access_state": {
+          "default": "locked_blueprint",
+          "enum": [
+            "unlocked",
+            "sample",
+            "locked_blueprint",
+            "locked_acp",
+            "stage_locked",
+            "not_generated"
+          ],
+          "title": "Access State",
+          "type": "string"
+        },
+        "available_content_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Available Content Formats",
+          "type": "array"
+        },
+        "available_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Available Formats",
+          "type": "array"
+        },
+        "category": {
+          "default": "",
+          "title": "Category",
+          "type": "string"
+        },
+        "diagram_key": {
+          "default": "",
+          "title": "Diagram Key",
+          "type": "string"
+        },
+        "diagram_surface": {
+          "default": "",
+          "title": "Diagram Surface",
+          "type": "string"
+        },
+        "enabled_from_stage": {
+          "default": "",
+          "title": "Enabled From Stage",
+          "type": "string"
+        },
+        "generation_state": {
+          "default": "pending_generation",
+          "enum": [
+            "generated",
+            "planned",
+            "pending_generation",
+            "not_generated"
+          ],
+          "title": "Generation State",
+          "type": "string"
+        },
+        "locked_reason": {
+          "default": "",
+          "title": "Locked Reason",
+          "type": "string"
+        },
+        "preferred_format": {
+          "default": "",
+          "title": "Preferred Format",
+          "type": "string"
+        },
+        "preview_thumbnail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview Thumbnail"
+        },
+        "product_scope": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Product Scope",
+          "type": "array"
+        },
+        "protection": {
+          "$ref": "#/$defs/DiagramContentProtection"
+        },
+        "required_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint"
+        },
+        "source_artifact_count": {
+          "default": 0,
+          "title": "Source Artifact Count",
+          "type": "integer"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "upgrade_cta_label": {
+          "default": "",
+          "title": "Upgrade Cta Label",
+          "type": "string"
+        },
+        "upsell": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiagramUpsellMessage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "DiagramCatalogEntry",
+      "type": "object"
+    },
+    "DiagramContentProtection": {
+      "additionalProperties": false,
+      "properties": {
+        "disable_context_menu": {
+          "default": true,
+          "title": "Disable Context Menu",
+          "type": "boolean"
+        },
+        "disable_copy": {
+          "default": true,
+          "title": "Disable Copy",
+          "type": "boolean"
+        },
+        "disable_download": {
+          "default": true,
+          "title": "Disable Download",
+          "type": "boolean"
+        },
+        "watermark_sample": {
+          "default": true,
+          "title": "Watermark Sample",
+          "type": "boolean"
+        }
+      },
+      "title": "DiagramContentProtection",
+      "type": "object"
+    },
+    "DiagramUpsellMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "cta_label": {
+          "default": "",
+          "title": "Cta Label",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "product": {
+          "default": "blueprint",
+          "title": "Product",
+          "type": "string"
+        },
+        "target_tier": {
+          "$ref": "#/$defs/CommercialTier",
+          "default": "blueprint_pro"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "DiagramUpsellMessage",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "default": "diagram-catalog.v2",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "current_stage": {
+      "default": "",
+      "title": "Current Stage",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/DiagramCatalogEntry"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "has_more": {
+      "default": false,
+      "title": "Has More",
+      "type": "boolean"
+    },
+    "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "locked_count": {
+      "default": 0,
+      "title": "Locked Count",
+      "type": "integer"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Cursor"
+    },
+    "pending_count": {
+      "default": 0,
+      "title": "Pending Count",
+      "type": "integer"
+    },
+    "sample_count": {
+      "default": 0,
+      "title": "Sample Count",
+      "type": "integer"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "tier": {
+      "$ref": "#/$defs/CommercialTier",
+      "default": "blueprint"
+    },
+    "total_count": {
+      "default": 0,
+      "title": "Total Count",
+      "type": "integer"
+    },
+    "unlocked_count": {
+      "default": 0,
+      "title": "Unlocked Count",
+      "type": "integer"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id"
+  ],
+  "title": "DiagramCatalogV2Response",
+  "type": "object"
+}

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/diagram-layout-plan.v1.schema.json",
+  "title": "Diagram Layout Plan",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "diagram_key",
+    "notation",
+    "strategy",
+    "metrics",
+    "viewport",
+    "nodes",
+    "edges"
+  ],
+  "properties": {
+    "schema_version": {"const": "diagram-layout-plan.v1"},
+    "diagram_key": {"type": "string"},
+    "notation": {
+      "type": "string",
+      "enum": [
+        "flowchart",
+        "sequence",
+        "class",
+        "er",
+        "state",
+        "journey",
+        "c4",
+        "bpmn",
+        "uml_use_case",
+        "uml_activity",
+        "uml_component",
+        "deployment",
+        "package",
+        "capability"
+      ]
+    },
+    "strategy": {
+      "type": "string",
+      "enum": ["fixed_grid", "layered", "bpmn_swimlane", "uml_use_case", "uml_activity", "split_required"]
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["node_count", "edge_count", "edge_density", "max_degree", "label_avg_chars", "estimated_crossing_risk", "split_recommended"],
+      "properties": {
+        "node_count": {"type": "integer", "minimum": 0},
+        "edge_count": {"type": "integer", "minimum": 0},
+        "edge_density": {"type": "number", "minimum": 0},
+        "max_degree": {"type": "integer", "minimum": 0},
+        "label_avg_chars": {"type": "number", "minimum": 0},
+        "lane_count": {"type": "integer", "minimum": 0},
+        "pool_count": {"type": "integer", "minimum": 0},
+        "estimated_crossing_risk": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+        "split_recommended": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "viewport": {
+      "type": "object",
+      "required": ["width", "height", "min_scale", "max_scale", "fit_mode"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 320},
+        "height": {"type": "integer", "minimum": 240},
+        "min_scale": {"type": "number", "minimum": 0.1, "maximum": 1},
+        "max_scale": {"type": "number", "minimum": 1, "maximum": 6},
+        "fit_mode": {"type": "string", "enum": ["contain", "width", "actual"]}
+      },
+      "additionalProperties": false
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "x", "y", "width", "height", "kind", "layer", "label_lines"],
+        "properties": {
+          "node_id": {"type": "string"},
+          "x": {"type": "number"},
+          "y": {"type": "number"},
+          "width": {"type": "integer", "minimum": 24},
+          "height": {"type": "integer", "minimum": 24},
+          "kind": {"type": "string"},
+          "layer": {"type": "integer", "minimum": 0},
+          "group_id": {"type": ["string", "null"]},
+          "pool_id": {"type": ["string", "null"]},
+          "lane_id": {"type": ["string", "null"]},
+          "label_lines": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["edge_id", "source", "target", "points", "label", "crossing_risk"],
+        "properties": {
+          "edge_id": {"type": "string"},
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "points": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": ["x", "y"],
+              "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"}
+              },
+              "additionalProperties": false
+            }
+          },
+          "label": {"type": "string"},
+          "label_position": {
+            "anyOf": [
+              {"type": "null"},
+              {
+                "type": "object",
+                "required": ["x", "y"],
+                "properties": {
+                  "x": {"type": "number"},
+                  "y": {"type": "number"}
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "crossing_risk": {"type": "string", "enum": ["low", "medium", "high", "critical"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "split_recommendation": {
+      "type": "object",
+      "required": ["recommended", "reason", "suggested_chunks"],
+      "properties": {
+        "recommended": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "suggested_chunks": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "renderer_revision": {"type": "string"}
+  },
+  "additionalProperties": false
+}

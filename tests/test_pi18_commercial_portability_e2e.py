@@ -9,6 +9,7 @@ from zipfile import ZipFile
 import pytest
 from fastapi.testclient import TestClient
 
+from app.services.shared_specs import resolve_shared_specs_dir
 from tests.api_testkit import build_test_client
 from tests.test_sessions_api import (
     approve_design_for_session,
@@ -23,7 +24,7 @@ from tests.test_sessions_api import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REFERENCE_CONSUMER_PATH = REPO_ROOT / "shared_specs" / "reference_consumers" / "python"
+REFERENCE_CONSUMER_PATH = resolve_shared_specs_dir() / "reference_consumers" / "python"
 sys.path.insert(0, str(REFERENCE_CONSUMER_PATH))
 
 from acp_zip_reference_consumer import validate_acp_zip  # noqa: E402

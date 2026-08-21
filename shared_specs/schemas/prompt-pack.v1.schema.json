@@ -1,0 +1,300 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "PromptArtifactV1": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "context_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Sources",
+          "type": "array"
+        },
+        "evaluation_case_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evaluation Case Keys",
+          "type": "array"
+        },
+        "fallback": {
+          "default": "",
+          "title": "Fallback",
+          "type": "string"
+        },
+        "guardrails": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Guardrails",
+          "type": "array"
+        },
+        "input_contracts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Contracts",
+          "type": "array"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "Output Schema",
+          "type": "object"
+        },
+        "prompt_key": {
+          "title": "Prompt Key",
+          "type": "string"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/CanonicalProvenanceEntry"
+          },
+          "title": "Provenance",
+          "type": "array"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "stop_conditions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Stop Conditions",
+          "type": "array"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "variables": {
+          "items": {
+            "$ref": "#/$defs/PromptVariable"
+          },
+          "title": "Variables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "prompt_key",
+        "role",
+        "title",
+        "content"
+      ],
+      "title": "PromptArtifactV1",
+      "type": "object"
+    },
+    "PromptPackOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "behavior_spec_version": {
+          "title": "Behavior Spec Version",
+          "type": "string"
+        },
+        "blueprint_core_version": {
+          "title": "Blueprint Core Version",
+          "type": "string"
+        },
+        "heuristic_decision_version": {
+          "title": "Heuristic Decision Version",
+          "type": "string"
+        },
+        "input_hash": {
+          "title": "Input Hash",
+          "type": "string"
+        },
+        "llm_policy_version": {
+          "title": "Llm Policy Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "blueprint_core_version",
+        "behavior_spec_version",
+        "llm_policy_version",
+        "heuristic_decision_version",
+        "input_hash"
+      ],
+      "title": "PromptPackOrigin",
+      "type": "object"
+    },
+    "PromptVariable": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "PromptVariable",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_role_prompts": {
+      "items": {
+        "$ref": "#/$defs/PromptArtifactV1"
+      },
+      "title": "Agent Role Prompts",
+      "type": "array"
+    },
+    "evaluator_prompt": {
+      "$ref": "#/$defs/PromptArtifactV1"
+    },
+    "executor_prompt": {
+      "$ref": "#/$defs/PromptArtifactV1"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "handoff_prompts": {
+      "items": {
+        "$ref": "#/$defs/PromptArtifactV1"
+      },
+      "title": "Handoff Prompts",
+      "type": "array"
+    },
+    "memory_prompt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptArtifactV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "origin": {
+      "$ref": "#/$defs/PromptPackOrigin"
+    },
+    "planner_prompt": {
+      "$ref": "#/$defs/PromptArtifactV1"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "recovery_prompt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptArtifactV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "retrieval_prompt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptArtifactV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "prompt-pack.v1",
+      "default": "prompt-pack.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "system_prompt": {
+      "$ref": "#/$defs/PromptArtifactV1"
+    },
+    "tool_use_prompt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptArtifactV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "origin",
+    "system_prompt",
+    "planner_prompt",
+    "executor_prompt",
+    "evaluator_prompt"
+  ],
+  "title": "PromptPackV1",
+  "type": "object"
+}

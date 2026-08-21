@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "action_kind": {
+      "enum": [
+        "navigate",
+        "answer",
+        "approve",
+        "reject",
+        "confirm",
+        "regenerate",
+        "retry",
+        "defer"
+      ],
+      "title": "Action Kind",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "default": "",
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "answer_text": {
+      "default": "",
+      "title": "Answer Text",
+      "type": "string"
+    },
+    "selected_option_key": {
+      "default": "",
+      "title": "Selected Option Key",
+      "type": "string"
+    },
+    "was_suggested_answer_used": {
+      "default": false,
+      "title": "Was Suggested Answer Used",
+      "type": "boolean"
+    },
+    "decision": {
+      "default": "",
+      "title": "Decision",
+      "type": "string"
+    },
+    "resolution_note": {
+      "default": "",
+      "title": "Resolution Note",
+      "type": "string"
+    },
+    "source_artifact_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Artifact Version"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "action_kind"
+  ],
+  "title": "AttentionActionRequestV2",
+  "type": "object"
+}

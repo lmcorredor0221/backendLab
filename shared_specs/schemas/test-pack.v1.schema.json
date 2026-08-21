@@ -1,0 +1,467 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "ContractReference": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_kind": {
+          "title": "Contract Kind",
+          "type": "string"
+        },
+        "schema_version": {
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_blueprint_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Blueprint Version"
+        }
+      },
+      "required": [
+        "contract_kind",
+        "schema_version"
+      ],
+      "title": "ContractReference",
+      "type": "object"
+    },
+    "StableIssueCatalogEntryV1": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "remediation": {
+          "title": "Remediation",
+          "type": "string"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "kind",
+        "severity",
+        "remediation"
+      ],
+      "title": "StableIssueCatalogEntryV1",
+      "type": "object"
+    },
+    "TestPackAcceptanceJourneyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_behavior": {
+          "title": "Expected Behavior",
+          "type": "string"
+        },
+        "input_reference": {
+          "title": "Input Reference",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "measurable_criterion": {
+          "title": "Measurable Criterion",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "input_reference",
+        "expected_behavior",
+        "measurable_criterion"
+      ],
+      "title": "TestPackAcceptanceJourneyV1",
+      "type": "object"
+    },
+    "TestPackCommandV1": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "expected_exit_code": {
+          "default": 0,
+          "title": "Expected Exit Code",
+          "type": "integer"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workdir": {
+          "default": ".",
+          "title": "Workdir",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "kind",
+        "command"
+      ],
+      "title": "TestPackCommandV1",
+      "type": "object"
+    },
+    "TestPackExternalConsumerV1": {
+      "additionalProperties": false,
+      "properties": {
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "entry_command": {
+          "title": "Entry Command",
+          "type": "string"
+        },
+        "relative_path": {
+          "title": "Relative Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "relative_path",
+        "entry_command"
+      ],
+      "title": "TestPackExternalConsumerV1",
+      "type": "object"
+    },
+    "TestPackFixtureRef": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_key": {
+          "title": "Contract Key",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "relative_path": {
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "valid": {
+          "default": true,
+          "title": "Valid",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "contract_key",
+        "relative_path"
+      ],
+      "title": "TestPackFixtureRef",
+      "type": "object"
+    },
+    "TestPackMutationCaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "blocks_readiness": {
+          "default": true,
+          "title": "Blocks Readiness",
+          "type": "boolean"
+        },
+        "contract_key": {
+          "title": "Contract Key",
+          "type": "string"
+        },
+        "expected_issue_code": {
+          "title": "Expected Issue Code",
+          "type": "string"
+        },
+        "expected_issue_path": {
+          "title": "Expected Issue Path",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "mutation": {
+          "title": "Mutation",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "contract_key",
+        "path",
+        "mutation",
+        "expected_issue_code",
+        "expected_issue_path"
+      ],
+      "title": "TestPackMutationCaseV1",
+      "type": "object"
+    },
+    "TestPackPromptEvaluationCaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "expected_substrings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Expected Substrings",
+          "type": "array"
+        },
+        "failure_mode": {
+          "default": "",
+          "title": "Failure Mode",
+          "type": "string"
+        },
+        "forbidden_substrings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Substrings",
+          "type": "array"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "measurable_criterion": {
+          "default": "",
+          "title": "Measurable Criterion",
+          "type": "string"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "prompt_key": {
+          "title": "Prompt Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "prompt_key",
+        "mode"
+      ],
+      "title": "TestPackPromptEvaluationCaseV1",
+      "type": "object"
+    },
+    "TestPackRecoveryCaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_behavior": {
+          "title": "Expected Behavior",
+          "type": "string"
+        },
+        "expected_prompt_key": {
+          "title": "Expected Prompt Key",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "measurable_criterion": {
+          "title": "Measurable Criterion",
+          "type": "string"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "trigger",
+        "expected_prompt_key",
+        "expected_behavior",
+        "measurable_criterion"
+      ],
+      "title": "TestPackRecoveryCaseV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "acceptance_journeys": {
+      "items": {
+        "$ref": "#/$defs/TestPackAcceptanceJourneyV1"
+      },
+      "title": "Acceptance Journeys",
+      "type": "array"
+    },
+    "blueprint_ref": {
+      "$ref": "#/$defs/ContractReference"
+    },
+    "commands": {
+      "items": {
+        "$ref": "#/$defs/TestPackCommandV1"
+      },
+      "title": "Commands",
+      "type": "array"
+    },
+    "external_consumer": {
+      "$ref": "#/$defs/TestPackExternalConsumerV1"
+    },
+    "fixtures": {
+      "items": {
+        "$ref": "#/$defs/TestPackFixtureRef"
+      },
+      "title": "Fixtures",
+      "type": "array"
+    },
+    "framework_target": {
+      "title": "Framework Target",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "invalid_fixtures": {
+      "items": {
+        "$ref": "#/$defs/TestPackFixtureRef"
+      },
+      "title": "Invalid Fixtures",
+      "type": "array"
+    },
+    "mutation_cases": {
+      "items": {
+        "$ref": "#/$defs/TestPackMutationCaseV1"
+      },
+      "title": "Mutation Cases",
+      "type": "array"
+    },
+    "prompt_evaluation_cases": {
+      "items": {
+        "$ref": "#/$defs/TestPackPromptEvaluationCaseV1"
+      },
+      "title": "Prompt Evaluation Cases",
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "recovery_cases": {
+      "items": {
+        "$ref": "#/$defs/TestPackRecoveryCaseV1"
+      },
+      "title": "Recovery Cases",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "test-pack.v1",
+      "default": "test-pack.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "stable_issue_catalog": {
+      "items": {
+        "$ref": "#/$defs/StableIssueCatalogEntryV1"
+      },
+      "title": "Stable Issue Catalog",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "blueprint_ref",
+    "framework_target",
+    "external_consumer"
+  ],
+  "title": "TestPackV1",
+  "type": "object"
+}

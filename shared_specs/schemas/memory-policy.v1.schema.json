@@ -1,0 +1,208 @@
+{
+  "$defs": {
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "MemoryContextBudgetV1": {
+      "additionalProperties": false,
+      "properties": {
+        "compaction_trigger": {
+          "default": "",
+          "title": "Compaction Trigger",
+          "type": "string"
+        },
+        "max_chars": {
+          "default": 0,
+          "title": "Max Chars",
+          "type": "integer"
+        },
+        "max_items": {
+          "default": 0,
+          "title": "Max Items",
+          "type": "integer"
+        },
+        "max_tokens": {
+          "default": 0,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "overflow_policy": {
+          "default": "",
+          "title": "Overflow Policy",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "MemoryContextBudgetV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_scope": {
+      "default": "",
+      "title": "Agent Scope",
+      "type": "string"
+    },
+    "checkpoints_required": {
+      "default": false,
+      "title": "Checkpoints Required",
+      "type": "boolean"
+    },
+    "context_budgets": {
+      "items": {
+        "$ref": "#/$defs/MemoryContextBudgetV1"
+      },
+      "title": "Context Budgets",
+      "type": "array"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "goal_drift_guard": {
+      "default": "",
+      "title": "Goal Drift Guard",
+      "type": "string"
+    },
+    "grounding_policy": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Grounding Policy",
+      "type": "object"
+    },
+    "invalidation_policy": {
+      "default": "",
+      "title": "Invalidation Policy",
+      "type": "string"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "retention_policy": {
+      "default": "",
+      "title": "Retention Policy",
+      "type": "string"
+    },
+    "retrieval_policy": {
+      "default": "",
+      "title": "Retrieval Policy",
+      "type": "string"
+    },
+    "retrieval_scopes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Retrieval Scopes",
+      "type": "array"
+    },
+    "review_trigger": {
+      "default": "",
+      "title": "Review Trigger",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "memory-policy.v1",
+      "default": "memory-policy.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sensitivity_rules": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Sensitivity Rules",
+      "type": "array"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "storage_layers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Storage Layers",
+      "type": "array"
+    },
+    "strategy": {
+      "title": "Strategy",
+      "type": "string"
+    },
+    "summary_policy": {
+      "default": "",
+      "title": "Summary Policy",
+      "type": "string"
+    },
+    "ttl_policy": {
+      "default": "",
+      "title": "Ttl Policy",
+      "type": "string"
+    },
+    "workspace_scope": {
+      "default": "",
+      "title": "Workspace Scope",
+      "type": "string"
+    },
+    "write_policy": {
+      "default": "",
+      "title": "Write Policy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "strategy"
+  ],
+  "title": "MemoryPolicyV1",
+  "type": "object"
+}

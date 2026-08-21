@@ -1,0 +1,707 @@
+{
+  "$defs": {
+    "BehaviorState": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "fallback": {
+          "default": "",
+          "title": "Fallback",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "objective": {
+          "title": "Objective",
+          "type": "string"
+        },
+        "outputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Outputs",
+          "type": "array"
+        },
+        "requires_approval": {
+          "default": false,
+          "title": "Requires Approval",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "actor",
+        "objective"
+      ],
+      "title": "BehaviorState",
+      "type": "object"
+    },
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "MultiAgentBenchmarkMetricV1": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_single_agent": {
+          "default": 0,
+          "title": "Baseline Single Agent",
+          "type": "number"
+        },
+        "direction": {
+          "enum": [
+            "higher_is_better",
+            "lower_is_better"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "improvement_delta": {
+          "default": 0,
+          "title": "Improvement Delta",
+          "type": "number"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "metric_key": {
+          "title": "Metric Key",
+          "type": "string"
+        },
+        "projected_multi_agent": {
+          "default": 0,
+          "title": "Projected Multi Agent",
+          "type": "number"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric_key",
+        "label",
+        "direction"
+      ],
+      "title": "MultiAgentBenchmarkMetricV1",
+      "type": "object"
+    },
+    "MultiAgentBenchmarkV1": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_budget": {
+          "default": "",
+          "title": "Cost Budget",
+          "type": "string"
+        },
+        "explicit_go_reason": {
+          "default": "",
+          "title": "Explicit Go Reason",
+          "type": "string"
+        },
+        "go_decision": {
+          "default": "hold",
+          "enum": [
+            "hold",
+            "go"
+          ],
+          "title": "Go Decision",
+          "type": "string"
+        },
+        "latency_budget": {
+          "default": "",
+          "title": "Latency Budget",
+          "type": "string"
+        },
+        "limitation_signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitation Signals",
+          "type": "array"
+        },
+        "measurable_single_agent_limitation": {
+          "default": "",
+          "title": "Measurable Single Agent Limitation",
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/MultiAgentBenchmarkMetricV1"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "success_gate": {
+          "default": "",
+          "title": "Success Gate",
+          "type": "string"
+        }
+      },
+      "title": "MultiAgentBenchmarkV1",
+      "type": "object"
+    },
+    "MultiAgentExecutionBudgetV1": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_budget": {
+          "default": "",
+          "title": "Cost Budget",
+          "type": "string"
+        },
+        "latency_budget_ms": {
+          "default": 0,
+          "title": "Latency Budget Ms",
+          "type": "integer"
+        },
+        "max_parallel_agents": {
+          "default": 0,
+          "title": "Max Parallel Agents",
+          "type": "integer"
+        },
+        "max_retries_per_handoff": {
+          "default": 0,
+          "title": "Max Retries Per Handoff",
+          "type": "integer"
+        },
+        "max_tool_calls_per_agent": {
+          "default": 0,
+          "title": "Max Tool Calls Per Agent",
+          "type": "integer"
+        }
+      },
+      "title": "MultiAgentExecutionBudgetV1",
+      "type": "object"
+    },
+    "MultiAgentHandoffContractV1": {
+      "additionalProperties": false,
+      "properties": {
+        "audit_trail": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Audit Trail",
+          "type": "array"
+        },
+        "failure_behavior": {
+          "default": "",
+          "title": "Failure Behavior",
+          "type": "string"
+        },
+        "from_agent": {
+          "title": "From Agent",
+          "type": "string"
+        },
+        "handoff_key": {
+          "title": "Handoff Key",
+          "type": "string"
+        },
+        "ownership_transfer": {
+          "default": "",
+          "title": "Ownership Transfer",
+          "type": "string"
+        },
+        "required_artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Artifacts",
+          "type": "array"
+        },
+        "success_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Success Criteria",
+          "type": "array"
+        },
+        "to_agent": {
+          "title": "To Agent",
+          "type": "string"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "handoff_key",
+        "from_agent",
+        "to_agent",
+        "trigger"
+      ],
+      "title": "MultiAgentHandoffContractV1",
+      "type": "object"
+    },
+    "MultiAgentMessageContractV1": {
+      "additionalProperties": false,
+      "properties": {
+        "failure_behavior": {
+          "default": "",
+          "title": "Failure Behavior",
+          "type": "string"
+        },
+        "from_agent": {
+          "title": "From Agent",
+          "type": "string"
+        },
+        "idempotency_strategy": {
+          "default": "",
+          "title": "Idempotency Strategy",
+          "type": "string"
+        },
+        "message_key": {
+          "title": "Message Key",
+          "type": "string"
+        },
+        "payload_schema": {
+          "additionalProperties": true,
+          "title": "Payload Schema",
+          "type": "object"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "required_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Fields",
+          "type": "array"
+        },
+        "retry_strategy": {
+          "default": "",
+          "title": "Retry Strategy",
+          "type": "string"
+        },
+        "timeout_policy": {
+          "default": "",
+          "title": "Timeout Policy",
+          "type": "string"
+        },
+        "to_agent": {
+          "title": "To Agent",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message_key",
+        "from_agent",
+        "to_agent",
+        "purpose"
+      ],
+      "title": "MultiAgentMessageContractV1",
+      "type": "object"
+    },
+    "MultiAgentPermissionBoundaryV1": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Tools",
+          "type": "array"
+        },
+        "escalation_policy": {
+          "default": "",
+          "title": "Escalation Policy",
+          "type": "string"
+        },
+        "required_approvals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Approvals",
+          "type": "array"
+        },
+        "side_effect_policy": {
+          "default": "",
+          "title": "Side Effect Policy",
+          "type": "string"
+        }
+      },
+      "title": "MultiAgentPermissionBoundaryV1",
+      "type": "object"
+    },
+    "MultiAgentRoleContractV1": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_key": {
+          "title": "Agent Key",
+          "type": "string"
+        },
+        "failure_mode": {
+          "default": "",
+          "title": "Failure Mode",
+          "type": "string"
+        },
+        "input_contracts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Contracts",
+          "type": "array"
+        },
+        "isolation_boundary": {
+          "default": "",
+          "title": "Isolation Boundary",
+          "type": "string"
+        },
+        "output_contracts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Output Contracts",
+          "type": "array"
+        },
+        "permissions": {
+          "$ref": "#/$defs/MultiAgentPermissionBoundaryV1"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "retry_strategy": {
+          "default": "",
+          "title": "Retry Strategy",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "runtime_mode": {
+          "default": "",
+          "title": "Runtime Mode",
+          "type": "string"
+        },
+        "success_signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Success Signals",
+          "type": "array"
+        },
+        "timeout_policy": {
+          "default": "",
+          "title": "Timeout Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_key",
+        "role",
+        "purpose"
+      ],
+      "title": "MultiAgentRoleContractV1",
+      "type": "object"
+    },
+    "MultiAgentSharedStateContractV1": {
+      "additionalProperties": false,
+      "properties": {
+        "consistency_policy": {
+          "default": "",
+          "title": "Consistency Policy",
+          "type": "string"
+        },
+        "owner_agent": {
+          "title": "Owner Agent",
+          "type": "string"
+        },
+        "payload_schema": {
+          "additionalProperties": true,
+          "title": "Payload Schema",
+          "type": "object"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "readers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Readers",
+          "type": "array"
+        },
+        "rollback_strategy": {
+          "default": "",
+          "title": "Rollback Strategy",
+          "type": "string"
+        },
+        "state_key": {
+          "title": "State Key",
+          "type": "string"
+        },
+        "update_policy": {
+          "default": "",
+          "title": "Update Policy",
+          "type": "string"
+        },
+        "writers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Writers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "state_key",
+        "purpose",
+        "owner_agent"
+      ],
+      "title": "MultiAgentSharedStateContractV1",
+      "type": "object"
+    },
+    "MultiAgentTopologyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_mode": {
+          "default": "",
+          "title": "Activation Mode",
+          "type": "string"
+        },
+        "agent_contracts": {
+          "items": {
+            "$ref": "#/$defs/MultiAgentRoleContractV1"
+          },
+          "title": "Agent Contracts",
+          "type": "array"
+        },
+        "benchmark": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiAgentBenchmarkV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "declared_pattern": {
+          "title": "Declared Pattern",
+          "type": "string"
+        },
+        "execution_budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiAgentExecutionBudgetV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "failure_isolation_rules": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Failure Isolation Rules",
+          "type": "array"
+        },
+        "handoff_contracts": {
+          "items": {
+            "$ref": "#/$defs/MultiAgentHandoffContractV1"
+          },
+          "title": "Handoff Contracts",
+          "type": "array"
+        },
+        "message_contracts": {
+          "items": {
+            "$ref": "#/$defs/MultiAgentMessageContractV1"
+          },
+          "title": "Message Contracts",
+          "type": "array"
+        },
+        "runtime_pattern": {
+          "title": "Runtime Pattern",
+          "type": "string"
+        },
+        "shared_state_contracts": {
+          "items": {
+            "$ref": "#/$defs/MultiAgentSharedStateContractV1"
+          },
+          "title": "Shared State Contracts",
+          "type": "array"
+        },
+        "support_state": {
+          "enum": [
+            "planned_only",
+            "supported"
+          ],
+          "title": "Support State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "declared_pattern",
+        "runtime_pattern",
+        "support_state"
+      ],
+      "title": "MultiAgentTopologyV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_pause": {
+      "default": "",
+      "title": "Approval Pause",
+      "type": "string"
+    },
+    "checkpoint_policy": {
+      "default": "",
+      "title": "Checkpoint Policy",
+      "type": "string"
+    },
+    "compensation_strategy": {
+      "default": "",
+      "title": "Compensation Strategy",
+      "type": "string"
+    },
+    "execution_pattern": {
+      "title": "Execution Pattern",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "multi_agent_topology": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MultiAgentTopologyV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "outputs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Outputs",
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "reasoning_pattern": {
+      "title": "Reasoning Pattern",
+      "type": "string"
+    },
+    "required_approvals": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Approvals",
+      "type": "array"
+    },
+    "retry_strategy": {
+      "default": "",
+      "title": "Retry Strategy",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "behavior-spec.v1",
+      "default": "behavior-spec.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selected_workflow_template_key": {
+      "default": "",
+      "title": "Selected Workflow Template Key",
+      "type": "string"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "states": {
+      "items": {
+        "$ref": "#/$defs/BehaviorState"
+      },
+      "title": "States",
+      "type": "array"
+    },
+    "termination_criteria": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Termination Criteria",
+      "type": "array"
+    },
+    "timeout_policy": {
+      "default": "",
+      "title": "Timeout Policy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "execution_pattern",
+    "reasoning_pattern"
+  ],
+  "title": "BehaviorSpecV1",
+  "type": "object"
+}

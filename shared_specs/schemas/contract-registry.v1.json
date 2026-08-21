@@ -1,0 +1,225 @@
+{
+  "contracts": [
+    {
+      "required": [
+        "behavior_spec",
+        "generated_at",
+        "heuristic_decision",
+        "identity",
+        "knowledge_contract",
+        "llm_policy",
+        "memory_policy",
+        "purpose",
+        "scope",
+        "source_session_id"
+      ],
+      "schema_file": "blueprint-core.v1.schema.json",
+      "schema_version": "blueprint-core.v1",
+      "title": "BlueprintCoreV1"
+    },
+    {
+      "required": [
+        "behavior_spec",
+        "blueprint_ref",
+        "evaluation_pack",
+        "generated_at",
+        "heuristic_decision",
+        "knowledge_contract",
+        "llm_policy",
+        "memory_policy",
+        "prompt_pack",
+        "readiness",
+        "source_session_id"
+      ],
+      "schema_file": "construction-pack.v1.schema.json",
+      "schema_version": "construction-pack.v1",
+      "title": "ConstructionPackV1"
+    },
+    {
+      "required": [
+        "agent_runtime",
+        "build_plan",
+        "capability_catalog",
+        "checkpoints",
+        "compatibility",
+        "conformance",
+        "decision_registry",
+        "deployment_guide",
+        "generated_at",
+        "implementation_decisions",
+        "knowledge_sources",
+        "memory_knowledge_plan",
+        "memory_strategy",
+        "migration",
+        "portable_manifest",
+        "producer_metadata",
+        "prompts",
+        "runtime_target_policy",
+        "runtime_targets",
+        "source_session_id",
+        "system_specification",
+        "technology_decisions",
+        "tests",
+        "tool_analysis",
+        "tool_bindings",
+        "tool_contracts",
+        "workflows"
+      ],
+      "schema_file": "agent-construction-package.v2.schema.json",
+      "schema_version": "agent-construction-package.v2",
+      "title": "AgentConstructionPackageV2"
+    },
+    {
+      "required": [
+        "evaluator_prompt",
+        "executor_prompt",
+        "generated_at",
+        "origin",
+        "planner_prompt",
+        "source_session_id",
+        "system_prompt"
+      ],
+      "schema_file": "prompt-pack.v1.schema.json",
+      "schema_version": "prompt-pack.v1",
+      "title": "PromptPackV1"
+    },
+    {
+      "required": [
+        "agentic",
+        "blueprint_ref",
+        "confidence",
+        "generated_at",
+        "maturity_stage",
+        "roi_summary",
+        "source_session_id",
+        "traditional"
+      ],
+      "schema_file": "estimation-pack.v1.schema.json",
+      "schema_version": "estimation-pack.v1",
+      "title": "EstimationPackV1"
+    },
+    {
+      "required": [
+        "archetype",
+        "auth_reference",
+        "endpoint_reference",
+        "execution_mode",
+        "generated_at",
+        "integration_kind",
+        "name",
+        "owner",
+        "purpose",
+        "risk_level",
+        "source_session_id"
+      ],
+      "schema_file": "tool-contract.v1.schema.json",
+      "schema_version": "tool-contract.v1",
+      "title": "ToolContractV1"
+    },
+    {
+      "required": [
+        "decision_summary",
+        "generated_at",
+        "source_session_id"
+      ],
+      "schema_file": "heuristic-decision.v1.schema.json",
+      "schema_version": "heuristic-decision.v1",
+      "title": "HeuristicDecisionV1"
+    },
+    {
+      "required": [
+        "budget_policy",
+        "circuit_breaker_policy",
+        "context_policy",
+        "fallback_model",
+        "fallback_policy",
+        "fast_model",
+        "generated_at",
+        "log_redaction_policy",
+        "output_validation_policy",
+        "provider",
+        "reasoning_model",
+        "sampling_policy",
+        "source_session_id"
+      ],
+      "schema_file": "llm-policy.v1.schema.json",
+      "schema_version": "llm-policy.v1",
+      "title": "LLMPolicyV1"
+    },
+    {
+      "required": [
+        "generated_at",
+        "source_session_id",
+        "strategy"
+      ],
+      "schema_file": "memory-policy.v1.schema.json",
+      "schema_version": "memory-policy.v1",
+      "title": "MemoryPolicyV1"
+    },
+    {
+      "required": [
+        "active_goal",
+        "active_stage",
+        "generated_at",
+        "source_session_id"
+      ],
+      "schema_file": "short-term-memory.v1.schema.json",
+      "schema_version": "short-term-memory.v1",
+      "title": "ShortTermMemoryV1"
+    },
+    {
+      "required": [
+        "generated_at",
+        "mode",
+        "source_session_id"
+      ],
+      "schema_file": "knowledge-contract.v1.schema.json",
+      "schema_version": "knowledge-contract.v1",
+      "title": "KnowledgeContractV1"
+    },
+    {
+      "required": [
+        "generated_at",
+        "knowledge_backend_mode",
+        "source_session_id"
+      ],
+      "schema_file": "knowledge-manifest.v1.schema.json",
+      "schema_version": "knowledge-manifest.v1",
+      "title": "KnowledgeManifestV1"
+    },
+    {
+      "required": [
+        "execution_pattern",
+        "generated_at",
+        "reasoning_pattern",
+        "source_session_id"
+      ],
+      "schema_file": "behavior-spec.v1.schema.json",
+      "schema_version": "behavior-spec.v1",
+      "title": "BehaviorSpecV1"
+    },
+    {
+      "required": [
+        "generated_at",
+        "readiness_state",
+        "source_session_id"
+      ],
+      "schema_file": "evaluation-pack.v1.schema.json",
+      "schema_version": "evaluation-pack.v1",
+      "title": "EvaluationPackV1"
+    },
+    {
+      "required": [
+        "blueprint_ref",
+        "external_consumer",
+        "framework_target",
+        "generated_at",
+        "source_session_id"
+      ],
+      "schema_file": "test-pack.v1.schema.json",
+      "schema_version": "test-pack.v1",
+      "title": "TestPackV1"
+    }
+  ],
+  "registry_version": "canonical-contract-registry.v1"
+}

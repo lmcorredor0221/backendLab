@@ -14,11 +14,12 @@ from app.contracts import (
     collect_validation_issues,
 )
 from app.services.canonical_exports import build_contract_bundle, build_knowledge_contract
+from app.services.shared_specs import resolve_shared_specs_dir
 from tests.api_testkit import build_test_client
 from tests.canonical_fixture_builder import FIXTURE_CASES, build_full_session_snapshot, sanitize_dynamic_contract_value
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMAS_ROOT = REPO_ROOT / "shared_specs" / "schemas"
+SCHEMAS_ROOT = resolve_shared_specs_dir() / "schemas"
 STAGE1_GOLDEN_ROOT = REPO_ROOT / "Docs" / "reingenieria-plataforma-2026-07-15" / "stage-1" / "golden"
 
 

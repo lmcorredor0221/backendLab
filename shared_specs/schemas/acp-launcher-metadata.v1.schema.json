@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "LauncherScriptResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "default": false,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "command": {
+          "default": "",
+          "title": "Command",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        },
+        "platform": {
+          "default": "",
+          "title": "Platform",
+          "type": "string"
+        }
+      },
+      "title": "LauncherScriptResponse",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "default": "acp-launcher-metadata.v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "launcher_version": {
+      "default": "",
+      "title": "Launcher Version",
+      "type": "string"
+    },
+    "manifest_path": {
+      "default": "ACP/launcher/launch-manifest.json",
+      "title": "Manifest Path",
+      "type": "string"
+    },
+    "package_name": {
+      "default": "",
+      "title": "Package Name",
+      "type": "string"
+    },
+    "report_output": {
+      "default": "",
+      "title": "Report Output",
+      "type": "string"
+    },
+    "requires_lean_backend": {
+      "default": false,
+      "title": "Requires Lean Backend",
+      "type": "boolean"
+    },
+    "restrictions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Restrictions",
+      "type": "array"
+    },
+    "safe_defaults": {
+      "additionalProperties": true,
+      "title": "Safe Defaults",
+      "type": "object"
+    },
+    "scripts": {
+      "items": {
+        "$ref": "#/$defs/LauncherScriptResponse"
+      },
+      "title": "Scripts",
+      "type": "array"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "workspace_id"
+  ],
+  "title": "LauncherMetadataResponse",
+  "type": "object"
+}

@@ -3,18 +3,17 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
+from app.services.shared_specs import resolve_shared_spec_path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-COMMERCIAL_EVENT_CATALOG_PATH = REPO_ROOT / "shared_specs" / "commercial-event-catalog.v1.json"
+
 DEFAULT_EVENT_SCHEMA_VERSION = "commercial-event.v1"
 
 
 @lru_cache
 def load_commercial_event_catalog() -> dict[str, Any]:
-    return json.loads(COMMERCIAL_EVENT_CATALOG_PATH.read_text(encoding="utf-8"))
+    return json.loads(resolve_shared_spec_path("commercial-event-catalog.v1.json").read_text(encoding="utf-8"))
 
 
 def resolve_commercial_event_catalog_entry(event_key: str) -> dict[str, Any]:

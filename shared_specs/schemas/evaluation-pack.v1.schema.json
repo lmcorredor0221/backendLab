@@ -1,0 +1,201 @@
+{
+  "$defs": {
+    "ArtifactStatus": {
+      "enum": [
+        "draft",
+        "ready",
+        "needs_review",
+        "failed"
+      ],
+      "title": "ArtifactStatus",
+      "type": "string"
+    },
+    "CanonicalProvenanceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "source_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Paths",
+          "type": "array"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path"
+      ],
+      "title": "CanonicalProvenanceEntry",
+      "type": "object"
+    },
+    "EvaluationCaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "expected_result": {
+          "title": "Expected Result",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "scenario": {
+          "title": "Scenario",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "category",
+        "scenario",
+        "expected_result"
+      ],
+      "title": "EvaluationCaseV1",
+      "type": "object"
+    },
+    "ReviewState": {
+      "enum": [
+        "complete",
+        "partial",
+        "blocked"
+      ],
+      "title": "ReviewState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "acceptance_cases": {
+      "items": {
+        "$ref": "#/$defs/EvaluationCaseV1"
+      },
+      "title": "Acceptance Cases",
+      "type": "array"
+    },
+    "blocking_issues": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blocking Issues",
+      "type": "array"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/EvaluationCaseV1"
+      },
+      "title": "Cases",
+      "type": "array"
+    },
+    "dataset_version_number": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dataset Version Number"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "latest_run_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/CanonicalProvenanceEntry"
+      },
+      "title": "Provenance",
+      "type": "array"
+    },
+    "readiness_state": {
+      "$ref": "#/$defs/ReviewState"
+    },
+    "recommendations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Recommendations",
+      "type": "array"
+    },
+    "rubric_version_number": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rubric Version Number"
+    },
+    "schema_version": {
+      "const": "evaluation-pack.v1",
+      "default": "evaluation-pack.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scores": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Scores",
+      "type": "object"
+    },
+    "source_blueprint_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Blueprint Version"
+    },
+    "source_session_id": {
+      "format": "uuid",
+      "title": "Source Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_session_id",
+    "generated_at",
+    "readiness_state"
+  ],
+  "title": "EvaluationPackV1",
+  "type": "object"
+}

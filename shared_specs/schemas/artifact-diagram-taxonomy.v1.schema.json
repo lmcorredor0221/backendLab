@@ -1,0 +1,357 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-agent-builder.local/schemas/artifact-diagram-taxonomy.v1.schema.json",
+  "title": "Lean Agent Builder Artifact and Diagram Taxonomy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "products",
+    "access_levels",
+    "artifact_categories",
+    "diagram_categories",
+    "artifact_entries",
+    "diagram_entries",
+    "validation_rules"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "artifact-diagram-taxonomy.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "products": {
+      "type": "array",
+      "items": {
+        "enum": ["blueprint", "acp", "shared"]
+      },
+      "minItems": 3,
+      "uniqueItems": true
+    },
+    "access_levels": {
+      "type": "array",
+      "items": {
+        "enum": ["sample", "view_only", "downloadable", "premium", "restricted"]
+      },
+      "minItems": 5,
+      "uniqueItems": true
+    },
+    "artifact_categories": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "functional",
+          "technical",
+          "commercial",
+          "diagram",
+          "prompt",
+          "tool",
+          "memory",
+          "contract",
+          "estimation",
+          "package",
+          "lineage"
+        ]
+      },
+      "minItems": 11,
+      "uniqueItems": true
+    },
+    "diagram_categories": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "architecture",
+          "orchestration",
+          "tools",
+          "memory",
+          "flow",
+          "knowledge",
+          "data",
+          "security",
+          "deployment",
+          "decisions",
+          "integrations",
+          "evaluation",
+          "lineage"
+        ]
+      },
+      "minItems": 13,
+      "uniqueItems": true
+    },
+    "artifact_entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifactEntry"
+      }
+    },
+    "diagram_entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/diagramEntry"
+      }
+    },
+    "validation_rules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "productOwner": {
+      "enum": ["blueprint", "acp", "shared"]
+    },
+    "stage": {
+      "enum": ["discover", "define", "design", "tools", "memory", "estimate", "validate", "package"]
+    },
+    "accessLevel": {
+      "enum": ["sample", "view_only", "downloadable", "premium", "restricted"]
+    },
+    "artifactCategory": {
+      "enum": [
+        "functional",
+        "technical",
+        "commercial",
+        "diagram",
+        "prompt",
+        "tool",
+        "memory",
+        "contract",
+        "estimation",
+        "package",
+        "lineage"
+      ]
+    },
+    "diagramCategory": {
+      "enum": [
+        "architecture",
+        "orchestration",
+        "tools",
+        "memory",
+        "flow",
+        "knowledge",
+        "data",
+        "security",
+        "deployment",
+        "decisions",
+        "integrations",
+        "evaluation",
+        "lineage"
+      ]
+    },
+    "tier": {
+      "enum": ["blueprint", "blueprint_pro", "acp"]
+    },
+    "format": {
+      "type": "string",
+      "pattern": "^[a-z0-9_+.-]+$"
+    },
+    "artifactEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_key",
+        "title",
+        "description",
+        "category",
+        "product_owner",
+        "stage_owner",
+        "access_level",
+        "formats",
+        "source_kind",
+        "portable_scope",
+        "blueprint_download",
+        "acp_download",
+        "internal_lean_refs_allowed"
+      ],
+      "properties": {
+        "artifact_key": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "$ref": "#/$defs/artifactCategory"
+        },
+        "product_owner": {
+          "$ref": "#/$defs/productOwner"
+        },
+        "stage_owner": {
+          "$ref": "#/$defs/stage"
+        },
+        "access_level": {
+          "$ref": "#/$defs/accessLevel"
+        },
+        "formats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/format"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "source_kind": {
+          "enum": [
+            "approved_journey_artifact",
+            "generated_blueprint_export",
+            "generated_acp_file",
+            "generated_diagram",
+            "commercial_summary",
+            "producer_provenance"
+          ]
+        },
+        "portable_scope": {
+          "enum": ["agent_specification", "construction_package", "commercial_value", "producer_lineage"]
+        },
+        "blueprint_download": {
+          "type": "boolean"
+        },
+        "acp_download": {
+          "type": "boolean"
+        },
+        "internal_lean_refs_allowed": {
+          "type": "boolean"
+        },
+        "canonical_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "diagramEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagram_key",
+        "title",
+        "description",
+        "category",
+        "diagram_surface",
+        "product_scope",
+        "required_tier",
+        "access_level",
+        "enabled_from_stage",
+        "default_generation_state",
+        "formats",
+        "source_artifact_keys",
+        "contains_internal_lean_model",
+        "sort_order",
+        "is_active"
+      ],
+      "properties": {
+        "diagram_key": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "$ref": "#/$defs/diagramCategory"
+        },
+        "diagram_surface": {
+          "enum": ["agent_design", "agent_runtime", "implementation_guide", "builder_provenance"]
+        },
+        "product_scope": {
+          "type": "array",
+          "items": {
+            "enum": ["blueprint", "acp"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "required_tier": {
+          "$ref": "#/$defs/tier"
+        },
+        "access_level": {
+          "$ref": "#/$defs/accessLevel"
+        },
+        "enabled_from_stage": {
+          "$ref": "#/$defs/stage"
+        },
+        "default_generation_state": {
+          "enum": ["generated", "planned", "pending_generation", "not_generated"]
+        },
+        "formats": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["preferred", "available"],
+          "properties": {
+            "preferred": {
+              "$ref": "#/$defs/format"
+            },
+            "available": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/format"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "source_artifact_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "portable_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "contains_internal_lean_model": {
+          "type": "boolean"
+        },
+        "upsell": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "locked_blueprint_message": {
+              "type": "string"
+            },
+            "locked_acp_message": {
+              "type": "string"
+            },
+            "stage_locked_message": {
+              "type": "string"
+            }
+          },
+          "default": {}
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "is_active": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
