@@ -46,6 +46,26 @@ class KnowledgeMemoryGovernanceMigrationSummary:
         return asdict(self)
 
 
+def _build_blank_normalization_statement(table_name: str, column_name: str, replacement: str):
+    # Cast through TEXT so the predicate stays valid on both TEXT columns and PostgreSQL enums.
+    return text(
+        f"UPDATE {table_name} "
+        f"SET {column_name} = '{replacement}' "
+        f"WHERE {column_name} IS NULL OR CAST({column_name} AS TEXT) = ''"
+    )
+
+
+def _normalize_blank_scalar_column(
+    session: Session,
+    *,
+    table_name: str,
+    column_name: str,
+    replacement: str,
+) -> int:
+    result = session.exec(_build_blank_normalization_statement(table_name, column_name, replacement))
+    return max(getattr(result, "rowcount", 0), 0)
+
+
 def apply_knowledge_memory_governance_migration(session: Session) -> KnowledgeMemoryGovernanceMigrationSummary:
     bind = session.get_bind()
     inspector = inspect(bind)
@@ -137,6 +157,49 @@ def apply_knowledge_memory_governance_migration(session: Session) -> KnowledgeMe
             connection.execute(text(statement))
             summary.indexes_created.append(index_name)
 
+    summary.runs_backfilled = _normalize_blank_scalar_column(
+        session,
+        table_name="knowledge_ingestion_runs",
+        column_name="scope",
+        replacement="platform",
+    )
+    _normalize_blank_scalar_column(
+        session,
+        table_name="knowledge_documents",
+        column_name="scope",
+        replacement="platform",
+    )
+    _normalize_blank_scalar_column(
+        session,
+        table_name="knowledge_documents",
+        column_name="visibility",
+        replacement="platform",
+    )
+    _normalize_blank_scalar_column(
+        session,
+        table_name="knowledge_documents",
+        column_name="status",
+        replacement="approved",
+    )
+    _normalize_blank_scalar_column(
+        session,
+        table_name="knowledge_sections",
+        column_name="scope",
+        replacement="platform",
+    )
+    _normalize_blank_scalar_column(
+        session,
+        table_name="knowledge_sections",
+        column_name="visibility",
+        replacement="platform",
+    )
+    _normalize_blank_scalar_column(
+        session,
+        table_name="knowledge_sections",
+        column_name="status",
+        replacement="approved",
+    )
+
     now = utc_now()
     documents = session.exec(select(KnowledgeDocumentRecord)).all()
     for record in documents:
@@ -185,22 +248,6 @@ def apply_knowledge_memory_governance_migration(session: Session) -> KnowledgeMe
         session.add(section)
         summary.sections_backfilled += 1
 
-    runs_update = session.exec(
-        text(
-            "UPDATE knowledge_ingestion_runs "
-            "SET scope = COALESCE(NULLIF(scope, ''), 'platform') "
-            "WHERE scope IS NULL OR scope = ''"
-        )
-    )
-    session.exec(
-        text(
-            "UPDATE knowledge_documents "
-            "SET visibility = COALESCE(NULLIF(visibility, ''), 'platform'), "
-            "status = COALESCE(NULLIF(status, ''), 'approved') "
-            "WHERE visibility IS NULL OR visibility = '' OR status IS NULL OR status = ''"
-        )
-    )
-
     if migration_record is None:
         session.add(
             SchemaMigrationRecord(
@@ -213,5 +260,4 @@ def apply_knowledge_memory_governance_migration(session: Session) -> KnowledgeMe
         )
 
     session.commit()
-    summary.runs_backfilled = max(getattr(runs_update, "rowcount", 0), 0)
     return summary
