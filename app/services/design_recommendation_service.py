@@ -957,6 +957,12 @@ def evaluate_design_recommendation_artifact(
                 }
             )
 
+    requirements_coverage = _selected_requirements_coverage(
+        reconciled.fit_matrix,
+        selected_design.alternative_key if selected_design else "",
+    )
+    blocking_count = sum(1 for item in findings if item.severity == "blocking")
+    warning_count = sum(1 for item in findings if item.severity == "warning")
     missing_information = [
         item
         for item in _normalized_list(
