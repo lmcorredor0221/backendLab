@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     codex_staged_agents: str = ""
     knowledge_docs_root: Path = Path(__file__).resolve().parents[3] / "Docs"
     runtime_secrets_master_key: str = ""
-    local_admin_email: str = "admin@leanbuilder.local"
+    local_admin_email: str = "lmcorredor@leanagentbuilder.com"
     local_admin_password: str = "LeanBuilder123!"
     local_admin_name: str = "Lean Builder Admin"
     auth_token_ttl_hours: int = 12

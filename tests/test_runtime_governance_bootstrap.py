@@ -161,3 +161,56 @@ def test_ensure_platform_admin_role_is_idempotent() -> None:
         ).all()
 
     assert len(assignments) == 1
+
+
+def test_backfill_platform_runtime_governance_deactivates_stale_platform_admins() -> None:
+    settings = get_settings()
+    original_path = settings.llm_config_path
+
+    with TemporaryDirectory(prefix="lean-builder-runtime-admin-sync-") as runtime_dir:
+        runtime_path = Path(runtime_dir) / "llm_settings.json"
+        runtime_path.write_text(json.dumps({"active_provider": "openai"}, ensure_ascii=True), encoding="utf-8")
+        settings.llm_config_path = runtime_path
+        try:
+            engine = _build_engine()
+            SQLModel.metadata.create_all(engine)
+            with Session(engine) as session:
+                configured_admin = UserRecord(
+                    email=settings.local_admin_email,
+                    full_name="Configured Admin",
+                    password_hash=hash_password(settings.local_admin_password),
+                )
+                stale_admin = UserRecord(
+                    email="legacy-admin@leanbuilder.local",
+                    full_name="Legacy Admin",
+                    password_hash=hash_password("LegacyAdmin123!"),
+                )
+                session.add(configured_admin)
+                session.add(stale_admin)
+                session.commit()
+                session.refresh(configured_admin)
+                session.refresh(stale_admin)
+                configured_admin_id = configured_admin.id
+                stale_admin_id = stale_admin.id
+
+                session.add(
+                    PlatformRoleAssignmentRecord(
+                        user_id=stale_admin_id,
+                        role=PlatformRole.platform_admin,
+                    )
+                )
+                session.commit()
+
+                backfill_platform_runtime_governance(session)
+
+                assignments = session.exec(
+                    select(PlatformRoleAssignmentRecord).where(
+                        PlatformRoleAssignmentRecord.role == PlatformRole.platform_admin
+                    )
+                ).all()
+        finally:
+            settings.llm_config_path = original_path
+
+    by_user_id = {assignment.user_id: assignment for assignment in assignments}
+    assert by_user_id[configured_admin_id].is_active is True
+    assert by_user_id[stale_admin_id].is_active is False

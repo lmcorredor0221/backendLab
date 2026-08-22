@@ -31,9 +31,13 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]
 
 
 def auth_headers(client: TestClient) -> dict[str, str]:
+    return auth_headers_for(client, email=TEST_EMAIL, password=TEST_PASSWORD)
+
+
+def auth_headers_for(client: TestClient, *, email: str, password: str) -> dict[str, str]:
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": TEST_EMAIL, "password": TEST_PASSWORD},
+        json={"email": email, "password": password},
     )
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
@@ -151,6 +155,29 @@ def seed_workspace_user(client: TestClient, workspace_id: UUID) -> UUID:
         return user.id
 
 
+def seed_workspace_owner(client: TestClient, workspace_id: UUID) -> tuple[UUID, str, str]:
+    with db_session_from_client(client) as session:
+        password = "Owner123!"
+        user = UserRecord(
+            email="workspace-owner@leanbuilder.local",
+            full_name="Workspace Owner",
+            password_hash=hash_password(password),
+            email_verified=True,
+        )
+        session.add(user)
+        session.flush()
+        session.add(
+            WorkspaceMembershipRecord(
+                workspace_id=workspace_id,
+                user_id=user.id,
+                role=WorkspaceRole.owner,
+                is_active=True,
+            )
+        )
+        session.commit()
+        return user.id, user.email, password
+
+
 def test_admin_overview_uses_real_scoped_sources_and_exposes_uninstrumented_states(client: TestClient) -> None:
     headers = auth_headers(client)
     workspace_id = active_workspace_id(client, headers)
@@ -239,3 +266,16 @@ def test_admin_users_roles_invitations_and_patch_are_guarded_and_audited(client:
     invitations_response = client.get("/api/v1/admin/users/invitations", headers=headers)
     assert invitations_response.status_code == 200
     assert invitations_response.json()["count"] == 1
+
+
+def test_admin_routes_forbid_workspace_owner_without_platform_admin(client: TestClient) -> None:
+    admin_headers = auth_headers(client)
+    workspace_id = active_workspace_id(client, admin_headers)
+    _, owner_email, owner_password = seed_workspace_owner(client, workspace_id)
+    owner_headers = auth_headers_for(client, email=owner_email, password=owner_password)
+    owner_headers["x-workspace-id"] = str(workspace_id)
+
+    response = client.get("/api/v1/admin/users", headers=owner_headers)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Solo un workspace admin o platform admin puede ejecutar esta accion."

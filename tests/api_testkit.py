@@ -18,9 +18,8 @@ from app.models import UserRecord
 from app.core.config import get_settings
 from app.services.auth_service import hash_password
 
-
-TEST_EMAIL = "admin@leanbuilder.local"
-TEST_PASSWORD = "LeanBuilder123!"
+TEST_EMAIL = get_settings().local_admin_email
+TEST_PASSWORD = get_settings().local_admin_password
 
 
 @contextmanager

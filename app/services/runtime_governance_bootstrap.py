@@ -269,9 +269,33 @@ def ensure_platform_admin_role(session: Session, user: UserRecord) -> None:
         session.commit()
 
 
+def sync_configured_platform_admin(session: Session) -> None:
+    configured_email = get_settings().local_admin_email.strip().lower()
+    configured_user = session.exec(select(UserRecord).where(UserRecord.email == configured_email)).first()
+    if configured_user is None:
+        return
+
+    ensure_platform_admin_role(session, configured_user)
+
+    stale_assignments = list(
+        session.exec(
+            select(PlatformRoleAssignmentRecord).where(
+                PlatformRoleAssignmentRecord.role == PlatformRole.platform_admin,
+                PlatformRoleAssignmentRecord.is_active == True,  # noqa: E712
+                PlatformRoleAssignmentRecord.user_id != configured_user.id,
+            )
+        ).all()
+    )
+    if not stale_assignments:
+        return
+
+    for assignment in stale_assignments:
+        assignment.is_active = False
+        assignment.updated_at = utc_now()
+        session.add(assignment)
+    session.commit()
+
+
 def backfill_platform_runtime_governance(session: Session) -> None:
     seed_platform_runtime_governance(session, seed_defaults=False)
-    local_admin_email = get_settings().local_admin_email
-    local_admin_user = session.exec(select(UserRecord).where(UserRecord.email == local_admin_email)).first()
-    if local_admin_user is not None:
-        ensure_platform_admin_role(session, local_admin_user)
+    sync_configured_platform_admin(session)

@@ -7,7 +7,7 @@ from app.services.runtime_governance_bootstrap import backfill_platform_runtime_
 from app.services.workspace_access import WorkspaceAccessContext
 
 
-WORKSPACE_RUNTIME_ADMIN_ROLES = {WorkspaceRole.owner, WorkspaceRole.admin}
+WORKSPACE_RUNTIME_ADMIN_ROLES = {WorkspaceRole.admin}
 
 
 def is_platform_admin(session: Session, user: UserRecord) -> bool:
@@ -35,4 +35,4 @@ def ensure_workspace_runtime_admin(
     if is_platform_admin(session, user):
         return
     if workspace_context.membership.role not in WORKSPACE_RUNTIME_ADMIN_ROLES:
-        raise PermissionError("Solo un workspace owner/admin puede ejecutar esta accion.")
+        raise PermissionError("Solo un workspace admin o platform admin puede ejecutar esta accion.")
