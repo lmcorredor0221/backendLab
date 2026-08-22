@@ -21,3 +21,14 @@ Copy-Item .env.example .env
 
 - `.env`, bases locales, logs, `runtime/`, `tmp/` y `.venv/` no se versionan.
 - Las migraciones Alembic y pruebas forman parte del repositorio.
+- Para usar Supabase como Postgres de produccion, revisa [SUPABASE_DEPLOY.md](./SUPABASE_DEPLOY.md).
+
+## Deploy desde GitHub
+
+La arquitectura recomendada para este backend es:
+
+- `Supabase`: base de datos PostgreSQL
+- `GitHub`: fuente del codigo
+- `Host de contenedores`: despliegue del backend FastAPI
+
+Supabase no es el host natural de este backend FastAPI largo-vivo. Lo normal es desplegar el contenedor desde GitHub en un proveedor externo y apuntar `DATABASE_URL` a Supabase.

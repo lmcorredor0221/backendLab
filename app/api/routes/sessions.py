@@ -8309,6 +8309,7 @@ def generate_estimation_report_route(
         benchmark_corpus_hash=benchmark_corpus_hash,
     )
     estimation_report = estimation_report.model_copy(update={"deterministic_inputs": deterministic_inputs})
+    runtime_settings = load_effective_runtime_settings(db, record.workspace_id)
     stage_context = build_stage_context_bundle(
         db,
         record=record,
@@ -8326,6 +8327,7 @@ def generate_estimation_report_route(
                 snapshot=snapshot,
                 report=estimation_report,
                 stage_context=stage_context,
+                runtime_settings=runtime_settings,
             )
             return ReactCapabilityOutput(
                 value=analysis_value,
@@ -8356,6 +8358,7 @@ def generate_estimation_report_route(
             snapshot=snapshot,
             report=estimation_report,
             stage_context=stage_context,
+            runtime_settings=runtime_settings,
         )
     deterministic_inputs = build_estimation_deterministic_inputs(
         db,

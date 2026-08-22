@@ -21,6 +21,7 @@ from app.services.auth_service import hash_password
 from app.services.llm_runtime.runtime_secrets_service import (
     annotate_runtime_settings_with_workspace_secrets,
     delete_workspace_provider_secret,
+    resolve_workspace_provider_secret_value,
     upsert_workspace_provider_secret,
 )
 from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
@@ -99,6 +100,11 @@ def test_upsert_workspace_provider_secret_encrypts_storage_and_redacts_runtime_v
                     workspace.id,
                     load_effective_runtime_settings(session, workspace.id),
                 )
+                resolved_secret = resolve_workspace_provider_secret_value(
+                    session,
+                    workspace.id,
+                    LLMProviderKey.openai,
+                )
         finally:
             settings.llm_config_path = original_path
 
@@ -113,6 +119,7 @@ def test_upsert_workspace_provider_secret_encrypts_storage_and_redacts_runtime_v
     assert runtime_view.openai.api_key_configured is True
     assert runtime_view.openai.secret_source == "workspace_managed"
     assert runtime_view.openai.health_status == "workspace_ready"
+    assert resolved_secret == "sk-workspace-alpha"
     assert "sk-workspace-alpha" not in runtime_view.model_dump_json()
     assert any(item.change_type == "workspace_provider_secret_upserted" for item in audit_rows)
     assert all("sk-workspace-alpha" not in json.dumps(item.after_payload_redacted) for item in audit_rows)

@@ -4,7 +4,7 @@ import base64
 import hashlib
 from uuid import UUID
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from sqlmodel import Session, select
 
 from app.core.config import get_settings
@@ -55,6 +55,13 @@ def _encrypt_secret_value(secret_value: str) -> str:
     return _fernet().encrypt(secret_value.encode("utf-8")).decode("utf-8")
 
 
+def _decrypt_secret_value(secret_ciphertext: str) -> str:
+    try:
+        return _fernet().decrypt(secret_ciphertext.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise ValueError("Workspace provider secret could not be decrypted with the configured master key.") from exc
+
+
 def _provider_record(session: Session, provider_key: LLMProviderKey) -> PlatformRuntimeProviderRecord | None:
     return session.exec(
         select(PlatformRuntimeProviderRecord).where(PlatformRuntimeProviderRecord.provider_key == provider_key)
@@ -89,6 +96,28 @@ def _workspace_secret_records(session: Session, workspace_id: UUID) -> dict[LLMP
         select(WorkspaceProviderSecretRecord).where(WorkspaceProviderSecretRecord.workspace_id == workspace_id)
     ).all()
     return {item.provider_key: item for item in rows}
+
+
+def resolve_workspace_provider_secret_value(
+    session: Session,
+    workspace_id: UUID,
+    provider_key: LLMProviderKey,
+    *,
+    secret_kind: str = "api_key",
+) -> str | None:
+    record = _workspace_secret_record(
+        session,
+        workspace_id,
+        provider_key,
+        secret_kind=secret_kind,
+    )
+    if not _record_is_configured(record) or record is None:
+        return None
+    if record.secret_ref:
+        return None
+    if not record.secret_ciphertext:
+        return None
+    return _decrypt_secret_value(record.secret_ciphertext)
 
 
 def _record_is_configured(record: WorkspaceProviderSecretRecord | None) -> bool:

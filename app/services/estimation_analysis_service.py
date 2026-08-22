@@ -33,6 +33,7 @@ from app.models import (
     RuntimeCatalogEntryRecord,
     SessionSnapshot,
     SessionStage,
+    LLMRuntimeSettings,
     utc_now,
 )
 from app.services.estimation_calibration import build_estimation_calibration_dashboard
@@ -474,6 +475,7 @@ def run_estimation_analysis(
     snapshot: SessionSnapshot,
     report: EstimationReportArtifact,
     stage_context: StageContextBundle | None = None,
+    runtime_settings: LLMRuntimeSettings | None = None,
 ) -> tuple[EstimationAnalysisArtifact, skill_runtime.SkillExecutionTrace]:
     workspace_summary, workspace_benchmarks, calibration_sample_size = _build_workspace_calibration_summary(session, snapshot)
     input_payload = EstimationRiskAnalysisInput(
@@ -493,7 +495,7 @@ def run_estimation_analysis(
     warnings: list[str] = []
     llm_result = None
     try:
-        llm_service = skill_runtime._builder_service_for_stage("estimate")
+        llm_service = skill_runtime._builder_service_for_stage("estimate", runtime_settings)
         llm_result = llm_service.analyze_estimation_risks(input_payload, context_bundle=stage_context)
         artifact = (
             EstimationAnalysisArtifact.model_validate(llm_result.artifact.model_dump(mode="json"))

@@ -18,6 +18,7 @@ from app.models import (
     OpenAIProviderConfig,
     ReviewState,
 )
+from app.services.llm_finops.ledger_service import LLMUsageLedgerService
 from app.services.llm_runtime.builder_contracts import BlueprintNarrativeOutput, LLMArtifactResult
 from app.services.llm_runtime.codex_cli.provider_facade import CodexLocalBuilderService
 from app.services.llm_runtime.provider_router import (
@@ -26,6 +27,7 @@ from app.services.llm_runtime.provider_router import (
     BuilderProviderFacade,
     BuilderProviderRouter,
 )
+from app.services.openai_builder import build_builder_service
 from app.services.llm_runtime.stage_context_types import StageContextBundle
 
 
@@ -394,6 +396,27 @@ def test_facade_provider_summary_exposes_route_metadata() -> None:
     assert summary["normalize_discovery_route"] == "primary:codex_local"
     assert summary["build_canvas_route"] == "shadow:deepseek"
     assert summary["synthesize_blueprint_narrative_route"] == "primary:deepseek"
+
+
+def test_build_builder_service_wires_finops_dependencies_for_all_providers() -> None:
+    facade = build_builder_service(
+        build_runtime_settings(
+            active_provider=LLMProviderKey.deepseek,
+            backend=AgentExecutionBackend.provider_native,
+        )
+    )
+
+    services = [
+        facade._openai_service,
+        facade._deepseek_service,
+        facade._codex_service,
+        facade._antigravity_service,
+    ]
+
+    for service in services:
+        assert service is not None
+        assert service._finops_session_factory is not None
+        assert isinstance(service._finops_ledger_service, LLMUsageLedgerService)
 
 
 def test_codex_local_builder_uses_staged_context_for_narrative_when_backend_is_hybrid() -> None:

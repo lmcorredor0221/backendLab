@@ -14,6 +14,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.supabase.example
 
 # Local databases
 *.db
@@ -24,6 +25,8 @@ venv/
 *.log
 *.out.log
 *.err.log
+result.json
+validated_output.json
 tmp/
 runtime/
 

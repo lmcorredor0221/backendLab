@@ -72,7 +72,11 @@ from app.services.llm_runtime.antigravity_cli.provider_facade import Antigravity
 from app.services.llm_runtime.provider_router import BuilderProviderFacade
 from app.services.llm_runtime.stage_context_types import StageContextBundle, build_llm_call_context
 from app.services.llm_finops.ledger_service import LLMUsageLedgerService
-from app.services.llm_finops.provider_instrumentation import FinOpsSessionFactory, record_provider_call
+from app.services.llm_finops.provider_instrumentation import (
+    FinOpsSessionFactory,
+    default_finops_session_factory,
+    record_provider_call,
+)
 from app.services.llm_finops.usage_normalization import normalize_deepseek_usage, normalize_openai_usage
 from app.services.rules import normalize_text
 
@@ -315,6 +319,14 @@ def _extract_json_payload(raw_content: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("DeepSeek no devolvio un objeto JSON.")
     return payload
+
+
+def _is_deepseek_length_finish_reason(finish_reason: str) -> bool:
+    return finish_reason.strip().lower() in {"length", "max_tokens"}
+
+
+def _deepseek_retry_max_tokens(max_tokens: int) -> int:
+    return min(max_tokens * 2, 8192)
 
 
 def _default_runtime_settings() -> dict[str, Any]:
@@ -696,12 +708,40 @@ def persist_llm_runtime_settings(payload: LLMRuntimeSettingsUpdateRequest) -> LL
 
 
 def build_builder_service(runtime_settings: LLMRuntimeSettings) -> BuilderProviderFacade:
+    finops_session_factory = default_finops_session_factory
+    finops_ledger_service = LLMUsageLedgerService()
     return BuilderProviderFacade(
         runtime_settings,
-        openai_service=OpenAIBuilderService(runtime_settings),
-        deepseek_service=DeepSeekBuilderService(runtime_settings),
-        codex_service=CodexLocalBuilderService(runtime_settings),
-        antigravity_service=AntigravityLocalBuilderService(runtime_settings),
+        openai_service=OpenAIBuilderService(
+            runtime_settings,
+            finops_session_factory=finops_session_factory,
+            finops_ledger_service=finops_ledger_service,
+        ),
+        deepseek_service=DeepSeekBuilderService(
+            runtime_settings,
+            finops_session_factory=finops_session_factory,
+            finops_ledger_service=finops_ledger_service,
+        ),
+        codex_service=CodexLocalBuilderService(
+            runtime_settings,
+            finops_session_factory=finops_session_factory,
+            finops_ledger_service=finops_ledger_service,
+        ),
+        antigravity_service=AntigravityLocalBuilderService(
+            runtime_settings,
+            finops_session_factory=finops_session_factory,
+            finops_ledger_service=finops_ledger_service,
+        ),
+    )
+
+
+def _resolve_workspace_provider_api_key(session, *, workspace_id, provider_key: LLMProviderKey) -> str | None:
+    from app.services.llm_runtime.runtime_secrets_service import resolve_workspace_provider_secret_value
+
+    return resolve_workspace_provider_secret_value(
+        session,
+        workspace_id,
+        provider_key,
     )
 
 
@@ -722,6 +762,26 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
         if OpenAI is not None and self.settings.openai_api_key:
             self._client = OpenAI(api_key=self.settings.openai_api_key)
 
+    def _provider_api_key_configured(self) -> bool:
+        return bool(self.settings.openai_api_key) or bool(self.runtime_settings.openai.api_key_configured)
+
+    def _ensure_workspace_client(self, workspace_id) -> None:
+        if self._client is not None or OpenAI is None or workspace_id is None:
+            return
+        if self.runtime_settings.uses_platform_credentials or self._finops_session_factory is None:
+            return
+        try:
+            with self._finops_session_factory() as session:
+                api_key = _resolve_workspace_provider_api_key(
+                    session,
+                    workspace_id=workspace_id,
+                    provider_key=LLMProviderKey.openai,
+                )
+        except Exception:
+            return
+        if api_key:
+            self._client = OpenAI(api_key=api_key)
+
     def can_attempt(self) -> bool:
         return (
             self.runtime_settings.active_provider == LLMProviderKey.openai
@@ -732,11 +792,12 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
         return self.can_attempt() and self._client is not None
 
     def provider_summary(self) -> dict[str, str | bool]:
+        configured = self._provider_api_key_configured()
         return {
             "provider": self.runtime_settings.active_provider.value,
             "mode": "responses",
-            "configured": bool(self.settings.openai_api_key),
-            "sdk_ready": self._client is not None,
+            "configured": configured,
+            "sdk_ready": self._client is not None or (OpenAI is not None and configured),
             "fast_model": self.runtime_settings.openai.fast_model,
             "reasoning_model": self.runtime_settings.openai.reasoning_model,
             "status_note": self.runtime_settings.openai.status_note,
@@ -796,6 +857,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
         )
 
         def _call_openai() -> LLMArtifactResult:
+            self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
             if not self.is_available():
                 return self._attach_context_metadata(
                     replace(
@@ -908,6 +970,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(
@@ -992,6 +1055,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.openai.value),
@@ -1087,6 +1151,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.openai.value),
@@ -1187,6 +1252,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.openai.value),
@@ -1401,6 +1467,29 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                 base_url=self.runtime_settings.deepseek.base_url,
             )
 
+    def _provider_api_key_configured(self) -> bool:
+        return bool(self.settings.deepseek_api_key) or bool(self.runtime_settings.deepseek.api_key_configured)
+
+    def _ensure_workspace_client(self, workspace_id) -> None:
+        if self._client is not None or OpenAI is None or workspace_id is None:
+            return
+        if self.runtime_settings.uses_platform_credentials or self._finops_session_factory is None:
+            return
+        try:
+            with self._finops_session_factory() as session:
+                api_key = _resolve_workspace_provider_api_key(
+                    session,
+                    workspace_id=workspace_id,
+                    provider_key=LLMProviderKey.deepseek,
+                )
+        except Exception:
+            return
+        if api_key:
+            self._client = OpenAI(
+                api_key=api_key,
+                base_url=self.runtime_settings.deepseek.base_url,
+            )
+
     def can_attempt(self) -> bool:
         return (
             self.runtime_settings.active_provider == LLMProviderKey.deepseek
@@ -1411,11 +1500,12 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         return self.can_attempt() and self._client is not None
 
     def provider_summary(self) -> dict[str, str | bool]:
+        configured = self._provider_api_key_configured()
         return {
             "provider": self.runtime_settings.active_provider.value,
             "mode": "chat_completions",
-            "configured": bool(self.settings.deepseek_api_key),
-            "sdk_ready": self._client is not None,
+            "configured": configured,
+            "sdk_ready": self._client is not None or (OpenAI is not None and configured),
             "fast_model": self.runtime_settings.deepseek.fast_model,
             "reasoning_model": self.runtime_settings.deepseek.reasoning_model,
             "base_url": self.runtime_settings.deepseek.base_url,
@@ -1444,7 +1534,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if self._client is None:
             raise RuntimeError("DeepSeek client no disponible.")
-        messages = [
+        base_messages = [
             {
                 "role": "system",
                 "content": (
@@ -1457,9 +1547,9 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                 "content": user_payload,
             },
         ]
-        request_kwargs: dict[str, Any] = {
+        base_request_kwargs: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": base_messages,
             "response_format": {"type": "json_object"},
             "stream": False,
             "max_tokens": max_tokens,
@@ -1467,25 +1557,54 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             "extra_body": {"thinking": {"type": thinking_mode}},
         }
         if reasoning_effort:
-            request_kwargs["reasoning_effort"] = reasoning_effort
-        response = self._client.chat.completions.create(**request_kwargs)
-        message = response.choices[0].message if response.choices else None
-        finish_reason = response.choices[0].finish_reason if response.choices else "unknown"
-        content = message.content if message is not None and isinstance(message.content, str) else ""
-        if not content.strip():
-            raise ValueError("DeepSeek devolvio contenido vacio.")
-        payload = _extract_json_payload(content)
-        usage = normalize_deepseek_usage(getattr(response, "usage", None))
-        metadata = {
-            "request_id": str(getattr(response, "id", "") or ""),
-            "finish_reason": str(finish_reason or "completed"),
-            "token_usage": usage.compatibility_token_usage(),
-            "normalized_usage": usage,
-            "model_name": model,
-            "output_model": output_model.__name__,
-        }
-        self._last_completion_metadata = dict(metadata)
-        return payload, metadata
+            base_request_kwargs["reasoning_effort"] = reasoning_effort
+        self._last_completion_metadata = {}
+        retry_limit = 1
+        for retry_count in range(retry_limit + 1):
+            request_kwargs = dict(base_request_kwargs)
+            if retry_count > 0:
+                request_kwargs["messages"] = [
+                    *base_messages,
+                    {
+                        "role": "user",
+                        "content": (
+                            "La respuesta anterior fue truncada por longitud. "
+                            "Regenera desde cero un unico objeto JSON valido, completo y compacto. "
+                            "No incluyas markdown ni explicaciones."
+                        ),
+                    },
+                ]
+                request_kwargs["max_tokens"] = _deepseek_retry_max_tokens(max_tokens)
+                request_kwargs["temperature"] = 0
+                request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+                request_kwargs.pop("reasoning_effort", None)
+
+            response = self._client.chat.completions.create(**request_kwargs)
+            message = response.choices[0].message if response.choices else None
+            finish_reason = response.choices[0].finish_reason if response.choices else "unknown"
+            content = message.content if message is not None and isinstance(message.content, str) else ""
+            usage = normalize_deepseek_usage(getattr(response, "usage", None))
+            metadata = {
+                "request_id": str(getattr(response, "id", "") or ""),
+                "finish_reason": str(finish_reason or "completed"),
+                "token_usage": usage.compatibility_token_usage(),
+                "normalized_usage": usage,
+                "model_name": model,
+                "output_model": output_model.__name__,
+                "raw_content_length": len(content),
+                "retry_count": retry_count,
+            }
+            self._last_completion_metadata = dict(metadata)
+            try:
+                if not content.strip():
+                    raise ValueError("DeepSeek devolvio contenido vacio.")
+                payload = _extract_json_payload(content)
+                return payload, metadata
+            except Exception:
+                if retry_count < retry_limit and _is_deepseek_length_finish_reason(str(finish_reason or "")):
+                    continue
+                raise
+        raise RuntimeError("DeepSeek no devolvio un payload usable.")
 
     def _create_structured_completion(
         self,
@@ -1557,6 +1676,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         )
 
         def _call_deepseek() -> LLMArtifactResult:
+            self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
             if not self.is_available():
                 return self._attach_context_metadata(
                     replace(
@@ -1590,6 +1710,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                         schema_validation_status=schema_status,
                         token_usage=dict(metadata.get("token_usage", {})),
                         normalized_usage=usage if isinstance(usage, type(base_result.normalized_usage)) else usage,
+                        retry_count=int(metadata.get("retry_count", 0) or 0),
                     ),
                     context_envelope=context_envelope,
                 )
@@ -1607,6 +1728,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                         normalized_usage=usage if isinstance(usage, type(base_result.normalized_usage)) else usage,
                         failure_kind=failure_kind,
                         failure_detail=str(exc)[:400],
+                        retry_count=int(self._last_completion_metadata.get("retry_count", 0) or 0),
                         degraded=True,
                     ),
                     context_envelope=context_envelope,
@@ -1656,6 +1778,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(
@@ -1724,6 +1847,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.deepseek.value),
@@ -1804,6 +1928,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.deepseek.value),
@@ -1888,6 +2013,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             ],
             context_bundle=context_bundle,
         )
+        self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
         if not self.is_available():
             return self._attach_context_metadata(
                 LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.deepseek.value),

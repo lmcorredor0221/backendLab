@@ -90,6 +90,18 @@ class FakeCompletionsAPI:
         return self.response
 
 
+class FakeSequentialCompletionsAPI:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = list(responses)
+        self.kwargs_history: list[dict[str, object]] = []
+
+    def create(self, **kwargs):
+        self.kwargs_history.append(dict(kwargs))
+        if not self.responses:
+            raise AssertionError("No quedan respuestas fake para DeepSeek.")
+        return self.responses.pop(0)
+
+
 class FakeDeepSeekClient:
     def __init__(self, completions_api: FakeCompletionsAPI) -> None:
         self.chat = SimpleNamespace(completions=completions_api)
@@ -168,3 +180,115 @@ def test_deepseek_structured_call_records_provider_exception() -> None:
     assert record.provider_key == "deepseek"
     assert record.failure_kind == "provider_error"
     assert "deepseek down" in record.failure_detail_redacted
+
+
+def test_deepseek_parse_failure_still_records_request_and_usage() -> None:
+    engine, session_factory = build_session_factory()
+    response = SimpleNamespace(
+        id="chatcmpl-deepseek-bad-json",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content='{"summary":"ok"\n"missing_comma":true}'),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=140,
+            completion_tokens=60,
+            total_tokens=200,
+            prompt_cache_hit_tokens=15,
+            prompt_cache_miss_tokens=125,
+        ),
+    )
+    service = DeepSeekBuilderService(
+        build_runtime_settings(),
+        finops_session_factory=session_factory,
+        finops_ledger_service=LLMUsageLedgerService(),
+    )
+    service.can_attempt = lambda: True  # type: ignore[method-assign]
+    service._client = FakeDeepSeekClient(FakeCompletionsAPI(response=response))
+
+    result = service.define_requirements(build_requirements_input(), context_bundle=build_stage_context())
+
+    with Session(engine) as db:
+        record = db.get(LLMUsageLedgerRecord, result.usage_record_id)
+
+    assert result.artifact is None
+    assert result.failure_kind == "provider_error"
+    assert result.request_id == "chatcmpl-deepseek-bad-json"
+    assert result.usage_record_id is not None
+    assert result.token_usage["total_tokens"] == 200
+    assert result.normalized_usage is not None
+    assert result.normalized_usage.cached_input_tokens == 15
+    assert record is not None
+    assert record.status == "failed"
+    assert record.request_id == "chatcmpl-deepseek-bad-json"
+    assert record.total_tokens == 200
+    assert record.cached_input_tokens == 15
+    assert record.failure_kind == "provider_error"
+
+
+def test_deepseek_retries_once_when_length_truncates_json() -> None:
+    engine, session_factory = build_session_factory()
+    truncated_response = SimpleNamespace(
+        id="chatcmpl-deepseek-length-1",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content='{"summary":"truncado"'),
+                finish_reason="length",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=180,
+            completion_tokens=4096,
+            total_tokens=4276,
+            prompt_cache_hit_tokens=0,
+            prompt_cache_miss_tokens=180,
+            reasoning_tokens=1200,
+        ),
+    )
+    valid_content = json.dumps(RequirementsDefinitionOutput(summary="Requisitos recuperados tras retry.").model_dump(mode="json"))
+    recovered_response = SimpleNamespace(
+        id="chatcmpl-deepseek-length-2",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=valid_content),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=200,
+            completion_tokens=80,
+            total_tokens=280,
+            prompt_cache_hit_tokens=0,
+            prompt_cache_miss_tokens=200,
+            reasoning_tokens=0,
+        ),
+    )
+    completions_api = FakeSequentialCompletionsAPI([truncated_response, recovered_response])
+    service = DeepSeekBuilderService(
+        build_runtime_settings(),
+        finops_session_factory=session_factory,
+        finops_ledger_service=LLMUsageLedgerService(),
+    )
+    service.can_attempt = lambda: True  # type: ignore[method-assign]
+    service._client = FakeDeepSeekClient(completions_api)
+
+    result = service.define_requirements(build_requirements_input(), context_bundle=build_stage_context())
+
+    with Session(engine) as db:
+        record = db.get(LLMUsageLedgerRecord, result.usage_record_id)
+
+    assert isinstance(result.artifact, RequirementsDefinitionOutput)
+    assert result.artifact.summary == "Requisitos recuperados tras retry."
+    assert result.request_id == "chatcmpl-deepseek-length-2"
+    assert result.retry_count == 1
+    assert result.usage_record_id is not None
+    assert result.token_usage["total_tokens"] == 280
+    assert record is not None
+    assert record.status == "succeeded"
+    assert record.request_id == "chatcmpl-deepseek-length-2"
+    assert record.retry_count == 1
+    assert len(completions_api.kwargs_history) == 2
+    assert int(completions_api.kwargs_history[1]["max_tokens"]) > int(completions_api.kwargs_history[0]["max_tokens"])
+    assert completions_api.kwargs_history[1]["extra_body"] == {"thinking": {"type": "disabled"}}
