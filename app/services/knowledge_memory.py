@@ -259,6 +259,15 @@ class KnowledgeMemoryService:
         self.workspace_docs_root = self.runtime_root / "managed-workspaces"
 
     def ensure_repo_docs_ingested(self, session: Session) -> KnowledgeIngestionReport:
+        scope_config = self._resolve_scope_config(KnowledgeScope.platform)
+        latest_run = self._latest_run(session, scope_config)
+        if latest_run is not None and not self._runtime_artifacts_exist(scope_config):
+            return self._build_report_from_run(
+                session,
+                latest_run,
+                documents=self._latest_document_entries(session, scope_config=scope_config),
+                changed_paths=[],
+            )
         return self.sync_docs_corpus(session, scope=KnowledgeScope.platform, force=False)
 
     def sync_docs_corpus(
@@ -1545,6 +1554,16 @@ class KnowledgeMemoryService:
 
     def _vector_index_path_for_scope(self, scope_config: ScopeConfig) -> Path:
         return scope_config.runtime_dir / "vector-index.json"
+
+    def _runtime_artifacts_exist(self, scope_config: ScopeConfig) -> bool:
+        return all(
+            path.exists()
+            for path in (
+                self._manifest_path_for_scope(scope_config),
+                self._lexical_index_path_for_scope(scope_config),
+                self._vector_index_path_for_scope(scope_config),
+            )
+        )
 
     def _metadata_override_exists_for_document(self, parsed_document: ParsedDocument) -> bool:
         scope_config = self._resolve_scope_config(

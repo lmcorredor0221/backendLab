@@ -180,6 +180,42 @@ def test_docs_ingestion_redacts_sensitive_content_before_indexing(tmp_path: Path
         assert "this-should-not-leak" not in manifest
 
 
+def test_ensure_repo_docs_ingested_reuses_latest_run_when_runtime_artifacts_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "Docs"
+    runtime_root = tmp_path / "runtime"
+    _write_doc(
+        docs_root / "ops" / "playbook.md",
+        "# Playbook\n\n## Recovery\nReusar el corpus persistido si el runtime local es efimero.\n",
+    )
+
+    service = KnowledgeMemoryService(docs_root=docs_root, runtime_root=runtime_root)
+    with _build_memory_session() as session:
+        first = service.sync_docs_corpus(session, force=True)
+
+        runtime_root.joinpath("knowledge-corpus-manifest.json").unlink()
+        runtime_root.joinpath("lexical-index.json").unlink()
+        runtime_root.joinpath("vector-index.json").unlink()
+
+        def _unexpected_sync(*_args, **_kwargs):
+            raise AssertionError("ensure_repo_docs_ingested no debe reconstruir el corpus cuando ya existe un run persistido.")
+
+        monkeypatch.setattr(service, "sync_docs_corpus", _unexpected_sync)
+
+        second = service.ensure_repo_docs_ingested(session)
+
+        assert second.run_id == first.run_id
+        assert second.corpus_hash == first.corpus_hash
+        assert second.changed_document_count == 0
+        assert second.document_count == first.document_count
+        assert second.section_count == first.section_count
+        assert not runtime_root.joinpath("knowledge-corpus-manifest.json").exists()
+        assert not runtime_root.joinpath("lexical-index.json").exists()
+        assert not runtime_root.joinpath("vector-index.json").exists()
+
+
 def test_governed_search_isolated_by_workspace_and_session_with_filters_and_cursor(tmp_path: Path) -> None:
     docs_root = tmp_path / "Docs"
     runtime_root = tmp_path / "runtime"
