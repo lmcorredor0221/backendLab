@@ -18,7 +18,9 @@ from app.services.diagram_center.persistence import (
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
 from app.services.diagram_center.registry_service import build_prompt_spec, get_registry_entry
 from app.services.diagram_center.renderer_service import RENDERER_REVISION, render_diagram
+from app.services.llm_runtime.capability_registry import BuilderCapability
 from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
+from app.services.llm_runtime.stage_context_types import StageContextBundle
 from app.services.openai_builder import build_builder_service
 
 
@@ -120,6 +122,33 @@ def _source_context(db: Session, record: SessionRecord) -> tuple[dict[str, objec
 def _fingerprint(payload: object) -> str:
     serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str)
     return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _build_generation_context_bundle(
+    *,
+    record: SessionRecord,
+    job: DiagramGenerationJobRecord,
+    stage: str,
+) -> StageContextBundle:
+    return StageContextBundle(
+        capability=BuilderCapability.generate_diagram_model.value,
+        role="builder",
+        stage=stage.strip().lower() or "design",
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        session_snapshot=None,
+        effective_language="es",
+        knowledge_manifest=None,
+        memory_policy=None,
+        short_term_memory=None,
+        context_fingerprint=f"diagram-job:{job.id}",
+        finops_metadata={
+            "diagram_job_id": str(job.id),
+            "diagram_key": job.diagram_key,
+            "generation_reason": job.reason,
+            "detail_level": job.detail_level,
+        },
+    )
 
 
 def job_response(record: DiagramGenerationJobRecord) -> DiagramGenerationJobResponse:
@@ -260,13 +289,14 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
         )
         runtime_settings = load_effective_runtime_settings(db, record.workspace_id)
         provider = build_builder_service(runtime_settings)
-        result = provider.generate_diagram_model(generation_input)
+        stage_context = _build_generation_context_bundle(record=record, job=job, stage=entry.stage)
+        result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
         if result.artifact is None and result.failure_kind in {
             "provider_error",
             "schema_invalid",
             "schema_missing_output",
         }:
-            result = provider.generate_diagram_model(generation_input)
+            result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
             job.request_metadata = {**job.request_metadata, "retry_count": 1}
         job.provider_key = result.provider_key or runtime_settings.active_provider.value
         job.model_name = result.model_name or ""
@@ -373,4 +403,3 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
                 db.commit()
             except Exception:
                 pass
-

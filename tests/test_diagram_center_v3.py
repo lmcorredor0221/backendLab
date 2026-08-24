@@ -5,10 +5,18 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from app.models import SessionRecord, UserRecord, WorkspaceRecord, WorkspaceRole
+from app.models import (
+    JourneyArtifactState,
+    JourneyStageArtifactRecord,
+    SessionRecord,
+    UserRecord,
+    WorkspaceRecord,
+    WorkspaceRole,
+)
 from app.api.routes.diagram_center import _governance_entry
 from app.services.diagram_center.contracts import (
     DiagramEdge,
+    DiagramGenerationInput,
     DiagramLane,
     DiagramModel,
     DiagramNode,
@@ -20,11 +28,13 @@ from app.services.diagram_center.contracts import (
     StructuredDiagramLane,
 )
 from app.services.diagram_center.catalog_service import _renderings_need_refresh, build_catalog_v3, build_diagram_detail_v3
+from app.services.diagram_center.generation_service import run_generation_job
 from app.services.diagram_center.persistence import DiagramGovernanceRecord, DiagramVersionRecord
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
 from app.services.diagram_center.registry_service import build_prompt_spec, get_registry_entry, list_registry_entries, load_diagram_registry
 from app.services.diagram_center.renderer_service import render_diagram
 from app.services.llm_runtime.capability_registry import BuilderCapability, get_builder_capability_spec
+from app.services.llm_runtime.builder_contracts import LLMArtifactResult
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
@@ -611,6 +621,120 @@ def test_generation_job_fails_visibly_when_approved_context_is_missing(client: T
     assert job_response.status_code == 200
     assert job_response.json()["status"] == "error"
     assert job_response.json()["error_code"] == "approved_context_missing"
+
+
+def test_run_generation_job_passes_workspace_context_to_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    local_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(local_engine)
+    captured: dict[str, object] = {}
+
+    class FakeProvider:
+        def generate_diagram_model(
+            self,
+            payload: DiagramGenerationInput,
+            *,
+            context_bundle=None,
+        ) -> LLMArtifactResult:
+            captured["payload"] = payload
+            captured["context_bundle"] = context_bundle
+            artifact = DiagramModel(
+                diagram_key=payload.diagram_key,
+                title=payload.title,
+                notation=payload.notation,
+                nodes=[
+                    DiagramNode(
+                        id="approved_context",
+                        label="Approved context",
+                        kind="task",
+                        source_refs=list(payload.source_refs),
+                    )
+                ],
+                edges=[],
+                source_refs=list(payload.source_refs),
+            )
+            return LLMArtifactResult(
+                artifact=artifact,
+                provider_key="deepseek",
+                model_name="deepseek-v4-pro",
+                prompt_version="diagram-prompts.v1.0.0",
+            )
+
+    monkeypatch.setattr(
+        "app.services.diagram_center.generation_service.build_builder_service",
+        lambda runtime_settings: FakeProvider(),
+    )
+
+    with Session(local_engine) as db:
+        user = UserRecord(email="diagram-runtime@test.local", full_name="Diagram Runtime", password_hash="test")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        workspace = WorkspaceRecord(
+            name="Diagram Runtime Workspace",
+            slug="diagram-runtime-workspace",
+            created_by_user_id=user.id,
+        )
+        db.add(workspace)
+        db.commit()
+        db.refresh(workspace)
+
+        record = SessionRecord(user_id=user.id, workspace_id=workspace.id, title="Diagram runtime propagation")
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        db.add(
+            JourneyStageArtifactRecord(
+                workspace_id=workspace.id,
+                session_id=record.id,
+                artifact_kind="discover",
+                stage_key="discover",
+                version_number=1,
+                state=JourneyArtifactState.approved,
+                proposal_payload={"summary": "Contexto aprobado para el diagrama."},
+                input_fingerprint="discover-in",
+                context_fingerprint="discover-ctx",
+                output_fingerprint="discover-out",
+                provider_key="deepseek",
+                model="deepseek-v4-pro",
+                execution_backend="provider_native",
+                prompt_version="discover-prompts.v1.0.0",
+                schema_version="discovery.v1",
+                approved_by_user_id=user.id,
+            )
+        )
+        db.flush()
+
+        from app.services.diagram_center.persistence import DiagramGenerationJobRecord
+
+        job = DiagramGenerationJobRecord(
+            workspace_id=workspace.id,
+            session_id=record.id,
+            diagram_key="sequence_diagram",
+            requested_by_user_id=user.id,
+            status="queued",
+            detail_level="standard",
+            reason="user_request",
+            idempotency_key="ctx-propagation",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        workspace_id = workspace.id
+        record_id = record.id
+
+    run_generation_job(job.id, local_engine)
+
+    context_bundle = captured.get("context_bundle")
+    assert context_bundle is not None
+    assert context_bundle.workspace_id == workspace_id
+    assert context_bundle.session_id == record_id
+    assert context_bundle.capability == BuilderCapability.generate_diagram_model.value
 
 
 def test_failed_generation_idempotency_key_can_be_retried(client: TestClient) -> None:
