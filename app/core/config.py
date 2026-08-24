@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     codex_staged_agents: str = ""
     knowledge_docs_root: Path = Path(__file__).resolve().parents[3] / "Docs"
     knowledge_repo_autosync_enabled: bool | None = None
+    runtime_bootstrap_enabled: bool | None = None
     runtime_secrets_master_key: str = ""
     local_admin_email: str = "lmcorredor@leanagentbuilder.com"
     local_admin_password: str = "LeanBuilder123!"
@@ -146,4 +147,11 @@ def knowledge_repo_autosync_enabled(settings: Settings | None = None) -> bool:
     resolved = settings or get_settings()
     if resolved.knowledge_repo_autosync_enabled is not None:
         return resolved.knowledge_repo_autosync_enabled
+    return _database_is_local(resolved)
+
+
+def runtime_bootstrap_enabled(settings: Settings | None = None) -> bool:
+    resolved = settings or get_settings()
+    if resolved.runtime_bootstrap_enabled is not None:
+        return resolved.runtime_bootstrap_enabled
     return _database_is_local(resolved)

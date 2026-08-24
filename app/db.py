@@ -3,7 +3,12 @@ from collections.abc import Generator
 from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.core.config import get_settings, knowledge_repo_autosync_enabled, should_auto_create_schema
+from app.core.config import (
+    get_settings,
+    knowledge_repo_autosync_enabled,
+    runtime_bootstrap_enabled,
+    should_auto_create_schema,
+)
 from app.services.alembic_runtime_guard import assert_alembic_head_applied
 from app.services.knowledge_memory import KnowledgeMemoryService
 from app.services.knowledge_memory_migration import apply_knowledge_memory_governance_migration
@@ -143,6 +148,8 @@ def create_db_and_tables() -> None:
         ensure_runtime_schema()
     else:
         assert_alembic_head_applied(engine)
+    if not runtime_bootstrap_enabled(settings):
+        return
     with Session(engine) as session:
         bootstrap_application_data(session)
 
