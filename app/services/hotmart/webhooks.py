@@ -22,11 +22,19 @@ from app.models import (
     HotmartPaymentLinkRecord,
     HotmartWebhookEventRecord,
     HotmartWebhookIngestResponse,
+    HotmartPendingActivationRecord,
     SessionRecord,
     utc_now,
 )
-from app.services.commerce_service import get_product, record_commercial_event, tier_rank
+from app.services.commerce_service import (
+    apply_package_credits_from_paid_order,
+    get_product,
+    record_commercial_event,
+    settle_open_debts_from_paid_order,
+    tier_rank,
+)
 from app.services.hotmart.auth import normalize_hotmart_environment
+from app.services.hotmart.pending_activations import register_pending_hotmart_activation
 from app.services.hotmart.redaction import redact_payload
 from app.services.hotmart.secrets import load_hotmart_hottok
 
@@ -52,9 +60,56 @@ def process_hotmart_webhook(
     event_id = _extract_event_id(payload, event_type=event_type, transaction=transaction, payload_hash=payload_hash)
 
     existing_event = session.exec(
-        select(HotmartWebhookEventRecord).where(HotmartWebhookEventRecord.event_id == event_id)
+        select(HotmartWebhookEventRecord).where(
+            HotmartWebhookEventRecord.event_id == event_id,
+            HotmartWebhookEventRecord.event_type == event_type,
+        )
     ).first()
     if existing_event is not None:
+        pending_activation = _pending_activation_for_event(session, existing_event.id)
+        existing_event.retries += 1
+        if existing_event.payload_hash != payload_hash:
+            existing_event.processing_status = "observed"
+            existing_event.error_code = "payload_conflict"
+            existing_event.error_message = "Same Hotmart event id/type arrived with a different payload hash."
+            existing_event.processed_at = utc_now()
+            session.add(existing_event)
+            from app.services.hotmart.sync import _open_or_update_issue
+
+            if existing_event.workspace_id is not None:
+                _open_or_update_issue(
+                    session,
+                    workspace_id=existing_event.workspace_id,
+                    environment=env,
+                    issue_type="webhook_payload_conflict",
+                    provider_ref=existing_event.transaction or existing_event.event_id,
+                    internal_ref=str(existing_event.order_id or ""),
+                    severity="medium",
+                    summary=f"Webhook {existing_event.event_id} arrived with a conflicting payload hash.",
+                    suggested_action="Review both payloads and resolve manually from the reconciliation console.",
+                    metadata={
+                        "event_id": existing_event.event_id,
+                        "event_type": existing_event.event_type,
+                        "stored_payload_hash": existing_event.payload_hash,
+                        "incoming_payload_hash": payload_hash,
+                        "retries": existing_event.retries,
+                    },
+                )
+            session.flush()
+            return HotmartWebhookIngestResponse(
+                event_id=event_id,
+                event_type=existing_event.event_type,
+                transaction=existing_event.transaction,
+                processing_status="observed",
+                duplicate=True,
+                workspace_id=existing_event.workspace_id,
+                order_id=existing_event.order_id,
+                payment_id=existing_event.payment_id,
+                pending_activation_id=pending_activation.id if pending_activation is not None else None,
+                message="Hotmart webhook conflict observed and sent to reconciliation.",
+            )
+        session.add(existing_event)
+        session.flush()
         return HotmartWebhookIngestResponse(
             event_id=event_id,
             event_type=existing_event.event_type,
@@ -64,6 +119,7 @@ def process_hotmart_webhook(
             workspace_id=existing_event.workspace_id,
             order_id=existing_event.order_id,
             payment_id=existing_event.payment_id,
+            pending_activation_id=pending_activation.id if pending_activation is not None else None,
             message="Duplicate Hotmart webhook ignored.",
         )
 
@@ -97,6 +153,30 @@ def process_hotmart_webhook(
         session.add(webhook_event)
         session.flush()
         raise PermissionError("Invalid Hotmart webhook token.")
+
+    if order is None and workspace_id is not None and event_type in APPROVAL_EVENTS:
+        pending_activation = register_pending_hotmart_activation(
+            session,
+            payload=payload,
+            webhook_event_id=webhook_event.id,
+            event_id=event_id,
+            source_workspace_id=workspace_id,
+            environment=env,
+            transaction=transaction or event_id,
+        )
+        webhook_event.processing_status = "pending_activation"
+        webhook_event.processed_at = utc_now()
+        session.add(webhook_event)
+        session.flush()
+        return HotmartWebhookIngestResponse(
+            event_id=event_id,
+            event_type=event_type,
+            transaction=transaction,
+            processing_status="pending_activation",
+            workspace_id=workspace_id,
+            pending_activation_id=pending_activation.id,
+            message="Hotmart approved purchase recorded pending activation.",
+        )
 
     if order is None or workspace_id is None:
         webhook_event.processing_status = "unresolved"
@@ -197,6 +277,18 @@ def _process_approved_purchase(
     payment.updated_at = utc_now()
     session.add(payment)
     session.flush()
+    settle_open_debts_from_paid_order(
+        session,
+        order=order,
+        payment=payment,
+        actor_user_id=order.buyer_user_id,
+    )
+    apply_package_credits_from_paid_order(
+        session,
+        order=order,
+        payment=payment,
+        actor_user_id=order.buyer_user_id,
+    )
 
     entitlement = session.exec(
         select(CommercialEntitlementRecord).where(CommercialEntitlementRecord.order_id == order.id)
@@ -449,6 +541,15 @@ def _fallback_workspace_id(session: Session, *, environment: str) -> UUID | None
         select(HotmartIntegrationConfigRecord).where(HotmartIntegrationConfigRecord.environment == environment)
     ).first()
     return config.workspace_id if config is not None else None
+
+
+def _pending_activation_for_event(
+    session: Session,
+    webhook_event_id: UUID,
+) -> HotmartPendingActivationRecord | None:
+    return session.exec(
+        select(HotmartPendingActivationRecord).where(HotmartPendingActivationRecord.webhook_event_id == webhook_event_id)
+    ).first()
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:

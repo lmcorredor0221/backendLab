@@ -12,7 +12,14 @@ from sqlmodel import Session, select
 
 from app.core.config import get_settings
 from app.db import engine, get_session
-from app.models import AuthTokenRecord, UserRecord
+from app.models import (
+    AuthTokenRecord,
+    UserCurrencyResponse,
+    UserCurrencyUpdateRequest,
+    UserLanguageResponse,
+    UserLanguageUpdateRequest,
+    UserRecord,
+)
 
 
 security = HTTPBearer(auto_error=False)
@@ -244,6 +251,26 @@ def update_user_consents(db: Session, user: UserRecord, payload: UserConsentUpda
     db.commit()
     db.refresh(user)
     return get_user_consents(user)
+
+
+def get_user_currency(user: UserRecord) -> UserCurrencyResponse:
+    return UserCurrencyResponse(
+        user_id=user.id,
+        preferred_currency=(user.preferred_currency or "COP").strip().upper() or "COP",
+        updated_at=user.updated_at,
+    )
+
+
+def update_user_currency(db: Session, user: UserRecord, payload: UserCurrencyUpdateRequest) -> UserCurrencyResponse:
+    currency = payload.preferred_currency.strip().upper()
+    if currency not in {"USD", "COP"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Moneda no soportada. Debe ser 'USD' o 'COP'.")
+    user.preferred_currency = currency
+    user.updated_at = utc_now()
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return get_user_currency(user)
 
 
 def update_user_language(db: Session, user: UserRecord, payload: UserLanguageUpdateRequest) -> UserLanguageResponse:

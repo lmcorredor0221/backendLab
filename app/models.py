@@ -97,6 +97,50 @@ class CommercialAccessRequestStatus(str, Enum):
     canceled = "canceled"
 
 
+class CommercialQuotaSourceKind(str, Enum):
+    free = "free"
+    subscription = "subscription"
+    one_time = "one_time"
+    adjustment = "adjustment"
+
+
+class CommercialQuotaBucketStatus(str, Enum):
+    scheduled = "scheduled"
+    active = "active"
+    exhausted = "exhausted"
+    expired = "expired"
+    canceled = "canceled"
+
+
+class CommercialQuotaLedgerMovementType(str, Enum):
+    seed = "seed"
+    overwrite = "overwrite"
+    credit = "credit"
+    consume = "consume"
+    expire = "expire"
+    cancel = "cancel"
+    adjustment = "adjustment"
+
+
+class CommercialPackageType(str, Enum):
+    one_time = "one_time"
+    subscription = "subscription"
+    bundle_subscription = "bundle_subscription"
+
+
+class CommercialDebtStatus(str, Enum):
+    open = "open"
+    settled = "settled"
+    waived = "waived"
+    canceled = "canceled"
+
+
+class HotmartPendingActivationStatus(str, Enum):
+    pending_activation = "pending_activation"
+    claimed = "claimed"
+    canceled = "canceled"
+
+
 class ACPWorkflowRunStatus(str, Enum):
     not_started = "not_started"
     running = "running"
@@ -853,6 +897,188 @@ class CommercialEventRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class CommercialQuotaProductConfigRecord(SQLModel, table=True):
+    __tablename__ = "commercial_quota_product_configs"
+    __table_args__ = (UniqueConstraint("product_key", name="uq_commercial_quota_product_config_product_key"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    product_key: str = Field(index=True, nullable=False)
+    display_name: str = Field(default="", nullable=False)
+    enabled: bool = Field(default=True, nullable=False)
+    initial_free_units: int = Field(default=0, nullable=False)
+    consumption_priority: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    checkout_required_on_zero_balance: bool = Field(default=True, nullable=False)
+    fifo_auto_approval_enabled: bool = Field(default=True, nullable=False)
+    default_blocked_request_ttl_hours: int = Field(default=72, nullable=False)
+    default_checkout_ttl_minutes: int = Field(default=30, nullable=False)
+    debt_enabled: bool = Field(default=True, nullable=False)
+    allow_manual_override_without_charge: bool = Field(default=True, nullable=False)
+    allow_courtesy: bool = Field(default=True, nullable=False)
+    allow_debt_pending: bool = Field(default=True, nullable=False)
+    catalog_priority_strategy: str = Field(default="minimum_sufficient", nullable=False)
+    sync_retry_limit: int = Field(default=5, nullable=False)
+    duplicate_conflict_visibility: str = Field(default="platform_admin_only", nullable=False)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommercialQuotaWorkspaceOverrideRecord(SQLModel, table=True):
+    __tablename__ = "commercial_quota_workspace_overrides"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "product_key",
+            name="uq_commercial_quota_workspace_override_workspace_product",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    product_key: str = Field(index=True, nullable=False)
+    is_active: bool = Field(default=True, nullable=False)
+    enabled_override: bool | None = Field(default=None, nullable=True)
+    free_units_override: int | None = Field(default=None, nullable=True)
+    consumption_priority_override: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    checkout_required_on_zero_balance_override: bool | None = Field(default=None, nullable=True)
+    fifo_auto_approval_enabled_override: bool | None = Field(default=None, nullable=True)
+    default_blocked_request_ttl_hours_override: int | None = Field(default=None, nullable=True)
+    default_checkout_ttl_minutes_override: int | None = Field(default=None, nullable=True)
+    debt_enabled_override: bool | None = Field(default=None, nullable=True)
+    effective_from: datetime | None = Field(default=None, nullable=True)
+    effective_to: datetime | None = Field(default=None, nullable=True)
+    notes: str = Field(default="", nullable=False)
+    updated_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommercialBalanceBucketRecord(SQLModel, table=True):
+    __tablename__ = "commercial_balance_buckets"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "product_key",
+            "bucket_key",
+            name="uq_commercial_balance_bucket_workspace_product_key",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    product_key: str = Field(index=True, nullable=False)
+    bucket_key: str = Field(index=True, nullable=False)
+    source_kind: CommercialQuotaSourceKind = Field(default=CommercialQuotaSourceKind.free, nullable=False)
+    status: CommercialQuotaBucketStatus = Field(default=CommercialQuotaBucketStatus.scheduled, nullable=False)
+    units_granted: int = Field(default=0, nullable=False)
+    units_consumed: int = Field(default=0, nullable=False)
+    source_ref: str = Field(default="", index=True, nullable=False)
+    granted_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", nullable=True)
+    payment_id: UUID | None = Field(default=None, foreign_key="commercial_payments.id", nullable=True)
+    starts_at: datetime = Field(default_factory=utc_now, nullable=False)
+    ends_at: datetime | None = Field(default=None, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommercialBalanceLedgerRecord(SQLModel, table=True):
+    __tablename__ = "commercial_balance_ledger"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    product_key: str = Field(index=True, nullable=False)
+    bucket_id: UUID | None = Field(default=None, foreign_key="commercial_balance_buckets.id", nullable=True)
+    movement_type: CommercialQuotaLedgerMovementType = Field(
+        default=CommercialQuotaLedgerMovementType.credit,
+        nullable=False,
+    )
+    source_kind: CommercialQuotaSourceKind = Field(default=CommercialQuotaSourceKind.free, nullable=False)
+    delta_units: int = Field(default=0, nullable=False)
+    balance_before_units: int = Field(default=0, nullable=False)
+    balance_after_units: int = Field(default=0, nullable=False)
+    bucket_balance_before_units: int = Field(default=0, nullable=False)
+    bucket_balance_after_units: int = Field(default=0, nullable=False)
+    source_ref: str = Field(default="", index=True, nullable=False)
+    actor_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", nullable=True)
+    payment_id: UUID | None = Field(default=None, foreign_key="commercial_payments.id", nullable=True)
+    access_request_id: UUID | None = Field(default=None, foreign_key="commercial_access_requests.id", nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommercialPackageCatalogRecord(SQLModel, table=True):
+    __tablename__ = "commercial_package_catalog"
+    __table_args__ = (UniqueConstraint("package_code", name="uq_commercial_package_catalog_code"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    package_code: str = Field(index=True, nullable=False)
+    display_name: str = Field(default="", nullable=False)
+    product_key: str = Field(index=True, nullable=False)
+    package_type: CommercialPackageType = Field(default=CommercialPackageType.one_time, nullable=False)
+    enabled: bool = Field(default=True, nullable=False)
+    granted_units: int = Field(default=0, nullable=False)
+    granted_units_blueprint_pro: int = Field(default=0, nullable=False)
+    granted_units_acp: int = Field(default=0, nullable=False)
+    validity_days: int | None = Field(default=None, nullable=True)
+    billing_cycle: str = Field(default="", nullable=False)
+    renewal_policy: str = Field(default="", nullable=False)
+    recommendation_priority: int = Field(default=100, nullable=False)
+    hotmart_environment: str = Field(default="sandbox", nullable=False)
+    hotmart_product_id: str = Field(default="", nullable=False)
+    hotmart_product_ucode: str = Field(default="", nullable=False)
+    offer_code: str = Field(default="", nullable=False)
+    plan_code: str = Field(default="", nullable=False)
+    checkout_currency_mode: str = Field(default="workspace_preferred", nullable=False)
+    hotmart_price_strategy: str = Field(default="provider_authoritative", nullable=False)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommercialDebtRecord(SQLModel, table=True):
+    __tablename__ = "commercial_debts"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    product_key: str = Field(index=True, nullable=False)
+    access_request_id: UUID | None = Field(default=None, foreign_key="commercial_access_requests.id", nullable=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", nullable=True)
+    status: CommercialDebtStatus = Field(default=CommercialDebtStatus.open, nullable=False)
+    reason_code: str = Field(default="", nullable=False)
+    reason_label: str = Field(default="", nullable=False)
+    summary: str = Field(default="", nullable=False)
+    amount_cents: int = Field(default=0, nullable=False)
+    settled_amount_cents: int = Field(default=0, nullable=False)
+    currency: str = Field(default="USD", nullable=False)
+    opened_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    resolved_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    due_at: datetime | None = Field(default=None, nullable=True)
+    resolved_at: datetime | None = Field(default=None, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommercialDebtSettlementRecord(SQLModel, table=True):
+    __tablename__ = "commercial_debt_settlements"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    debt_id: UUID = Field(foreign_key="commercial_debts.id", index=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", nullable=True)
+    payment_id: UUID | None = Field(default=None, foreign_key="commercial_payments.id", nullable=True)
+    settled_amount_cents: int = Field(default=0, nullable=False)
+    currency: str = Field(default="USD", nullable=False)
+    settlement_kind: str = Field(default="manual", nullable=False)
+    actor_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
 class HotmartIntegrationConfigRecord(SQLModel, table=True):
     __tablename__ = "hotmart_integration_configs"
     __table_args__ = (UniqueConstraint("workspace_id", "environment", name="uq_hotmart_config_workspace_environment"),)
@@ -1022,7 +1248,7 @@ class HotmartSyncCursorRecord(SQLModel, table=True):
 
 class HotmartWebhookEventRecord(SQLModel, table=True):
     __tablename__ = "hotmart_webhook_events"
-    __table_args__ = (UniqueConstraint("event_id", name="uq_hotmart_webhook_event_id"),)
+    __table_args__ = (UniqueConstraint("event_id", "event_type", name="uq_hotmart_webhook_event_id_type"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     event_id: str = Field(default="", index=True, nullable=False)
@@ -1040,6 +1266,54 @@ class HotmartWebhookEventRecord(SQLModel, table=True):
     retries: int = Field(default=0, nullable=False)
     processed_at: datetime | None = Field(default=None, nullable=True)
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class HotmartPendingActivationRecord(SQLModel, table=True):
+    __tablename__ = "hotmart_pending_activations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_workspace_id",
+            "environment",
+            "provider_ref",
+            name="uq_hotmart_pending_activation_workspace_provider_ref",
+        ),
+        UniqueConstraint("activation_token", name="uq_hotmart_pending_activation_token"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    source_workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    status: HotmartPendingActivationStatus = Field(
+        default=HotmartPendingActivationStatus.pending_activation,
+        nullable=False,
+        index=True,
+    )
+    provider_ref: str = Field(default="", index=True, nullable=False)
+    event_id: str = Field(default="", index=True, nullable=False)
+    webhook_event_id: UUID | None = Field(default=None, foreign_key="hotmart_webhook_events.id", nullable=True)
+    hotmart_product_id: str = Field(default="", index=True, nullable=False)
+    hotmart_product_ucode: str = Field(default="", nullable=False)
+    offer_code: str = Field(default="", nullable=False)
+    plan_code: str = Field(default="", nullable=False)
+    product_key: str = Field(default="", index=True, nullable=False)
+    package_code: str = Field(default="", nullable=False)
+    resolution_strategy: str = Field(default="", nullable=False)
+    buyer_name: str = Field(default="", nullable=False)
+    buyer_email: str = Field(default="", index=True, nullable=False)
+    buyer_document: str = Field(default="", nullable=False)
+    currency: str = Field(default="USD", nullable=False)
+    amount_cents: int = Field(default=0, nullable=False)
+    activation_token: str = Field(default="", index=True, nullable=False)
+    claimed_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    claimed_workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", nullable=True)
+    claimed_session_id: UUID | None = Field(default=None, foreign_key="sessions.id", nullable=True)
+    adopted_order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", nullable=True)
+    adopted_payment_id: UUID | None = Field(default=None, foreign_key="commercial_payments.id", nullable=True)
+    claimed_at: datetime | None = Field(default=None, nullable=True)
+    canceled_at: datetime | None = Field(default=None, nullable=True)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
 class HotmartReconciliationIssueRecord(SQLModel, table=True):
@@ -5202,6 +5476,7 @@ class AuthUser(ContractModel):
     id: UUID
     email: str
     full_name: str
+    preferred_currency: str = "COP"
     active_workspace_id: UUID | None = None
     active_workspace_name: str = ""
     workspaces: list[WorkspaceMembershipSummary] = PydanticField(default_factory=list)
@@ -5434,6 +5709,7 @@ class CommercialCheckoutSessionRequest(ContractModel):
     session_id: UUID
     product_key: str
     price_code: str = ""
+    package_code: str = ""
     provider: Literal["sandbox", "hotmart"] | None = None
     success_url: str = ""
     cancel_url: str = ""
@@ -5864,7 +6140,364 @@ class HotmartWebhookIngestResponse(ContractModel):
     order_id: UUID | None = None
     payment_id: UUID | None = None
     entitlement_id: UUID | None = None
+    pending_activation_id: UUID | None = None
     message: str = ""
+
+
+class HotmartPendingActivationResponse(ContractModel):
+    contract_version: str = "hotmart-pending-activation.v1"
+    id: UUID
+    source_workspace_id: UUID
+    environment: str = "sandbox"
+    status: HotmartPendingActivationStatus = HotmartPendingActivationStatus.pending_activation
+    provider_ref: str = ""
+    event_id: str = ""
+    hotmart_product_id: str = ""
+    hotmart_product_ucode: str = ""
+    offer_code: str = ""
+    plan_code: str = ""
+    product_key: str = ""
+    package_code: str = ""
+    resolution_strategy: str = ""
+    buyer_name: str = ""
+    buyer_email: str = ""
+    currency: str = "USD"
+    amount_cents: int = 0
+    activation_token: str = ""
+    claimed_by_user_id: UUID | None = None
+    claimed_workspace_id: UUID | None = None
+    claimed_session_id: UUID | None = None
+    adopted_order_id: UUID | None = None
+    adopted_payment_id: UUID | None = None
+    claimed_at: datetime | None = None
+    canceled_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class HotmartPendingActivationPublicResponse(ContractModel):
+    contract_version: str = "hotmart-pending-activation-public.v1"
+    activation_token: str = ""
+    status: HotmartPendingActivationStatus = HotmartPendingActivationStatus.pending_activation
+    buyer_name: str = ""
+    buyer_email: str = ""
+    buyer_email_masked: str = ""
+    product_key: str = ""
+    resolved_product_key: str = ""
+    package_code: str = ""
+    display_name: str = ""
+    resolution_strategy: str = ""
+    currency: str = "USD"
+    amount_cents: int = 0
+    can_bootstrap: bool = False
+    already_claimed: bool = False
+    claim_status_message: str = ""
+    claimed_session_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class HotmartPendingActivationClaimRequest(ContractModel):
+    session_id: UUID
+
+
+class HotmartPendingActivationBootstrapRequest(ContractModel):
+    session_id: UUID | None = None
+
+
+class HotmartPendingActivationBootstrapResponse(ContractModel):
+    contract_version: str = "hotmart-pending-activation-bootstrap.v1"
+    created_session: bool = False
+    pending_activation: HotmartPendingActivationResponse
+    project_title: str = ""
+    redirect_path: str = ""
+    product_redirect_path: str = ""
+    session_id: UUID
+    work_redirect_path: str = ""
+    workspace_id: UUID
+
+
+class CommercialQuotaProductConfigUpsertRequest(ContractModel):
+    product_key: str
+    display_name: str
+    enabled: bool = True
+    initial_free_units: int = 0
+    consumption_priority: list[str] = PydanticField(default_factory=list)
+    checkout_required_on_zero_balance: bool = True
+    fifo_auto_approval_enabled: bool = True
+    default_blocked_request_ttl_hours: int = 72
+    default_checkout_ttl_minutes: int = 30
+    debt_enabled: bool = True
+    allow_manual_override_without_charge: bool = True
+    allow_courtesy: bool = True
+    allow_debt_pending: bool = True
+    catalog_priority_strategy: str = "minimum_sufficient"
+    sync_retry_limit: int = 5
+    duplicate_conflict_visibility: str = "platform_admin_only"
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class CommercialQuotaProductConfigResponse(ContractModel):
+    contract_version: str = "commercial-quota-product-config.v1"
+    id: UUID
+    product_key: str
+    display_name: str
+    enabled: bool
+    initial_free_units: int
+    consumption_priority: list[str] = PydanticField(default_factory=list)
+    checkout_required_on_zero_balance: bool
+    fifo_auto_approval_enabled: bool
+    default_blocked_request_ttl_hours: int
+    default_checkout_ttl_minutes: int
+    debt_enabled: bool
+    allow_manual_override_without_charge: bool
+    allow_courtesy: bool
+    allow_debt_pending: bool
+    catalog_priority_strategy: str
+    sync_retry_limit: int
+    duplicate_conflict_visibility: str
+    updated_at: datetime
+
+
+class CommercialQuotaWorkspaceOverrideUpsertRequest(ContractModel):
+    workspace_id: UUID
+    product_key: str
+    is_active: bool = True
+    enabled_override: bool | None = None
+    free_units_override: int | None = None
+    consumption_priority_override: list[str] = PydanticField(default_factory=list)
+    checkout_required_on_zero_balance_override: bool | None = None
+    fifo_auto_approval_enabled_override: bool | None = None
+    default_blocked_request_ttl_hours_override: int | None = None
+    default_checkout_ttl_minutes_override: int | None = None
+    debt_enabled_override: bool | None = None
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    notes: str = ""
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class CommercialQuotaWorkspaceOverrideResponse(ContractModel):
+    contract_version: str = "commercial-quota-workspace-override.v1"
+    id: UUID
+    workspace_id: UUID
+    product_key: str
+    is_active: bool
+    enabled_override: bool | None = None
+    free_units_override: int | None = None
+    consumption_priority_override: list[str] = PydanticField(default_factory=list)
+    checkout_required_on_zero_balance_override: bool | None = None
+    fifo_auto_approval_enabled_override: bool | None = None
+    default_blocked_request_ttl_hours_override: int | None = None
+    default_checkout_ttl_minutes_override: int | None = None
+    debt_enabled_override: bool | None = None
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    notes: str = ""
+    updated_by_user_id: UUID | None = None
+    updated_at: datetime
+
+
+class CommercialQuotaEffectiveConfigResponse(ContractModel):
+    contract_version: str = "commercial-quota-effective-config.v1"
+    workspace_id: UUID
+    product_key: str
+    display_name: str
+    enabled: bool
+    initial_free_units: int
+    consumption_priority: list[str] = PydanticField(default_factory=list)
+    checkout_required_on_zero_balance: bool
+    fifo_auto_approval_enabled: bool
+    default_blocked_request_ttl_hours: int
+    default_checkout_ttl_minutes: int
+    debt_enabled: bool
+    allow_manual_override_without_charge: bool
+    allow_courtesy: bool
+    allow_debt_pending: bool
+    catalog_priority_strategy: str
+    sync_retry_limit: int
+    duplicate_conflict_visibility: str
+    override_id: UUID | None = None
+
+
+class CommercialBalanceBucketResponse(ContractModel):
+    contract_version: str = "commercial-balance-bucket.v1"
+    bucket_id: UUID
+    bucket_key: str
+    source_kind: CommercialQuotaSourceKind
+    status: CommercialQuotaBucketStatus
+    units_granted: int
+    units_consumed: int
+    available_units: int
+    starts_at: datetime
+    ends_at: datetime | None = None
+    source_ref: str
+
+
+class CommercialBalanceSnapshotResponse(ContractModel):
+    contract_version: str = "commercial-balance-snapshot.v1"
+    workspace_id: UUID
+    product_key: str
+    total_available_units: int
+    by_source_kind: dict[str, int] = PydanticField(default_factory=dict)
+    buckets: list[CommercialBalanceBucketResponse] = PydanticField(default_factory=list)
+
+
+class CommercialBalanceLedgerResponse(ContractModel):
+    contract_version: str = "commercial-balance-ledger.v1"
+    id: UUID
+    workspace_id: UUID
+    product_key: str
+    bucket_id: UUID | None = None
+    movement_type: CommercialQuotaLedgerMovementType
+    source_kind: CommercialQuotaSourceKind
+    delta_units: int
+    balance_before_units: int
+    balance_after_units: int
+    bucket_balance_before_units: int
+    bucket_balance_after_units: int
+    source_ref: str
+    actor_user_id: UUID | None = None
+    order_id: UUID | None = None
+    payment_id: UUID | None = None
+    access_request_id: UUID | None = None
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+    created_at: datetime
+
+
+class CommercialPackageCatalogUpsertRequest(ContractModel):
+    package_code: str
+    display_name: str
+    product_key: str
+    package_type: CommercialPackageType = CommercialPackageType.one_time
+    enabled: bool = True
+    granted_units: int = 0
+    granted_units_blueprint_pro: int = 0
+    granted_units_acp: int = 0
+    validity_days: int | None = None
+    billing_cycle: str = ""
+    renewal_policy: str = ""
+    recommendation_priority: int = 100
+    hotmart_environment: str = "sandbox"
+    hotmart_product_id: str = ""
+    hotmart_product_ucode: str = ""
+    offer_code: str = ""
+    plan_code: str = ""
+    checkout_currency_mode: str = "workspace_preferred"
+    hotmart_price_strategy: str = "provider_authoritative"
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class CommercialPackageCatalogResponse(ContractModel):
+    contract_version: str = "commercial-package-catalog.v1"
+    id: UUID
+    package_code: str
+    display_name: str
+    product_key: str
+    package_type: CommercialPackageType
+    enabled: bool
+    granted_units: int
+    granted_units_blueprint_pro: int
+    granted_units_acp: int
+    validity_days: int | None = None
+    billing_cycle: str
+    renewal_policy: str
+    recommendation_priority: int
+    hotmart_environment: str
+    hotmart_product_id: str
+    hotmart_product_ucode: str
+    offer_code: str
+    plan_code: str
+    checkout_currency_mode: str
+    hotmart_price_strategy: str
+    updated_at: datetime
+
+
+class CommercialPackageRecommendationResponse(ContractModel):
+    contract_version: str = "commercial-package-recommendation.v1"
+    requested_product_key: str
+    required_units: int
+    package_code: str = ""
+    display_name: str = ""
+    package_type: CommercialPackageType | None = None
+    granted_units_for_product: int = 0
+    recommendation_priority: int = 0
+    recommendation_reason: str = ""
+    hotmart_environment: str = ""
+    hotmart_product_id: str = ""
+    hotmart_product_ucode: str = ""
+    offer_code: str = ""
+    plan_code: str = ""
+
+
+class CommercialLegacyPackageResolutionCandidateResponse(ContractModel):
+    package_code: str
+    display_name: str = ""
+    package_type: CommercialPackageType = CommercialPackageType.one_time
+    product_key: str = ""
+    granted_units_for_order_product: int = 0
+    granted_units_blueprint_pro: int = 0
+    granted_units_acp: int = 0
+    offer_ref: str = ""
+
+
+class CommercialLegacyPackageResolutionResponse(ContractModel):
+    contract_version: str = "commercial-legacy-package-resolution.v1"
+    order_id: UUID
+    workspace_id: UUID
+    session_id: UUID | None = None
+    payment_id: UUID | None = None
+    product_key: str = ""
+    status: Literal["pending_manual_resolution", "resolved"] = "pending_manual_resolution"
+    reason: str = ""
+    provider: str = ""
+    checkout_ref: str = ""
+    currency: str = "USD"
+    total_cents: int = 0
+    selected_package_code: str = ""
+    resolution_note: str = ""
+    package_credit_applied: bool = False
+    candidate_packages: list[CommercialLegacyPackageResolutionCandidateResponse] = PydanticField(default_factory=list)
+    created_at: datetime
+    paid_at: datetime | None = None
+    detected_at: datetime | None = None
+    resolved_at: datetime | None = None
+    resolved_by_user_id: UUID | None = None
+
+
+class CommercialLegacyPackageResolutionResolveRequest(ContractModel):
+    package_code: str
+    resolution_note: str = ""
+
+
+class CommercialDebtSettlementRequest(ContractModel):
+    amount_cents: int
+    currency: str = "USD"
+    settlement_kind: str = "manual"
+    resolution_note: str = ""
+
+
+class CommercialDebtResponse(ContractModel):
+    contract_version: str = "commercial-debt.v1"
+    id: UUID
+    workspace_id: UUID
+    product_key: str
+    access_request_id: UUID | None = None
+    order_id: UUID | None = None
+    status: CommercialDebtStatus
+    reason_code: str
+    reason_label: str
+    summary: str
+    amount_cents: int
+    settled_amount_cents: int
+    currency: str
+    opened_by_user_id: UUID | None = None
+    resolved_by_user_id: UUID | None = None
+    due_at: datetime | None = None
+    resolved_at: datetime | None = None
+    updated_at: datetime
+    created_at: datetime
 
 
 class AccessRequestCreateRequest(ContractModel):
@@ -5876,6 +6509,13 @@ class AccessRequestCreateRequest(ContractModel):
 class AccessRequestResolveRequest(ContractModel):
     decision: Literal["approved", "rejected", "canceled"]
     resolution_note: str = ""
+    approval_mode: Literal["manual_standard", "override_without_charge", "courtesy", "debt_pending"] = (
+        "manual_standard"
+    )
+    debt_amount_cents: int = 0
+    debt_currency: str = "USD"
+    debt_reason_code: str = ""
+    debt_reason_label: str = ""
 
 
 class AccessRequestResponse(ContractModel):
@@ -6421,6 +7061,44 @@ class ActivityResponse(ContractModel):
     generated_at: datetime = PydanticField(default_factory=utc_now)
 
 
+class CommercialCurrencyTotal(ContractModel):
+    currency: str = "USD"
+    amount_cents: int = 0
+
+
+class WorkspaceCommercialProductSummaryResponse(ContractModel):
+    product_key: str
+    display_name: str = ""
+    available_units: int = 0
+    free_units: int = 0
+    subscription_units: int = 0
+    one_time_units: int = 0
+    adjustment_units: int = 0
+    pending_request_count: int = 0
+    open_debt_count: int = 0
+    debt_totals: list[CommercialCurrencyTotal] = PydanticField(default_factory=list)
+    recommendation: CommercialPackageRecommendationResponse | None = None
+
+
+class WorkspaceCommercialOrderSummaryResponse(ContractModel):
+    order_id: UUID
+    product_key: str = ""
+    status: CommercialOrderStatus
+    currency: str = "USD"
+    total_cents: int = 0
+    checkout_url: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceCommercialSummaryResponse(ContractModel):
+    contract_version: str = "workspace-commercial-summary.v1"
+    products: list[WorkspaceCommercialProductSummaryResponse] = PydanticField(default_factory=list)
+    open_debts: list[CommercialDebtResponse] = PydanticField(default_factory=list)
+    recent_orders: list[WorkspaceCommercialOrderSummaryResponse] = PydanticField(default_factory=list)
+    request_history: list[AccessRequestResponse] = PydanticField(default_factory=list)
+
+
 class PlanAccessResponse(ContractModel):
     contract_version: str = "plan-access.v1"
     session_id: UUID
@@ -6429,6 +7107,9 @@ class PlanAccessResponse(ContractModel):
     products: list[ProductCatalogResponse] = PydanticField(default_factory=list)
     pending_requests: list[AccessRequestResponse] = PydanticField(default_factory=list)
     entitlements: list[CommercialEntitlementSummary] = PydanticField(default_factory=list)
+    workspace_commercial: WorkspaceCommercialSummaryResponse = PydanticField(
+        default_factory=WorkspaceCommercialSummaryResponse
+    )
     generated_at: datetime = PydanticField(default_factory=utc_now)
 
 
@@ -6721,6 +7402,16 @@ class UserLanguageResponse(ContractModel):
     updated_at: datetime
 
 
+class UserCurrencyUpdateRequest(ContractModel):
+    preferred_currency: str
+
+
+class UserCurrencyResponse(ContractModel):
+    user_id: UUID
+    preferred_currency: str
+    updated_at: datetime
+
+
 class InitiativeEvaluationRequest(ContractModel):
     initiative_text: str = PydanticField(
         ...,
@@ -6765,4 +7456,3 @@ class InitiativeEvaluationResponse(ContractModel):
     prefilled_project_data: dict[str, Any] = PydanticField(default_factory=dict)
     token_usage: dict[str, int] = PydanticField(default_factory=dict)
     evaluation_id: str = ""
-

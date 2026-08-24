@@ -249,3 +249,58 @@ def test_refresh_hotmart_payment_link_marks_available_link_active(db_session: Se
     order_after = db_session.get(CommercialOrderRecord, order.id)
     assert order_after is not None
     assert order_after.metadata_payload["hotmart_payment_link_activation_status"] == "active"
+
+
+def test_hotmart_payment_link_uses_frozen_snapshot_for_cop_checkout(db_session: Session) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    upsert_hotmart_credentials(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartCredentialUpsertRequest(
+            environment="sandbox",
+            enabled=True,
+            client_id="client-id-value",
+            client_secret="client-secret-value",
+            basic_token="basic-token-value",
+        ),
+    )
+    upsert_hotmart_product_mapping(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartProductMappingUpsertRequest(
+            environment="sandbox",
+            internal_product_key="blueprint_pro",
+            hotmart_product_ucode="hotmart-product-ucode",
+            currency="COP",
+        ),
+    )
+    db_session.commit()
+    order = _create_hotmart_order(db_session, record, user)
+    snapshot = dict(order.metadata_payload["commercial_snapshot"])
+    snapshot["trm_cop_frozen"] = 4000.0
+    order.metadata_payload = {**order.metadata_payload, "commercial_snapshot": snapshot}
+    db_session.add(order)
+    db_session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/oauth/token":
+            return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["currency"] == "COP"
+        assert payload["value"] == 196000.0
+        return httpx.Response(201, json={"ucode": "pl-cop-123", "url": "https://pay.hotmart.test/pl-cop-123"})
+
+    response = create_hotmart_payment_link_for_order(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartPaymentLinkCreateRequest(
+            order_id=order.id,
+            environment="sandbox",
+            callback_url="https://example.test/hotmart/webhook",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    db_session.commit()
+
+    assert response.currency == "COP"
+    assert response.net_amount_cents == 19600000

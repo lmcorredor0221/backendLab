@@ -22,7 +22,7 @@ from app.models import (
     ProductPriceRecord,
     utc_now,
 )
-from app.services.commerce_service import get_price, record_commercial_event
+from app.services.commerce_service import ensure_order_commercial_snapshot, get_price, record_commercial_event
 from app.services.hotmart.auth import HotmartAuthClient, default_hotmart_api_base_url, normalize_hotmart_environment
 from app.services.hotmart.redaction import redact_payload
 from app.services.hotmart.secrets import build_hotmart_status, load_hotmart_credentials
@@ -347,12 +347,15 @@ def _build_payment_link_payload(
     mapping: HotmartProductMappingRecord,
     payload: HotmartPaymentLinkCreateRequest,
     callback_url: str,
+    snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     link_name = payload.link_name.strip() or f"{product_key}-{order.checkout_ref}"
+    target_currency = (mapping.currency or str(snapshot.get("checkout_currency") or order.currency) or "USD").upper()
+    value, normalized_amount_cents, trm_applied = _resolve_checkout_value(snapshot=snapshot, order=order, target_currency=target_currency)
     return {
         "name": link_name[:120],
-        "value": round(order.total_cents / 100.0, 2),
-        "currency": (mapping.currency or order.currency).upper(),
+        "value": value,
+        "currency": target_currency,
         "link_configuration": {
             "link_callback_url": callback_url,
         },
@@ -372,6 +375,48 @@ def _existing_payment_link(
         )
         .order_by(HotmartPaymentLinkRecord.created_at.desc())
     ).first()
+def _resolve_checkout_value(
+    *,
+    snapshot: dict[str, Any],
+    order: CommercialOrderRecord,
+    target_currency: str,
+) -> tuple[float, int, float | None]:
+    net_amount_usd_cents = int(snapshot.get("net_amount_usd_cents") or 0)
+    checkout_amount_cents = int(snapshot.get("checkout_amount_cents") or order.total_cents)
+    checkout_currency = str(snapshot.get("checkout_currency") or order.currency or "USD").upper()
+    trm_cop_frozen = snapshot.get("trm_cop_frozen")
+    if target_currency == "USD":
+        amount_cents = net_amount_usd_cents or checkout_amount_cents
+        return round(amount_cents / 100.0, 2), amount_cents, None
+    if target_currency == "COP":
+        trm_value = float(trm_cop_frozen or 0.0)
+        if trm_value <= 0:
+            raise ValueError("Commercial order snapshot must include a frozen TRM for COP checkout.")
+        if net_amount_usd_cents > 0:
+            amount_value = round((net_amount_usd_cents / 100.0) * trm_value, 2)
+        elif checkout_currency == "COP":
+            amount_value = round(checkout_amount_cents / 100.0, 2)
+        else:
+            amount_value = round((checkout_amount_cents / 100.0) * trm_value, 2)
+        return amount_value, int(round(amount_value * 100)), trm_value
+    amount_cents = checkout_amount_cents if checkout_currency == target_currency else net_amount_usd_cents or checkout_amount_cents
+    return round(amount_cents / 100.0, 2), amount_cents, None
+
+
+def _normalize_usd_amount_cents(
+    *,
+    usd_amount_cents: int,
+    target_currency: str,
+    trm_applied: float | None,
+) -> int:
+    if target_currency == "USD":
+        return max(0, usd_amount_cents)
+    if target_currency == "COP":
+        trm_value = float(trm_applied or 0.0)
+        if trm_value <= 0:
+            return max(0, usd_amount_cents)
+        return max(0, int(round((usd_amount_cents / 100.0) * trm_value * 100)))
+    return max(0, usd_amount_cents)
 
 
 def create_hotmart_payment_link_for_order(
@@ -397,12 +442,35 @@ def create_hotmart_payment_link_for_order(
     if credentials is None:
         raise ValueError("Hotmart OAuth credentials are required before creating payment links.")
 
+    snapshot = ensure_order_commercial_snapshot(session, order)
     request_payload = _build_payment_link_payload(
         order=order,
         product_key=product_key,
         mapping=mapping,
         payload=payload,
         callback_url=callback_url,
+        snapshot=snapshot,
+    )
+    target_currency = str(request_payload.get("currency") or "USD").upper()
+    _, normalized_amount_cents, trm_applied = _resolve_checkout_value(
+        snapshot=snapshot,
+        order=order,
+        target_currency=target_currency,
+    )
+    gross_amount_usd_cents = int(snapshot.get("amount_usd_base_cents") or order.subtotal_cents)
+    discount_amount_usd_cents = int(
+        snapshot.get("discount_usd_cents") or max(0, gross_amount_usd_cents - int(snapshot.get("net_amount_usd_cents") or 0))
+    )
+    net_amount_usd_cents = int(snapshot.get("net_amount_usd_cents") or order.total_cents)
+    gross_amount_cents = _normalize_usd_amount_cents(
+        usd_amount_cents=gross_amount_usd_cents,
+        target_currency=target_currency,
+        trm_applied=trm_applied,
+    )
+    discount_amount_cents = _normalize_usd_amount_cents(
+        usd_amount_cents=discount_amount_usd_cents,
+        target_currency=target_currency,
+        trm_applied=trm_applied,
     )
     api_client = HotmartPaymentLinkApiClient(
         api_base_url=status.api_base_url or default_hotmart_api_base_url(env),
@@ -426,11 +494,12 @@ def create_hotmart_payment_link_for_order(
             hotmart_payment_link_id=f"failed_{order.checkout_ref}",
             provider_ref=f"failed:{order.checkout_ref}",
             activation_status="failed",
-            gross_amount_cents=order.subtotal_cents,
-            discount_amount_cents=max(0, order.subtotal_cents - order.total_cents),
-            net_amount_cents=order.total_cents,
-            currency=(mapping.currency or order.currency).upper(),
-            internal_unit_amount_usd_cents=mapping.internal_unit_amount_usd_cents,
+            gross_amount_cents=gross_amount_cents,
+            discount_amount_cents=discount_amount_cents,
+            net_amount_cents=normalized_amount_cents,
+            currency=target_currency,
+            internal_unit_amount_usd_cents=net_amount_usd_cents,
+            trm_cop_applied=trm_applied,
             discount_origin=str(order.metadata_payload.get("discount_origin") or "internal_upgrade_credit")
             if order.subtotal_cents != order.total_cents
             else "none",
@@ -451,11 +520,12 @@ def create_hotmart_payment_link_for_order(
         provider_ref=api_result.provider_ref,
         checkout_url=api_result.checkout_url,
         activation_status="pending_activation",
-        gross_amount_cents=order.subtotal_cents,
-        discount_amount_cents=max(0, order.subtotal_cents - order.total_cents),
-        net_amount_cents=order.total_cents,
-        currency=(mapping.currency or order.currency).upper(),
-        internal_unit_amount_usd_cents=mapping.internal_unit_amount_usd_cents,
+        gross_amount_cents=gross_amount_cents,
+        discount_amount_cents=discount_amount_cents,
+        net_amount_cents=normalized_amount_cents,
+        currency=target_currency,
+        internal_unit_amount_usd_cents=net_amount_usd_cents,
+        trm_cop_applied=trm_applied,
         discount_origin=str(order.metadata_payload.get("discount_origin") or "internal_upgrade_credit")
         if order.subtotal_cents != order.total_cents
         else "none",
@@ -469,6 +539,9 @@ def create_hotmart_payment_link_for_order(
         "hotmart_payment_link_id": api_result.provider_ref,
         "hotmart_payment_link_activation_status": "pending_activation",
         "hotmart_payment_link_http_status": api_result.http_status,
+        "hotmart_checkout_currency": target_currency,
+        "hotmart_checkout_amount_cents": normalized_amount_cents,
+        "hotmart_trm_cop_applied": trm_applied,
     }
     order.updated_at = utc_now()
     session.add(order)
@@ -562,4 +635,3 @@ def _payload_contains_link(payload: Any, provider_ref: str) -> bool:
     if isinstance(payload, list):
         return any(_payload_contains_link(item, provider_ref) for item in payload)
     return False
-

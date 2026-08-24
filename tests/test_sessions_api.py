@@ -13,6 +13,7 @@ from sqlmodel import select
 from app.core.config import get_settings
 from app.db import get_session
 from app.models import (
+    ArtifactStatus,
     BlueprintArtifact,
     CanvasArtifact,
     DiscoveryArtifact,
@@ -26,9 +27,13 @@ from app.models import (
     PlatformRole,
     PlatformRoleAssignmentRecord,
     RuntimeCatalogEntryRecord,
+    SessionStage,
+    ToolRecommendationArtifact,
     ToolRecommendationConfidence,
+    ToolRecommendationEnvelope,
     ToolRecommendationLLMDecision,
     ToolRecommendationLLMOutput,
+    MemoryRecommendationArtifact,
     UserRecord,
     WorkspaceMembershipRecord,
     WorkspaceRecord,
@@ -2510,6 +2515,57 @@ def test_recommend_tools_route_respects_workspace_feature_flag(client: TestClien
     assert "feature flag is disabled" in response.json()["detail"].lower()
 
 
+def test_recommend_tools_route_attempts_react_even_when_workspace_flag_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    react_attempted = {"value": False}
+    session_id = UUID("11111111-1111-1111-1111-111111111111")
+
+    def _fail_react(**kwargs):
+        react_attempted["value"] = True
+        raise RuntimeError("react-disabled-test")
+
+    monkeypatch.setattr(sessions_routes, "run_tools_react", _fail_react)
+    monkeypatch.setattr(
+        sessions_routes,
+        "run_tool_recommendation_stage",
+        lambda *args, **kwargs: (
+            ToolRecommendationEnvelope(
+                status=ArtifactStatus.needs_review,
+                stage=SessionStage.build_blueprint,
+                data=ToolRecommendationArtifact(source_session_id=session_id),
+                missing_fields=[],
+                assumptions=[],
+                warnings=[],
+                evidence=[],
+                llm_trace=None,
+                next_action="review_tool_recommendation",
+            ),
+            [],
+        ),
+    )
+
+    payload, _, _, warnings = sessions_routes._execute_tools_runtime(
+        session_id=session_id,
+        workspace_id=UUID("22222222-2222-2222-2222-222222222222"),
+        discovery=None,
+        canvas=None,
+        blueprint=None,
+        definition_artifact=None,
+        design_artifact=None,
+        instructions="",
+        blueprint_version_number=1,
+        runtime_settings=None,
+        stage_context=None,
+    )
+
+    assert react_attempted["value"] is True
+    assert "react_runtime_fallback:RuntimeError" in warnings
+    assert payload.next_action == "review_tool_recommendation"
+
+
 def test_approve_tools_selection_promotes_blueprint_tools_and_memory_uses_digest(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
     approve_design_for_session(client, headers, session_id)
@@ -2589,6 +2645,52 @@ def test_recommend_memory_route_persists_artifact_and_skill_runs(
     skill_runs_by_key = {item["skill_key"]: item for item in snapshot["skill_runs"]}
     assert "memory_recommendation_skill" in skill_runs_by_key
     assert "memory_critique_skill" in skill_runs_by_key
+
+
+def test_recommend_memory_route_attempts_react_even_when_workspace_flag_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    react_attempted = {"value": False}
+    session_id = UUID("33333333-3333-3333-3333-333333333333")
+
+    def _fail_react(**kwargs):
+        react_attempted["value"] = True
+        raise RuntimeError("react-disabled-test")
+
+    monkeypatch.setattr(sessions_routes, "run_memory_react", _fail_react)
+    monkeypatch.setattr(
+        sessions_routes,
+        "run_memory_recommendation_stage",
+        lambda **kwargs: (
+            MemoryRecommendationArtifact(source_session_id=session_id),
+            [],
+        ),
+    )
+
+    payload, _, _, warnings = sessions_routes._execute_memory_runtime(
+        session_id=session_id,
+        workspace_id=UUID("44444444-4444-4444-4444-444444444444"),
+        discovery=None,
+        canvas=None,
+        blueprint=None,
+        definition_artifact=None,
+        design_artifact=None,
+        approved_tools_digest=None,
+        tools_artifact=None,
+        session_snapshot=None,
+        instructions="",
+        blueprint_version_number=1,
+        source_stage_versions=None,
+        runtime_settings=None,
+        proposal_stage_context=None,
+        critique_stage_context=None,
+    )
+
+    assert react_attempted["value"] is True
+    assert "react_runtime_fallback:RuntimeError" in warnings
+    assert payload.schema_version == "memory-recommendation.v1"
 
 
 def test_approve_memory_profile_refreshes_user_edits_and_promotes_blueprint_sections(

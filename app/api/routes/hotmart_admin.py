@@ -3,10 +3,28 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models import (
+    CommercialBalanceLedgerResponse,
+    CommercialBalanceSnapshotResponse,
+    CommercialDebtResponse,
+    CommercialDebtSettlementRequest,
+    CommercialLegacyPackageResolutionResolveRequest,
+    CommercialLegacyPackageResolutionResponse,
+    CommercialPackageCatalogResponse,
+    CommercialPackageCatalogUpsertRequest,
+    CommercialPackageRecommendationResponse,
+    CommercialQuotaBucketStatus,
+    CommercialQuotaEffectiveConfigResponse,
+    CommercialQuotaLedgerMovementType,
+    CommercialQuotaProductConfigResponse,
+    CommercialQuotaProductConfigUpsertRequest,
+    CommercialQuotaSourceKind,
+    CommercialQuotaWorkspaceOverrideRecord,
+    CommercialQuotaWorkspaceOverrideResponse,
+    CommercialQuotaWorkspaceOverrideUpsertRequest,
     HotmartClubModuleResponse,
     HotmartClubOverviewResponse,
     HotmartClubPageResponse,
@@ -18,6 +36,7 @@ from app.models import (
     HotmartPaymentLinkCreateRequest,
     HotmartPaymentLinkResponse,
     HotmartOperationalAlertResponse,
+    HotmartPendingActivationResponse,
     HotmartPromotionCreateRequest,
     HotmartPromotionDeleteResponse,
     HotmartPromotionMetricsResponse,
@@ -36,6 +55,25 @@ from app.models import (
     UserRecord,
 )
 from app.services.auth_service import get_current_user
+from app.services.commercial_catalog_service import (
+    list_package_catalog,
+    recommend_package_for_product,
+    upsert_package_catalog_entry,
+)
+from app.services.commercial_debt_service import list_commercial_debts, settle_commercial_debt
+from app.services.commerce_service import record_commercial_event
+from app.services.commercial_package_fulfillment_service import (
+    list_legacy_package_resolutions,
+    resolve_legacy_package_resolution,
+)
+from app.services.commercial_quota_service import (
+    get_balance_snapshot,
+    list_balance_ledger,
+    list_quota_product_configs,
+    resolve_effective_quota_config,
+    upsert_quota_product_config,
+    upsert_workspace_quota_override,
+)
 from app.services.hotmart.payment_links import (
     HotmartPaymentLinkError,
     create_hotmart_payment_link_for_order,
@@ -44,6 +82,7 @@ from app.services.hotmart.payment_links import (
     refresh_hotmart_payment_link,
     upsert_hotmart_product_mapping,
 )
+from app.services.hotmart.pending_activations import list_pending_hotmart_activations
 from app.services.hotmart.coupons import (
     HotmartCouponError,
     build_hotmart_promotion_metrics,
@@ -79,7 +118,7 @@ from app.services.hotmart.sync import (
     resolve_hotmart_reconciliation_issue,
     run_hotmart_manual_sync,
 )
-from app.services.runtime_access_control import ensure_workspace_runtime_admin
+from app.services.runtime_access_control import ensure_platform_admin, ensure_workspace_runtime_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
 
@@ -429,6 +468,24 @@ def list_hotmart_reconciliation_issues_route(
     )
 
 
+@router.get("/pending-activations", response_model=list[HotmartPendingActivationResponse])
+def list_hotmart_pending_activations_route(
+    workspace_id: UUID | None = Query(default=None),
+    status_filter: str = Query(default="pending_activation", alias="status"),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> list[HotmartPendingActivationResponse]:
+    try:
+        ensure_platform_admin(db, current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return list_pending_hotmart_activations(
+        db,
+        source_workspace_id=workspace_id,
+        status_filter=status_filter,
+    )
+
+
 @router.post("/reconciliation/{issue_id}/resolve", response_model=HotmartReconciliationIssueResponse)
 def resolve_hotmart_reconciliation_issue_route(
     issue_id: UUID,
@@ -676,6 +733,419 @@ def test_hotmart_connection_route(
         db,
         workspace_id=workspace_context.workspace.id,
         environment=environment,
+    )
+    db.commit()
+    return response
+
+
+def _ensure_platform_admin_or_403(db: Session, current_user: UserRecord) -> None:
+    try:
+        ensure_platform_admin(db, current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+def _serialize_quota_product_config(record) -> CommercialQuotaProductConfigResponse:
+    return CommercialQuotaProductConfigResponse(
+        id=record.id,
+        product_key=record.product_key,
+        display_name=record.display_name,
+        enabled=record.enabled,
+        initial_free_units=record.initial_free_units,
+        consumption_priority=list(record.consumption_priority),
+        checkout_required_on_zero_balance=record.checkout_required_on_zero_balance,
+        fifo_auto_approval_enabled=record.fifo_auto_approval_enabled,
+        default_blocked_request_ttl_hours=record.default_blocked_request_ttl_hours,
+        default_checkout_ttl_minutes=record.default_checkout_ttl_minutes,
+        debt_enabled=record.debt_enabled,
+        allow_manual_override_without_charge=record.allow_manual_override_without_charge,
+        allow_courtesy=record.allow_courtesy,
+        allow_debt_pending=record.allow_debt_pending,
+        catalog_priority_strategy=record.catalog_priority_strategy,
+        sync_retry_limit=record.sync_retry_limit,
+        duplicate_conflict_visibility=record.duplicate_conflict_visibility,
+        updated_at=record.updated_at,
+    )
+
+
+def _serialize_workspace_override(record: CommercialQuotaWorkspaceOverrideRecord) -> CommercialQuotaWorkspaceOverrideResponse:
+    return CommercialQuotaWorkspaceOverrideResponse(
+        id=record.id,
+        workspace_id=record.workspace_id,
+        product_key=record.product_key,
+        is_active=record.is_active,
+        enabled_override=record.enabled_override,
+        free_units_override=record.free_units_override,
+        consumption_priority_override=list(record.consumption_priority_override),
+        checkout_required_on_zero_balance_override=record.checkout_required_on_zero_balance_override,
+        fifo_auto_approval_enabled_override=record.fifo_auto_approval_enabled_override,
+        default_blocked_request_ttl_hours_override=record.default_blocked_request_ttl_hours_override,
+        default_checkout_ttl_minutes_override=record.default_checkout_ttl_minutes_override,
+        debt_enabled_override=record.debt_enabled_override,
+        effective_from=record.effective_from,
+        effective_to=record.effective_to,
+        notes=record.notes,
+        updated_by_user_id=record.updated_by_user_id,
+        updated_at=record.updated_at,
+    )
+
+
+def _serialize_effective_quota(
+    *,
+    workspace_id: UUID,
+    config,
+) -> CommercialQuotaEffectiveConfigResponse:
+    return CommercialQuotaEffectiveConfigResponse(
+        workspace_id=workspace_id,
+        product_key=config.product_key,
+        display_name=config.display_name,
+        enabled=config.enabled,
+        initial_free_units=config.initial_free_units,
+        consumption_priority=[item.value for item in config.consumption_priority],
+        checkout_required_on_zero_balance=config.checkout_required_on_zero_balance,
+        fifo_auto_approval_enabled=config.fifo_auto_approval_enabled,
+        default_blocked_request_ttl_hours=config.default_blocked_request_ttl_hours,
+        default_checkout_ttl_minutes=config.default_checkout_ttl_minutes,
+        debt_enabled=config.debt_enabled,
+        allow_manual_override_without_charge=config.allow_manual_override_without_charge,
+        allow_courtesy=config.allow_courtesy,
+        allow_debt_pending=config.allow_debt_pending,
+        catalog_priority_strategy=config.catalog_priority_strategy,
+        sync_retry_limit=config.sync_retry_limit,
+        duplicate_conflict_visibility=config.duplicate_conflict_visibility,
+        override_id=config.override_id,
+    )
+
+
+def _serialize_balance_snapshot(snapshot) -> CommercialBalanceSnapshotResponse:
+    return CommercialBalanceSnapshotResponse(
+        workspace_id=snapshot.workspace_id,
+        product_key=snapshot.product_key,
+        total_available_units=snapshot.total_available_units,
+        by_source_kind={key.value: value for key, value in snapshot.by_source_kind.items()},
+        buckets=[
+            {
+                "bucket_id": bucket.bucket_id,
+                "bucket_key": bucket.bucket_key,
+                "source_kind": bucket.source_kind,
+                "status": bucket.status,
+                "units_granted": bucket.units_granted,
+                "units_consumed": bucket.units_consumed,
+                "available_units": bucket.available_units,
+                "starts_at": bucket.starts_at,
+                "ends_at": bucket.ends_at,
+                "source_ref": bucket.source_ref,
+            }
+            for bucket in snapshot.buckets
+        ],
+    )
+
+
+def _serialize_balance_ledger_entry(record) -> CommercialBalanceLedgerResponse:
+    return CommercialBalanceLedgerResponse(
+        id=record.id,
+        workspace_id=record.workspace_id,
+        product_key=record.product_key,
+        bucket_id=record.bucket_id,
+        movement_type=record.movement_type,
+        source_kind=record.source_kind,
+        delta_units=record.delta_units,
+        balance_before_units=record.balance_before_units,
+        balance_after_units=record.balance_after_units,
+        bucket_balance_before_units=record.bucket_balance_before_units,
+        bucket_balance_after_units=record.bucket_balance_after_units,
+        source_ref=record.source_ref,
+        actor_user_id=record.actor_user_id,
+        order_id=record.order_id,
+        payment_id=record.payment_id,
+        access_request_id=record.access_request_id,
+        metadata=record.metadata_payload,
+        created_at=record.created_at,
+    )
+
+
+@router.get("/commercial/quota-products", response_model=list[CommercialQuotaProductConfigResponse])
+def list_commercial_quota_products_route(
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> list[CommercialQuotaProductConfigResponse]:
+    _ensure_platform_admin_or_403(db, current_user)
+    return [_serialize_quota_product_config(item) for item in list_quota_product_configs(db)]
+
+
+@router.post("/commercial/quota-products", response_model=CommercialQuotaProductConfigResponse)
+def upsert_commercial_quota_product_route(
+    payload: CommercialQuotaProductConfigUpsertRequest,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> CommercialQuotaProductConfigResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    record = upsert_quota_product_config(
+        db,
+        product_key=payload.product_key,
+        display_name=payload.display_name,
+        enabled=payload.enabled,
+        initial_free_units=payload.initial_free_units,
+        consumption_priority=payload.consumption_priority,
+        checkout_required_on_zero_balance=payload.checkout_required_on_zero_balance,
+        fifo_auto_approval_enabled=payload.fifo_auto_approval_enabled,
+        default_blocked_request_ttl_hours=payload.default_blocked_request_ttl_hours,
+        default_checkout_ttl_minutes=payload.default_checkout_ttl_minutes,
+        debt_enabled=payload.debt_enabled,
+        allow_manual_override_without_charge=payload.allow_manual_override_without_charge,
+        allow_courtesy=payload.allow_courtesy,
+        allow_debt_pending=payload.allow_debt_pending,
+        catalog_priority_strategy=payload.catalog_priority_strategy,
+        sync_retry_limit=payload.sync_retry_limit,
+        duplicate_conflict_visibility=payload.duplicate_conflict_visibility,
+        metadata=payload.metadata,
+    )
+    db.commit()
+    return _serialize_quota_product_config(record)
+
+
+@router.get("/commercial/workspace-overrides", response_model=list[CommercialQuotaWorkspaceOverrideResponse])
+def list_commercial_workspace_overrides_route(
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> list[CommercialQuotaWorkspaceOverrideResponse]:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    rows = db.exec(
+        select(CommercialQuotaWorkspaceOverrideRecord)
+        .where(CommercialQuotaWorkspaceOverrideRecord.workspace_id == target_workspace_id)
+        .order_by(CommercialQuotaWorkspaceOverrideRecord.product_key.asc())
+    ).all()
+    return [_serialize_workspace_override(row) for row in rows]
+
+
+@router.post("/commercial/workspace-overrides", response_model=CommercialQuotaWorkspaceOverrideResponse)
+def upsert_commercial_workspace_override_route(
+    payload: CommercialQuotaWorkspaceOverrideUpsertRequest,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> CommercialQuotaWorkspaceOverrideResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    record = upsert_workspace_quota_override(
+        db,
+        workspace_id=payload.workspace_id,
+        product_key=payload.product_key,
+        is_active=payload.is_active,
+        enabled_override=payload.enabled_override,
+        free_units_override=payload.free_units_override,
+        consumption_priority_override=payload.consumption_priority_override,
+        checkout_required_on_zero_balance_override=payload.checkout_required_on_zero_balance_override,
+        fifo_auto_approval_enabled_override=payload.fifo_auto_approval_enabled_override,
+        default_blocked_request_ttl_hours_override=payload.default_blocked_request_ttl_hours_override,
+        default_checkout_ttl_minutes_override=payload.default_checkout_ttl_minutes_override,
+        debt_enabled_override=payload.debt_enabled_override,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+        notes=payload.notes,
+        updated_by_user_id=current_user.id,
+        metadata=payload.metadata,
+    )
+    db.commit()
+    return _serialize_workspace_override(record)
+
+
+@router.get("/commercial/effective-config", response_model=CommercialQuotaEffectiveConfigResponse)
+def get_commercial_effective_config_route(
+    product_key: str,
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> CommercialQuotaEffectiveConfigResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    apply_workspace_bootstrap(db, target_workspace_id)
+    resolved = resolve_effective_quota_config(
+        db,
+        workspace_id=target_workspace_id,
+        product_key=product_key,
+    )
+    return _serialize_effective_quota(workspace_id=target_workspace_id, config=resolved)
+
+
+@router.get("/commercial/balance-snapshot", response_model=CommercialBalanceSnapshotResponse)
+def get_commercial_balance_snapshot_route(
+    product_key: str,
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> CommercialBalanceSnapshotResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    apply_workspace_bootstrap(db, target_workspace_id)
+    snapshot = get_balance_snapshot(
+        db,
+        workspace_id=target_workspace_id,
+        product_key=product_key,
+    )
+    return _serialize_balance_snapshot(snapshot)
+
+
+@router.get("/commercial/balance-ledger", response_model=list[CommercialBalanceLedgerResponse])
+def list_commercial_balance_ledger_route(
+    product_key: str,
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> list[CommercialBalanceLedgerResponse]:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    apply_workspace_bootstrap(db, target_workspace_id)
+    return [
+        _serialize_balance_ledger_entry(item)
+        for item in list_balance_ledger(db, workspace_id=target_workspace_id, product_key=product_key)
+    ]
+
+
+@router.get("/commercial/package-catalog", response_model=list[CommercialPackageCatalogResponse])
+def list_commercial_package_catalog_route(
+    product_key: str = Query(default=""),
+    include_disabled: bool = Query(default=True),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> list[CommercialPackageCatalogResponse]:
+    _ensure_platform_admin_or_403(db, current_user)
+    return list_package_catalog(db, product_key=product_key, include_disabled=include_disabled)
+
+
+@router.post("/commercial/package-catalog", response_model=CommercialPackageCatalogResponse)
+def upsert_commercial_package_catalog_route(
+    payload: CommercialPackageCatalogUpsertRequest,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> CommercialPackageCatalogResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    response = upsert_package_catalog_entry(db, payload=payload)
+    db.commit()
+    return response
+
+
+@router.get("/commercial/package-recommendation", response_model=CommercialPackageRecommendationResponse)
+def get_commercial_package_recommendation_route(
+    product_key: str,
+    required_units: int = Query(default=1),
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> CommercialPackageRecommendationResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    return recommend_package_for_product(
+        db,
+        product_key=product_key,
+        required_units=required_units,
+        workspace_id=target_workspace_id,
+    )
+
+
+@router.get("/commercial/debts", response_model=list[CommercialDebtResponse])
+def list_commercial_debts_route(
+    status: str = Query(default="open"),
+    product_key: str = Query(default=""),
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> list[CommercialDebtResponse]:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    return list_commercial_debts(
+        db,
+        workspace_id=target_workspace_id,
+        status=status,
+        product_key=product_key,
+    )
+
+
+@router.post("/commercial/debts/{debt_id}/settle", response_model=CommercialDebtResponse)
+def settle_commercial_debt_route(
+    debt_id: UUID,
+    payload: CommercialDebtSettlementRequest,
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> CommercialDebtResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    response = settle_commercial_debt(
+        db,
+        workspace_id=target_workspace_id,
+        debt_id=debt_id,
+        payload=payload,
+        actor_user_id=current_user.id,
+    )
+    db.commit()
+    return response
+
+
+@router.get("/commercial/legacy-package-resolutions", response_model=list[CommercialLegacyPackageResolutionResponse])
+def list_commercial_legacy_package_resolutions_route(
+    status_filter: str = Query(default="pending", alias="status"),
+    product_key: str = Query(default=""),
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> list[CommercialLegacyPackageResolutionResponse]:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    return list_legacy_package_resolutions(
+        db,
+        workspace_id=target_workspace_id,
+        status_filter=status_filter,
+        product_key=product_key,
+    )
+
+
+@router.post(
+    "/commercial/legacy-package-resolutions/{order_id}/resolve",
+    response_model=CommercialLegacyPackageResolutionResponse,
+)
+def resolve_commercial_legacy_package_resolution_route(
+    order_id: UUID,
+    payload: CommercialLegacyPackageResolutionResolveRequest,
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> CommercialLegacyPackageResolutionResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    try:
+        response = resolve_legacy_package_resolution(
+            db,
+            workspace_id=target_workspace_id,
+            order_id=order_id,
+            package_code=payload.package_code,
+            resolution_note=payload.resolution_note,
+            actor_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    record_commercial_event(
+        db,
+        workspace_id=response.workspace_id,
+        session_id=response.session_id,
+        user_id=current_user.id,
+        event_key="legacy_package_resolution_resolved",
+        product_key=response.product_key,
+        source="hotmart_admin",
+        metadata={
+            "order_id": str(response.order_id),
+            "package_code": response.selected_package_code,
+        },
+        correlation_id=response.checkout_ref,
     )
     db.commit()
     return response

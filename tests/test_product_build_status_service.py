@@ -19,6 +19,7 @@ from app.services.auth_service import hash_password
 from app.services.deliverable_catalog import build_deliverable_catalog_response
 from app.services.deliverable_catalog.registry_service import get_registry_entry
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
+from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing import ProductBuildLifecycle, ProductBuildProductKey, build_product_build_status
 
 
@@ -140,6 +141,96 @@ def test_product_build_status_surfaces_failed_deliverable_as_attention() -> None
     assert status.attention.blocking_count == 1
     assert status.last_error is not None
     assert status.last_error.code == "deliverable_generation_error"
+
+
+def test_product_build_status_surfaces_failed_diagram_job_as_attention() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint)
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint,
+            current_stage="package",
+        )
+        diagram_item = next(
+            item
+            for item in catalog.entries
+            if item.deliverable_type.value == "diagram" and "blueprint" in item.product_scope
+        )
+        db.add(
+            DiagramGenerationJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                diagram_key=diagram_item.key.removeprefix("diagram."),
+                status="failed",
+                idempotency_key=f"eov3-diagram-job-{uuid4()}",
+                error_code="diagram_renderer_failed",
+                error_message="Diagram renderer failed while producing the governed diagram.",
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_basic,
+            current_user=user,
+        )
+        failed = next(item for item in status.deliverables if item.deliverable_key == diagram_item.key)
+
+    assert failed.state.value == "error"
+    assert status.lifecycle == ProductBuildLifecycle.requires_attention
+    assert status.attention.blocking_count == 1
+    assert status.last_error is not None
+    assert status.last_error.trace_refs == [diagram_item.key]
+
+
+def test_product_build_status_uses_active_diagram_job_as_current_activity() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint)
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint,
+            current_stage="package",
+        )
+        diagram_item = next(
+            item
+            for item in catalog.entries
+            if item.deliverable_type.value == "diagram" and "blueprint" in item.product_scope
+        )
+        db.add(
+            DiagramGenerationJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                diagram_key=diagram_item.key.removeprefix("diagram."),
+                status="generating",
+                idempotency_key=f"eov3-diagram-job-{uuid4()}",
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_basic,
+            current_user=user,
+        )
+
+    assert status.lifecycle == ProductBuildLifecycle.running
+    assert status.current_activity is not None
+    assert status.current_activity.label == "Generando diagrama"
+    assert status.current_activity.detail == diagram_item.key
 
 
 def test_product_build_status_allows_cumulative_product_surface_override() -> None:

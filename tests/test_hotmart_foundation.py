@@ -273,3 +273,52 @@ def test_hotmart_admin_status_and_credentials_routes_are_admin_only_and_redacted
     assert "client-secret-value" not in serialized
     assert "basic-token-value" not in serialized
     assert "hottok-value" not in serialized
+
+
+def test_hotmart_commercial_admin_routes_expose_quota_and_effective_config_for_platform_admin(client: TestClient) -> None:
+    headers = _auth_headers(client)
+
+    list_response = client.get("/api/v1/admin/integrations/hotmart/commercial/quota-products", headers=headers)
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert {item["product_key"] for item in payload} >= {"blueprint_pro", "acp"}
+
+    update_response = client.post(
+        "/api/v1/admin/integrations/hotmart/commercial/quota-products",
+        headers=headers,
+        json={
+          "product_key": "blueprint_pro",
+          "display_name": "Blueprint Pro",
+          "enabled": True,
+          "initial_free_units": 2,
+          "consumption_priority": ["free", "subscription", "one_time"],
+          "checkout_required_on_zero_balance": True,
+          "fifo_auto_approval_enabled": True,
+          "default_blocked_request_ttl_hours": 72,
+          "default_checkout_ttl_minutes": 30,
+          "debt_enabled": True,
+          "allow_manual_override_without_charge": True,
+          "allow_courtesy": True,
+          "allow_debt_pending": True,
+          "catalog_priority_strategy": "minimum_sufficient",
+          "sync_retry_limit": 5,
+          "duplicate_conflict_visibility": "platform_admin_only",
+          "metadata": {},
+        },
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["initial_free_units"] == 2
+
+    effective_response = client.get(
+        "/api/v1/admin/integrations/hotmart/commercial/effective-config?product_key=blueprint_pro",
+        headers=headers,
+    )
+    assert effective_response.status_code == 200
+    assert effective_response.json()["initial_free_units"] == 2
+
+    legacy_response = client.get(
+        "/api/v1/admin/integrations/hotmart/commercial/legacy-package-resolutions?status=pending&product_key=blueprint_pro",
+        headers=headers,
+    )
+    assert legacy_response.status_code == 200
+    assert legacy_response.json() == []

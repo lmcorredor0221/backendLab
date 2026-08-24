@@ -110,6 +110,13 @@ def ensure_personal_workspace(session: Session, user: UserRecord, default_name: 
     user.default_workspace_id = workspace.id
     user.updated_at = utc_now()
     session.add(user)
+    from app.services.commercial_quota_service import initialize_workspace_commercial_quota
+
+    initialize_workspace_commercial_quota(
+        session,
+        workspace_id=workspace.id,
+        actor_user_id=user.id,
+    )
     session.commit()
     session.refresh(user)
     session.refresh(workspace)
@@ -129,6 +136,7 @@ def build_auth_user(
         id=user.id,
         email=user.email,
         full_name=user.full_name,
+        preferred_currency=(user.preferred_currency or "COP").strip().upper() or "COP",
         active_workspace_id=active_context.workspace.id,
         active_workspace_name=active_context.workspace.name,
         workspaces=[

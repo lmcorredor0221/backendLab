@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 
-from app.api.routes.sessions import build_snapshot
+from app.api.routes.sessions import build_snapshot, sync_short_term_memory_checkpoint
 from app.db import get_session
 from app.models import (
     AccessRequestCreateRequest,
@@ -23,6 +23,11 @@ from app.models import (
     CommercialOrderRecord,
     CommercialOrderResponse,
     CommercialTier,
+    HotmartPendingActivationBootstrapRequest,
+    HotmartPendingActivationBootstrapResponse,
+    HotmartPendingActivationClaimRequest,
+    HotmartPendingActivationPublicResponse,
+    HotmartPendingActivationResponse,
     ProductCatalogResponse,
     ProductOfferResponse,
     ProductOverviewItem,
@@ -58,6 +63,13 @@ from app.services.commerce_service import (
 )
 from app.services.commercial_access import build_commercial_access_snapshot_v2, build_entitlement_context
 from app.services.diagram_catalog_service import build_diagram_catalog
+from app.services.hotmart.pending_activations import (
+    claim_hotmart_pending_activation,
+    get_hotmart_pending_activation_public,
+    get_hotmart_pending_activation_record,
+    list_user_pending_hotmart_activations,
+)
+from app.services.operations_service import capture_operational_state
 from app.services.product_processing import (
     ProductBuildLifecycle,
     ProductBuildProductKey,
@@ -65,6 +77,9 @@ from app.services.product_processing import (
     ProductJourneyProductSummary,
     build_product_journey_overview,
 )
+from app.services.runtime_access_control import is_platform_admin
+from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
+from app.services.workspace_bootstrap import apply_workspace_bootstrap
 from app.core.config import get_settings
 
 
@@ -101,6 +116,33 @@ def _route_item(key: str, label: str, href: str, *, detail: str = "", access_sta
 
 def _blocked_attention(key: str, title: str, reason: str, href: str) -> ProductAttentionItem:
     return ProductAttentionItem(key=key, title=title, severity="blocking", reason=reason, href=href)
+
+
+def _create_hotmart_activation_session(
+    db: Session,
+    *,
+    current_user: UserRecord,
+    workspace_context: WorkspaceAccessContext,
+) -> SessionRecord:
+    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    record = SessionRecord(user_id=current_user.id, workspace_id=workspace_context.workspace.id)
+    db.add(record)
+    db.flush()
+    capture_operational_state(db, session_id=record.id, source_action="create_session")
+    sync_short_term_memory_checkpoint(db, record=record, source_action="create_session")
+    return record
+
+
+def _session_work_redirect_path(record: SessionRecord) -> str:
+    return f"/projects/{record.id}/discover"
+
+
+def _session_product_redirect_path(record: SessionRecord) -> str:
+    if record.commercial_tier == CommercialTier.acp:
+        return f"/projects/{record.id}/acp"
+    if record.commercial_tier == CommercialTier.blueprint_pro:
+        return f"/projects/{record.id}/blueprint/pro"
+    return f"/projects/{record.id}/blueprint"
 
 
 def _legacy_product_key(product_key: ProductBuildProductKey) -> str:
@@ -310,6 +352,125 @@ def get_order_route(
     if role is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     return build_order_response(db, order)
+
+
+@router.get("/commerce/hotmart/pending-activations", response_model=list[HotmartPendingActivationResponse])
+def list_hotmart_pending_activations_route(
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> list[HotmartPendingActivationResponse]:
+    return list_user_pending_hotmart_activations(db, current_user=current_user)
+
+
+@router.get(
+    "/commerce/hotmart/pending-activations/{activation_token}/public",
+    response_model=HotmartPendingActivationPublicResponse,
+)
+def get_hotmart_pending_activation_public_route(
+    activation_token: str,
+    db: Session = Depends(get_session),
+) -> HotmartPendingActivationPublicResponse:
+    try:
+        return get_hotmart_pending_activation_public(db, activation_token=activation_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post(
+    "/commerce/hotmart/pending-activations/{activation_token}/claim",
+    response_model=HotmartPendingActivationResponse,
+)
+def claim_hotmart_pending_activation_route(
+    activation_token: str,
+    payload: HotmartPendingActivationClaimRequest,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> HotmartPendingActivationResponse:
+    try:
+        response = claim_hotmart_pending_activation(
+            db,
+            activation_token=activation_token,
+            payload=payload,
+            current_user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    db.commit()
+    return response
+
+
+@router.post(
+    "/commerce/hotmart/pending-activations/{activation_token}/bootstrap",
+    response_model=HotmartPendingActivationBootstrapResponse,
+)
+def bootstrap_hotmart_pending_activation_route(
+    activation_token: str,
+    payload: HotmartPendingActivationBootstrapRequest | None = None,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> HotmartPendingActivationBootstrapResponse:
+    try:
+        pending_record = get_hotmart_pending_activation_record(db, activation_token=activation_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    platform_admin = is_platform_admin(db, current_user)
+    buyer_email = pending_record.buyer_email.strip().lower()
+    if buyer_email and buyer_email != current_user.email.strip().lower() and not platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This Hotmart purchase belongs to another buyer email.",
+        )
+
+    created_session = False
+    if pending_record.claimed_session_id is not None:
+        if pending_record.claimed_by_user_id not in {None, current_user.id} and not platform_admin:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This Hotmart purchase was already activated by another user.",
+            )
+        target_session = _get_record_or_404(db, pending_record.claimed_session_id, current_user.id)
+    elif payload is not None and payload.session_id is not None:
+        target_session = _get_record_or_404(db, payload.session_id, current_user.id)
+    else:
+        target_session = _create_hotmart_activation_session(
+            db,
+            current_user=current_user,
+            workspace_context=workspace_context,
+        )
+        created_session = True
+
+    try:
+        response = claim_hotmart_pending_activation(
+            db,
+            activation_token=activation_token,
+            payload=HotmartPendingActivationClaimRequest(session_id=target_session.id),
+            current_user=current_user,
+        )
+    except PermissionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    db.commit()
+    db.refresh(target_session)
+    work_redirect_path = _session_work_redirect_path(target_session)
+    product_redirect_path = _session_product_redirect_path(target_session)
+    return HotmartPendingActivationBootstrapResponse(
+        created_session=created_session,
+        pending_activation=response,
+        project_title=target_session.title,
+        redirect_path=work_redirect_path if created_session else product_redirect_path,
+        product_redirect_path=product_redirect_path,
+        session_id=target_session.id,
+        work_redirect_path=work_redirect_path,
+        workspace_id=target_session.workspace_id,
+    )
 
 
 @router.get("/sessions/{session_id}/product-overview", response_model=ProductOverviewResponse)

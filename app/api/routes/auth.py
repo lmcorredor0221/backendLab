@@ -9,6 +9,8 @@ from app.models import (
     LoginResponse,
     UserConsentResponse,
     UserConsentUpdateRequest,
+    UserCurrencyResponse,
+    UserCurrencyUpdateRequest,
     UserLanguageResponse,
     UserLanguageUpdateRequest,
     UserRecord,
@@ -127,3 +129,21 @@ def update_language_route(
 ) -> UserLanguageResponse:
     from app.services.auth_service import update_user_language
     return update_user_language(db, current_user, payload)
+
+
+@router.get("/currency", response_model=UserCurrencyResponse)
+def get_currency_route(
+    current_user: UserRecord = Depends(get_current_user),
+) -> UserCurrencyResponse:
+    from app.services.auth_service import get_user_currency
+    return get_user_currency(current_user)
+
+
+@router.patch("/currency", response_model=UserCurrencyResponse)
+def update_currency_route(
+    payload: UserCurrencyUpdateRequest,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> UserCurrencyResponse:
+    from app.services.auth_service import update_user_currency
+    return update_user_currency(db, current_user, payload)

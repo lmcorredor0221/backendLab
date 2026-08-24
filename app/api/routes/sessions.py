@@ -6442,6 +6442,69 @@ def patch_blueprint_route(
     return envelope
 
 
+def _execute_tools_runtime(
+    *,
+    session_id: UUID,
+    workspace_id: UUID,
+    discovery,
+    canvas,
+    blueprint,
+    definition_artifact: RequirementsDefinitionOutput,
+    design_artifact: DesignRecommendationArtifact,
+    instructions: str,
+    blueprint_version_number: int | None,
+    runtime_settings,
+    stage_context,
+) -> tuple[ToolRecommendationEnvelope, list, object | None, list[str]]:
+    react_run = None
+    react_runtime_warnings: list[str] = []
+    try:
+        react_execution = run_tools_react(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            discovery=discovery,
+            canvas=canvas,
+            blueprint=blueprint,
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            instructions=instructions,
+            blueprint_version_number=blueprint_version_number,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
+        envelope = ToolRecommendationEnvelope(
+            status=ArtifactStatus.needs_review if react_execution.react_run and react_execution.react_run.status != "completed" else ArtifactStatus.ready,
+            stage=SessionStage.build_blueprint,
+            data=react_execution.value,
+            missing_fields=[],
+            assumptions=[],
+            warnings=react_execution.warnings,
+            evidence=[],
+            llm_trace=None,
+            next_action="resolve_tool_recommendation_findings" if react_execution.react_run and react_execution.react_run.status != "completed" else "review_tool_recommendation",
+        )
+        traces = react_execution.traces
+        react_run = react_execution.react_run
+    except Exception as exc:  # noqa: BLE001
+        react_runtime_warnings = [
+            "El controlador ReAct no pudo completar Tools; se mantuvo el runtime existente.",
+            f"react_runtime_fallback:{type(exc).__name__}",
+        ]
+        envelope, traces = run_tool_recommendation_stage(
+            session_id,
+            discovery,
+            canvas,
+            blueprint,
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            instructions=instructions,
+            blueprint_version_number=blueprint_version_number,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
+    return envelope, traces, react_run, react_runtime_warnings
+
+
 @router.post("/{session_id}/recommend-tools", response_model=ToolRecommendationEnvelope)
 def recommend_tools_route(
     session_id: UUID,
@@ -6501,66 +6564,19 @@ def recommend_tools_route(
         task_source_keys=["tool_recommendation_case", "tool_recommendation_catalog"],
         allow_second_page=True,
     )
-    react_run = None
-    react_runtime_warnings: list[str] = []
-    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
-        try:
-            react_execution = run_tools_react(
-                session_id=session_id,
-                workspace_id=record.workspace_id,
-                discovery=hydrate_discovery(opportunity),
-                canvas=hydrate_canvas(canvas),
-                blueprint=hydrate_blueprint(blueprint),
-                definition_artifact=definition_artifact,
-                design_artifact=design_artifact,
-                instructions=payload.instructions if payload is not None else "",
-                blueprint_version_number=blueprint_version_number,
-                runtime_settings=runtime_settings,
-                stage_context=stage_context,
-            )
-            envelope = ToolRecommendationEnvelope(
-                status=ArtifactStatus.needs_review if react_execution.react_run and react_execution.react_run.status != "completed" else ArtifactStatus.ready,
-                stage=SessionStage.build_blueprint,
-                data=react_execution.value,
-                missing_fields=[],
-                assumptions=[],
-                warnings=react_execution.warnings,
-                evidence=[],
-                llm_trace=None,
-                next_action="resolve_tool_recommendation_findings" if react_execution.react_run and react_execution.react_run.status != "completed" else "review_tool_recommendation",
-            )
-            traces = react_execution.traces
-            react_run = react_execution.react_run
-        except Exception as exc:  # noqa: BLE001
-            react_runtime_warnings = [
-                "El controlador ReAct no pudo completar Tools; se mantuvo el runtime existente.",
-                f"react_runtime_fallback:{type(exc).__name__}",
-            ]
-            envelope, traces = run_tool_recommendation_stage(
-                session_id,
-                hydrate_discovery(opportunity),
-                hydrate_canvas(canvas),
-                hydrate_blueprint(blueprint),
-                definition_artifact=definition_artifact,
-                design_artifact=design_artifact,
-                instructions=payload.instructions if payload is not None else "",
-                blueprint_version_number=blueprint_version_number,
-                runtime_settings=runtime_settings,
-                stage_context=stage_context,
-            )
-    else:
-        envelope, traces = run_tool_recommendation_stage(
-            session_id,
-            hydrate_discovery(opportunity),
-            hydrate_canvas(canvas),
-            hydrate_blueprint(blueprint),
-            definition_artifact=definition_artifact,
-            design_artifact=design_artifact,
-            instructions=payload.instructions if payload is not None else "",
-            blueprint_version_number=blueprint_version_number,
-            runtime_settings=runtime_settings,
-            stage_context=stage_context,
-        )
+    envelope, traces, react_run, react_runtime_warnings = _execute_tools_runtime(
+        session_id=session_id,
+        workspace_id=record.workspace_id,
+        discovery=hydrate_discovery(opportunity),
+        canvas=hydrate_canvas(canvas),
+        blueprint=hydrate_blueprint(blueprint),
+        definition_artifact=definition_artifact,
+        design_artifact=design_artifact,
+        instructions=payload.instructions if payload is not None else "",
+        blueprint_version_number=blueprint_version_number,
+        runtime_settings=runtime_settings,
+        stage_context=stage_context,
+    )
     envelope = envelope.model_copy(
         update={
             "data": envelope.data.model_copy(
@@ -6847,6 +6863,73 @@ def approve_tools_selection_route(
     return build_snapshot(db, record)
 
 
+def _execute_memory_runtime(
+    *,
+    session_id: UUID,
+    workspace_id: UUID,
+    discovery,
+    canvas,
+    blueprint,
+    definition_artifact: RequirementsDefinitionOutput | None,
+    design_artifact: DesignRecommendationArtifact | None,
+    approved_tools_digest,
+    tools_artifact,
+    session_snapshot: SessionSnapshot,
+    instructions: str,
+    blueprint_version_number: int | None,
+    source_stage_versions: MemoryRecommendationSourceStageVersions,
+    runtime_settings,
+    proposal_stage_context,
+    critique_stage_context,
+) -> tuple[MemoryRecommendationArtifact, list, object | None, list[str]]:
+    react_run = None
+    react_runtime_warnings: list[str] = []
+    try:
+        react_execution = run_memory_react(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            discovery=discovery,
+            canvas=canvas,
+            blueprint=blueprint,
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            approved_tools_digest=approved_tools_digest,
+            tools_artifact=tools_artifact,
+            session_snapshot=session_snapshot,
+            instructions=instructions,
+            blueprint_version_number=blueprint_version_number,
+            source_stage_versions=source_stage_versions,
+            runtime_settings=runtime_settings,
+            proposal_stage_context=proposal_stage_context,
+            critique_stage_context=critique_stage_context,
+        )
+        artifact = react_execution.value
+        traces = react_execution.traces
+        react_run = react_execution.react_run
+    except Exception as exc:  # noqa: BLE001
+        react_runtime_warnings = [
+            "El controlador ReAct no pudo completar Memory; se mantuvo el runtime existente.",
+            f"react_runtime_fallback:{type(exc).__name__}",
+        ]
+        artifact, traces = run_memory_recommendation_stage(
+            session_id=session_id,
+            discovery=discovery,
+            canvas=canvas,
+            blueprint=blueprint,
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            approved_tools_digest=approved_tools_digest,
+            session_snapshot=session_snapshot,
+            instructions=instructions,
+            blueprint_version_number=blueprint_version_number,
+            source_stage_versions=source_stage_versions,
+            runtime_settings=runtime_settings,
+            proposal_stage_context=proposal_stage_context,
+            critique_stage_context=critique_stage_context,
+        )
+    return artifact, traces, react_run, react_runtime_warnings
+
+
 @router.post("/{session_id}/recommend-memory", response_model=JourneyStageArtifactEntry)
 def recommend_memory_route(
     session_id: UUID,
@@ -7061,69 +7144,24 @@ def recommend_memory_route(
         allow_second_page=True,
     )
     session_snapshot = build_snapshot(db, record)
-    react_run = None
-    react_runtime_warnings: list[str] = []
-    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
-        try:
-            react_execution = run_memory_react(
-                session_id=session_id,
-                workspace_id=record.workspace_id,
-                discovery=discovery,
-                canvas=canvas,
-                blueprint=blueprint,
-                definition_artifact=definition_artifact,
-                design_artifact=design_artifact,
-                approved_tools_digest=latest_recommendation.approved_tools_digest,
-                tools_artifact=latest_recommendation,
-                session_snapshot=session_snapshot,
-                instructions=payload.instructions if payload is not None else "",
-                blueprint_version_number=blueprint_version_number,
-                source_stage_versions=source_stage_versions,
-                runtime_settings=runtime_settings,
-                proposal_stage_context=proposal_stage_context,
-                critique_stage_context=critique_stage_context,
-            )
-            artifact = react_execution.value
-            traces = react_execution.traces
-            react_run = react_execution.react_run
-        except Exception as exc:  # noqa: BLE001
-            react_runtime_warnings = [
-                "El controlador ReAct no pudo completar Memory; se mantuvo el runtime existente.",
-                f"react_runtime_fallback:{type(exc).__name__}",
-            ]
-            artifact, traces = run_memory_recommendation_stage(
-                session_id=session_id,
-                discovery=discovery,
-                canvas=canvas,
-                blueprint=blueprint,
-                definition_artifact=definition_artifact,
-                design_artifact=design_artifact,
-                approved_tools_digest=latest_recommendation.approved_tools_digest,
-                session_snapshot=session_snapshot,
-                instructions=payload.instructions if payload is not None else "",
-                blueprint_version_number=blueprint_version_number,
-                source_stage_versions=source_stage_versions,
-                runtime_settings=runtime_settings,
-                proposal_stage_context=proposal_stage_context,
-                critique_stage_context=critique_stage_context,
-            )
-    else:
-        artifact, traces = run_memory_recommendation_stage(
-            session_id=session_id,
-            discovery=discovery,
-            canvas=canvas,
-            blueprint=blueprint,
-            definition_artifact=definition_artifact,
-            design_artifact=design_artifact,
-            approved_tools_digest=latest_recommendation.approved_tools_digest,
-            session_snapshot=session_snapshot,
-            instructions=payload.instructions if payload is not None else "",
-            blueprint_version_number=blueprint_version_number,
-            source_stage_versions=source_stage_versions,
-            runtime_settings=runtime_settings,
-            proposal_stage_context=proposal_stage_context,
-            critique_stage_context=critique_stage_context,
-        )
+    artifact, traces, react_run, react_runtime_warnings = _execute_memory_runtime(
+        session_id=session_id,
+        workspace_id=record.workspace_id,
+        discovery=discovery,
+        canvas=canvas,
+        blueprint=blueprint,
+        definition_artifact=definition_artifact,
+        design_artifact=design_artifact,
+        approved_tools_digest=latest_recommendation.approved_tools_digest,
+        tools_artifact=latest_recommendation,
+        session_snapshot=session_snapshot,
+        instructions=payload.instructions if payload is not None else "",
+        blueprint_version_number=blueprint_version_number,
+        source_stage_versions=source_stage_versions,
+        runtime_settings=runtime_settings,
+        proposal_stage_context=proposal_stage_context,
+        critique_stage_context=critique_stage_context,
+    )
     stage_trace = next((trace.llm_trace for trace in reversed(traces) if trace.llm_trace is not None), None)
     combined_warnings = list(
         dict.fromkeys(

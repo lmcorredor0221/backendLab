@@ -7,9 +7,14 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
+    CommercialCheckoutCompletionRequest,
     CommercialCheckoutSessionRequest,
+    CommercialDebtRecord,
+    CommercialDebtStatus,
+    CommercialPackageCatalogUpsertRequest,
     CommercialOrderRecord,
     CommercialOrderStatus,
+    CommercialPaymentRecord,
     HotmartPaymentLinkRecord,
     SessionRecord,
     UserRecord,
@@ -22,7 +27,13 @@ from app.services.commerce_provider_router import (
     get_commerce_payment_provider,
     normalize_commerce_payment_provider,
 )
-from app.services.commerce_service import create_checkout_session
+from app.services.commerce_service import complete_checkout_session, create_checkout_session
+from app.services.commercial_catalog_service import upsert_package_catalog_entry
+from app.services.commercial_debt_service import create_commercial_debt
+from app.services.commercial_quota_service import get_balance_snapshot
+from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord  # noqa: F401
+from app.services.diagram_center.persistence import DiagramGenerationJobRecord  # noqa: F401
+from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord  # noqa: F401
 
 
 @pytest.fixture()
@@ -232,3 +243,94 @@ def test_checkout_enforces_buyer_permission(db_session: Session) -> None:
         )
 
 
+def test_sandbox_payment_settles_open_workspace_debt(db_session: Session) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            idempotency_key=f"{record.id}:sandbox-debt-settlement",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    create_commercial_debt(
+        db_session,
+        workspace_id=workspace.id,
+        product_key="blueprint_pro",
+        access_request_id=None,
+        amount_cents=checkout.total_cents,
+        currency="USD",
+        actor_user_id=user.id,
+        reason_code="manual_debt",
+        reason_label="Deuda manual",
+    )
+    db_session.commit()
+
+    response = complete_checkout_session(
+        db_session,
+        checkout_ref=checkout.checkout_ref,
+        request=CommercialCheckoutCompletionRequest(
+            outcome="success",
+            provider_payment_id=f"sandbox_pay_{checkout.checkout_ref}",
+        ),
+        current_user=user,
+    )
+    db_session.commit()
+
+    order = db_session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == response.order_id)).one()
+    payment = db_session.exec(select(CommercialPaymentRecord).where(CommercialPaymentRecord.order_id == order.id)).one()
+    debts = db_session.exec(select(CommercialDebtRecord).where(CommercialDebtRecord.workspace_id == workspace.id)).all()
+    assert len(debts) == 1
+    assert debts[0].status == CommercialDebtStatus.settled
+    assert debts[0].settled_amount_cents == checkout.total_cents
+    assert payment.metadata_payload["debt_settlement"]["settled_amount_cents"] == checkout.total_cents
+    assert order.metadata_payload["debt_settlement"]["currency"] == "USD"
+
+
+def test_sandbox_payment_credits_workspace_balance_from_package_code(db_session: Session) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    upsert_package_catalog_entry(
+        db_session,
+        payload=CommercialPackageCatalogUpsertRequest(
+            package_code="bp-pack-3",
+            display_name="Blueprint Pack 3",
+            product_key="blueprint_pro",
+            granted_units=3,
+            validity_days=30,
+        ),
+    )
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            package_code="bp-pack-3",
+            idempotency_key=f"{record.id}:sandbox-package-credit",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    response = complete_checkout_session(
+        db_session,
+        checkout_ref=checkout.checkout_ref,
+        request=CommercialCheckoutCompletionRequest(
+            outcome="success",
+            provider_payment_id=f"sandbox_pay_{checkout.checkout_ref}",
+        ),
+        current_user=user,
+    )
+    db_session.commit()
+
+    snapshot = get_balance_snapshot(db_session, workspace_id=workspace.id, product_key="blueprint_pro")
+    order = db_session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == response.order_id)).one()
+    payment = db_session.exec(select(CommercialPaymentRecord).where(CommercialPaymentRecord.order_id == order.id)).one()
+    assert snapshot.total_available_units == 3
+    assert payment.metadata_payload["package_credit"]["package_code"] == "bp-pack-3"
+    assert payment.metadata_payload["package_credit"]["grants"][0]["units"] == 3
+    assert order.metadata_payload["package_credit"]["grants"][0]["product_key"] == "blueprint_pro"

@@ -48,6 +48,22 @@ from app.models import (
 )
 from app.services.commerce_provider_router import get_commerce_payment_provider
 from app.services.commercial_event_catalog import enrich_commercial_event_metadata
+from app.services.commercial_debt_service import (
+    create_commercial_debt,
+    has_open_commercial_debt,
+    settle_open_commercial_debts,
+)
+from app.services.commercial_catalog_service import get_package_catalog_entry, package_units_for_product
+from app.services.commercial_package_fulfillment_service import (
+    apply_paid_order_package_credits,
+    mark_pending_legacy_package_resolution,
+)
+from app.services.commercial_quota_service import (
+    consume_balance_units,
+    ensure_quota_seed,
+    get_balance_snapshot,
+    initialize_workspace_commercial_quota,
+)
 from app.services.payment_providers.base import CheckoutProviderContext
 
 
@@ -258,6 +274,7 @@ def ensure_commercial_seed(db: Session) -> None:
         existing.status = CommercialPriceStatus.active
         existing.updated_at = utc_now()
         db.add(existing)
+    ensure_quota_seed(db)
 
 
 def list_catalog(db: Session) -> list[ProductCatalogResponse]:
@@ -764,6 +781,188 @@ def validate_safe_redirect_url(url: str, base_url: str = "") -> str:
     raise ValueError(f"Invalid redirect URL format: {cleaned}")
 
 
+def _resolve_price_usd_cents(price: ProductPriceRecord) -> int:
+    if price.unit_amount_usd_cents > 0:
+        return price.unit_amount_usd_cents
+    if price.currency.upper() == "USD":
+        return price.unit_amount_cents
+    return price.unit_amount_cents
+
+
+def _build_order_commercial_snapshot(
+    *,
+    product: ProductCatalogRecord,
+    price: ProductPriceRecord,
+    provider: str,
+    subtotal_cents: int,
+    discount_cents: int,
+    total_cents: int,
+    success_url: str,
+    cancel_url: str,
+    is_upgrade: bool,
+) -> dict[str, object]:
+    trm_info = get_today_trm_data()
+    amount_usd_base_cents = _resolve_price_usd_cents(price)
+    discount_usd_cents = min(max(0, discount_cents), amount_usd_base_cents)
+    net_amount_usd_cents = max(0, amount_usd_base_cents - discount_usd_cents)
+    return {
+        "contract_version": "commercial-order-snapshot.v1",
+        "product_key": product.product_key,
+        "product_version": product.version,
+        "price_code": price.price_code,
+        "price_version": price.version,
+        "provider": provider,
+        "subtotal_cents": subtotal_cents,
+        "discount_cents": discount_cents,
+        "total_cents": total_cents,
+        "checkout_amount_cents": total_cents,
+        "checkout_currency": (price.currency or "USD").upper(),
+        "amount_usd_base_cents": amount_usd_base_cents,
+        "discount_usd_cents": discount_usd_cents,
+        "net_amount_usd_cents": net_amount_usd_cents,
+        "trm_cop_frozen": trm_info["rate"],
+        "trm_effective_date": trm_info["date"],
+        "is_upgrade": is_upgrade,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "pricing_source": "product_price_usd",
+    }
+
+
+def ensure_order_commercial_snapshot(
+    db: Session,
+    order: CommercialOrderRecord,
+) -> dict[str, object]:
+    snapshot = order.metadata_payload.get("commercial_snapshot")
+    if isinstance(snapshot, dict) and snapshot.get("product_key"):
+        return snapshot
+    product_key = str(order.metadata_payload.get("product_key") or "")
+    if not product_key:
+        line = db.exec(select(CommercialOrderLineRecord).where(CommercialOrderLineRecord.order_id == order.id)).first()
+        product_key = line.product_key if line is not None else ""
+    if not product_key:
+        raise ValueError("Order snapshot requires a product key.")
+    product = get_product(db, product_key)
+    price_code = str(order.metadata_payload.get("price_code") or "")
+    price = get_price(db, product_key, price_code)
+    snapshot = _build_order_commercial_snapshot(
+        product=product,
+        price=price,
+        provider=order.provider,
+        subtotal_cents=order.subtotal_cents,
+        discount_cents=max(0, order.subtotal_cents - order.total_cents),
+        total_cents=order.total_cents,
+        success_url=str(order.metadata_payload.get("success_url") or ""),
+        cancel_url=str(order.metadata_payload.get("cancel_url") or ""),
+        is_upgrade=bool(order.metadata_payload.get("is_upgrade")),
+    )
+    order.metadata_payload = {**order.metadata_payload, "commercial_snapshot": snapshot}
+    order.updated_at = utc_now()
+    db.add(order)
+    db.flush()
+    return snapshot
+
+
+def settle_open_debts_from_paid_order(
+    db: Session,
+    *,
+    order: CommercialOrderRecord,
+    payment: CommercialPaymentRecord,
+    actor_user_id: UUID | None = None,
+) -> dict[str, object] | None:
+    snapshot = ensure_order_commercial_snapshot(db, order)
+    payment_currency = (payment.currency or order.currency or "USD").strip().upper()
+    payment_amount_cents = max(0, payment.amount_cents)
+    snapshot_amount_usd_cents = max(0, int(snapshot.get("net_amount_usd_cents") or 0))
+    candidates: list[tuple[int, str, str]] = []
+    if payment_amount_cents > 0:
+        candidates.append((payment_amount_cents, payment_currency, "payment_currency"))
+    if snapshot_amount_usd_cents > 0 and not any(currency == "USD" for _, currency, _ in candidates):
+        candidates.append((snapshot_amount_usd_cents, "USD", "order_snapshot_usd"))
+
+    for amount_cents, currency, strategy in candidates:
+        remaining_amount_cents = settle_open_commercial_debts(
+            db,
+            workspace_id=order.workspace_id,
+            amount_cents=amount_cents,
+            currency=currency,
+            actor_user_id=actor_user_id,
+            order_id=order.id,
+            payment_id=payment.id,
+            settlement_kind="payment_capture",
+            metadata={
+                "strategy": strategy,
+                "provider": order.provider,
+                "checkout_ref": order.checkout_ref,
+            },
+        )
+        settled_amount_cents = max(0, amount_cents - remaining_amount_cents)
+        if settled_amount_cents <= 0:
+            continue
+        summary = {
+            "strategy": strategy,
+            "currency": currency,
+            "requested_amount_cents": amount_cents,
+            "settled_amount_cents": settled_amount_cents,
+            "remaining_unapplied_cents": remaining_amount_cents,
+        }
+        payment.metadata_payload = {**dict(payment.metadata_payload or {}), "debt_settlement": summary}
+        payment.updated_at = utc_now()
+        order.metadata_payload = {**dict(order.metadata_payload or {}), "debt_settlement": summary}
+        order.updated_at = utc_now()
+        db.add(payment)
+        db.add(order)
+        db.flush()
+        return summary
+    return None
+
+
+def apply_package_credits_from_paid_order(
+    db: Session,
+    *,
+    order: CommercialOrderRecord,
+    payment: CommercialPaymentRecord,
+    actor_user_id: UUID | None = None,
+) -> dict[str, object] | None:
+    summary = apply_paid_order_package_credits(
+        db,
+        order=order,
+        payment=payment,
+        actor_user_id=actor_user_id,
+    )
+    if summary is None:
+        legacy_resolution = mark_pending_legacy_package_resolution(
+            db,
+            order=order,
+            payment=payment,
+        )
+        if legacy_resolution is not None:
+            record_commercial_event(
+                db,
+                workspace_id=order.workspace_id,
+                session_id=order.session_id,
+                user_id=actor_user_id,
+                event_key="legacy_package_resolution_required",
+                product_key=legacy_resolution.product_key,
+                source=order.provider,
+                metadata={
+                    "order_id": str(order.id),
+                    "candidate_package_codes": [item.package_code for item in legacy_resolution.candidate_packages],
+                    "resolution_status": legacy_resolution.status,
+                },
+                correlation_id=order.checkout_ref,
+            )
+        return None
+    payment.metadata_payload = {**dict(payment.metadata_payload or {}), "package_credit": summary}
+    payment.updated_at = utc_now()
+    order.metadata_payload = {**dict(order.metadata_payload or {}), "package_credit": summary}
+    order.updated_at = utc_now()
+    db.add(payment)
+    db.add(order)
+    db.flush()
+    return summary
+
+
 def create_checkout_session(
     db: Session,
     *,
@@ -784,6 +983,14 @@ def create_checkout_session(
     product = get_product(db, resolved_request.product_key)
     if product.product_key == "blueprint":
         raise ValueError("Blueprint free does not require checkout.")
+    resolved_package_code = resolved_request.package_code.strip()
+    package = None
+    if resolved_package_code:
+        package = get_package_catalog_entry(db, package_code=resolved_package_code)
+        if package is None:
+            raise ValueError(f"Commercial package {resolved_package_code} is not active.")
+        if package_units_for_product(package, product.product_key) <= 0:
+            raise ValueError(f"Commercial package {resolved_package_code} does not grant units for product {product.product_key}.")
     price = get_price(db, product.product_key, resolved_request.price_code)
 
     discount_cents, net_total_cents, is_upgrade = calculate_project_upgrade_discount_cents(
@@ -794,6 +1001,7 @@ def create_checkout_session(
         resolved_record.id,
         product.product_key,
         current_user.id,
+        package_code=resolved_package_code,
     )
     existing = db.exec(
         select(CommercialOrderRecord).where(
@@ -823,6 +1031,17 @@ def create_checkout_session(
             base_url=base_url,
         )
     )
+    snapshot = _build_order_commercial_snapshot(
+        product=product,
+        price=price,
+        provider=provider_draft.provider,
+        subtotal_cents=price.unit_amount_cents,
+        discount_cents=discount_cents,
+        total_cents=net_total_cents,
+        success_url=validated_success_url,
+        cancel_url=validated_cancel_url,
+        is_upgrade=is_upgrade,
+    )
     order = CommercialOrderRecord(
         workspace_id=resolved_record.workspace_id,
         session_id=resolved_record.id,
@@ -841,9 +1060,12 @@ def create_checkout_session(
             "provider": provider_draft.provider,
             "success_url": validated_success_url,
             "cancel_url": validated_cancel_url,
+            "package_code": resolved_package_code,
+            "package_type": package.package_type.value if package is not None else "",
             "is_upgrade": is_upgrade,
             "upgrade_discount_cents": discount_cents,
             "base_product_cents": price.unit_amount_cents,
+            "commercial_snapshot": snapshot,
             **provider_draft.metadata,
         },
     )
@@ -856,7 +1078,11 @@ def create_checkout_session(
         quantity=1,
         unit_amount_cents=price.unit_amount_cents,
         total_amount_cents=price.unit_amount_cents,
-        metadata_payload={"product_version": product.version, "price_version": price.version},
+        metadata_payload={
+            "product_version": product.version,
+            "price_version": price.version,
+            "package_code": resolved_package_code,
+        },
     )
     db.add(line)
     record_commercial_event(
@@ -867,15 +1093,20 @@ def create_checkout_session(
         event_key="checkout_started",
         product_key=product.product_key,
         source="commerce_checkout",
-        metadata={"order_id": str(order.id), "price_code": price.price_code, "provider": provider_draft.provider},
+        metadata={
+            "order_id": str(order.id),
+            "price_code": price.price_code,
+            "provider": provider_draft.provider,
+            "package_code": resolved_package_code,
+        },
         correlation_id=provider_draft.checkout_ref,
     )
     db.flush()
     return serialize_checkout_response(db, order)
 
 
-def checkout_idempotency_key(session_id: UUID, product_key: str, user_id: UUID) -> str:
-    digest = hashlib.sha256(f"{session_id}:{product_key}:{user_id}".encode("utf-8")).hexdigest()
+def checkout_idempotency_key(session_id: UUID, product_key: str, user_id: UUID, *, package_code: str = "") -> str:
+    digest = hashlib.sha256(f"{session_id}:{product_key}:{user_id}:{package_code.strip()}".encode("utf-8")).hexdigest()
     return digest[:64]
 
 
@@ -990,6 +1221,18 @@ def complete_checkout_session(
         )
         db.add(payment)
         db.flush()
+    settle_open_debts_from_paid_order(
+        db,
+        order=order,
+        payment=payment,
+        actor_user_id=current_user.id,
+    )
+    apply_package_credits_from_paid_order(
+        db,
+        order=order,
+        payment=payment,
+        actor_user_id=current_user.id,
+    )
 
     entitlement = find_entitlement_for_order(db, order)
     if entitlement is None:
@@ -1146,6 +1389,27 @@ def create_access_request(
         source="access_request",
         metadata={"capability": request.capability},
     )
+    _auto_approve_access_request_from_workspace_balance(
+        db,
+        access_request=record,
+        session_record=session_record,
+        actor_user=current_user,
+    )
+    if record.status == CommercialAccessRequestStatus.pending and has_open_commercial_debt(
+        db,
+        workspace_id=workspace_id,
+        product_key=record.product_key,
+    ):
+        record_commercial_event(
+            db,
+            workspace_id=workspace_id,
+            session_id=request.session_id,
+            user_id=current_user.id,
+            event_key="access_request_blocked_by_debt",
+            product_key=record.product_key,
+            source="access_request",
+            metadata={"capability": request.capability, "request_id": str(record.id)},
+        )
     return serialize_access_request(record)
 
 
@@ -1190,7 +1454,257 @@ def request_access(
         source="access_request",
         metadata={"capability": payload.capability},
     )
+    _auto_approve_access_request_from_workspace_balance(
+        db,
+        access_request=access_request,
+        session_record=record,
+        actor_user=current_user,
+    )
+    if access_request.status == CommercialAccessRequestStatus.pending and has_open_commercial_debt(
+        db,
+        workspace_id=record.workspace_id,
+        product_key=access_request.product_key,
+    ):
+        record_commercial_event(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=current_user.id,
+            event_key="access_request_blocked_by_debt",
+            product_key=access_request.product_key,
+            source="access_request",
+            metadata={"capability": payload.capability, "request_id": str(access_request.id)},
+        )
     return serialize_access_request(access_request)
+
+
+def _auto_approve_access_request_from_workspace_balance(
+    db: Session,
+    *,
+    access_request: CommercialAccessRequestRecord,
+    session_record: SessionRecord,
+    actor_user: UserRecord | None,
+    approval_mode: str = "workspace_quota_balance",
+) -> bool:
+    if access_request.status != CommercialAccessRequestStatus.pending:
+        return False
+    if access_request.product_key not in {"blueprint_pro", "acp"}:
+        return False
+    if has_open_commercial_debt(
+        db,
+        workspace_id=access_request.workspace_id,
+        product_key=access_request.product_key,
+    ):
+        return False
+    initialize_workspace_commercial_quota(
+        db,
+        workspace_id=access_request.workspace_id,
+        actor_user_id=actor_user.id if actor_user is not None else None,
+    )
+    snapshot = get_balance_snapshot(
+        db,
+        workspace_id=access_request.workspace_id,
+        product_key=access_request.product_key,
+    )
+    if snapshot.total_available_units <= 0:
+        return False
+    consume_balance_units(
+        db,
+        workspace_id=access_request.workspace_id,
+        product_key=access_request.product_key,
+        units=1,
+        actor_user_id=actor_user.id if actor_user is not None else None,
+        access_request_id=access_request.id,
+        source_ref=f"access_request:{access_request.id}",
+        metadata={
+            "capability": access_request.capability,
+            "approval_mode": approval_mode,
+        },
+    )
+    access_request.status = CommercialAccessRequestStatus.approved
+    access_request.resolver_user_id = actor_user.id if actor_user is not None else None
+    access_request.resolution_note = "Autoaprobada por saldo disponible del workspace."
+    access_request.resolved_at = utc_now()
+    access_request.updated_at = utc_now()
+    db.add(access_request)
+
+    target_tier = access_request.target_tier or (
+        CommercialTier.acp if access_request.product_key == "acp" else CommercialTier.blueprint_pro
+    )
+    entitlement = CommercialEntitlementRecord(
+        workspace_id=access_request.workspace_id,
+        session_id=access_request.session_id,
+        product_key=access_request.product_key,
+        tier=target_tier,
+        status=CommercialEntitlementStatus.active,
+        source=CommercialEntitlementSource.admin_grant,
+        granted_by_user_id=actor_user.id if actor_user is not None else None,
+        metadata_payload={
+            "access_request_id": str(access_request.id),
+            "decision": "approved",
+            "approval_mode": approval_mode,
+        },
+    )
+    db.add(entitlement)
+    if tier_rank(target_tier) > tier_rank(session_record.commercial_tier):
+        session_record.commercial_tier = target_tier
+        session_record.updated_at = utc_now()
+        db.add(session_record)
+    record_commercial_event(
+        db,
+        workspace_id=access_request.workspace_id,
+        session_id=access_request.session_id,
+        user_id=actor_user.id if actor_user is not None else None,
+        event_key="access_request_approved",
+        product_key=access_request.product_key,
+        source="quota_balance",
+        metadata={
+            "capability": access_request.capability,
+            "request_id": str(access_request.id),
+            "approval_mode": approval_mode,
+        },
+    )
+    return True
+
+
+def _apply_access_request_manual_approval(
+    db: Session,
+    *,
+    access_request: CommercialAccessRequestRecord,
+    session_record: SessionRecord,
+    current_user: UserRecord,
+    approval_mode: str,
+    resolution_note: str,
+    debt_amount_cents: int = 0,
+    debt_currency: str = "USD",
+    debt_reason_code: str = "",
+    debt_reason_label: str = "",
+) -> None:
+    target_tier = access_request.target_tier or (
+        CommercialTier.acp if access_request.product_key == "acp" else CommercialTier.blueprint_pro
+    )
+    product_key = access_request.product_key or ("acp" if target_tier == CommercialTier.acp else "blueprint_pro")
+    note = resolution_note.strip()
+    consumed_units = 0
+    debt_id = ""
+    if approval_mode == "override_without_charge" and product_key in {"blueprint_pro", "acp"}:
+        snapshot = get_balance_snapshot(
+            db,
+            workspace_id=access_request.workspace_id,
+            product_key=product_key,
+        )
+        if snapshot.total_available_units > 0:
+            consume_balance_units(
+                db,
+                workspace_id=access_request.workspace_id,
+                product_key=product_key,
+                units=1,
+                actor_user_id=current_user.id,
+                access_request_id=access_request.id,
+                source_ref=f"access_request:{access_request.id}:override",
+                metadata={
+                    "capability": access_request.capability,
+                    "approval_mode": approval_mode,
+                },
+            )
+            consumed_units = 1
+        if not note:
+            note = "Aprobada por override sin cobro."
+    elif approval_mode == "courtesy":
+        if not note:
+            note = "Aprobada por cortesia."
+    elif approval_mode == "debt_pending":
+        price = get_price(db, product_key)
+        amount_cents = debt_amount_cents if debt_amount_cents > 0 else _resolve_price_usd_cents(price)
+        debt = create_commercial_debt(
+            db,
+            workspace_id=access_request.workspace_id,
+            product_key=product_key,
+            access_request_id=access_request.id,
+            amount_cents=amount_cents,
+            currency=debt_currency or "USD",
+            actor_user_id=current_user.id,
+            reason_code=debt_reason_code or "debt_pending",
+            reason_label=debt_reason_label or "Deuda pendiente",
+            summary=note or "Aprobacion con deuda comercial pendiente.",
+            metadata={"approval_mode": approval_mode, "capability": access_request.capability},
+        )
+        debt_id = str(debt.id)
+        if not note:
+            note = "Aprobada con deuda comercial pendiente."
+    elif not note:
+        note = "Aprobada manualmente por administracion."
+
+    access_request.status = CommercialAccessRequestStatus.approved
+    access_request.resolver_user_id = current_user.id
+    access_request.resolution_note = note
+    access_request.resolved_at = utc_now()
+    access_request.updated_at = utc_now()
+    db.add(access_request)
+
+    entitlement = CommercialEntitlementRecord(
+        workspace_id=access_request.workspace_id,
+        session_id=access_request.session_id,
+        product_key=product_key,
+        tier=target_tier,
+        status=CommercialEntitlementStatus.active,
+        source=CommercialEntitlementSource.admin_grant,
+        granted_by_user_id=current_user.id,
+        metadata_payload={
+            "access_request_id": str(access_request.id),
+            "decision": "approved",
+            "approval_mode": approval_mode,
+            "debt_id": debt_id,
+            "consumed_units": consumed_units,
+        },
+    )
+    db.add(entitlement)
+    if tier_rank(target_tier) > tier_rank(session_record.commercial_tier):
+        session_record.commercial_tier = target_tier
+        session_record.updated_at = utc_now()
+        db.add(session_record)
+
+
+def process_pending_access_requests_fifo(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    product_key: str,
+    actor_user: UserRecord | None = None,
+    approval_mode: str = "workspace_quota_replenishment",
+) -> list[CommercialAccessRequestRecord]:
+    if product_key not in {"blueprint_pro", "acp"}:
+        return []
+    approved: list[CommercialAccessRequestRecord] = []
+    pending_requests = db.exec(
+        select(CommercialAccessRequestRecord)
+        .where(
+            CommercialAccessRequestRecord.workspace_id == workspace_id,
+            CommercialAccessRequestRecord.product_key == product_key,
+            CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.pending,
+        )
+        .order_by(CommercialAccessRequestRecord.created_at.asc(), CommercialAccessRequestRecord.id.asc())
+    ).all()
+    for access_request in pending_requests:
+        snapshot = get_balance_snapshot(
+            db,
+            workspace_id=workspace_id,
+            product_key=product_key,
+        )
+        if snapshot.total_available_units <= 0:
+            break
+        session_record = db.get(SessionRecord, access_request.session_id)
+        if session_record is None:
+            continue
+        if _auto_approve_access_request_from_workspace_balance(
+            db,
+            access_request=access_request,
+            session_record=session_record,
+            actor_user=actor_user,
+            approval_mode=approval_mode,
+        ):
+            approved.append(access_request)
+    return approved
 
 
 def resolve_access_request_by_id(
@@ -1216,31 +1730,28 @@ def resolve_access_request_by_id(
         raise PermissionError("Solo un administrador del sistema o un workspace owner/admin puede resolver solicitudes.")
     if record.status != CommercialAccessRequestStatus.pending:
         return serialize_access_request(record, db)
-    record.status = CommercialAccessRequestStatus(request.decision)
-    record.resolver_user_id = current_user.id
-    record.resolution_note = request.resolution_note
-    record.resolved_at = utc_now()
-    record.updated_at = utc_now()
-    db.add(record)
-
     if request.decision == "approved":
-        target_tier = record.target_tier or (CommercialTier.acp if record.product_key == "acp" else CommercialTier.blueprint_pro)
-        product_key = record.product_key or ("acp" if target_tier == CommercialTier.acp else "blueprint_pro")
-        entitlement = CommercialEntitlementRecord(
-            workspace_id=record.workspace_id,
-            session_id=record.session_id,
-            product_key=product_key,
-            tier=target_tier,
-            status=CommercialEntitlementStatus.active,
-            source=CommercialEntitlementSource.admin_grant,
-            granted_by_user_id=current_user.id,
-            metadata_payload={"access_request_id": str(record.id), "decision": "approved"},
+        if request.approval_mode != "manual_standard" and not is_admin:
+            raise PermissionError("Solo un platform admin puede usar excepciones comerciales.")
+        _apply_access_request_manual_approval(
+            db,
+            access_request=record,
+            session_record=session_record,
+            current_user=current_user,
+            approval_mode=request.approval_mode,
+            resolution_note=request.resolution_note,
+            debt_amount_cents=request.debt_amount_cents,
+            debt_currency=request.debt_currency,
+            debt_reason_code=request.debt_reason_code,
+            debt_reason_label=request.debt_reason_label,
         )
-        db.add(entitlement)
-        if tier_rank(target_tier) > tier_rank(session_record.commercial_tier):
-            session_record.commercial_tier = target_tier
-            session_record.updated_at = utc_now()
-            db.add(session_record)
+    else:
+        record.status = CommercialAccessRequestStatus(request.decision)
+        record.resolver_user_id = current_user.id
+        record.resolution_note = request.resolution_note
+        record.resolved_at = utc_now()
+        record.updated_at = utc_now()
+        db.add(record)
 
     record_commercial_event(
         db,
@@ -1250,7 +1761,11 @@ def resolve_access_request_by_id(
         event_key=f"access_request_{record.status.value}",
         product_key=record.product_key,
         source="access_request",
-        metadata={"capability": record.capability, "request_id": str(record.id)},
+        metadata={
+            "capability": record.capability,
+            "request_id": str(record.id),
+            "approval_mode": request.approval_mode,
+        },
     )
     return serialize_access_request(record, db)
 
@@ -1274,31 +1789,28 @@ def resolve_access_request(
         raise PermissionError("Solo un administrador del sistema o un workspace owner/admin puede resolver solicitudes.")
     if access_request.status != CommercialAccessRequestStatus.pending:
         return serialize_access_request(access_request, db)
-    access_request.status = CommercialAccessRequestStatus(payload.decision)
-    access_request.resolver_user_id = current_user.id
-    access_request.resolution_note = payload.resolution_note
-    access_request.resolved_at = utc_now()
-    access_request.updated_at = utc_now()
-    db.add(access_request)
-
     if payload.decision == "approved":
-        target_tier = access_request.target_tier or (CommercialTier.acp if access_request.product_key == "acp" else CommercialTier.blueprint_pro)
-        product_key = access_request.product_key or ("acp" if target_tier == CommercialTier.acp else "blueprint_pro")
-        entitlement = CommercialEntitlementRecord(
-            workspace_id=access_request.workspace_id,
-            session_id=access_request.session_id,
-            product_key=product_key,
-            tier=target_tier,
-            status=CommercialEntitlementStatus.active,
-            source=CommercialEntitlementSource.admin_grant,
-            granted_by_user_id=current_user.id,
-            metadata_payload={"access_request_id": str(access_request.id), "decision": "approved"},
+        if payload.approval_mode != "manual_standard" and not is_admin:
+            raise PermissionError("Solo un platform admin puede usar excepciones comerciales.")
+        _apply_access_request_manual_approval(
+            db,
+            access_request=access_request,
+            session_record=session_record,
+            current_user=current_user,
+            approval_mode=payload.approval_mode,
+            resolution_note=payload.resolution_note,
+            debt_amount_cents=payload.debt_amount_cents,
+            debt_currency=payload.debt_currency,
+            debt_reason_code=payload.debt_reason_code,
+            debt_reason_label=payload.debt_reason_label,
         )
-        db.add(entitlement)
-        if tier_rank(target_tier) > tier_rank(session_record.commercial_tier):
-            session_record.commercial_tier = target_tier
-            session_record.updated_at = utc_now()
-            db.add(session_record)
+    else:
+        access_request.status = CommercialAccessRequestStatus(payload.decision)
+        access_request.resolver_user_id = current_user.id
+        access_request.resolution_note = payload.resolution_note
+        access_request.resolved_at = utc_now()
+        access_request.updated_at = utc_now()
+        db.add(access_request)
 
     record_commercial_event(
         db,
@@ -1308,7 +1820,11 @@ def resolve_access_request(
         event_key=f"access_request_{access_request.status.value}",
         product_key=access_request.product_key,
         source="access_request",
-        metadata={"capability": access_request.capability, "request_id": str(access_request.id)},
+        metadata={
+            "capability": access_request.capability,
+            "request_id": str(access_request.id),
+            "approval_mode": payload.approval_mode,
+        },
     )
     return serialize_access_request(access_request, db)
 

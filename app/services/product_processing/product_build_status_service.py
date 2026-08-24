@@ -11,6 +11,7 @@ from app.services.commercial_access import build_commercial_access_snapshot_v2
 from app.services.deliverable_catalog.catalog_service import build_deliverable_catalog_response
 from app.services.deliverable_catalog.contracts import DeliverableCatalogItem
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
+from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing.contracts import (
     ProductBuildAction,
     ProductBuildActionState,
@@ -114,16 +115,43 @@ def build_product_build_status(
         current_stage=current_stage,
     )
     product_items = [item for item in catalog.entries if _is_expected_for_product(item, meta)]
+    product_items_by_key = {item.key: item for item in product_items}
     jobs_by_key = _latest_jobs_by_key(db, session_id=record.id)
+    diagram_jobs_by_key = _latest_diagram_jobs_by_key(db, session_id=record.id)
+    product_jobs_by_key = {item.key: jobs_by_key[item.key] for item in product_items if item.key in jobs_by_key}
+    diagram_jobs_by_deliverable_key = {
+        item.key: diagram_job
+        for item in product_items
+        if (diagram_job := _diagram_job_for_item(item, diagram_jobs_by_key)) is not None
+    }
     deliverables = [
-        _build_deliverable_status(item, meta, job=jobs_by_key.get(item.key), session_id=str(record.id))
+        _build_deliverable_status(
+            item,
+            meta,
+            job=jobs_by_key.get(item.key),
+            diagram_job=diagram_jobs_by_deliverable_key.get(item.key),
+            session_id=str(record.id),
+        )
         for item in product_items
     ]
     run = _latest_run(db, record=record, product_key=meta.product_key)
-    attention_items = _build_attention_items(db, record=record, meta=meta, jobs_by_key=jobs_by_key, run=run)
+    attention_items = _build_attention_items(
+        db,
+        record=record,
+        meta=meta,
+        product_items_by_key=product_items_by_key,
+        jobs_by_key=product_jobs_by_key,
+        diagram_jobs_by_key=diagram_jobs_by_deliverable_key,
+        run=run,
+    )
     progress = _build_progress(run, deliverables)
     lifecycle = _derive_lifecycle(run, entitlement, deliverables, attention_items)
-    current_activity = _build_current_activity(db, run, jobs_by_key.values(), lifecycle)
+    current_activity = _build_current_activity(
+        db,
+        run,
+        [*product_jobs_by_key.values(), *diagram_jobs_by_deliverable_key.values()],
+        lifecycle,
+    )
     actions = _build_actions(meta, lifecycle, entitlement, record_id=str(record.id))
     last_error = _build_last_error(run, deliverables)
     stages = _build_stage_statuses(
@@ -231,14 +259,28 @@ def _latest_jobs_by_key(db: Session, *, session_id) -> dict[str, DeliverableGene
     return by_key
 
 
+def _latest_diagram_jobs_by_key(db: Session, *, session_id) -> dict[str, DiagramGenerationJobRecord]:
+    jobs = db.exec(
+        select(DiagramGenerationJobRecord)
+        .where(DiagramGenerationJobRecord.session_id == session_id)
+        .order_by(DiagramGenerationJobRecord.updated_at.desc())
+    ).all()
+    by_key: dict[str, DiagramGenerationJobRecord] = {}
+    for job in jobs:
+        by_key.setdefault(job.diagram_key, job)
+    return by_key
+
+
 def _build_deliverable_status(
     item: DeliverableCatalogItem,
     meta: ProductBuildMeta,
     *,
     job: DeliverableGenerationJobRecord | None,
+    diagram_job: DiagramGenerationJobRecord | None,
     session_id: str,
 ) -> ProductBuildDeliverableStatus:
-    state = _deliverable_state(item, job)
+    effective_job = job or diagram_job
+    state = _deliverable_state(item, job, diagram_job=diagram_job)
     return ProductBuildDeliverableStatus(
         deliverable_key=item.key,
         title=item.title,
@@ -247,8 +289,8 @@ def _build_deliverable_status(
         product_surface=meta.product_key,
         stage_key=item.stage,
         required=True,
-        job_id=str(job.id) if job is not None else "",
-        updated_at=(job.updated_at.isoformat() if job is not None else ""),
+        job_id=str(effective_job.id) if effective_job is not None else "",
+        updated_at=(effective_job.updated_at.isoformat() if effective_job is not None else ""),
         href=f"/projects/{session_id}/blueprint?deliverable={item.key}",
     )
 
@@ -256,9 +298,12 @@ def _build_deliverable_status(
 def _deliverable_state(
     item: DeliverableCatalogItem,
     job: DeliverableGenerationJobRecord | None,
+    *,
+    diagram_job: DiagramGenerationJobRecord | None = None,
 ) -> ProductBuildDeliverableState:
+    effective_job = job or diagram_job
     access_state = str(item.access.access_state or "")
-    job_status = str(job.status or "") if job is not None else ""
+    job_status = str(effective_job.status or "") if effective_job is not None else ""
     if access_state in {"locked", "stage_locked", "disabled"}:
         return ProductBuildDeliverableState.locked
     if access_state == "quality_failed" or job_status in ERROR_JOB_STATES:
@@ -281,7 +326,9 @@ def _build_attention_items(
     *,
     record: SessionRecord,
     meta: ProductBuildMeta,
+    product_items_by_key: dict[str, DeliverableCatalogItem],
     jobs_by_key: dict[str, DeliverableGenerationJobRecord],
+    diagram_jobs_by_key: dict[str, DiagramGenerationJobRecord],
     run: ProductBuildRunRecord | None,
 ) -> list[ProductBuildAttentionItem]:
     items: list[ProductBuildAttentionItem] = []
@@ -334,7 +381,38 @@ def _build_attention_items(
                 blocking=True,
             )
         )
+    for deliverable_key, job in diagram_jobs_by_key.items():
+        if job.status not in {"error", "failed", "requires_attention"}:
+            continue
+        item = product_items_by_key.get(deliverable_key)
+        linked_step = steps_by_key.get(f"deliverable:{deliverable_key}")
+        items.append(
+            ProductBuildAttentionItem(
+                key=f"diagram-job:{deliverable_key}",
+                title=f"No se pudo generar {item.title if item is not None else deliverable_key}",
+                severity=ProductBuildAttentionSeverity.technical_error
+                if job.status in ERROR_JOB_STATES
+                else ProductBuildAttentionSeverity.blocking,
+                product_key=meta.product_key.value,
+                run_id=str(run.id) if run is not None else "",
+                step_id=str(linked_step.id) if linked_step is not None else "",
+                source="diagram_job",
+                deliverable_key=deliverable_key,
+                href=f"/projects/{record.id}/blueprint?deliverable={deliverable_key}",
+                reason=job.error_message or job.error_code or "El job de generacion del diagrama requiere revision.",
+                blocking=True,
+            )
+        )
     return items
+
+
+def _diagram_job_for_item(
+    item: DeliverableCatalogItem,
+    diagram_jobs_by_key: dict[str, DiagramGenerationJobRecord],
+) -> DiagramGenerationJobRecord | None:
+    if item.deliverable_type.value != "diagram":
+        return None
+    return diagram_jobs_by_key.get(item.key.removeprefix("diagram."))
 
 
 def _steps_by_key(db: Session, run: ProductBuildRunRecord | None) -> dict[str, ProductBuildStepRecord]:
@@ -475,16 +553,22 @@ def _derive_lifecycle(
 def _build_current_activity(
     db: Session,
     run: ProductBuildRunRecord | None,
-    jobs: Iterable[DeliverableGenerationJobRecord],
+    jobs: Iterable[DeliverableGenerationJobRecord | DiagramGenerationJobRecord],
     lifecycle: ProductBuildLifecycle,
 ) -> ProductBuildCurrentActivity | None:
     active_job = next((job for job in jobs if job.status in ACTIVE_JOB_STATES), None)
     if active_job is not None:
+        if isinstance(active_job, DiagramGenerationJobRecord):
+            reference_key = f"diagram.{active_job.diagram_key}"
+            label = "Generando diagrama"
+        else:
+            reference_key = active_job.deliverable_key
+            label = "Generando entregable"
         return ProductBuildCurrentActivity(
-            activity_key=f"deliverable:{active_job.deliverable_key}",
-            label="Generando entregable",
-            detail=active_job.deliverable_key,
-            step_key=active_job.deliverable_key,
+            activity_key=f"deliverable:{reference_key}",
+            label=label,
+            detail=reference_key,
+            step_key=reference_key,
             status="running" if active_job.status in {"generating", "updating", "running"} else "queued",
             started_at=active_job.started_at.isoformat() if active_job.started_at else "",
             updated_at=active_job.updated_at.isoformat(),

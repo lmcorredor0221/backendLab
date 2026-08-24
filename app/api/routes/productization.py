@@ -67,6 +67,7 @@ from app.services.export_delivery_service import (
     read_export_job_bytes,
     retry_export_job_response,
 )
+from app.services.plan_access_service import build_workspace_commercial_summary
 from app.services.product_processing import (
     ProductBuildCommandRequest,
     ProductBuildProductKey,
@@ -699,6 +700,11 @@ def get_plan_access_route(
         products=list_active_products(db),
         pending_requests=[serialize_access_request(item) for item in pending_requests],
         entitlements=access.entitlements,
+        workspace_commercial=build_workspace_commercial_summary(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+        ),
     )
 
 
