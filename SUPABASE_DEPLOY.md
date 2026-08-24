@@ -94,6 +94,37 @@ SCHEMA_MANAGEMENT_MODE=alembic
 
 If the database has not been initialized, the API will fail fast and tell you to run `alembic upgrade head`.
 
+## Legacy schema recovery without `alembic_version`
+
+If production already has the core application tables but is missing `alembic_version`, do not assume the safest move is a blind `alembic upgrade head`.
+
+Recommended recovery sequence:
+
+1. Verify the legacy schema already contains the baseline objects expected before the missing revisions.
+2. If only the newest revisions are absent, apply the missing DDL in controlled SQL blocks.
+3. Stamp `alembic_version` only after the schema matches the expected head.
+
+For the Supabase production alignment executed on August 24, 2026, the reusable SQL script is:
+
+```text
+backend/scripts/prod_schema_alignment_20260824.sql
+```
+
+That recovery aligned a production database that:
+
+- already had legacy core tables such as `workspaces`, `users`, `sessions`, `commercial_orders`, and `hotmart_webhook_events`
+- already had the `stage_operations` control columns introduced in revision `20260816_0014`
+- was missing `alembic_version`
+- was missing the tables introduced by revisions `20260823_0015`, `20260823_0016`, and `20260824_0017`
+
+The script:
+
+- creates the missing commercial quota, catalog, debt, and Hotmart pending activation tables
+- normalizes the Hotmart webhook unique constraint to `(event_id, event_type)`
+- stamps `alembic_version` to `20260824_0017`
+
+When running that script in Supabase SQL Editor, choose `Run without RLS` to match the backend-managed schema expected by the Alembic migrations.
+
 ## GitHub deployment flow
 
 Because your code is already in GitHub, the simplest path is:
