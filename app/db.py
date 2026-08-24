@@ -109,7 +109,7 @@ def ensure_runtime_schema() -> None:
                 )
 
 
-def create_db_and_tables() -> None:
+def bootstrap_application_data(session: Session) -> None:
     from app.services.deliverable_catalog import persistence as _deliverable_catalog_persistence  # noqa: F401
     from app.services.product_processing import persistence as _product_processing_persistence  # noqa: F401
     from app.services.journey_stage_migration import JourneyStageMigrationService
@@ -121,25 +121,29 @@ def create_db_and_tables() -> None:
         apply_workspace_uuid_column_migration,
     )
 
+    apply_workspace_uuid_column_migration(session)
+    backfill_user_default_workspaces(session)
+    apply_workspace_scoped_legacy_backfill(session)
+    backfill_platform_runtime_governance(session)
+    apply_runtime_llm_multitenant_migration(session)
+    apply_session_contract_migration(session)
+    JourneyStageMigrationService().apply(session)
+    apply_knowledge_memory_governance_migration(session)
+    from app.services.commerce_service import backfill_legacy_entitlements, ensure_commercial_seed
+
+    ensure_commercial_seed(session)
+    backfill_legacy_entitlements(session)
+    KnowledgeMemoryService().ensure_repo_docs_ingested(session)
+
+
+def create_db_and_tables() -> None:
     if should_auto_create_schema(settings):
         SQLModel.metadata.create_all(engine)
         ensure_runtime_schema()
     else:
         assert_alembic_head_applied(engine)
     with Session(engine) as session:
-        apply_workspace_uuid_column_migration(session)
-        backfill_user_default_workspaces(session)
-        apply_workspace_scoped_legacy_backfill(session)
-        backfill_platform_runtime_governance(session)
-        apply_runtime_llm_multitenant_migration(session)
-        apply_session_contract_migration(session)
-        JourneyStageMigrationService().apply(session)
-        apply_knowledge_memory_governance_migration(session)
-        from app.services.commerce_service import backfill_legacy_entitlements, ensure_commercial_seed
-
-        ensure_commercial_seed(session)
-        backfill_legacy_entitlements(session)
-        KnowledgeMemoryService().ensure_repo_docs_ingested(session)
+        bootstrap_application_data(session)
 
 
 def get_session() -> Generator[Session, None, None]:
