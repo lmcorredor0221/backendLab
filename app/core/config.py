@@ -124,17 +124,26 @@ def allow_demo_tier_upgrade(settings: Settings | None = None) -> bool:
     return resolved.app_debug
 
 
+def _database_is_local(settings: Settings) -> bool:
+    parsed = make_url(settings.database_url)
+    if parsed.drivername.startswith("sqlite"):
+        return True
+    host = (parsed.host or "").strip().lower()
+    return host in {"127.0.0.1", "localhost"}
+
+
 def should_auto_create_schema(settings: Settings | None = None) -> bool:
     resolved = settings or get_settings()
-    return resolved.schema_management_mode.strip().lower() != "alembic"
+    mode = resolved.schema_management_mode.strip().lower()
+    if mode == "alembic":
+        return False
+    if mode == "create_all_local":
+        return _database_is_local(resolved)
+    return True
 
 
 def knowledge_repo_autosync_enabled(settings: Settings | None = None) -> bool:
     resolved = settings or get_settings()
     if resolved.knowledge_repo_autosync_enabled is not None:
         return resolved.knowledge_repo_autosync_enabled
-    parsed = make_url(resolved.database_url)
-    if parsed.drivername.startswith("sqlite"):
-        return True
-    host = (parsed.host or "").strip().lower()
-    return host in {"127.0.0.1", "localhost"}
+    return _database_is_local(resolved)
