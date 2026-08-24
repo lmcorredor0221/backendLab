@@ -16,7 +16,7 @@ from uuid import UUID
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from app.core.config import get_settings
+from app.core.config import get_settings, knowledge_repo_autosync_enabled
 from app.models import (
     KnowledgeCorpusStatus,
     KnowledgeDocumentEntry,
@@ -261,12 +261,25 @@ class KnowledgeMemoryService:
     def ensure_repo_docs_ingested(self, session: Session) -> KnowledgeIngestionReport:
         scope_config = self._resolve_scope_config(KnowledgeScope.platform)
         latest_run = self._latest_run(session, scope_config)
-        if latest_run is not None and not self._runtime_artifacts_exist(scope_config):
+        autosync_enabled = knowledge_repo_autosync_enabled()
+        if latest_run is not None and (not autosync_enabled or not self._runtime_artifacts_exist(scope_config)):
             return self._build_report_from_run(
                 session,
                 latest_run,
                 documents=self._latest_document_entries(session, scope_config=scope_config),
                 changed_paths=[],
+            )
+        if not autosync_enabled:
+            return KnowledgeIngestionReport(
+                source_root=scope_config.source_root,
+                scope=scope_config.scope,
+                workspace_id=scope_config.workspace_id,
+                session_id=scope_config.session_id,
+                status="skipped",
+                vector_dimensions=self.vector_dimensions,
+                filesystem_manifest_path=str(self._manifest_path_for_scope(scope_config)),
+                lexical_index_path=str(self._lexical_index_path_for_scope(scope_config)),
+                vector_index_path=str(self._vector_index_path_for_scope(scope_config)),
             )
         return self.sync_docs_corpus(session, scope=KnowledgeScope.platform, force=False)
 

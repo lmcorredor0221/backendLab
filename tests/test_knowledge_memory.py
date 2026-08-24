@@ -216,6 +216,41 @@ def test_ensure_repo_docs_ingested_reuses_latest_run_when_runtime_artifacts_are_
         assert not runtime_root.joinpath("vector-index.json").exists()
 
 
+def test_ensure_repo_docs_ingested_skips_repo_autosync_for_remote_database(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "Docs"
+    runtime_root = tmp_path / "runtime"
+    _write_doc(
+        docs_root / "ops" / "playbook.md",
+        "# Playbook\n\n## Recovery\nLa resincronizacion del repo se ejecuta de forma explicita fuera de produccion.\n",
+    )
+
+    settings = get_settings()
+    original_database_url = settings.database_url
+    original_autosync_override = settings.knowledge_repo_autosync_enabled
+    settings.database_url = "postgresql+psycopg://user:secret@aws-0-us-east-2.pooler.supabase.com:5432/postgres"
+    settings.knowledge_repo_autosync_enabled = None
+
+    try:
+        service = KnowledgeMemoryService(docs_root=docs_root, runtime_root=runtime_root)
+        with _build_memory_session() as session:
+            def _unexpected_sync(*_args, **_kwargs):
+                raise AssertionError("El autosync del repo no debe ejecutarse cuando la base configurada es remota.")
+
+            monkeypatch.setattr(service, "sync_docs_corpus", _unexpected_sync)
+            report = service.ensure_repo_docs_ingested(session)
+
+            assert report.status == "skipped"
+            assert report.run_id is None
+            assert report.document_count == 0
+            assert report.changed_document_count == 0
+    finally:
+        settings.database_url = original_database_url
+        settings.knowledge_repo_autosync_enabled = original_autosync_override
+
+
 def test_governed_search_isolated_by_workspace_and_session_with_filters_and_cursor(tmp_path: Path) -> None:
     docs_root = tmp_path / "Docs"
     runtime_root = tmp_path / "runtime"

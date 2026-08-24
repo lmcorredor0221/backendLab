@@ -3,6 +3,7 @@ from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
     codex_shadow_agents: str = ""
     codex_staged_agents: str = ""
     knowledge_docs_root: Path = Path(__file__).resolve().parents[3] / "Docs"
+    knowledge_repo_autosync_enabled: bool | None = None
     runtime_secrets_master_key: str = ""
     local_admin_email: str = "lmcorredor@leanagentbuilder.com"
     local_admin_password: str = "LeanBuilder123!"
@@ -125,3 +127,14 @@ def allow_demo_tier_upgrade(settings: Settings | None = None) -> bool:
 def should_auto_create_schema(settings: Settings | None = None) -> bool:
     resolved = settings or get_settings()
     return resolved.schema_management_mode.strip().lower() != "alembic"
+
+
+def knowledge_repo_autosync_enabled(settings: Settings | None = None) -> bool:
+    resolved = settings or get_settings()
+    if resolved.knowledge_repo_autosync_enabled is not None:
+        return resolved.knowledge_repo_autosync_enabled
+    parsed = make_url(resolved.database_url)
+    if parsed.drivername.startswith("sqlite"):
+        return True
+    host = (parsed.host or "").strip().lower()
+    return host in {"127.0.0.1", "localhost"}
