@@ -648,6 +648,10 @@ def load_llm_runtime_settings() -> LLMRuntimeSettings:
     return resolve_runtime_settings_payload(payload)
 
 
+def load_default_builder_runtime_settings() -> LLMRuntimeSettings:
+    return load_llm_runtime_settings()
+
+
 def persist_llm_runtime_settings(payload: LLMRuntimeSettingsUpdateRequest) -> LLMRuntimeSettings:
     defaults = _default_runtime_settings()
     settings = get_settings()
@@ -707,28 +711,29 @@ def persist_llm_runtime_settings(payload: LLMRuntimeSettingsUpdateRequest) -> LL
     return load_llm_runtime_settings()
 
 
-def build_builder_service(runtime_settings: LLMRuntimeSettings) -> BuilderProviderFacade:
+def build_builder_service(runtime_settings: LLMRuntimeSettings | None = None) -> BuilderProviderFacade:
+    resolved_runtime_settings = runtime_settings or load_llm_runtime_settings()
     finops_session_factory = default_finops_session_factory
     finops_ledger_service = LLMUsageLedgerService()
     return BuilderProviderFacade(
-        runtime_settings,
+        resolved_runtime_settings,
         openai_service=OpenAIBuilderService(
-            runtime_settings,
+            resolved_runtime_settings,
             finops_session_factory=finops_session_factory,
             finops_ledger_service=finops_ledger_service,
         ),
         deepseek_service=DeepSeekBuilderService(
-            runtime_settings,
+            resolved_runtime_settings,
             finops_session_factory=finops_session_factory,
             finops_ledger_service=finops_ledger_service,
         ),
         codex_service=CodexLocalBuilderService(
-            runtime_settings,
+            resolved_runtime_settings,
             finops_session_factory=finops_session_factory,
             finops_ledger_service=finops_ledger_service,
         ),
         antigravity_service=AntigravityLocalBuilderService(
-            runtime_settings,
+            resolved_runtime_settings,
             finops_session_factory=finops_session_factory,
             finops_ledger_service=finops_ledger_service,
         ),

@@ -317,6 +317,7 @@ from app.services.stage5_service import (
     sync_governance_handoff,
     update_feature_flag,
 )
+from app.services.workspace_membership_service import get_effective_workspace_membership
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 from app.services.workspace_bootstrap import apply_workspace_bootstrap, build_workspace_contract
 
@@ -876,15 +877,12 @@ def get_or_404(session: Session, session_id: UUID, user_id: UUID) -> SessionReco
     record = session.exec(select(SessionRecord).where(SessionRecord.id == session_id)).first()
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    accessible_workspace_ids = set(
-        session.exec(
-            select(WorkspaceMembershipRecord.workspace_id).where(
-                WorkspaceMembershipRecord.user_id == user_id,
-                WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-            )
-        ).all()
+    membership = get_effective_workspace_membership(
+        session,
+        workspace_id=record.workspace_id,
+        user_id=user_id,
     )
-    if record.workspace_id not in accessible_workspace_ids:
+    if membership is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return record
 
@@ -3066,9 +3064,13 @@ def build_snapshot(
         session_id=record.id,
     )
 
-    current_membership = (
-        get_workspace_membership_for_record(session, record=record, user_id=current_user.id) if current_user is not None else None
-    )
+    current_membership = None
+    if current_user is not None:
+        current_membership = get_effective_workspace_membership(
+            session,
+            workspace_id=record.workspace_id,
+            user_id=current_user.id,
+        )
     owner = session.exec(select(UserRecord).where(UserRecord.id == record.user_id)).first()
 
     snapshot = SessionSnapshot(
@@ -3378,13 +3380,11 @@ def get_workspace_membership_for_record(
     record: SessionRecord,
     user_id: UUID,
 ) -> WorkspaceMembershipRecord:
-    membership = session.exec(
-        select(WorkspaceMembershipRecord).where(
-            WorkspaceMembershipRecord.workspace_id == record.workspace_id,
-            WorkspaceMembershipRecord.user_id == user_id,
-            WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-        )
-    ).first()
+    membership = get_effective_workspace_membership(
+        session,
+        workspace_id=record.workspace_id,
+        user_id=user_id,
+    )
     if membership is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return membership

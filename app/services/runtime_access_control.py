@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from app.models import PlatformRole, PlatformRoleAssignmentRecord, UserRecord, WorkspaceRole
-from app.services.runtime_governance_bootstrap import backfill_platform_runtime_governance
+from app.models import UserRecord, WorkspaceRole
+from app.services.workspace_membership_service import is_platform_admin_user
 from app.services.workspace_access import WorkspaceAccessContext
 
 
@@ -11,15 +11,7 @@ WORKSPACE_RUNTIME_ADMIN_ROLES = {WorkspaceRole.admin}
 
 
 def is_platform_admin(session: Session, user: UserRecord) -> bool:
-    backfill_platform_runtime_governance(session)
-    assignment = session.exec(
-        select(PlatformRoleAssignmentRecord).where(
-            PlatformRoleAssignmentRecord.user_id == user.id,
-            PlatformRoleAssignmentRecord.role == PlatformRole.platform_admin,
-            PlatformRoleAssignmentRecord.is_active == True,  # noqa: E712
-        )
-    ).first()
-    return assignment is not None
+    return is_platform_admin_user(session, user=user)
 
 
 def ensure_platform_admin(session: Session, user: UserRecord) -> None:

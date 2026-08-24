@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.models import (
     CommercialAccessSnapshotV2,
@@ -12,7 +12,6 @@ from app.models import (
     SessionCommercialAccess,
     SessionRecord,
     UserRecord,
-    WorkspaceMembershipRecord,
     WorkspaceRole,
 )
 from app.services.commerce_service import (
@@ -286,19 +285,13 @@ def resolve_session_entitlement_context(
     record: SessionRecord,
     current_user: UserRecord,
 ) -> CommercialEntitlementContext:
-    membership = db.exec(
-        select(WorkspaceMembershipRecord).where(
-            WorkspaceMembershipRecord.workspace_id == record.workspace_id,
-            WorkspaceMembershipRecord.user_id == current_user.id,
-            WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-        )
-    ).first()
     effective = resolve_effective_entitlement_state(db, record)
+    role = role_for_user(db, workspace_id=record.workspace_id, user_id=current_user.id)
     return build_entitlement_context(
         tier=effective.tier,
         workspace_id=record.workspace_id,
         user_id=current_user.id,
-        role=membership.role if membership is not None else None,
+        role=role,
         purchase_refs=effective.purchase_refs,
     )
 

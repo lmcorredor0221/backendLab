@@ -18,6 +18,7 @@ from app.models import (
 from app.services.auth_service import hash_password
 from app.services.llm_runtime.runtime_settings_service import (
     load_effective_runtime_settings,
+    load_llm_execution_runtime_settings,
     load_platform_runtime_defaults,
     persist_platform_runtime_defaults,
     persist_workspace_runtime_settings,
@@ -190,6 +191,112 @@ def test_persist_workspace_runtime_settings_isolated_by_workspace_and_audited() 
     assert len(audit_rows) == 1
     assert audit_rows[0].actor_email == "workspace-admin@leanbuilder.local"
     assert audit_rows[0].after_payload_redacted["active_provider"] == "deepseek"
+
+
+def test_load_llm_execution_runtime_settings_follows_workspace_override() -> None:
+    settings = get_settings()
+    original_path = settings.llm_config_path
+
+    with TemporaryDirectory(prefix="lean-builder-runtime-service-") as runtime_dir:
+        runtime_path = Path(runtime_dir) / "llm_settings.json"
+        runtime_path.write_text(json.dumps({"active_provider": "openai"}, ensure_ascii=True), encoding="utf-8")
+        settings.llm_config_path = runtime_path
+        try:
+            engine = _build_engine()
+            SQLModel.metadata.create_all(engine)
+            with Session(engine) as session:
+                actor, workspace = _seed_user_and_workspace(
+                    session,
+                    email="platform-admin@leanbuilder.local",
+                    workspace_name="Platform Workspace",
+                )
+
+                persist_platform_runtime_defaults(
+                    session,
+                    payload=LLMRuntimeSettingsUpdateRequest.model_validate(
+                        {
+                            "active_provider": "deepseek",
+                            "agent_execution_backend": "provider_native",
+                            "knowledge_access_backend": "inline_context",
+                            "openai": {
+                                "fast_model": "gpt-5.4-mini",
+                                "reasoning_model": "gpt-5.5",
+                                "reasoning_effort": "low",
+                            },
+                            "deepseek": {
+                                "base_url": "https://api.deepseek.com",
+                                "fast_model": "deepseek-v4-flash",
+                                "reasoning_model": "deepseek-v4-pro",
+                                "reasoning_effort": "max",
+                            },
+                            "codex_local": {
+                                "command": "codex",
+                                "model": "gpt-5.5",
+                                "profile": "platform-profile",
+                                "cost_policy": "hybrid",
+                                "timeout_ms": 180000,
+                                "max_concurrency": 2,
+                                "runner_id": "platform",
+                                "auth_mode": "auto",
+                                "fallback_models": ["gpt-5.5-mini"],
+                                "primary_agents": ["normalize_discovery"],
+                                "shadow_agents": ["synthesize_blueprint_narrative"],
+                                "staged_agents": ["evaluate_readiness"],
+                            },
+                        }
+                    ),
+                    actor_user_id=actor.id,
+                    mirror_legacy_runtime=False,
+                )
+                persist_workspace_runtime_settings(
+                    session,
+                    workspace.id,
+                    payload=LLMRuntimeSettingsUpdateRequest.model_validate(
+                        {
+                            "active_provider": "openai",
+                            "uses_platform_credentials": False,
+                            "agent_execution_backend": "provider_native",
+                            "knowledge_access_backend": "workspace_staged",
+                            "openai": {
+                                "fast_model": "gpt-5.4-mini",
+                                "reasoning_model": "gpt-5.5",
+                                "reasoning_effort": "low",
+                            },
+                            "deepseek": {
+                                "base_url": "https://api.deepseek.com",
+                                "fast_model": "deepseek-v4-flash",
+                                "reasoning_model": "deepseek-v4-pro",
+                                "reasoning_effort": "max",
+                            },
+                            "codex_local": {
+                                "command": "codex",
+                                "model": "gpt-5.5",
+                                "profile": "workspace-profile",
+                                "cost_policy": "hybrid",
+                                "timeout_ms": 180000,
+                                "max_concurrency": 2,
+                                "runner_id": "workspace",
+                                "auth_mode": "auto",
+                                "fallback_models": ["gpt-5.5-mini"],
+                                "primary_agents": ["normalize_discovery"],
+                                "shadow_agents": ["synthesize_blueprint_narrative"],
+                                "staged_agents": ["evaluate_readiness"],
+                            },
+                        }
+                    ),
+                    actor_user_id=actor.id,
+                    mirror_legacy_runtime=False,
+                )
+                workspace_runtime = load_effective_runtime_settings(session, workspace.id)
+                execution_runtime = load_llm_execution_runtime_settings(session, workspace.id)
+        finally:
+            settings.llm_config_path = original_path
+
+    assert workspace_runtime.active_provider.value == "openai"
+    assert workspace_runtime.uses_platform_credentials is False
+    assert execution_runtime.active_provider.value == "openai"
+    assert execution_runtime.uses_platform_credentials is False
+    assert execution_runtime.knowledge_access_backend.value == "workspace_staged"
 
 
 def test_persist_platform_runtime_defaults_updates_workspace_fallbacks() -> None:

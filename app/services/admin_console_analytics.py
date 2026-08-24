@@ -25,6 +25,7 @@ from app.models import (
     utc_now,
 )
 from app.services.llm_finops.analytics_service import LLMUsageAnalyticsFilters, LLMUsageAnalyticsService
+from app.services.workspace_membership_service import get_effective_workspace_membership
 
 
 DEFAULT_ADMIN_PERIOD_DAYS = 30
@@ -313,13 +314,11 @@ class AdminConsoleAnalyticsService:
         workspace_id: UUID,
         current_user_id: UUID,
     ) -> dict[str, Any]:
-        workspace_membership = session.exec(
-            select(WorkspaceMembershipRecord).where(
-                WorkspaceMembershipRecord.workspace_id == workspace_id,
-                WorkspaceMembershipRecord.user_id == current_user_id,
-                WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-            )
-        ).first()
+        workspace_membership = get_effective_workspace_membership(
+            session,
+            workspace_id=workspace_id,
+            user_id=current_user_id,
+        )
         platform_assignments = list(
             session.exec(
                 select(PlatformRoleAssignmentRecord).where(

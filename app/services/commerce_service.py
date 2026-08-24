@@ -46,6 +46,7 @@ from app.models import (
     WorkspaceRole,
     utc_now,
 )
+from app.services.workspace_membership_service import get_effective_workspace_membership
 from app.services.commerce_provider_router import get_commerce_payment_provider
 from app.services.commercial_event_catalog import enrich_commercial_event_metadata
 from app.services.commercial_debt_service import (
@@ -425,23 +426,19 @@ def build_product_response(db: Session, record: ProductCatalogRecord) -> Product
 
 
 def get_membership(db: Session, record: SessionRecord, user: UserRecord) -> WorkspaceMembershipRecord | None:
-    return db.exec(
-        select(WorkspaceMembershipRecord).where(
-            WorkspaceMembershipRecord.workspace_id == record.workspace_id,
-            WorkspaceMembershipRecord.user_id == user.id,
-            WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-        )
-    ).first()
+    return get_effective_workspace_membership(
+        db,
+        workspace_id=record.workspace_id,
+        user_id=user.id,
+    )
 
 
 def role_for_user(db: Session, *, workspace_id: UUID, user_id: UUID) -> WorkspaceRole | None:
-    membership = db.exec(
-        select(WorkspaceMembershipRecord).where(
-            WorkspaceMembershipRecord.workspace_id == workspace_id,
-            WorkspaceMembershipRecord.user_id == user_id,
-            WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-        )
-    ).first()
+    membership = get_effective_workspace_membership(
+        db,
+        workspace_id=workspace_id,
+        user_id=user_id,
+    )
     return membership.role if membership is not None else None
 
 

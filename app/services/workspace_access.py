@@ -18,6 +18,7 @@ from app.models import (
     utc_now,
 )
 from app.services.auth_service import get_current_user
+from app.services.workspace_membership_service import list_effective_workspace_memberships
 
 
 @dataclass(frozen=True)
@@ -131,7 +132,7 @@ def build_auth_user(
     requested_workspace_id: UUID | None = None,
 ) -> AuthUser:
     active_context = resolve_workspace_access(session, user, requested_workspace_id=requested_workspace_id)
-    memberships = list_workspace_memberships(session, user)
+    memberships = list_effective_workspace_memberships(session, user=user)
     return AuthUser(
         id=user.id,
         email=user.email,
@@ -159,7 +160,7 @@ def resolve_workspace_access(
     requested_workspace_id: UUID | None = None,
 ) -> WorkspaceAccessContext:
     ensure_personal_workspace(session, user)
-    memberships = list_workspace_memberships(session, user)
+    memberships = list_effective_workspace_memberships(session, user=user)
     if not memberships:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The user has no active workspace memberships.")
 

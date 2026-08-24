@@ -25,7 +25,6 @@ from app.models import (
     HotmartProductMappingRecord,
     SessionRecord,
     UserRecord,
-    WorkspaceMembershipRecord,
     utc_now,
 )
 from app.services.commerce_service import (
@@ -40,6 +39,7 @@ from app.services.commerce_service import (
 from app.services.commercial_catalog_service import get_package_catalog_entry, package_units_for_product
 from app.services.hotmart.auth import normalize_hotmart_environment
 from app.services.runtime_access_control import is_platform_admin
+from app.services.workspace_membership_service import get_effective_workspace_membership
 
 
 @dataclass(frozen=True)
@@ -358,13 +358,11 @@ def claim_hotmart_pending_activation(
     if target_session.workspace_id is None:
         raise ValueError("Target session is not attached to a workspace.")
 
-    membership = session.exec(
-        select(WorkspaceMembershipRecord).where(
-            WorkspaceMembershipRecord.workspace_id == target_session.workspace_id,
-            WorkspaceMembershipRecord.user_id == current_user.id,
-            WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-        )
-    ).first()
+    membership = get_effective_workspace_membership(
+        session,
+        workspace_id=target_session.workspace_id,
+        user_id=current_user.id,
+    )
     if membership is None:
         raise PermissionError("You do not have access to the target workspace.")
 

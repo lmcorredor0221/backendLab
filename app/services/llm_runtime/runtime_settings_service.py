@@ -329,6 +329,12 @@ def load_effective_runtime_settings(session: Session, workspace_id: UUID) -> LLM
     )
 
 
+def load_llm_execution_runtime_settings(session: Session, workspace_id: UUID | None = None) -> LLMRuntimeSettings:
+    if workspace_id is None:
+        return load_platform_runtime_defaults(session)
+    return load_effective_runtime_settings(session, workspace_id)
+
+
 def load_effective_runtime_settings_for_session(session: Session, session_id: UUID) -> LLMRuntimeSettings:
     record = session.get(SessionRecord, session_id)
     if record is None:

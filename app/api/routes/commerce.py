@@ -36,7 +36,6 @@ from app.models import (
     SessionRecord,
     TRMResponse,
     UserRecord,
-    WorkspaceMembershipRecord,
     WorkspaceRole,
 )
 from app.services.acp_generator import generate_acp_preview
@@ -78,6 +77,7 @@ from app.services.product_processing import (
     build_product_journey_overview,
 )
 from app.services.runtime_access_control import is_platform_admin
+from app.services.workspace_membership_service import get_effective_workspace_membership
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
 from app.core.config import get_settings
@@ -90,13 +90,11 @@ def _get_record_or_404(db: Session, session_id: UUID, user_id: UUID) -> SessionR
     record = db.get(SessionRecord, session_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    membership = db.exec(
-        select(WorkspaceMembershipRecord).where(
-            WorkspaceMembershipRecord.workspace_id == record.workspace_id,
-            WorkspaceMembershipRecord.user_id == user_id,
-            WorkspaceMembershipRecord.is_active == True,  # noqa: E712
-        )
-    ).first()
+    membership = get_effective_workspace_membership(
+        db,
+        workspace_id=record.workspace_id,
+        user_id=user_id,
+    )
     if membership is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return record

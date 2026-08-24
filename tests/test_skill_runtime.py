@@ -9,6 +9,7 @@ from app.models import (
     DiscoveryArtifact,
     DiscoveryInput,
     EvaluationArtifact,
+    LLMProviderKey,
     ReviewState,
     ToolRecommendationArtifact,
     ToolRecommendationConfidence,
@@ -16,8 +17,9 @@ from app.models import (
     ToolRecommendationLLMOutput,
 )
 from app.services.llm_runtime.builder_contracts import FunctionalRequirement, LLMArtifactResult, RequirementsDefinitionOutput
-from app.services.openai_builder import BlueprintNarrativeOutput
+from app.services.openai_builder import BlueprintNarrativeOutput, load_llm_runtime_settings
 from app.services.skill_runtime import (
+    _builder_service_for_stage,
     get_skill_registry,
     run_blueprint_stage,
     run_canvas_stage,
@@ -338,6 +340,34 @@ def test_stage_runtime_surfaces_llm_trace_for_all_builder_stages(monkeypatch) ->
     assert recommendation_traces[0].llm_trace is not None
 
 
+def test_builder_service_for_stage_uses_runtime_loader_when_context_missing(monkeypatch) -> None:
+    expected_runtime = load_llm_runtime_settings().model_copy(update={"active_provider": LLMProviderKey.deepseek})
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime.load_llm_runtime_settings",
+        lambda: expected_runtime,
+    )
+
+    def fake_build_builder_service(runtime_settings):
+        captured["runtime_settings"] = runtime_settings
+        return sentinel
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime.build_builder_service",
+        fake_build_builder_service,
+    )
+
+    service = _builder_service_for_stage("design")
+
+    assert service is sentinel
+    resolved_runtime = captured["runtime_settings"]
+    assert resolved_runtime is not None
+    assert resolved_runtime.active_provider == LLMProviderKey.deepseek
+    assert resolved_runtime.uses_platform_credentials is expected_runtime.uses_platform_credentials
+
+
 def test_tool_recommendation_stage_returns_structured_placeholder_contract() -> None:
     discovery_envelope, _ = run_discovery_stage(complete_discovery_input())
     canvas_envelope, _ = run_canvas_stage(discovery_envelope.data)
@@ -440,4 +470,3 @@ def test_design_self_healing_reconciles_contradictions() -> None:
     # Verify recommended alternative was reconciled with the justified architecture
     assert evaluated.selected_design.architecture in {"supervisor_with_subagents", "handoffs"}
     assert evaluated.review_state != ReviewState.blocked
-

@@ -27,6 +27,7 @@ from app.models import (
     PlatformRole,
     PlatformRoleAssignmentRecord,
     RuntimeCatalogEntryRecord,
+    SessionRecord,
     SessionStage,
     ToolRecommendationArtifact,
     ToolRecommendationConfidence,
@@ -166,6 +167,26 @@ def assign_platform_role(
             assignment.updated_at = utc_now()
             session.add(assignment)
         session.commit()
+    finally:
+        session_generator.close()
+
+
+def create_session_for_workspace(client: TestClient, *, email: str, workspace_id: str, title: str = "Proyecto externo") -> str:
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        user = session.exec(select(UserRecord).where(UserRecord.email == email)).first()
+        assert user is not None
+        record = SessionRecord(
+            user_id=user.id,
+            workspace_id=UUID(workspace_id),
+            title=title,
+        )
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+        return str(record.id)
     finally:
         session_generator.close()
 
@@ -1720,6 +1741,39 @@ def test_auth_and_sessions_can_switch_between_user_workspaces(client: TestClient
     secondary_session_ids = {item["id"] for item in secondary_list_response.json()["items"]}
     assert secondary_session_id in secondary_session_ids
     assert default_session_id not in secondary_session_ids
+
+
+def test_platform_admin_can_access_sessions_from_external_workspace(client: TestClient) -> None:
+    seed_user(
+        client,
+        email="external-owner@leanbuilder.local",
+        password="ExternalOwner123!",
+        full_name="External Owner",
+    )
+    external_workspace_id = create_workspace_for_user(
+        client,
+        email="external-owner@leanbuilder.local",
+        name="External Workspace",
+        role=WorkspaceRole.owner,
+    )
+    external_session_id = create_session_for_workspace(
+        client,
+        email="external-owner@leanbuilder.local",
+        workspace_id=external_workspace_id,
+        title="Proyecto externo administrable",
+    )
+
+    headers = auth_headers(client)
+    me_response = client.get(
+        "/api/v1/auth/me",
+        headers={**headers, "x-workspace-id": external_workspace_id},
+    )
+    assert me_response.status_code == 200
+    assert me_response.json()["active_workspace_id"] == external_workspace_id
+
+    snapshot_response = client.get(f"/api/v1/sessions/{external_session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    assert snapshot_response.json()["session"]["workspace_id"] == external_workspace_id
 
 
 def test_project_portfolio_rename_lifecycle_and_facets(client: TestClient) -> None:
@@ -3468,7 +3522,7 @@ def test_runtime_llm_settings_can_switch_active_provider_without_breaking_health
     assert {"define", "design", "tools", "memory", "evaluate", "build"} == {
         item["stage_key"] for item in initial_payload["memory_rollout"]["stages"]
     }
-    assert {"openai", "deepseek", "codex_local"} == {
+    assert {"openai", "deepseek", "codex_local", "antigravity_cli"} == {
         item["key"] for item in initial_payload["provider_options"]
     }
 
@@ -3528,6 +3582,8 @@ def test_runtime_llm_settings_can_switch_active_provider_without_breaking_health
     assert health_response.status_code == 200
     health_payload = health_response.json()
     assert health_payload["status"] == "ok"
+    assert health_payload["runtime"]["scope"] == "platform_default"
+    assert "workspace" in health_payload["runtime"]["scope_detail"]
     assert health_payload["runtime"]["active_provider"] in {"openai", "deepseek", "codex_local"}
     assert "llm_runtime_settings" not in health_payload
     assert "command" not in json.dumps(health_payload)

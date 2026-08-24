@@ -18,6 +18,7 @@ from app.models import (
     SessionStage,
     UserRecord,
     WorkspaceMembershipRecord,
+    WorkspaceRecord,
     WorkspaceRole,
 )
 from app.services.auth_service import hash_password
@@ -178,6 +179,50 @@ def seed_workspace_owner(client: TestClient, workspace_id: UUID) -> tuple[UUID, 
         return user.id, user.email, password
 
 
+def seed_external_workspace(client: TestClient) -> tuple[UUID, UUID, str]:
+    with db_session_from_client(client) as session:
+        owner = UserRecord(
+            email="external-owner@leanbuilder.local",
+            full_name="External Owner",
+            password_hash=hash_password("ExternalOwner123!"),
+            email_verified=True,
+        )
+        viewer = UserRecord(
+            email="external-viewer@leanbuilder.local",
+            full_name="External Viewer",
+            password_hash=hash_password("ExternalViewer123!"),
+            email_verified=True,
+        )
+        session.add(owner)
+        session.add(viewer)
+        session.flush()
+        workspace = WorkspaceRecord(
+            name="External Workspace",
+            slug=f"external-workspace-{str(owner.id)[:8]}",
+            created_by_user_id=owner.id,
+        )
+        session.add(workspace)
+        session.flush()
+        session.add(
+            WorkspaceMembershipRecord(
+                workspace_id=workspace.id,
+                user_id=owner.id,
+                role=WorkspaceRole.owner,
+                is_active=True,
+            )
+        )
+        session.add(
+            WorkspaceMembershipRecord(
+                workspace_id=workspace.id,
+                user_id=viewer.id,
+                role=WorkspaceRole.viewer,
+                is_active=True,
+            )
+        )
+        session.commit()
+        return workspace.id, viewer.id, viewer.email
+
+
 def test_admin_overview_uses_real_scoped_sources_and_exposes_uninstrumented_states(client: TestClient) -> None:
     headers = auth_headers(client)
     workspace_id = active_workspace_id(client, headers)
@@ -279,3 +324,32 @@ def test_admin_routes_forbid_workspace_owner_without_platform_admin(client: Test
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Solo un workspace admin o platform admin puede ejecutar esta accion."
+
+
+def test_platform_admin_can_select_and_administer_external_workspace(client: TestClient) -> None:
+    headers = auth_headers(client)
+    external_workspace_id, _, external_viewer_email = seed_external_workspace(client)
+
+    me_response = client.get(
+        "/api/v1/auth/me",
+        headers={**headers, "x-workspace-id": str(external_workspace_id)},
+    )
+
+    assert me_response.status_code == 200
+    me_payload = me_response.json()
+    assert me_payload["active_workspace_id"] == str(external_workspace_id)
+    assert any(item["workspace_id"] == str(external_workspace_id) for item in me_payload["workspaces"])
+
+    users_response = client.get(
+        "/api/v1/admin/users",
+        headers={**headers, "x-workspace-id": str(external_workspace_id)},
+    )
+    assert users_response.status_code == 200
+    assert any(item["email"] == external_viewer_email for item in users_response.json()["items"])
+
+    roles_response = client.get(
+        "/api/v1/admin/roles",
+        headers={**headers, "x-workspace-id": str(external_workspace_id)},
+    )
+    assert roles_response.status_code == 200
+    assert roles_response.json()["effective"]["workspace"] == "owner"

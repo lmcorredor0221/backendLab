@@ -625,6 +625,11 @@ def build_minimal_health_payload(session: Session) -> dict[str, Any]:
             "sdk_ready": bool(summary.get("sdk_ready")),
         },
         "runtime": {
+            "scope": "platform_default",
+            "scope_detail": (
+                "Pulso publico sin contexto de workspace o sesion; los overrides efectivos solo se resuelven "
+                "en rutas autenticadas por workspace."
+            ),
             "active_provider": runtime_settings.active_provider.value,
             "agent_execution_backend": runtime_settings.agent_execution_backend.value,
             "knowledge_access_backend": runtime_settings.knowledge_access_backend.value,
