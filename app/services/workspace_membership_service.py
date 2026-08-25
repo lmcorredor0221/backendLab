@@ -34,6 +34,24 @@ def is_platform_admin_user(session: Session, *, user: UserRecord) -> bool:
     return is_platform_admin_user_id(session, user_id=user.id)
 
 
+def list_active_platform_roles_for_user(session: Session, *, user: UserRecord) -> list[PlatformRole]:
+    backfill_platform_runtime_governance(session)
+    assignments = session.exec(
+        select(PlatformRoleAssignmentRecord).where(
+            PlatformRoleAssignmentRecord.user_id == user.id,
+            PlatformRoleAssignmentRecord.is_active == True,  # noqa: E712
+        )
+    ).all()
+    seen: set[PlatformRole] = set()
+    roles: list[PlatformRole] = []
+    for assignment in assignments:
+        if assignment.role in seen:
+            continue
+        seen.add(assignment.role)
+        roles.append(assignment.role)
+    return roles
+
+
 def get_effective_workspace_membership(
     session: Session,
     *,

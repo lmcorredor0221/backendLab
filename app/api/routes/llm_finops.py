@@ -20,11 +20,25 @@ from app.services.auth_service import get_current_user
 from app.services.llm_finops.analytics_service import LLMUsageAnalyticsFilters, LLMUsageAnalyticsService
 from app.services.llm_finops.alert_service import LLMFinOpsAlertService
 from app.services.llm_finops.budget_service import LLMBudgetService
-from app.services.runtime_access_control import ensure_workspace_runtime_admin
+from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 
 
-router = APIRouter(prefix="/finops/llm", tags=["llm-finops"])
+def require_finops_admin(
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> None:
+    try:
+        ensure_platform_admin(db, current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+router = APIRouter(
+    prefix="/finops/llm",
+    tags=["llm-finops"],
+    dependencies=[Depends(require_finops_admin)],
+)
 
 
 class LLMBudgetPolicyCreateRequest(BaseModel):
@@ -358,8 +372,9 @@ def _ensure_finops_admin(
     current_user: UserRecord,
     workspace_context: WorkspaceAccessContext,
 ) -> None:
+    del workspace_context
     try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
+        ensure_platform_admin(db, current_user)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 

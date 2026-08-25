@@ -118,7 +118,7 @@ from app.services.hotmart.sync import (
     resolve_hotmart_reconciliation_issue,
     run_hotmart_manual_sync,
 )
-from app.services.runtime_access_control import ensure_platform_admin, ensure_workspace_runtime_admin
+from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
 
@@ -133,10 +133,7 @@ def get_hotmart_status_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartIntegrationStatusResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_hotmart_status(
         db,
@@ -152,10 +149,7 @@ def upsert_hotmart_credentials_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartIntegrationStatusResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = upsert_hotmart_credentials(
@@ -177,10 +171,7 @@ def list_hotmart_mappings_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartProductMappingResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_product_mappings(
         db,
@@ -196,10 +187,7 @@ def upsert_hotmart_mapping_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartProductMappingResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = upsert_hotmart_product_mapping(
@@ -219,10 +207,7 @@ def list_hotmart_payment_links_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartPaymentLinkResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_payment_links(db, workspace_id=workspace_context.workspace.id)
 
@@ -234,10 +219,7 @@ def create_hotmart_payment_link_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPaymentLinkResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = create_hotmart_payment_link_for_order(
@@ -262,10 +244,7 @@ def refresh_hotmart_payment_link_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPaymentLinkResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = refresh_hotmart_payment_link(
@@ -289,10 +268,7 @@ def list_hotmart_coupon_promotions_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartPromotionResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_promotions(
         db,
@@ -308,10 +284,7 @@ def get_hotmart_coupon_metrics_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPromotionMetricsResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_hotmart_promotion_metrics(
         db,
@@ -327,10 +300,7 @@ def create_hotmart_coupon_promotion_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPromotionResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = create_hotmart_coupon_promotion(
@@ -356,10 +326,7 @@ def delete_hotmart_coupon_promotion_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPromotionDeleteResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = delete_hotmart_coupon_promotion(
@@ -384,10 +351,7 @@ def run_hotmart_manual_sync_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartSyncRunResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = run_hotmart_manual_sync(
@@ -415,10 +379,7 @@ def list_hotmart_sync_runs_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartSyncRunResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_sync_runs(
         db,
@@ -435,10 +396,7 @@ def list_hotmart_sync_cursors_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartSyncCursorResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_sync_cursors(
         db,
@@ -455,10 +413,7 @@ def list_hotmart_reconciliation_issues_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartReconciliationIssueResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_reconciliation_issues(
         db,
@@ -475,10 +430,7 @@ def list_hotmart_pending_activations_route(
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> list[HotmartPendingActivationResponse]:
-    try:
-        ensure_platform_admin(db, current_user)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     return list_pending_hotmart_activations(
         db,
         source_workspace_id=workspace_id,
@@ -494,10 +446,7 @@ def resolve_hotmart_reconciliation_issue_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartReconciliationIssueResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = resolve_hotmart_reconciliation_issue(
@@ -521,10 +470,7 @@ def replay_hotmart_webhook_event_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartWebhookReplayResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = replay_hotmart_webhook_event(
@@ -547,10 +493,7 @@ def get_hotmart_club_overview_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartClubOverviewResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return get_hotmart_club_overview(
         db,
@@ -566,10 +509,7 @@ def sync_hotmart_club_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartSyncRunResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = sync_hotmart_club(
@@ -596,10 +536,7 @@ def list_hotmart_club_modules_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubModuleResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_modules(
         db,
@@ -615,10 +552,7 @@ def list_hotmart_club_pages_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubPageResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_pages(
         db,
@@ -634,10 +568,7 @@ def list_hotmart_club_students_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubStudentResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_students(
         db,
@@ -653,10 +584,7 @@ def list_hotmart_club_progress_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubProgressResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_progress(
         db,
@@ -672,10 +600,7 @@ def get_hotmart_release_readiness_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartReleaseReadinessResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_hotmart_release_readiness(
         db,
@@ -691,10 +616,7 @@ def list_hotmart_operational_alerts_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartOperationalAlertResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_operational_alerts(
         db,
@@ -709,10 +631,7 @@ def list_hotmart_runbook_sections_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartRunbookSectionResponse]:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_runbook_sections()
 
@@ -724,10 +643,7 @@ def test_hotmart_connection_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartTestConnectionResponse:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    _ensure_platform_admin_or_403(db, current_user)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     response = test_hotmart_connection(
         db,

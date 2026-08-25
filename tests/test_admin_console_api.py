@@ -323,7 +323,7 @@ def test_admin_routes_forbid_workspace_owner_without_platform_admin(client: Test
     response = client.get("/api/v1/admin/users", headers=owner_headers)
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "Solo un workspace admin o platform admin puede ejecutar esta accion."
+    assert response.json()["detail"] == "Solo un platform admin puede ejecutar esta accion."
 
 
 def test_platform_admin_can_select_and_administer_external_workspace(client: TestClient) -> None:
@@ -338,6 +338,7 @@ def test_platform_admin_can_select_and_administer_external_workspace(client: Tes
     assert me_response.status_code == 200
     me_payload = me_response.json()
     assert me_payload["active_workspace_id"] == str(external_workspace_id)
+    assert me_payload["platform_roles"] == ["platform_admin"]
     assert any(item["workspace_id"] == str(external_workspace_id) for item in me_payload["workspaces"])
 
     users_response = client.get(

@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from sqlmodel import Session
 
-from app.models import UserRecord, WorkspaceRole
+from app.models import UserRecord
 from app.services.workspace_membership_service import is_platform_admin_user
 from app.services.workspace_access import WorkspaceAccessContext
-
-
-WORKSPACE_RUNTIME_ADMIN_ROLES = {WorkspaceRole.admin}
 
 
 def is_platform_admin(session: Session, user: UserRecord) -> bool:
@@ -24,7 +21,7 @@ def ensure_workspace_runtime_admin(
     user: UserRecord,
     workspace_context: WorkspaceAccessContext,
 ) -> None:
-    if is_platform_admin(session, user):
-        return
-    if workspace_context.membership.role not in WORKSPACE_RUNTIME_ADMIN_ROLES:
-        raise PermissionError("Solo un workspace admin o platform admin puede ejecutar esta accion.")
+    del workspace_context
+    # Legacy compatibility name: runtime and technical administration are now
+    # governed globally by the platform admin role only.
+    ensure_platform_admin(session, user)

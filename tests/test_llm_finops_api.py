@@ -10,6 +10,7 @@ from sqlmodel import select
 
 from app.db import get_session
 from app.models import LLMUsageLedgerRecord, UserRecord
+from app.services.auth_service import hash_password
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
@@ -23,6 +24,15 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     response = client.post(
         "/api/v1/auth/login",
         json={"email": TEST_EMAIL, "password": TEST_PASSWORD},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def auth_headers_for(client: TestClient, *, email: str, password: str) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": password},
     )
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
@@ -77,6 +87,25 @@ def seed_usage_record(
         session_generator.close()
 
 
+def seed_non_platform_user(client: TestClient, *, email: str, password: str) -> None:
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        session.add(
+            UserRecord(
+                email=email,
+                full_name="FinOps Viewer",
+                password_hash=hash_password(password),
+                email_verified=True,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+        session_generator.close()
+
+
 def test_llm_finops_summary_empty_state(client: TestClient) -> None:
     headers = auth_headers(client)
 
@@ -85,6 +114,24 @@ def test_llm_finops_summary_empty_state(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json()["call_count"] == 0
     assert response.json()["cost_total"] == 0
+
+
+def test_llm_finops_routes_require_platform_admin(client: TestClient) -> None:
+    seed_non_platform_user(
+        client,
+        email="finops-viewer@leanbuilder.local",
+        password="FinopsViewer123!",
+    )
+    headers = auth_headers_for(
+        client,
+        email="finops-viewer@leanbuilder.local",
+        password="FinopsViewer123!",
+    )
+
+    response = client.get("/api/v1/finops/llm/summary", headers=headers)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Solo un platform admin puede ejecutar esta accion."
 
 
 def test_llm_finops_summary_is_scoped_to_active_workspace(client: TestClient) -> None:

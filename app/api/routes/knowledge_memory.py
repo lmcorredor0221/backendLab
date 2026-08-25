@@ -20,7 +20,7 @@ from app.models import (
 )
 from app.services.auth_service import get_current_user
 from app.services.knowledge_memory import KnowledgeMemoryService
-from app.services.runtime_access_control import ensure_platform_admin, ensure_workspace_runtime_admin
+from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 
 
@@ -64,11 +64,9 @@ def _ensure_scope_admin(
     current_user: UserRecord,
     workspace_context: WorkspaceAccessContext,
 ) -> None:
+    del scope, workspace_context
     try:
-        if scope == KnowledgeScope.platform:
-            ensure_platform_admin(db, current_user)
-            return
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
+        ensure_platform_admin(db, current_user)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
@@ -95,7 +93,7 @@ def get_docs_corpus_status(
     scope: KnowledgeScope = Query(default=KnowledgeScope.platform),
     session_id: UUID | None = Query(default=None),
     ensure: bool = Query(default=True),
-    _: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
     db: Session = Depends(get_session),
 ) -> KnowledgeCorpusStatus:
@@ -109,6 +107,12 @@ def get_docs_corpus_status(
         workspace_context=workspace_context,
         session_id=session_id,
         required=scope == KnowledgeScope.session,
+    )
+    _ensure_scope_admin(
+        db,
+        scope=scope,
+        current_user=current_user,
+        workspace_context=workspace_context,
     )
     return KnowledgeMemoryService().build_corpus_status(
         db,

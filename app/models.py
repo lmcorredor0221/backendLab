@@ -5479,6 +5479,7 @@ class AuthUser(ContractModel):
     preferred_currency: str = "COP"
     active_workspace_id: UUID | None = None
     active_workspace_name: str = ""
+    platform_roles: list[str] = PydanticField(default_factory=list)
     workspaces: list[WorkspaceMembershipSummary] = PydanticField(default_factory=list)
 
 

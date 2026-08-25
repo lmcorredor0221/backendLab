@@ -3799,7 +3799,7 @@ def test_runtime_secret_routes_redact_plaintext_and_isolate_workspaces(client: T
     assert runtime_after_delete.json()["openai"]["secret_source"] == "platform_managed"
 
 
-def test_workspace_runtime_admin_routes_require_workspace_admin_or_owner(client: TestClient) -> None:
+def test_workspace_runtime_routes_require_platform_admin_for_non_platform_users(client: TestClient) -> None:
     seed_user(
         client,
         email="viewer@leanbuilder.local",
@@ -3820,6 +3820,9 @@ def test_workspace_runtime_admin_routes_require_workspace_admin_or_owner(client:
         ),
         "x-workspace-id": viewer_workspace_id,
     }
+
+    read_response = client.get("/api/v1/runtime/llm", headers=viewer_headers)
+    assert read_response.status_code == 403
 
     update_response = client.patch(
         "/api/v1/runtime/llm",
@@ -3864,7 +3867,7 @@ def test_workspace_runtime_admin_routes_require_workspace_admin_or_owner(client:
     assert test_response.status_code == 403
 
 
-def test_workspace_runtime_admin_routes_allow_workspace_admin(client: TestClient) -> None:
+def test_workspace_runtime_routes_forbid_workspace_admin_without_platform_role(client: TestClient) -> None:
     seed_user(
         client,
         email="workspace-admin@leanbuilder.local",
@@ -3920,17 +3923,13 @@ def test_workspace_runtime_admin_routes_allow_workspace_admin(client: TestClient
             },
         },
     )
-    assert update_response.status_code == 200
+    assert update_response.status_code == 403
 
     health_response = client.get("/api/v1/runtime/llm/health", headers=admin_headers)
-    assert health_response.status_code == 200
-    assert health_response.json()["mode"] == "health"
-    assert health_response.json()["provider_key"] == "openai"
+    assert health_response.status_code == 403
 
     test_response = client.post("/api/v1/runtime/llm/test", headers=admin_headers)
-    assert test_response.status_code == 200
-    assert test_response.json()["mode"] == "test"
-    assert any(item["check_key"] == "dry_run" for item in test_response.json()["checks"])
+    assert test_response.status_code == 403
 
 
 def test_platform_runtime_routes_require_platform_admin(client: TestClient) -> None:
@@ -3958,7 +3957,7 @@ def test_platform_runtime_routes_allow_platform_admin_and_govern_workspace_runti
     providers_response = client.get("/api/v1/platform/runtime/providers", headers=headers)
     assert providers_response.status_code == 200
     provider_keys = {item["provider_key"] for item in providers_response.json()}
-    assert provider_keys == {"openai", "deepseek", "codex_local"}
+    assert provider_keys == {"openai", "deepseek", "codex_local", "antigravity_cli"}
 
     update_provider_response = client.patch(
         "/api/v1/platform/runtime/providers/deepseek",

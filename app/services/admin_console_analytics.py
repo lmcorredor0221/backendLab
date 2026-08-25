@@ -625,23 +625,25 @@ def _sorted_buckets(grouped: dict[str, dict[str, Any]], *, key_name: str) -> lis
 def _workspace_role_payload(role: WorkspaceRole) -> dict[str, Any]:
     permissions = {
         WorkspaceRole.owner: [
-            "workspace.manage",
-            "settings.manage",
-            "runtime.manage",
-            "users.manage",
-            "roles.manage",
-            "billing.manage",
-            "projects.manage",
+            "workspace.members.manage",
+            "workspace.projects.manage",
+            "workspace.preferences.manage",
+            "workspace.commerce.read",
+            "workspace.plan.read",
         ],
         WorkspaceRole.admin: [
-            "settings.manage",
-            "runtime.manage",
-            "users.manage",
-            "billing.manage",
-            "projects.manage",
+            "workspace.projects.manage",
+            "workspace.members.read",
+            "workspace.preferences.read",
+            "workspace.plan.read",
         ],
-        WorkspaceRole.editor: ["projects.create", "projects.edit", "settings.read", "analytics.read"],
-        WorkspaceRole.viewer: ["projects.read", "settings.read", "analytics.read"],
+        WorkspaceRole.editor: [
+            "projects.manage",
+            "projects.create",
+            "projects.edit",
+            "workspace.read",
+        ],
+        WorkspaceRole.viewer: ["projects.read", "workspace.read"],
     }[role]
     return {
         "key": _enum_value(role),

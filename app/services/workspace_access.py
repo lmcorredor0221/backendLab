@@ -18,7 +18,10 @@ from app.models import (
     utc_now,
 )
 from app.services.auth_service import get_current_user
-from app.services.workspace_membership_service import list_effective_workspace_memberships
+from app.services.workspace_membership_service import (
+    list_active_platform_roles_for_user,
+    list_effective_workspace_memberships,
+)
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,7 @@ def build_auth_user(
 ) -> AuthUser:
     active_context = resolve_workspace_access(session, user, requested_workspace_id=requested_workspace_id)
     memberships = list_effective_workspace_memberships(session, user=user)
+    platform_roles = [role.value for role in list_active_platform_roles_for_user(session, user=user)]
     return AuthUser(
         id=user.id,
         email=user.email,
@@ -140,6 +144,7 @@ def build_auth_user(
         preferred_currency=(user.preferred_currency or "COP").strip().upper() or "COP",
         active_workspace_id=active_context.workspace.id,
         active_workspace_name=active_context.workspace.name,
+        platform_roles=platform_roles,
         workspaces=[
             WorkspaceMembershipSummary(
                 workspace_id=workspace.id,

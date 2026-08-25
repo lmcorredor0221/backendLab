@@ -22,7 +22,7 @@ from app.services.admin_console_analytics import (
     audit_admin_change,
 )
 from app.services.auth_service import get_current_user
-from app.services.runtime_access_control import ensure_workspace_runtime_admin
+from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 
 
@@ -332,8 +332,9 @@ def _ensure_admin(
     current_user: UserRecord,
     workspace_context: WorkspaceAccessContext,
 ) -> None:
+    del workspace_context
     try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
+        ensure_platform_admin(db, current_user)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 

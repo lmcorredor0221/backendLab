@@ -26,12 +26,26 @@ from app.services.llm_runtime.runtime_settings_service import (
     reset_workspace_runtime_settings,
 )
 from app.services.memory_rollout import build_memory_rollout_summary
-from app.services.runtime_access_control import ensure_workspace_runtime_admin
+from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
 
 
-router = APIRouter(prefix="/runtime", tags=["runtime-settings"])
+def require_platform_runtime_admin(
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> None:
+    try:
+        ensure_platform_admin(db, current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+router = APIRouter(
+    prefix="/runtime",
+    tags=["runtime-settings"],
+    dependencies=[Depends(require_platform_runtime_admin)],
+)
 
 
 def _runtime_settings_response(
@@ -80,7 +94,6 @@ def update_llm_runtime_settings_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> LLMRuntimeSettings:
     try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
         validate_runtime_update_request_against_platform_registry(db, payload)
     except (PermissionError, ValueError) as exc:
         status_code = status.HTTP_403_FORBIDDEN if isinstance(exc, PermissionError) else status.HTTP_400_BAD_REQUEST
@@ -105,10 +118,6 @@ def reset_llm_runtime_settings_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> LLMRuntimeSettings:
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     runtime_settings = reset_workspace_runtime_settings(
         db,
@@ -132,7 +141,6 @@ def upsert_workspace_provider_secret_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> WorkspaceProviderSecretResponse:
     try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
         apply_workspace_bootstrap(db, workspace_context.workspace.id)
         return upsert_workspace_provider_secret(
             db,
@@ -156,7 +164,6 @@ def rotate_workspace_provider_secret_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> WorkspaceProviderSecretResponse:
     try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
         apply_workspace_bootstrap(db, workspace_context.workspace.id)
         return rotate_workspace_provider_secret(
             db,
@@ -179,7 +186,6 @@ def delete_workspace_provider_secret_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> WorkspaceProviderSecretResponse:
     try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
         apply_workspace_bootstrap(db, workspace_context.workspace.id)
         return delete_workspace_provider_secret(
             db,
@@ -201,10 +207,6 @@ def get_workspace_runtime_health_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ):
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_workspace_runtime_health(
         db,
@@ -219,10 +221,6 @@ def test_workspace_runtime_route(
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ):
-    try:
-        ensure_workspace_runtime_admin(db, current_user, workspace_context)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_workspace_runtime_health(
         db,
