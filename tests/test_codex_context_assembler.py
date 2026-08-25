@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.contracts.canonical_v1 import MemoryContextBudgetV1
@@ -119,3 +121,17 @@ def test_context_assembler_preserves_required_payload_as_full_staged_file() -> N
     assert payload["delivery_mode"] == "filesystem_full_required"
     assert assembly.stats.prompt_truncated_source_count == 1
     assert assembly.stats.truncated_source_count == 0
+
+
+def test_context_assembler_reads_repo_excerpt_beyond_legacy_900_limit(tmp_path: Path) -> None:
+    marker = "REPO_EXCERPT_CONTEXT_MARKER"
+    source_path = tmp_path / "knowledge" / "candidate" / "source.md"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text(f"Intro\n\n{'A' * 980}\n\n{marker}\n\n{'B' * 900}", encoding="utf-8")
+
+    assembler = CodexContextAssembler(repo_root=tmp_path)
+
+    excerpt = assembler._read_source_excerpt("knowledge/candidate/source.md")
+
+    assert marker in excerpt
+    assert len(excerpt) <= 1_600

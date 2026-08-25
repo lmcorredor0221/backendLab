@@ -154,6 +154,7 @@ def build_full_session_snapshot(client: TestClient, case_key: str, case_title: s
         headers=headers,
         json={"tier": "acp"},
     ).raise_for_status()
+    client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers).raise_for_status()
 
     preview_response = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
     preview_response.raise_for_status()

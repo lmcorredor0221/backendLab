@@ -164,7 +164,9 @@ def test_openai_service_bootstraps_client_from_workspace_secret(monkeypatch) -> 
 
         assert runtime_settings.uses_platform_credentials is False
         assert runtime_settings.active_provider == LLMProviderKey.openai
-        assert runtime_settings.openai.api_key_configured is False
+        assert runtime_settings.openai.api_key_configured is True
+        assert runtime_settings.openai.secret_source == "workspace_managed"
+        assert runtime_settings.openai.health_status == "workspace_ready"
 
         captured: dict[str, str] = {}
         response = SimpleNamespace(
@@ -250,7 +252,9 @@ def test_deepseek_service_bootstraps_client_from_workspace_secret(monkeypatch) -
 
         assert runtime_settings.uses_platform_credentials is False
         assert runtime_settings.active_provider == LLMProviderKey.deepseek
-        assert runtime_settings.deepseek.api_key_configured is False
+        assert runtime_settings.deepseek.api_key_configured is True
+        assert runtime_settings.deepseek.secret_source == "workspace_managed"
+        assert runtime_settings.deepseek.health_status == "workspace_ready"
 
         captured: dict[str, str] = {}
         content = json.dumps(

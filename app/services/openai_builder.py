@@ -408,37 +408,876 @@ def _deepseek_retry_max_tokens(max_tokens: int, *, expand_budget: bool) -> int:
     return min(max_tokens * 2, 8192)
 
 
+def _compact_text(value: object, *, limit: int = 220, fallback: str = "") -> str:
+    normalized = " ".join(str(value or "").split()).strip()
+    if not normalized:
+        return fallback
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _compact_string_list(values: list[object], *, limit: int = 5, item_limit: int = 180) -> list[str]:
+    items: list[str] = []
+    for value in values[:limit]:
+        compact = _compact_text(value, limit=item_limit)
+        if compact:
+            items.append(compact)
+    return items
+
+
+def _compact_source_refs(values: list[str], *, limit: int = 8) -> list[str]:
+    return [item.strip() for item in values[:limit] if item and item.strip()]
+
+
+def _compact_discovery_input(discovery: DiscoveryInput | DiscoveryArtifact) -> dict[str, Any]:
+    return {
+        "problem_statement": _compact_text(discovery.problem_statement, limit=260),
+        "current_user": _compact_text(discovery.current_user, limit=120),
+        "current_process": _compact_text(discovery.current_process, limit=320),
+        "desired_outcome": _compact_text(discovery.desired_outcome, limit=260),
+        "autonomy_level": _compact_text(discovery.autonomy_level, limit=24),
+        "constraints": _compact_string_list(list(discovery.constraints), limit=6, item_limit=140),
+        "operational_baseline": {
+            "current_time_spent": _compact_text(discovery.operational_baseline.current_time_spent, limit=80),
+            "current_cost": _compact_text(discovery.operational_baseline.current_cost, limit=120),
+            "frequent_errors": _compact_string_list(
+                list(discovery.operational_baseline.frequent_errors),
+                limit=6,
+                item_limit=140,
+            ),
+            "automation_opportunities": _compact_string_list(
+                list(discovery.operational_baseline.automation_opportunities),
+                limit=6,
+                item_limit=140,
+            ),
+        },
+        "mvp_definition": {
+            "v1_scope": _compact_string_list(list(discovery.mvp_definition.v1_scope), limit=6, item_limit=120),
+            "out_of_scope": _compact_string_list(list(discovery.mvp_definition.out_of_scope), limit=6, item_limit=120),
+            "north_star_metric": _compact_text(discovery.mvp_definition.north_star_metric, limit=180),
+            "non_delegable_decisions": _compact_string_list(
+                list(discovery.mvp_definition.non_delegable_decisions),
+                limit=6,
+                item_limit=120,
+            ),
+        },
+    }
+
+
+def _compact_discovery_artifact(discovery: DiscoveryArtifact) -> dict[str, Any]:
+    payload = _compact_discovery_input(discovery)
+    payload.update(
+        {
+            "case_type": _compact_text(discovery.case_type, limit=60),
+            "value_statement": _compact_text(discovery.value_statement, limit=220),
+        }
+    )
+    return payload
+
+
+def _compact_canvas_artifact(canvas: CanvasArtifact) -> dict[str, Any]:
+    return {
+        "user_goal": _compact_text(canvas.user_goal, limit=260),
+        "success_metric": _compact_text(canvas.success_metric, limit=180),
+        "primary_risk": _compact_text(canvas.primary_risk, limit=180),
+        "mvp_scope": _compact_string_list(list(canvas.mvp_scope), limit=6, item_limit=120),
+        "out_of_scope": _compact_string_list(list(canvas.out_of_scope), limit=6, item_limit=120),
+        "agent_profile": {
+            "mission": _compact_text(canvas.agent_profile.mission, limit=220),
+            "primary_user": _compact_text(canvas.agent_profile.primary_user, limit=120),
+            "agent_task": _compact_text(canvas.agent_profile.agent_task, limit=220),
+            "allowed_decisions": _compact_string_list(
+                list(canvas.agent_profile.allowed_decisions),
+                limit=5,
+                item_limit=120,
+            ),
+            "prohibited_decisions": _compact_string_list(
+                list(canvas.agent_profile.prohibited_decisions),
+                limit=5,
+                item_limit=120,
+            ),
+            "key_inputs": _compact_string_list(list(canvas.agent_profile.key_inputs), limit=6, item_limit=100),
+            "expected_outputs": _compact_string_list(
+                list(canvas.agent_profile.expected_outputs),
+                limit=6,
+                item_limit=100,
+            ),
+            "human_approvals": _compact_string_list(
+                list(canvas.agent_profile.human_approvals),
+                limit=5,
+                item_limit=120,
+            ),
+            "success_metrics": _compact_string_list(
+                list(canvas.agent_profile.success_metrics),
+                limit=5,
+                item_limit=120,
+            ),
+        },
+    }
+
+
+def _compact_safety_checks(checks: list[Any], *, limit: int = 6) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for item in checks[:limit]:
+        compacted.append(
+            {
+                "category": _compact_text(getattr(item, "category", ""), limit=80),
+                "risk": _compact_text(getattr(item, "risk", ""), limit=140),
+                "severity": _compact_text(getattr(item, "severity", ""), limit=40),
+                "mitigation": _compact_text(getattr(item, "mitigation", ""), limit=180),
+                "status": _compact_text(getattr(item, "status", ""), limit=40),
+            }
+        )
+    return compacted
+
+
+def _compact_blueprint_tool(tool: Any) -> dict[str, Any]:
+    return {
+        "name": _compact_text(getattr(tool, "name", ""), limit=80),
+        "purpose": _compact_text(getattr(tool, "purpose", ""), limit=180),
+        "owner": _compact_text(getattr(tool, "owner", ""), limit=80),
+        "archetype": _compact_text(getattr(tool, "archetype", ""), limit=60),
+        "integration_kind": _compact_text(getattr(tool, "integration_kind", ""), limit=60),
+        "tool_type": _compact_text(getattr(tool, "tool_type", ""), limit=40),
+        "execution_stage": _compact_text(getattr(tool, "execution_stage", ""), limit=40),
+        "when_to_use": _compact_text(getattr(tool, "when_to_use", ""), limit=180),
+        "risk_level": _compact_text(getattr(tool, "risk_level", ""), limit=40),
+        "requires_approval": bool(getattr(tool, "requires_approval", False)),
+        "has_side_effects": bool(getattr(tool, "has_side_effects", False)),
+        "inputs": _compact_string_list(list(getattr(tool, "inputs", [])), limit=5, item_limit=100),
+        "outputs": _compact_string_list(list(getattr(tool, "outputs", [])), limit=5, item_limit=100),
+        "permissions": _compact_string_list(list(getattr(tool, "permissions", [])), limit=5, item_limit=100),
+        "scopes": _compact_string_list(list(getattr(tool, "scopes", [])), limit=5, item_limit=100),
+        "validations": _compact_string_list(list(getattr(tool, "validations", [])), limit=5, item_limit=120),
+        "failure_mode": _compact_text(getattr(tool, "failure_mode", ""), limit=140),
+        "timeout_policy": _compact_text(getattr(tool, "timeout_policy", ""), limit=100),
+    }
+
+
+def _compact_blueprint_artifact(blueprint: BlueprintArtifact) -> dict[str, Any]:
+    return {
+        "architecture": _compact_text(blueprint.architecture, limit=80),
+        "reasoning_pattern": _compact_text(blueprint.reasoning_pattern, limit=80),
+        "memory_strategy": _compact_text(blueprint.memory_strategy, limit=80),
+        "readiness_state": getattr(blueprint.readiness_state, "value", blueprint.readiness_state),
+        "guardrails": _compact_string_list(list(blueprint.guardrails), limit=8, item_limit=140),
+        "tools": [_compact_blueprint_tool(item) for item in blueprint.tools[:8]],
+        "llm_policy": {
+            "provider": _compact_text(blueprint.llm_policy.provider, limit=40),
+            "fast_model": _compact_text(blueprint.llm_policy.fast_model, limit=80),
+            "reasoning_model": _compact_text(blueprint.llm_policy.reasoning_model, limit=80),
+            "context_policy": _compact_text(blueprint.llm_policy.context_policy, limit=140),
+            "fallback_policy": _compact_text(blueprint.llm_policy.fallback_policy, limit=140),
+            "budget_policy": _compact_text(blueprint.llm_policy.budget_policy, limit=140),
+            "output_validation_policy": _compact_text(
+                blueprint.llm_policy.output_validation_policy,
+                limit=140,
+            ),
+            "functions": [
+                {
+                    "role": _compact_text(item.role, limit=60),
+                    "provider": _compact_text(item.provider, limit=40),
+                    "model": _compact_text(item.model, limit=80),
+                    "reasoning_effort": _compact_text(item.reasoning_effort, limit=40),
+                    "max_tokens": int(item.max_tokens or 0),
+                }
+                for item in blueprint.llm_policy.functions[:6]
+            ],
+        },
+        "memory_profile": {
+            "strategy": _compact_text(blueprint.memory_profile.strategy, limit=100),
+            "storage_layers": _compact_string_list(
+                list(blueprint.memory_profile.storage_layers),
+                limit=6,
+                item_limit=80,
+            ),
+            "write_policy": _compact_text(blueprint.memory_profile.write_policy, limit=160),
+            "retrieval_policy": _compact_text(blueprint.memory_profile.retrieval_policy, limit=160),
+            "review_trigger": _compact_text(blueprint.memory_profile.review_trigger, limit=140),
+            "goal_drift_guard": _compact_text(blueprint.memory_profile.goal_drift_guard, limit=140),
+            "retention_policy": _compact_text(blueprint.memory_profile.retention_policy, limit=140),
+            "sensitivity_rules": _compact_string_list(
+                list(blueprint.memory_profile.sensitivity_rules),
+                limit=6,
+                item_limit=120,
+            ),
+        },
+        "knowledge_profile": {
+            "mode": _compact_text(blueprint.knowledge_profile.mode, limit=40),
+            "sources": [
+                {
+                    "key": _compact_text(item.key, limit=80),
+                    "title": _compact_text(item.title, limit=120),
+                    "source_type": _compact_text(item.source_type, limit=60),
+                    "owner": _compact_text(item.owner, limit=80),
+                    "description": _compact_text(item.description, limit=160),
+                }
+                for item in blueprint.knowledge_profile.sources[:6]
+            ],
+            "ingestion_policy": {
+                "parser": _compact_text(blueprint.knowledge_profile.ingestion_policy.parser, limit=60),
+                "chunking_policy": _compact_text(
+                    blueprint.knowledge_profile.ingestion_policy.chunking_policy,
+                    limit=120,
+                ),
+                "include_filters": _compact_string_list(
+                    list(blueprint.knowledge_profile.ingestion_policy.include_filters),
+                    limit=5,
+                    item_limit=100,
+                ),
+                "exclude_filters": _compact_string_list(
+                    list(blueprint.knowledge_profile.ingestion_policy.exclude_filters),
+                    limit=5,
+                    item_limit=100,
+                ),
+            },
+            "retrieval_policy": {
+                "top_k": int(blueprint.knowledge_profile.retrieval_policy.top_k or 0),
+                "search_mode": _compact_text(
+                    blueprint.knowledge_profile.retrieval_policy.search_mode,
+                    limit=60,
+                ),
+                "reranking_policy": _compact_text(
+                    blueprint.knowledge_profile.retrieval_policy.reranking_policy,
+                    limit=120,
+                ),
+                "fallback_behavior": _compact_text(
+                    blueprint.knowledge_profile.retrieval_policy.fallback_behavior,
+                    limit=120,
+                ),
+            },
+            "grounding_policy": {
+                "citations_policy": _compact_text(
+                    blueprint.knowledge_profile.grounding_policy.citations_policy,
+                    limit=120,
+                ),
+                "confidence_policy": _compact_text(
+                    blueprint.knowledge_profile.grounding_policy.confidence_policy,
+                    limit=120,
+                ),
+                "no_evidence_behavior": _compact_text(
+                    blueprint.knowledge_profile.grounding_policy.no_evidence_behavior,
+                    limit=120,
+                ),
+                "contradictory_evidence_behavior": _compact_text(
+                    blueprint.knowledge_profile.grounding_policy.contradictory_evidence_behavior,
+                    limit=120,
+                ),
+            },
+            "sensitivity_rules": _compact_string_list(
+                list(blueprint.knowledge_profile.sensitivity_rules),
+                limit=6,
+                item_limit=120,
+            ),
+            "notes": _compact_text(blueprint.knowledge_profile.notes, limit=180),
+        },
+        "safety_checks": _compact_safety_checks(blueprint.safety_checks),
+        "delivery_package": {
+            "decision_summary": _compact_text(blueprint.delivery_package.decision_summary, limit=220),
+            "deliverables": _compact_string_list(
+                [item.key for item in blueprint.delivery_package.deliverables],
+                limit=8,
+                item_limit=80,
+            ),
+            "pattern_catalog": _compact_string_list(
+                [
+                    f"{item.family}:{getattr(item, 'pattern_key', getattr(item, 'key', ''))}:{item.label}"
+                    for item in blueprint.delivery_package.pattern_catalog
+                ],
+                limit=8,
+                item_limit=120,
+            ),
+            "component_readiness": _compact_string_list(
+                [
+                    (
+                        f"{item.component}:"
+                        f"{getattr(getattr(item, 'status', ''), 'value', getattr(item, 'status', ''))}:"
+                        f"{'; '.join(list(getattr(item, 'blocking_issues', []))[:2]) or (str(getattr(item, 'completed_checks', 0)) + '/' + str(getattr(item, 'total_checks', 0)) + ' checks')}"
+                    )
+                    for item in blueprint.delivery_package.component_readiness
+                ],
+                limit=6,
+                item_limit=160,
+            ),
+            "risk_summary": _compact_text(
+                getattr(
+                    blueprint.delivery_package.risk_summary,
+                    "summary",
+                    getattr(blueprint.delivery_package.risk_summary, "overall_summary", ""),
+                ),
+                limit=220,
+            ),
+        },
+        "narrative": _compact_text(blueprint.narrative, limit=520),
+    }
+
+
+def _compact_definition_validation(validation: RequirementsDefinitionOutput) -> dict[str, Any]:
+    return {
+        "coverage_ratio": float(validation.validation.coverage_ratio or 0),
+        "blocking_issues": _compact_string_list(list(validation.validation.blocking_issues), limit=10, item_limit=120),
+        "contradictions": _compact_string_list(list(validation.validation.contradictions), limit=8, item_limit=120),
+        "vague_nfrs": _compact_string_list(list(validation.validation.vague_nfrs), limit=8, item_limit=120),
+        "missing_acceptance": _compact_string_list(list(validation.validation.missing_acceptance), limit=8, item_limit=80),
+        "untraced_items": _compact_string_list(list(validation.validation.untraced_items), limit=8, item_limit=80),
+        "blocking_open_questions": _compact_string_list(
+            list(validation.validation.blocking_open_questions),
+            limit=8,
+            item_limit=80,
+        ),
+    }
+
+
+def _compact_definition_artifact(definition: RequirementsDefinitionOutput) -> dict[str, Any]:
+    return {
+        "summary": _compact_text(definition.summary, limit=260),
+        "measurable_objectives": _compact_string_list(list(definition.measurable_objectives), limit=8, item_limit=140),
+        "functional_requirements": [
+            {
+                "key": _compact_text(item.key, limit=80),
+                "title": _compact_text(item.title, limit=140),
+                "priority": _compact_text(item.priority, limit=24),
+                "requirement": _compact_text(item.requirement, limit=200),
+                "acceptance": _compact_string_list(list(item.acceptance), limit=3, item_limit=120),
+            }
+            for item in definition.functional_requirements[:8]
+        ],
+        "non_functional_requirements": [
+            {
+                "key": _compact_text(item.key, limit=80),
+                "title": _compact_text(item.title, limit=140),
+                "category": _compact_text(item.category, limit=40),
+                "metric": _compact_text(item.metric, limit=60),
+                "target": _compact_text(item.target, limit=80),
+                "requirement": _compact_text(item.requirement, limit=180),
+            }
+            for item in definition.non_functional_requirements[:8]
+        ],
+        "business_rules": _compact_string_list(
+            [f"{item.key}: {item.rule}" for item in definition.business_rules],
+            limit=6,
+            item_limit=180,
+        ),
+        "dependencies": _compact_string_list(
+            [f"{item.key}: {item.dependency}" for item in definition.dependencies],
+            limit=6,
+            item_limit=180,
+        ),
+        "assumptions": _compact_string_list(
+            [item.assumption for item in definition.assumptions],
+            limit=6,
+            item_limit=160,
+        ),
+        "open_questions": _compact_string_list(
+            [item.question for item in definition.open_questions],
+            limit=8,
+            item_limit=160,
+        ),
+        "validation": _compact_definition_validation(definition),
+        "canvas_projection": _compact_canvas_artifact(definition.canvas_projection),
+        "evidence_refs": _compact_source_refs(list(definition.evidence_refs)),
+        "confidence": float(definition.confidence or 0),
+    }
+
+
+def _compact_design_alternative(alternative: Any) -> dict[str, Any]:
+    return {
+        "alternative_key": _compact_text(getattr(alternative, "alternative_key", ""), limit=80),
+        "label": _compact_text(getattr(alternative, "label", ""), limit=120),
+        "architecture": _compact_text(getattr(alternative, "architecture", ""), limit=80),
+        "reasoning_pattern": _compact_text(getattr(alternative, "reasoning_pattern", ""), limit=80),
+        "coordination_model": _compact_text(getattr(alternative, "coordination_model", ""), limit=80),
+        "summary": _compact_text(getattr(alternative, "summary", ""), limit=220),
+        "topology": _compact_text(getattr(alternative, "topology", ""), limit=140),
+        "approval_points": _compact_string_list(list(getattr(alternative, "approval_points", [])), limit=5, item_limit=120),
+        "tradeoffs": _compact_string_list(list(getattr(alternative, "tradeoffs", [])), limit=5, item_limit=120),
+        "assumptions": _compact_string_list(list(getattr(alternative, "assumptions", [])), limit=5, item_limit=120),
+        "fit_rationale": _compact_string_list(list(getattr(alternative, "fit_rationale", [])), limit=5, item_limit=120),
+        "fit_score": float(getattr(alternative, "fit_score", 0) or 0),
+        "roles": _compact_string_list(
+            [
+                f"{item.key}:{item.title}:{item.responsibility}"
+                for item in list(getattr(alternative, "roles", []))
+            ],
+            limit=6,
+            item_limit=160,
+        ),
+        "handoffs": _compact_string_list(
+            [
+                f"{item.from_role}->{item.to_role}:{item.trigger}"
+                for item in list(getattr(alternative, "handoffs", []))
+            ],
+            limit=6,
+            item_limit=160,
+        ),
+        "failure_modes": _compact_string_list(
+            [
+                f"{item.scenario}:{item.retry_strategy}:{item.compensation_strategy}"
+                for item in list(getattr(alternative, "failure_modes", []))
+            ],
+            limit=5,
+            item_limit=180,
+        ),
+        "blueprint_projection": {
+            "architecture": _compact_text(getattr(getattr(alternative, "blueprint_projection", None), "architecture", ""), limit=80),
+            "reasoning_pattern": _compact_text(
+                getattr(getattr(alternative, "blueprint_projection", None), "reasoning_pattern", ""),
+                limit=80,
+            ),
+            "guardrails": _compact_string_list(
+                list(getattr(getattr(alternative, "blueprint_projection", None), "guardrails", [])),
+                limit=6,
+                item_limit=120,
+            ),
+            "narrative": _compact_text(
+                getattr(getattr(alternative, "blueprint_projection", None), "narrative", ""),
+                limit=240,
+            ),
+        },
+    }
+
+
+def _compact_design_coverage_entry(entry: Any) -> dict[str, Any]:
+    return {
+        "requirement_key": _compact_text(getattr(entry, "requirement_key", ""), limit=80),
+        "requirement_title": _compact_text(getattr(entry, "requirement_title", ""), limit=140),
+        "category": _compact_text(getattr(entry, "category", ""), limit=40),
+        "priority": _compact_text(getattr(entry, "priority", ""), limit=24),
+        "coverage_status": _compact_text(getattr(entry, "coverage_status", ""), limit=40),
+        "rationale": _compact_text(getattr(entry, "rationale", ""), limit=180),
+        "source_refs": _compact_source_refs(list(getattr(entry, "source_refs", []))),
+    }
+
+
+def _compact_design_proposal_output(proposal: AgentDesignProposalOutput) -> dict[str, Any]:
+    return {
+        "summary": _compact_text(proposal.summary, limit=260),
+        "recommended_alternative_key": _compact_text(proposal.recommended_alternative_key, limit=80),
+        "architecture": _compact_text(proposal.architecture, limit=80),
+        "reasoning_pattern": _compact_text(proposal.reasoning_pattern, limit=80),
+        "memory_strategy": _compact_text(proposal.memory_strategy, limit=80),
+        "coordination_model": _compact_text(proposal.coordination_model, limit=80),
+        "decision_rationale": _compact_text(proposal.decision_rationale, limit=240),
+        "alternatives": [_compact_design_alternative(item) for item in proposal.alternatives[:3]],
+        "requirements_coverage": [
+            _compact_design_coverage_entry(item) for item in proposal.requirements_coverage[:10]
+        ],
+        "tooling_principles": _compact_string_list(list(proposal.tooling_principles), limit=6, item_limit=140),
+        "design_decisions": _compact_string_list(
+            [
+                f"{item.dimension}:{item.selected_option}:{item.rationale}"
+                for item in proposal.design_decisions
+            ],
+            limit=8,
+            item_limit=180,
+        ),
+        "open_questions": _compact_string_list(list(proposal.open_questions), limit=8, item_limit=160),
+        "guided_questions": _compact_string_list(
+            [item.question for item in proposal.guided_questions],
+            limit=5,
+            item_limit=160,
+        ),
+        "narrative": _compact_text(proposal.narrative, limit=320),
+        "evidence_refs": _compact_source_refs(list(proposal.evidence_refs)),
+        "confidence": float(proposal.confidence or 0),
+    }
+
+
+def _compact_memory_architecture_recommendation_output(
+    proposal: MemoryArchitectureRecommendationOutput,
+) -> dict[str, Any]:
+    return {
+        "memory_strategy": _compact_text(proposal.memory_strategy, limit=120),
+        "short_term_strategy": _compact_text(proposal.short_term_strategy, limit=180),
+        "long_term_strategy": _compact_text(proposal.long_term_strategy, limit=180),
+        "retrieval_strategy": _compact_text(proposal.retrieval_strategy, limit=180),
+        "storage_layers": _compact_string_list(list(proposal.storage_layers), limit=6, item_limit=100),
+        "write_policy": _compact_text(proposal.write_policy, limit=180),
+        "pruning_policy": _compact_text(proposal.pruning_policy, limit=160),
+        "security_notes": _compact_string_list(list(proposal.security_notes), limit=6, item_limit=140),
+        "open_questions": _compact_string_list(list(proposal.open_questions), limit=6, item_limit=160),
+        "guided_questions": _compact_string_list(
+            [item.question for item in proposal.guided_questions],
+            limit=5,
+            item_limit=160,
+        ),
+        "rationale": _compact_text(proposal.rationale, limit=260),
+    }
+
+
+def _compact_validation_scenario_item(scenario: Any) -> dict[str, Any]:
+    return {
+        "scenario_key": _compact_text(getattr(scenario, "scenario_key", ""), limit=80),
+        "title": _compact_text(getattr(scenario, "title", ""), limit=140),
+        "objective": _compact_text(getattr(scenario, "objective", ""), limit=200),
+        "steps": _compact_string_list(list(getattr(scenario, "steps", [])), limit=8, item_limit=140),
+        "expected_outcomes": _compact_string_list(
+            list(getattr(scenario, "expected_outcomes", [])),
+            limit=6,
+            item_limit=140,
+        ),
+        "failure_signals": _compact_string_list(
+            list(getattr(scenario, "failure_signals", [])),
+            limit=6,
+            item_limit=140,
+        ),
+        "priority": _compact_text(getattr(scenario, "priority", ""), limit=24),
+    }
+
+
+def _compact_validation_simulation_output(simulation: ValidationSimulationOutput) -> dict[str, Any]:
+    return {
+        "scenario_key": _compact_text(simulation.scenario_key, limit=80),
+        "result_status": _compact_text(simulation.result_status, limit=40),
+        "simulated_transcript": _compact_string_list(list(simulation.simulated_transcript), limit=10, item_limit=180),
+        "observed_decisions": _compact_string_list(list(simulation.observed_decisions), limit=8, item_limit=160),
+        "tool_interactions": _compact_string_list(list(simulation.tool_interactions), limit=8, item_limit=160),
+        "issues": _compact_string_list(list(simulation.issues), limit=8, item_limit=160),
+    }
+
+
+def _compact_estimation_report_artifact(report: EstimationReportArtifact) -> dict[str, Any]:
+    return {
+        "maturity_stage": getattr(report.maturity_stage, "value", report.maturity_stage),
+        "blueprint_version_number": report.blueprint_version_number,
+        "current_blueprint_version_number": report.current_blueprint_version_number,
+        "source_artifacts": _compact_string_list(list(report.source_artifacts), limit=8, item_limit=100),
+        "assumptions": _compact_string_list(list(report.assumptions), limit=8, item_limit=160),
+        "risk_drivers": _compact_string_list(list(report.risk_drivers), limit=8, item_limit=160),
+        "traditional": {
+            "hours_total": float(getattr(report.traditional, "hours_total", 0) or 0),
+            "duration_weeks": float(getattr(report.traditional, "duration_weeks", 0) or 0),
+            "cost_total": float(getattr(report.traditional, "cost_total", 0) or 0),
+        },
+        "agentic": {
+            "active_provider": getattr(getattr(report.agentic, "active_provider", ""), "value", getattr(report.agentic, "active_provider", "")),
+            "pricing_policy": _compact_text(getattr(report.agentic, "pricing_policy", ""), limit=80),
+            "provider_model": _compact_text(getattr(report.agentic, "provider_model", ""), limit=100),
+            "hours_total": float(getattr(report.agentic, "hours_total", 0) or 0),
+            "duration_weeks": float(getattr(report.agentic, "duration_weeks", 0) or 0),
+            "cost_total": float(getattr(report.agentic, "cost_total", 0) or 0),
+            "automation_coverage_percent": int(getattr(report.agentic, "automation_coverage_percent", 0) or 0),
+            "blueprint_design_coverage_percent": int(getattr(report.agentic, "blueprint_design_coverage_percent", 0) or 0),
+            "acp_package_readiness_percent": int(getattr(report.agentic, "acp_package_readiness_percent", 0) or 0),
+            "implementation_scope_coverage_percent": int(
+                getattr(report.agentic, "implementation_scope_coverage_percent", 0) or 0
+            ),
+            "pricing_assumptions": _compact_string_list(
+                list(getattr(report.agentic, "pricing_assumptions", [])),
+                limit=6,
+                item_limit=140,
+            ),
+        },
+        "confidence": {
+            "score": int(report.confidence.score or 0),
+            "label": getattr(report.confidence.label, "value", report.confidence.label),
+            "uncertainty_band_percent": int(report.confidence.uncertainty_band_percent or 0),
+            "blocking_gaps": int(report.confidence.blocking_gaps or 0),
+            "open_questions": int(report.confidence.open_questions or 0),
+            "design_gap_count": int(report.confidence.design_gap_count or 0),
+            "implementation_gap_count": int(report.confidence.implementation_gap_count or 0),
+            "positive_signals": _compact_string_list(
+                list(report.confidence.positive_signals),
+                limit=6,
+                item_limit=140,
+            ),
+            "negative_signals": _compact_string_list(
+                list(report.confidence.negative_signals),
+                limit=6,
+                item_limit=140,
+            ),
+            "recommended_next_actions": _compact_string_list(
+                list(report.confidence.recommended_next_actions),
+                limit=6,
+                item_limit=140,
+            ),
+        },
+        "deterministic_inputs": {
+            "pricing_catalog_signature": _compact_text(
+                report.deterministic_inputs.pricing_catalog_signature,
+                limit=120,
+            ),
+            "validation_fingerprint": _compact_text(
+                report.deterministic_inputs.validation_fingerprint,
+                limit=120,
+            ),
+            "benchmark_corpus_hash": _compact_text(
+                report.deterministic_inputs.benchmark_corpus_hash,
+                limit=120,
+            ),
+            "catalogs_used": _compact_string_list(
+                list(report.deterministic_inputs.catalogs_used),
+                limit=6,
+                item_limit=100,
+            ),
+            "benchmark_ids": _compact_string_list(
+                list(report.deterministic_inputs.benchmark_ids),
+                limit=8,
+                item_limit=100,
+            ),
+            "formula_notes": _compact_string_list(
+                list(report.deterministic_inputs.formula_notes),
+                limit=6,
+                item_limit=160,
+            ),
+            "calibration_sample_size": int(report.deterministic_inputs.calibration_sample_size or 0),
+        },
+        "notes": _compact_string_list(list(report.notes), limit=6, item_limit=140),
+    }
+
+
+def _compact_tool_recommendation_case_payload(prompt_input: ToolRecommendationPromptInput) -> dict[str, Any]:
+    return {
+        "prompt_version": _compact_text(prompt_input.prompt_version, limit=60),
+        "source_session_id": str(prompt_input.source_session_id or ""),
+        "source_blueprint_version": prompt_input.source_blueprint_version,
+        "case_classification": _compact_text(prompt_input.case_classification, limit=80),
+        "agent_goal": _compact_text(prompt_input.agent_goal, limit=240),
+        "primary_user": _compact_text(prompt_input.primary_user, limit=120),
+        "workflow_summary": _compact_text(prompt_input.workflow_summary, limit=260),
+        "constraints_summary": _compact_text(prompt_input.constraints_summary, limit=220),
+        "source_refs": _compact_source_refs(list(prompt_input.source_refs)),
+        "core_workflows": _compact_string_list(list(prompt_input.core_workflows), limit=8, item_limit=120),
+        "interaction_modes": _compact_string_list(list(prompt_input.interaction_modes), limit=6, item_limit=100),
+        "required_information_sources": _compact_string_list(
+            list(prompt_input.required_information_sources),
+            limit=8,
+            item_limit=120,
+        ),
+        "required_write_actions": _compact_string_list(
+            list(prompt_input.required_write_actions),
+            limit=8,
+            item_limit=120,
+        ),
+        "approval_boundaries": _compact_string_list(
+            list(prompt_input.approval_boundaries),
+            limit=8,
+            item_limit=120,
+        ),
+        "hard_constraints": _compact_string_list(list(prompt_input.hard_constraints), limit=8, item_limit=120),
+        "requirements_coverage": [
+            {
+                "requirement_key": _compact_text(item.requirement_key, limit=80),
+                "requirement_title": _compact_text(item.requirement_title, limit=140),
+                "category": _compact_text(item.category, limit=40),
+                "priority": _compact_text(item.priority, limit=24),
+                "coverage_status": _compact_text(item.coverage_status, limit=40),
+                "covered_by_tool_keys": _compact_string_list(
+                    list(item.covered_by_tool_keys),
+                    limit=5,
+                    item_limit=80,
+                ),
+                "rationale": _compact_text(item.rationale, limit=180),
+            }
+            for item in prompt_input.requirements_coverage[:10]
+        ],
+        "design_role_coverage": [
+            {
+                "role_key": _compact_text(item.role_key, limit=80),
+                "role_title": _compact_text(item.role_title, limit=120),
+                "responsibility": _compact_text(item.responsibility, limit=160),
+                "coverage_status": _compact_text(item.coverage_status, limit=40),
+                "covered_by_tool_keys": _compact_string_list(
+                    list(item.covered_by_tool_keys),
+                    limit=5,
+                    item_limit=80,
+                ),
+                "rationale": _compact_text(item.rationale, limit=180),
+            }
+            for item in prompt_input.design_role_coverage[:8]
+        ],
+        "existing_gaps": [
+            {
+                "gap_key": _compact_text(item.gap_key, limit=80),
+                "title": _compact_text(item.title, limit=120),
+                "question": _compact_text(item.question, limit=180),
+                "reason": _compact_text(item.reason, limit=180),
+                "impact": _compact_text(item.impact, limit=160),
+                "severity": _compact_text(item.severity, limit=40),
+            }
+            for item in prompt_input.existing_gaps[:6]
+        ],
+        "compact_evidence": _compact_string_list(list(prompt_input.compact_evidence), limit=8, item_limit=160),
+    }
+
+
+def _compact_tool_recommendation_catalog_payload(prompt_input: ToolRecommendationPromptInput) -> dict[str, Any]:
+    return {
+        "mandatory_tool_keys": [item.value for item in prompt_input.mandatory_tool_keys[:8]],
+        "forbidden_tool_keys": [item.value for item in prompt_input.forbidden_tool_keys[:8]],
+        "candidate_tools": [
+            {
+                "tool_key": item.tool_key.value,
+                "tool_label": _compact_text(item.tool_label, limit=120),
+                "family_key": _compact_text(item.family_key, limit=80),
+                "family_status": _compact_text(item.family_status, limit=40),
+                "capability_covered": _compact_text(item.capability_covered, limit=160),
+                "reason": _compact_text(item.reason, limit=180),
+                "selection_notes": _compact_string_list(list(item.selection_notes), limit=4, item_limit=120),
+            }
+            for item in prompt_input.candidate_tools[:12]
+        ],
+    }
+
+
+def _compact_diagram_resolved_input(value: dict[str, Any]) -> dict[str, Any]:
+    evidence_items = value.get("evidence", [])
+    compact_evidence: list[dict[str, Any]] = []
+    if isinstance(evidence_items, list):
+        for item in evidence_items[:3]:
+            if not isinstance(item, dict):
+                continue
+            compact_evidence.append(
+                {
+                    "artifact_key": _compact_text(item.get("artifact_key", ""), limit=80),
+                    "ref": _compact_text(item.get("ref", ""), limit=100),
+                    "summary": _compact_text(
+                        (item.get("content") or {}).get("summary", "") if isinstance(item.get("content"), dict) else "",
+                        limit=180,
+                    ),
+                }
+            )
+    return {
+        "input_key": _compact_text(value.get("input_key", ""), limit=120),
+        "status": _compact_text(value.get("status", ""), limit=40),
+        "matched_artifact_keys": _compact_string_list(value.get("matched_artifact_keys", []), limit=6, item_limit=80)
+        if isinstance(value.get("matched_artifact_keys"), list)
+        else [],
+        "artifact_refs": _compact_string_list(value.get("artifact_refs", []), limit=6, item_limit=100)
+        if isinstance(value.get("artifact_refs"), list)
+        else [],
+        "evidence": compact_evidence,
+    }
+
+
 def _serialize_capability_payload_for_api(payload: BaseModel) -> dict[str, Any]:
-    serialized = payload.model_dump(mode="json")
-    if not isinstance(payload, DiagramGenerationInput):
+    if isinstance(payload, DiscoveryAnalysisInput):
+        return {
+            "analysis_goal": _compact_text(payload.analysis_goal, limit=180),
+            "known_gaps": _compact_string_list(list(payload.known_gaps), limit=8, item_limit=120),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+            "discovery_capture": _compact_discovery_input(payload.discovery_capture),
+        }
+    if isinstance(payload, RequirementsDefinitionInput):
+        return {
+            "discovery": _compact_discovery_artifact(payload.discovery),
+            "canvas": _compact_canvas_artifact(payload.canvas) if payload.canvas is not None else None,
+            "known_constraints": _compact_string_list(list(payload.known_constraints), limit=8, item_limit=120),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, AgentDesignInput):
+        return {
+            "discovery": _compact_discovery_artifact(payload.discovery),
+            "canvas": _compact_canvas_artifact(payload.canvas),
+            "current_blueprint": _compact_blueprint_artifact(payload.current_blueprint)
+            if payload.current_blueprint is not None
+            else None,
+            "requirement_digest": _compact_string_list(list(payload.requirement_digest), limit=12, item_limit=180),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, AgentDesignCritiqueInput):
+        return {
+            "discovery": _compact_discovery_artifact(payload.discovery),
+            "canvas": _compact_canvas_artifact(payload.canvas),
+            "proposal": _compact_design_proposal_output(payload.proposal),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, MemoryArchitectureInput):
+        return {
+            "blueprint": _compact_blueprint_artifact(payload.blueprint),
+            "discovery": _compact_discovery_artifact(payload.discovery) if payload.discovery is not None else None,
+            "canvas": _compact_canvas_artifact(payload.canvas) if payload.canvas is not None else None,
+            "approved_tool_names": _compact_string_list(list(payload.approved_tool_names), limit=10, item_limit=80),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, MemoryArchitectureCritiqueInput):
+        return {
+            "blueprint": _compact_blueprint_artifact(payload.blueprint),
+            "proposal": _compact_memory_architecture_recommendation_output(payload.proposal),
+            "approved_tool_names": _compact_string_list(list(payload.approved_tool_names), limit=10, item_limit=80),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, ValidationScenarioGenerationInput):
+        return {
+            "blueprint": _compact_blueprint_artifact(payload.blueprint),
+            "discovery": _compact_discovery_artifact(payload.discovery) if payload.discovery is not None else None,
+            "canvas": _compact_canvas_artifact(payload.canvas) if payload.canvas is not None else None,
+            "focus_areas": _compact_string_list(list(payload.focus_areas), limit=8, item_limit=140),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, ValidationScenarioSimulationInput):
+        return {
+            "blueprint": _compact_blueprint_artifact(payload.blueprint),
+            "scenario": _compact_validation_scenario_item(payload.scenario),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, ValidationRunJudgmentInput):
+        return {
+            "simulation": _compact_validation_simulation_output(payload.simulation),
+            "blueprint": _compact_blueprint_artifact(payload.blueprint) if payload.blueprint is not None else None,
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, EstimationRiskAnalysisInput):
+        return {
+            "blueprint": _compact_blueprint_artifact(payload.blueprint) if payload.blueprint is not None else None,
+            "estimation_report": _compact_estimation_report_artifact(payload.estimation_report),
+            "pricing_summary": _compact_string_list(list(payload.pricing_summary), limit=8, item_limit=160),
+            "validation_summary": _compact_string_list(list(payload.validation_summary), limit=8, item_limit=160),
+            "workspace_calibration_summary": _compact_string_list(
+                list(payload.workspace_calibration_summary),
+                limit=8,
+                item_limit=160,
+            ),
+            "benchmark_hints": _compact_string_list(list(payload.benchmark_hints), limit=8, item_limit=160),
+            "source_refs": _compact_source_refs(list(payload.source_refs)),
+        }
+    if isinstance(payload, DiagramGenerationInput):
+        serialized = payload.model_dump(mode="json")
+        source_context = serialized.get("source_context")
+        compact_context: dict[str, Any] = {}
+        if isinstance(source_context, dict):
+            for field_name in (
+                "project",
+                "coverage_summary",
+                "resolved_inputs",
+                "missing_required_inputs",
+                "approved_artifact_keys",
+            ):
+                value = source_context.get(field_name)
+                if value not in (None, "", [], {}):
+                    compact_context[field_name] = value
+            approved_artifacts = source_context.get("approved_artifacts")
+            if isinstance(approved_artifacts, list):
+                compact_context["approved_artifact_count"] = len(approved_artifacts)
+        if compact_context:
+            serialized["source_context"] = compact_context
+        serialized["context_brief"] = _compact_text(payload.context_brief, limit=320)
+        serialized["source_refs"] = _compact_source_refs(list(payload.source_refs), limit=16)
+        serialized["required_inputs"] = _compact_string_list(list(payload.required_inputs), limit=12, item_limit=120)
+        serialized["allowed_elements"] = _compact_string_list(list(payload.allowed_elements), limit=12, item_limit=80)
+        serialized["allowed_relationships"] = _compact_string_list(
+            list(payload.allowed_relationships),
+            limit=12,
+            item_limit=100,
+        )
+        serialized["forbidden_mixes"] = _compact_string_list(list(payload.forbidden_mixes), limit=8, item_limit=120)
+        serialized["inherits_from"] = _compact_string_list(list(payload.inherits_from), limit=8, item_limit=120)
+        serialized["transform_rules"] = _compact_string_list(list(payload.transform_rules), limit=8, item_limit=160)
+        serialized["semantic_rules"] = _compact_string_list(list(payload.semantic_rules), limit=10, item_limit=160)
+        serialized["exclusions"] = _compact_string_list(list(payload.exclusions), limit=8, item_limit=140)
+        serialized["missing_required_inputs"] = _compact_string_list(
+            list(payload.missing_required_inputs),
+            limit=10,
+            item_limit=120,
+        )
+        serialized["resolved_inputs"] = [
+            _compact_diagram_resolved_input(item)
+            for item in payload.resolved_inputs[:5]
+            if isinstance(item, dict)
+        ]
         return serialized
-
-    source_context = serialized.get("source_context")
-    compact_context: dict[str, Any] = {}
-    if isinstance(source_context, dict):
-        for field_name in (
-            "project",
-            "coverage_summary",
-            "resolved_inputs",
-            "missing_required_inputs",
-            "approved_artifact_keys",
-        ):
-            value = source_context.get(field_name)
-            if value not in (None, "", [], {}):
-                compact_context[field_name] = value
-        approved_artifacts = source_context.get("approved_artifacts")
-        if isinstance(approved_artifacts, list):
-            compact_context["approved_artifact_count"] = len(approved_artifacts)
-    if compact_context:
-        serialized["source_context"] = compact_context
-
-    if isinstance(serialized.get("source_refs"), list):
-        serialized["source_refs"] = serialized["source_refs"][:12]
-    if isinstance(serialized.get("resolved_inputs"), list):
-        serialized["resolved_inputs"] = serialized["resolved_inputs"][:4]
-    if isinstance(serialized.get("missing_required_inputs"), list):
-        serialized["missing_required_inputs"] = serialized["missing_required_inputs"][:8]
-    return serialized
+    return payload.model_dump(mode="json")
 
 
 def _default_runtime_settings() -> dict[str, Any]:
@@ -1111,7 +1950,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
                 CodexContextInlineSource(
                     key="discovery_capture",
                     title="Discovery capture",
-                    content=json.dumps(payload.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_discovery_input(payload), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Captura cruda de discovery para normalizacion estructurada por provider API.",
                 )
@@ -1196,7 +2035,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
                 CodexContextInlineSource(
                     key="normalized_discovery",
                     title="Normalized discovery",
-                    content=json.dumps(discovery.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_discovery_artifact(discovery), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Discovery estructurado aprobado para construir el canvas via provider API.",
                 )
@@ -1278,21 +2117,21 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
                 CodexContextInlineSource(
                     key="narrative_discovery",
                     title="Discovery for blueprint narrative",
-                    content=json.dumps(discovery.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_discovery_artifact(discovery), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Discovery estructurado aprobado para la narrativa tecnica.",
                 ),
                 CodexContextInlineSource(
                     key="narrative_canvas",
                     title="Canvas for blueprint narrative",
-                    content=json.dumps(canvas.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_canvas_artifact(canvas), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Canvas Lean aprobado que define alcance y meta del blueprint.",
                 ),
                 CodexContextInlineSource(
                     key="narrative_blueprint",
                     title="Blueprint for narrative synthesis",
-                    content=json.dumps(blueprint.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_blueprint_artifact(blueprint), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Blueprint base cuya narrativa debe sintetizarse sin alterar contratos.",
                 ),
@@ -1362,15 +2201,8 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
         *,
         context_bundle: StageContextBundle | None = None,
     ) -> LLMArtifactResult:
-        case_payload = prompt_input.model_dump(
-            mode="json",
-            exclude={"candidate_tools", "mandatory_tool_keys", "forbidden_tool_keys"},
-        )
-        catalog_payload = {
-            "mandatory_tool_keys": [item.value for item in prompt_input.mandatory_tool_keys],
-            "forbidden_tool_keys": [item.value for item in prompt_input.forbidden_tool_keys],
-            "candidate_tools": [item.model_dump(mode="json") for item in prompt_input.candidate_tools],
-        }
+        case_payload = _compact_tool_recommendation_case_payload(prompt_input)
+        catalog_payload = _compact_tool_recommendation_catalog_payload(prompt_input)
         context_envelope = self._build_context_envelope(
             role="builder",
             task_kind="openai_tool_recommendation",
@@ -1969,7 +2801,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                 CodexContextInlineSource(
                     key="discovery_capture",
                     title="Discovery capture",
-                    content=json.dumps(payload.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_discovery_input(payload), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Captura cruda de discovery para normalizacion estructurada por provider API.",
                 )
@@ -2038,7 +2870,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                 CodexContextInlineSource(
                     key="normalized_discovery",
                     title="Normalized discovery",
-                    content=json.dumps(discovery.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_discovery_artifact(discovery), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Discovery estructurado aprobado para construir el canvas via provider API.",
                 )
@@ -2105,21 +2937,21 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                 CodexContextInlineSource(
                     key="narrative_discovery",
                     title="Discovery for blueprint narrative",
-                    content=json.dumps(discovery.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_discovery_artifact(discovery), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Discovery estructurado aprobado para la narrativa tecnica.",
                 ),
                 CodexContextInlineSource(
                     key="narrative_canvas",
                     title="Canvas for blueprint narrative",
-                    content=json.dumps(canvas.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_canvas_artifact(canvas), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Canvas Lean aprobado que define alcance y meta del blueprint.",
                 ),
                 CodexContextInlineSource(
                     key="narrative_blueprint",
                     title="Blueprint for narrative synthesis",
-                    content=json.dumps(blueprint.model_dump(mode="json"), ensure_ascii=True, indent=2),
+                    content=json.dumps(_compact_blueprint_artifact(blueprint), ensure_ascii=True, indent=2),
                     required=True,
                     summary="Blueprint base cuya narrativa debe sintetizarse sin alterar contratos.",
                 ),
@@ -2174,15 +3006,8 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         *,
         context_bundle: StageContextBundle | None = None,
     ) -> LLMArtifactResult:
-        case_payload = prompt_input.model_dump(
-            mode="json",
-            exclude={"candidate_tools", "mandatory_tool_keys", "forbidden_tool_keys"},
-        )
-        catalog_payload = {
-            "mandatory_tool_keys": [item.value for item in prompt_input.mandatory_tool_keys],
-            "forbidden_tool_keys": [item.value for item in prompt_input.forbidden_tool_keys],
-            "candidate_tools": [item.model_dump(mode="json") for item in prompt_input.candidate_tools],
-        }
+        case_payload = _compact_tool_recommendation_case_payload(prompt_input)
+        catalog_payload = _compact_tool_recommendation_catalog_payload(prompt_input)
         context_envelope = self._build_context_envelope(
             role="builder",
             task_kind="deepseek_tool_recommendation",

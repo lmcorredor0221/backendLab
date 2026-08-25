@@ -308,7 +308,7 @@ def load_workspace_runtime_settings(session: Session, workspace_id: UUID) -> Wor
     return _active_workspace_runtime_record(session, workspace_id)
 
 
-def load_effective_runtime_settings(session: Session, workspace_id: UUID) -> LLMRuntimeSettings:
+def _load_effective_runtime_settings_base(session: Session, workspace_id: UUID) -> LLMRuntimeSettings:
     platform_runtime = load_platform_runtime_defaults(session)
     workspace_runtime = load_workspace_runtime_settings(session, workspace_id)
     if workspace_runtime is None:
@@ -326,6 +326,25 @@ def load_effective_runtime_settings(session: Session, workspace_id: UUID) -> LLM
         effective_runtime,
         platform_runtime=platform_runtime,
         workspace_record=workspace_runtime,
+    )
+
+
+def load_effective_runtime_settings(
+    session: Session,
+    workspace_id: UUID,
+    *,
+    annotate_workspace_secrets: bool = True,
+) -> LLMRuntimeSettings:
+    effective_runtime = _load_effective_runtime_settings_base(session, workspace_id)
+    if not annotate_workspace_secrets:
+        return effective_runtime
+
+    from app.services.llm_runtime.runtime_secrets_service import annotate_runtime_settings_with_workspace_secrets
+
+    return annotate_runtime_settings_with_workspace_secrets(
+        session,
+        workspace_id,
+        effective_runtime,
     )
 
 

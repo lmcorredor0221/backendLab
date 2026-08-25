@@ -67,6 +67,33 @@ def _latest_approved_artifact(snapshot: SessionSnapshot, stage_key: str) -> Jour
     return max(approved, key=_artifact_sort_key)
 
 
+def _resolve_design_artifact(artifact: JourneyStageArtifactEntry | None) -> DesignRecommendationArtifact | None:
+    if artifact is None:
+        return None
+    schema_version = artifact.schema_version or artifact.proposal_payload.get("schema_version", "")
+    if schema_version == "design-recommendation.v1" or "alternatives" in artifact.proposal_payload:
+        return DesignRecommendationArtifact.model_validate(artifact.proposal_payload)
+    return None
+
+
+def _resolve_memory_artifact(artifact: JourneyStageArtifactEntry | None) -> MemoryRecommendationArtifact | None:
+    if artifact is None:
+        return None
+    schema_version = artifact.schema_version or artifact.proposal_payload.get("schema_version", "")
+    if schema_version == "memory-recommendation.v1" or "proposed_memory_profile" in artifact.proposal_payload:
+        return MemoryRecommendationArtifact.model_validate(artifact.proposal_payload)
+    return None
+
+
+def _resolve_validation_artifact(artifact: JourneyStageArtifactEntry | None) -> SimulationSpecificationArtifact | None:
+    if artifact is None:
+        return None
+    schema_version = artifact.schema_version or artifact.proposal_payload.get("schema_version", "")
+    if schema_version == "validation-simulation-spec.v1" or "scenarios" in artifact.proposal_payload:
+        return SimulationSpecificationArtifact.model_validate(artifact.proposal_payload)
+    return None
+
+
 def _artifact_citations(artifact: JourneyStageArtifactEntry) -> list[str]:
     citations: list[str] = []
     for item in artifact.evidence_manifest:
@@ -223,8 +250,8 @@ def build_blueprint_consistency_report(snapshot: SessionSnapshot) -> BlueprintCo
         for item in definition.business_rules:
             requirement_priorities[item.key] = item.priority
 
-        if approved_design is not None:
-            design = DesignRecommendationArtifact.model_validate(approved_design.proposal_payload)
+        design = _resolve_design_artifact(approved_design)
+        if design is not None and approved_design is not None:
             coverage_by_requirement = {
                 item.requirement_key: item for item in design.requirements_coverage if item.requirement_key
             }
@@ -400,8 +427,8 @@ def build_blueprint_consistency_report(snapshot: SessionSnapshot) -> BlueprintCo
                 )
             )
 
-    if approved_memory is not None and blueprint is not None:
-        memory_artifact = MemoryRecommendationArtifact.model_validate(approved_memory.proposal_payload)
+    memory_artifact = _resolve_memory_artifact(approved_memory)
+    if memory_artifact is not None and approved_memory is not None and blueprint is not None:
         current_memory_profile = blueprint.memory_profile.model_dump(mode="json")
         current_knowledge_profile = blueprint.knowledge_profile.model_dump(mode="json")
         approved_memory_profile = memory_artifact.proposed_memory_profile.model_dump(mode="json")
@@ -469,8 +496,8 @@ def build_blueprint_consistency_report(snapshot: SessionSnapshot) -> BlueprintCo
                 )
             )
 
-    if approved_validate is not None:
-        validate_artifact = SimulationSpecificationArtifact.model_validate(approved_validate.proposal_payload)
+    validate_artifact = _resolve_validation_artifact(approved_validate)
+    if validate_artifact is not None:
         latest_versions = {
             stage_key: next(
                 (

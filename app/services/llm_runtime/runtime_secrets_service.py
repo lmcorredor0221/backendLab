@@ -347,7 +347,11 @@ def build_workspace_provider_secret_view(
     provider_key: LLMProviderKey,
 ) -> WorkspaceProviderSecretResponse:
     backfill_platform_runtime_governance(session)
-    runtime_settings = load_effective_runtime_settings(session, workspace_id)
+    runtime_settings = load_effective_runtime_settings(
+        session,
+        workspace_id,
+        annotate_workspace_secrets=False,
+    )
     runtime_record = load_workspace_runtime_settings(session, workspace_id)
     uses_platform_credentials = True if runtime_record is None else runtime_record.uses_platform_credentials
     record = _workspace_secret_record(session, workspace_id, provider_key)
@@ -454,7 +458,11 @@ def delete_workspace_provider_secret(
     if not _supports_workspace_secrets(session, provider_key):
         raise ValueError(f"El provider {provider_key.value} no soporta secretos por workspace.")
 
-    runtime_settings = load_effective_runtime_settings(session, workspace_id)
+    runtime_settings = load_effective_runtime_settings(
+        session,
+        workspace_id,
+        annotate_workspace_secrets=False,
+    )
     before_view = build_workspace_provider_secret_view(session, workspace_id, provider_key)
     record = _workspace_secret_record(session, workspace_id, provider_key)
     if record is None:

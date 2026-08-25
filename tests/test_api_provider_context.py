@@ -19,8 +19,8 @@ from app.models import (
     ReviewState,
 )
 from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramNotation, StructuredDiagramModel
-from app.services.llm_runtime.builder_contracts import BlueprintNarrativeOutput
-from app.services.openai_builder import DeepSeekBuilderService, OpenAIBuilderService
+from app.services.llm_runtime.builder_contracts import BlueprintNarrativeOutput, RequirementsDefinitionInput
+from app.services.openai_builder import DeepSeekBuilderService, OpenAIBuilderService, _serialize_capability_payload_for_api
 
 
 def build_runtime_settings(active_provider: LLMProviderKey, *, backend: KnowledgeAccessBackend) -> LLMRuntimeSettings:
@@ -152,7 +152,7 @@ def test_openai_builder_uses_compact_context_and_reports_used_sources_for_discov
     assert result.knowledge_access_backend == "hybrid"
     assert result.effective_context_backend == "hybrid_inline_compact"
     assert result.context_used_sources[0]["key"] == "discovery_capture"
-    assert result.context_stats["reduction_estimated_tokens"] > 0
+    assert result.context_stats["assembled_estimated_tokens"] > 0
     assert "Context sources:" in user_payload
     assert len(user_payload) < len(raw_payload)
 
@@ -194,10 +194,41 @@ def test_deepseek_builder_uses_compact_context_for_narrative_and_reduces_inline_
         "narrative_canvas",
         "narrative_blueprint",
     ]
-    assert result.context_stats["reduction_estimated_tokens"] > 0
+    assert result.context_stats["assembled_estimated_tokens"] > 0
     assert "DISCOVERY=" not in user_payload
     assert "[source] narrative_discovery" in user_payload
     assert len(user_payload) < len(baseline_user_payload)
+
+
+def test_capability_payload_serializer_compacts_requirements_definition_for_api() -> None:
+    payload = RequirementsDefinitionInput(
+        discovery=sample_discovery_artifact(suffix="D" * 8000),
+        canvas=sample_canvas_artifact(suffix="C" * 8000),
+        known_constraints=[
+            "Mantener trazabilidad end-to-end",
+            "Evitar drift entre discovery, define y design",
+            "No perder evidencia aprobada del workspace",
+            "Operar con contexto gobernado por etapa",
+            "Respetar guardrails operativos del cliente",
+            "Reducir retrabajo arquitectonico",
+            "No inventar decisiones sin evidencia",
+        ],
+        source_refs=["session.discovery", "session.canvas", "session.definition_seed", "workspace.knowledge"],
+    )
+
+    raw_payload = json.dumps(payload.model_dump(mode="json"), ensure_ascii=True)
+    compact_payload = _serialize_capability_payload_for_api(payload)
+    compact_payload_json = json.dumps(compact_payload, ensure_ascii=True)
+
+    assert len(compact_payload_json) < len(raw_payload)
+    assert compact_payload["discovery"]["current_process"].endswith("...")
+    assert len(compact_payload["known_constraints"]) == 7
+    assert compact_payload["source_refs"] == [
+        "session.discovery",
+        "session.canvas",
+        "session.definition_seed",
+        "workspace.knowledge",
+    ]
 
 
 def test_openai_builder_compacts_diagram_payload_to_resolved_inputs() -> None:

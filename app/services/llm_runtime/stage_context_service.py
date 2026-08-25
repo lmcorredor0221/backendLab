@@ -43,6 +43,7 @@ CAPABILITY_STAGE_DEFAULTS = {
 }
 
 RETRIEVAL_ENABLED_STAGES = {"define", "design", "tools", "memory", "validate", "estimate", "package"}
+_MAX_RETRIEVED_KNOWLEDGE_EXCERPT_CHARS = 1_600
 
 
 def _stable_hash(value: Any) -> str:
@@ -278,7 +279,7 @@ class StageKnowledgePlanner:
             authority_level=item.authority_level,
             memory_usage=item.memory_usage,
             summary=_compact_text(item.preview, fallback=title)[:280],
-            excerpt=_compact_text(item.preview, fallback=title)[:900],
+            excerpt=_compact_text(item.preview, fallback=title)[:_MAX_RETRIEVED_KNOWLEDGE_EXCERPT_CHARS],
             source_version=source_version,
             required=item.memory_usage == "required_retrieval",
             source_refs=[item.relative_path, item.section_key],

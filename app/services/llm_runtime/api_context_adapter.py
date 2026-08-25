@@ -114,9 +114,13 @@ class APIProviderContextAdapter:
         lines = [
             f"[source] {source.key}",
             f"title={source.title}",
+            f"type={source.source_type}",
+            f"authority={source.authority_level}",
             f"required={'true' if source.required else 'false'}",
             f"summary={source.summary}",
         ]
+        if getattr(source, "prompt_truncated", False) or getattr(source, "truncated", False):
+            lines.append("truncated=true")
         if source.source_refs:
             lines.append("refs=" + ", ".join(source.source_refs[:3]))
         lines.extend(
@@ -129,8 +133,6 @@ class APIProviderContextAdapter:
 
     def _extract_excerpt(self, content: str) -> str:
         normalized = content.strip()
-        for marker in ("Payload:\n", "Excerpted evidence:\n"):
-            if marker in normalized:
-                normalized = normalized.split(marker, 1)[1].strip()
-                break
-        return normalized[:900].strip()
+        if not normalized:
+            return ""
+        return normalized

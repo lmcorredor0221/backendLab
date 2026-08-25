@@ -96,6 +96,27 @@ def _auth_headers(client) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def test_stage_knowledge_planner_preserves_retrieved_excerpt_beyond_legacy_900_limit() -> None:
+    marker = "RETRIEVED_KNOWLEDGE_CONTEXT_MARKER"
+    preview = f"Resumen {'A' * 980} {marker} {'B' * 900}"
+    hit = KnowledgeSearchHit(
+        relative_path="knowledge/required/runtime.md",
+        section_key="runtime-guidance",
+        title="Runtime guidance",
+        authority_level="operational",
+        memory_usage="candidate_retrieval",
+        preview=preview,
+        score=0.91,
+        version_number=3,
+    )
+
+    evidence = StageKnowledgePlanner()._to_retrieved_evidence(hit, role="builder")
+
+    assert marker in evidence.excerpt
+    assert len(evidence.excerpt) <= 1_600
+    assert evidence.source_version == "v3"
+
+
 def _complete_discovery_payload() -> dict:
     return DiscoveryInput(
         problem_statement="Disenar agentes de soporte con metodologia Lean y bajo riesgo operativo.",

@@ -31,6 +31,7 @@ from app.services.llm_runtime.stage_context_types import ApprovedArtifactReferen
 from app.services.text_sanitization import read_sanitized_utf8_text
 
 _TEXT_FILE_SUFFIXES = {".json", ".md", ".mmd", ".puml", ".txt", ".yaml", ".yml"}
+_MAX_REPO_SOURCE_EXCERPT_CHARS = 1_600
 
 
 def _estimate_tokens(text: str) -> int:
@@ -826,7 +827,7 @@ class CodexContextAssembler:
         path = self.repo_root / relative_path
         if not path.exists():
             return ""
-        return _collapse_text(read_sanitized_utf8_text(path))[:900].strip()
+        return _collapse_text(read_sanitized_utf8_text(path))[:_MAX_REPO_SOURCE_EXCERPT_CHARS].strip()
 
     def _materialize_sources(
         self,
