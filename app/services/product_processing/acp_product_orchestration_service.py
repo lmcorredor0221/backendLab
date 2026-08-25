@@ -39,6 +39,7 @@ def ensure_acp_product_orchestration(
     execute_jobs: bool = False,
     allow_llm: bool = False,
     activation_payload: dict[str, Any] | None = None,
+    catalog_stage_override: str | None = "package",
 ) -> ProductBuildStatus:
     """Synchronize ACP direct readiness with the portable product build run.
 
@@ -66,6 +67,7 @@ def ensure_acp_product_orchestration(
                 **(activation_payload or {}),
             },
         ),
+        catalog_stage_override=catalog_stage_override,
     )
 
     if record.workspace_id is None:
@@ -83,7 +85,13 @@ def ensure_acp_product_orchestration(
     _sync_acp_readiness_steps(db, run=run, resolution=resolution)
     _finalize_acp_run_from_steps(db, run=run, resolution=resolution)
     db.flush()
-    return build_product_build_status(db, record=record, product_key=ProductBuildProductKey.acp, current_user=current_user)
+    return build_product_build_status(
+        db,
+        record=record,
+        product_key=ProductBuildProductKey.acp,
+        current_user=current_user,
+        catalog_stage_override=catalog_stage_override,
+    )
 
 
 def _sync_acp_readiness_steps(db: Session, *, run: ProductBuildRunRecord, resolution) -> None:

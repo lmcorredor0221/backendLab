@@ -233,8 +233,16 @@ def get_product_build_status_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> ProductBuildStatus:
     from app.services.product_processing.product_build_orchestrator import reconcile_product_build_run
+    from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
 
     record = get_or_404(db, session_id, current_user.id)
+    if product_key == ProductBuildProductKey.acp:
+        return ensure_acp_product_orchestration(
+            db,
+            record=record,
+            current_user=current_user,
+            activation_payload={"source": "product_build_status"},
+        )
     return reconcile_product_build_run(
         db,
         record=record,
@@ -254,6 +262,7 @@ def post_product_build_action_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> ProductBuildStatus:
     from app.services.product_processing.blueprint_basic_service import execute_blueprint_basic_action
+    from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
     from app.services.product_processing.product_build_orchestrator import (
         ProductBuildOrchestrationOptions,
         ensure_product_build_orchestration,
@@ -277,6 +286,18 @@ def post_product_build_action_route(
             catalog_stage_override=PRODUCT_SURFACE_STAGE,
         )
     if payload.action in {"start", "resume", "retry"}:
+        if product_key == ProductBuildProductKey.acp:
+            return ensure_acp_product_orchestration(
+                db,
+                record=record,
+                current_user=current_user,
+                execute_jobs=True,
+                allow_llm=payload.allow_llm,
+                activation_payload={
+                    "source": f"product_build_action:{payload.action}",
+                    "idempotency_key": payload.idempotency_key,
+                },
+            )
         return ensure_product_build_orchestration(
             db,
             record=record,
@@ -431,6 +452,7 @@ def post_attention_v2_action_route(
             db,
             record=record,
             snapshot=snapshot,
+            current_stage=current_stage,
             current_user=current_user,
         )
     db.commit()

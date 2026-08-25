@@ -54,6 +54,7 @@ from app.services.product_processing.product_build_run_service import (
     update_product_build_run_state,
     upsert_product_build_step,
 )
+from app.services.product_processing.product_build_status_service import build_product_build_status
 
 
 STAGE_DEPENDENCY_KEY = {
@@ -66,6 +67,7 @@ STAGE_DEPENDENCY_KEY = {
     "validate": "validation.scenarios",
     "package": "package.manifest",
 }
+STAGE_FLOW_ORDER = tuple(STAGE_DEPENDENCY_KEY.keys())
 COMPLETED_STEP_STATES = {"available", "completed", "skipped"}
 ACTIVE_STEP_STATES = {"queued", "generating", "running"}
 PREMIUM_BACKLOG_PRODUCT_MODES = {
@@ -419,20 +421,25 @@ def sync_premium_enrichment_product_run(
     current_tier: CommercialTier,
     current_user: UserRecord | None = None,
     source: str = "premium_enrichment",
-) -> None:
+    current_stage: str | None = None,
+    auto_execute_when_ready: bool = False,
+    allow_llm: bool = False,
+) -> ProductBuildStatus | None:
     if _tier_rank(current_tier) < _tier_rank(CommercialTier.blueprint_pro):
-        return
+        return None
     record = db.get(SessionRecord, session_id)
     if record is None or record.workspace_id != workspace_id:
-        return
+        return None
 
-    ensure_product_build_orchestration(
+    effective_stage = str(current_stage or getattr(record.current_stage, "value", str(record.current_stage or "discover")))
+
+    status = ensure_product_build_orchestration(
         db,
         record=record,
         product_key=ProductBuildProductKey.blueprint_pro,
         current_user=current_user,
         options=ProductBuildOrchestrationOptions(
-            current_stage=getattr(record.current_stage, "value", str(record.current_stage or "discover")),
+            current_stage=effective_stage,
             activation_payload={
                 "source": source,
                 "workspace_id": str(workspace_id),
@@ -440,6 +447,25 @@ def sync_premium_enrichment_product_run(
             },
         ),
     )
+    if auto_execute_when_ready and _should_auto_execute_premium_build(status, effective_stage):
+        status = ensure_product_build_orchestration(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=current_user,
+            options=ProductBuildOrchestrationOptions(
+                current_stage=effective_stage,
+                execute_jobs=True,
+                allow_llm=allow_llm,
+                activation_payload={
+                    "source": source,
+                    "workspace_id": str(workspace_id),
+                    "session_id": str(session_id),
+                    "auto_execute": True,
+                },
+            ),
+            catalog_stage_override=effective_stage,
+        )
     runs = list_product_build_runs(
         db,
         workspace_id=workspace_id,
@@ -472,8 +498,61 @@ def sync_premium_enrichment_product_run(
                 "source": source,
             },
             error_payload=_premium_backlog_error_payload(backlog_record, step_status),
-        )
+    )
     _finalize_premium_run_from_all_steps(db, run=run, backlog_records=records)
+    return build_product_build_status(
+        db,
+        record=record,
+        product_key=ProductBuildProductKey.blueprint_pro,
+        current_user=current_user,
+        catalog_stage_override=effective_stage,
+    )
+
+
+def _normalize_stage_key(value: str | None) -> str:
+    stage = str(value or "").strip().lower()
+    if stage in STAGE_FLOW_ORDER:
+        return stage
+    legacy_map = {
+        "draft_capture": "discover",
+        "input_validation": "discover",
+        "normalize_discovery": "discover",
+        "build_canvas": "define",
+        "build_blueprint": "design",
+        "post_validation": "validate",
+        "ready_for_export": "package",
+    }
+    return legacy_map.get(stage, "discover")
+
+
+def _stage_index(stage_key: str | None) -> int:
+    normalized = _normalize_stage_key(stage_key)
+    try:
+        return STAGE_FLOW_ORDER.index(normalized)
+    except ValueError:
+        return 0
+
+
+def _should_auto_execute_premium_build(
+    status: ProductBuildStatus | None,
+    current_stage: str | None = None,
+) -> bool:
+    if status is None or status.entitlement.access_state != "allowed":
+        return False
+    current_stage_idx = _stage_index(current_stage)
+    if any(
+        item.blocking and _stage_index(item.stage_key or current_stage) <= current_stage_idx
+        for item in status.attention.items
+    ):
+        return False
+    relevant_deliverables = [
+        item for item in status.deliverables if _stage_index(item.stage_key) <= current_stage_idx
+    ]
+    if not relevant_deliverables:
+        relevant_deliverables = list(status.deliverables)
+    if any(getattr(item.state, "value", str(item.state)) in {"queued", "generating"} for item in relevant_deliverables):
+        return False
+    return any(getattr(item.state, "value", str(item.state)) in {"pending", "stale"} for item in relevant_deliverables)
 
 
 def _resolved_answer(record: UncertaintyBacklogRecord, payload: PremiumUncertaintyResolutionRequest) -> str:

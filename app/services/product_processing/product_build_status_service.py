@@ -497,13 +497,19 @@ def _build_progress(
     deliverables: list[ProductBuildDeliverableStatus],
 ) -> ProductBuildProgress:
     if run is not None and run.total_units > 0:
+        completed = int(run.completed_units)
+        total = int(run.total_units)
+        blocked = int(run.blocked_units)
+        label = f"{completed}/{total} artefactos o dependencias listos."
+        if blocked > 0:
+            label = f"{label} {blocked} requieren atencion."
         return ProductBuildProgress(
             percent=run.progress_percent,
             completed_units=run.completed_units,
             total_units=run.total_units,
             blocked_units=run.blocked_units,
             calculation="manual",
-            label="Progreso persistido del build.",
+            label=label,
         )
     completed = sum(1 for item in deliverables if item.state == ProductBuildDeliverableState.available)
     blocked = sum(1 for item in deliverables if item.state in {ProductBuildDeliverableState.error, ProductBuildDeliverableState.requires_attention})
@@ -579,10 +585,18 @@ def _build_current_activity(
     active_step = next((step for step in steps if step.status in {"queued", "running", "generating"}), None)
     if active_step is None:
         return None
+    checkpoint = active_step.checkpoint_payload or {}
+    detail = str(
+        checkpoint.get("title")
+        or checkpoint.get("label")
+        or active_step.deliverable_key
+        or active_step.dependency_key
+        or active_step.step_key
+    )
     return ProductBuildCurrentActivity(
         activity_key=active_step.step_key,
-        label="Procesando producto",
-        detail=active_step.deliverable_key or active_step.dependency_key,
+        label="Procesando artefactos pendientes",
+        detail=detail,
         step_key=active_step.step_key,
         status="running" if lifecycle == ProductBuildLifecycle.running else "queued",
         started_at=active_step.started_at.isoformat() if active_step.started_at else "",

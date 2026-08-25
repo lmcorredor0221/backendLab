@@ -275,6 +275,7 @@ from app.services.product_processing import (
     dismiss_premium_uncertainty,
     resolve_premium_uncertainty,
     resolve_product_processing_mode,
+    sync_product_builds_after_stage_approval,
     upsert_uncertainty_backlog,
 )
 from app.services.rules import derive_knowledge_profile, find_missing_discovery_fields
@@ -3667,6 +3668,12 @@ def approve_stage_artifact_route(
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
     sync_short_term_memory_checkpoint(db, record=record, source_action=f"journey_approve:{stage_key}")
+    sync_product_builds_after_stage_approval(
+        db,
+        record=record,
+        stage_key=stage_key,
+        current_user=current_user,
+    )
     capture_operational_state(db, session_id=session_id, source_action=f"journey_approve:{stage_key}")
     db.commit()
     return artifact
@@ -6731,6 +6738,12 @@ def approve_tools_selection_route(
         except Exception as exc:  # noqa: BLE001
             _raise_stage_proposal_http_error(exc)
         sync_short_term_memory_checkpoint(db, record=record, source_action="approve_tools_selection")
+        sync_product_builds_after_stage_approval(
+            db,
+            record=record,
+            stage_key="tools",
+            current_user=current_user,
+        )
         capture_operational_state(db, session_id=session_id, source_action="approve_tools_selection")
         db.commit()
         return build_snapshot(db, record)
@@ -6858,6 +6871,12 @@ def approve_tools_selection_route(
     )
     db.add(record)
     sync_short_term_memory_checkpoint(db, record=record, source_action="approve_tools_selection")
+    sync_product_builds_after_stage_approval(
+        db,
+        record=record,
+        stage_key="tools",
+        current_user=current_user,
+    )
     capture_operational_state(db, session_id=session_id, source_action="approve_tools_selection")
     db.commit()
     return build_snapshot(db, record)
@@ -7460,6 +7479,12 @@ def approve_memory_profile_route(
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
     sync_short_term_memory_checkpoint(db, record=record, source_action="approve_memory_profile")
+    sync_product_builds_after_stage_approval(
+        db,
+        record=record,
+        stage_key="memory",
+        current_user=current_user,
+    )
     capture_operational_state(db, session_id=session_id, source_action="approve_memory_profile")
     db.commit()
     return build_snapshot(db, record)
@@ -7708,6 +7733,12 @@ def approve_validation_scenarios_route(
         payload={"scenario_keys": [item.scenario_key for item in specification.scenarios]},
     )
     sync_short_term_memory_checkpoint(db, record=record, source_action="approve_validation_scenarios")
+    sync_product_builds_after_stage_approval(
+        db,
+        record=record,
+        stage_key="validate",
+        current_user=current_user,
+    )
     capture_operational_state(db, session_id=session_id, source_action="approve_validation_scenarios")
     db.commit()
     return build_snapshot(db, record)

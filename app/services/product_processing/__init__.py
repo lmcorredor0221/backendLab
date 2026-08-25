@@ -150,6 +150,7 @@ __all__ = [
     "resolve_product_processing_mode",
     "sync_premium_enrichment_product_run",
     "sync_product_builds_after_attention_action",
+    "sync_product_builds_after_stage_approval",
     "supersede_unresolved_uncertainties",
     "update_product_build_run_state",
     "upsert_uncertainty_backlog",
@@ -184,4 +185,8 @@ def __getattr__(name: str):
         from app.services.product_processing import product_build_attention_sync_service
 
         return getattr(product_build_attention_sync_service, name)
+    if name == "sync_product_builds_after_stage_approval":
+        from app.services.product_processing import product_build_progress_sync_service
+
+        return getattr(product_build_progress_sync_service, name)
     raise AttributeError(f"module 'app.services.product_processing' has no attribute {name!r}")
