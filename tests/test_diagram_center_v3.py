@@ -213,6 +213,10 @@ def test_diagram_model_quality_and_renderers_use_canonical_graph() -> None:
     assert report.score == 100
     assert renderings["mermaid"].startswith("sequenceDiagram")
     assert "<svg" in renderings["svg"]
+    assert "UML SEQUENCE" in renderings["svg"]
+    assert 'data-diagram-notation="sequence"' in renderings["svg"]
+    assert 'data-sequence-kind="lifeline"' in renderings["svg"]
+    assert 'data-sequence-kind="message"' in renderings["svg"]
     assert "@startuml" in renderings["plantuml"]
     assert '"diagram_key": "sequence_diagram"' in renderings["presentation"]
     assert '"schema_version": "diagram-model.v1"' in renderings["json"]
@@ -356,6 +360,36 @@ def test_detail_refreshes_legacy_generic_svg_for_specialized_notation() -> None:
     fresh_renderings = render_diagram(model)
 
     assert _renderings_need_refresh(legacy_renderings, model, entry) is True
+    assert _renderings_need_refresh(fresh_renderings, model, entry) is False
+
+
+def test_detail_refreshes_legacy_generic_svg_for_sequence_notation() -> None:
+    entry = get_registry_entry("sequence_diagram")
+    assert entry is not None
+    model = DiagramModel(
+        diagram_key="sequence_diagram",
+        title="Consulta documental",
+        notation="sequence",
+        metadata={"renderer_key": entry.renderer_key},
+        nodes=[
+            DiagramNode(id="user", label="Usuario", kind="actor", source_refs=["discover:1"]),
+            DiagramNode(id="assistant", label="Asistente", kind="participant", source_refs=["design:1"]),
+        ],
+        edges=[DiagramEdge(id="m1", source="user", target="assistant", label="consulta", kind="sync_message", order=1)],
+        source_refs=["discover:1", "design:1"],
+    )
+    legacy_renderings = {
+        "svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" data-diagram-notation="sequence" '
+            'data-renderer-revision="diagram-renderer.v1.3.0"><rect x="1" y="1" width="10" height="10"/></svg>'
+        ),
+        "plantuml": "@startuml\nactor Usuario\n@enduml",
+        "presentation": "{}",
+    }
+    fresh_renderings = render_diagram(model)
+
+    assert _renderings_need_refresh(legacy_renderings, model, entry) is True
+    assert 'data-sequence-kind="lifeline"' in fresh_renderings["svg"]
     assert _renderings_need_refresh(fresh_renderings, model, entry) is False
 
 

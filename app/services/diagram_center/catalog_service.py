@@ -38,10 +38,18 @@ _PLANTUML_NOTATIONS = {
 _SPECIALIZED_SVG_NOTATIONS = {
     "uml_use_case",
     "uml_activity",
+    "sequence",
     "uml_component",
     "bpmn",
     "deployment",
     "package",
+}
+
+_SPECIALIZED_SVG_MARKERS: dict[str, tuple[str, ...]] = {
+    "uml_use_case": ('data-node-kind="system_boundary"', "<ellipse"),
+    "uml_activity": ("uml-activity-arrow",),
+    "sequence": ('data-sequence-kind="lifeline"', 'data-sequence-kind="participant-head"'),
+    "bpmn": ('data-bpmn-kind="pool"',),
 }
 
 
@@ -282,6 +290,9 @@ def _renderings_need_refresh(renderings: dict[str, str], model: DiagramModel, it
         return True
     notation = item.notation.value
     if notation in _SPECIALIZED_SVG_NOTATIONS and f'data-diagram-notation="{notation}"' not in svg:
+        return True
+    required_markers = _SPECIALIZED_SVG_MARKERS.get(notation, ())
+    if required_markers and any(marker not in svg for marker in required_markers):
         return True
     if notation == "bpmn":
         expected_source_keys = {"bpmn_xml"}

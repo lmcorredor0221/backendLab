@@ -987,9 +987,149 @@ def _render_bpmn_svg(model: DiagramModel) -> str:
     return "".join(parts)
 
 
+def _sequence_head_width(label: str, *, actor: bool) -> int:
+    if actor:
+        return max(124, min(176, 92 + max((len(line) for line in _text_lines(label, max_chars=18, max_lines=2)), default=8) * 5))
+    return max(166, min(260, 126 + max((len(line) for line in _text_lines(label, max_chars=22, max_lines=2)), default=10) * 5))
+
+
+def _sequence_is_actor(kind: str) -> bool:
+    normalized = _kind(kind)
+    return any(token in normalized for token in ("actor", "user", "person", "customer", "client"))
+
+
+def _sequence_edge_style(kind: str) -> tuple[str, str, str]:
+    normalized = _kind(kind)
+    if any(token in normalized for token in ("return", "reply", "response")):
+        return ("uml-sequence-return-arrow", ' stroke-dasharray="8 6"', "return_message")
+    if "async" in normalized or "event" in normalized:
+        return ("uml-sequence-open-arrow", "", "async_message")
+    return ("uml-sequence-arrow", "", "sync_message")
+
+
+def _render_sequence_svg(model: DiagramModel) -> str:
+    participants = list(model.nodes)
+    participants_by_id = {node.id: node for node in participants}
+    ordered_edges = sorted(model.edges, key=lambda item: item.order if item.order is not None else 9999)
+    message_count = max(1, len(ordered_edges))
+    head_y = 112
+    lifeline_top = 184
+    message_top = 220
+    message_gap = 74
+    footer_height = 64
+
+    widths = {
+        node.id: _sequence_head_width(node.label, actor=_sequence_is_actor(node.kind))
+        for node in participants
+    }
+    lane_width = max(230, max(widths.values(), default=176) + 56)
+    width = max(1180, 120 + max(1, len(participants)) * lane_width)
+    height = max(420, message_top + message_count * message_gap + footer_height)
+    centers = {
+        node.id: 88 + lane_width / 2 + index * lane_width
+        for index, node in enumerate(participants)
+    }
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc" {_svg_root_attrs(model)}>',
+        f'<title id="title">{escape(model.title)}</title>',
+        f'<desc id="desc">{escape(model.description or "UML Sequence Diagram")}</desc>',
+        '<defs><marker id="uml-sequence-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#526176"/></marker><marker id="uml-sequence-open-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#526176" stroke-width="1.7" stroke-linejoin="round"/></marker><marker id="uml-sequence-return-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#526176" stroke-width="1.5" stroke-linejoin="round"/></marker><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172033" flood-opacity="0.12"/></filter></defs>',
+        '<rect width="100%" height="100%" rx="20" fill="#f8f9fc"/>',
+        '<text x="40" y="44" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="900" letter-spacing="3" fill="#3047b8">UML SEQUENCE</text>',
+    ]
+
+    for node in participants:
+        center_x = centers[node.id]
+        actor = _sequence_is_actor(node.kind)
+        head_width = widths[node.id]
+        head_x = center_x - head_width / 2
+        lifeline_y2 = height - 42
+        parts.append(
+            f'<line data-sequence-kind="lifeline" data-node-id="{escape(node.id)}" x1="{center_x:.1f}" y1="{lifeline_top:.1f}" x2="{center_x:.1f}" y2="{lifeline_y2:.1f}" stroke="#92a0b8" stroke-width="1.7" stroke-dasharray="8 8"/>'
+        )
+        if actor:
+            label_lines = _text_lines(node.label, max_chars=18, max_lines=2)
+            parts.append(
+                f'<g data-node-id="{escape(node.id)}" data-node-kind="actor" data-sequence-kind="participant-head" filter="url(#shadow)">'
+                f'<circle cx="{center_x:.1f}" cy="{head_y+18:.1f}" r="13" fill="#ffffff" stroke="#3047b8" stroke-width="2"/>'
+                f'<path d="M {center_x:.1f} {head_y+31:.1f} L {center_x:.1f} {head_y+58:.1f} M {center_x-22:.1f} {head_y+42:.1f} L {center_x+22:.1f} {head_y+42:.1f} M {center_x:.1f} {head_y+58:.1f} L {center_x-20:.1f} {head_y+78:.1f} M {center_x:.1f} {head_y+58:.1f} L {center_x+20:.1f} {head_y+78:.1f}" stroke="#3047b8" stroke-width="2.1" stroke-linecap="round" fill="none"/>'
+                f'{_svg_multiline_text(label_lines, x=center_x, y=head_y + 102, size=13, weight=800, fill="#10172a")}'
+                "</g>"
+            )
+            continue
+        label_lines = _text_lines(node.label, max_chars=22, max_lines=2)
+        text_y = head_y + 30 - ((len(label_lines) - 1) * 9)
+        parts.append(
+            f'<g data-node-id="{escape(node.id)}" data-node-kind="participant" data-sequence-kind="participant-head" filter="url(#shadow)">'
+            f'<rect x="{head_x:.1f}" y="{head_y:.1f}" width="{head_width}" height="58" rx="14" fill="#ffffff" stroke="#3047b8" stroke-width="1.9"/>'
+            f'<rect x="{head_x:.1f}" y="{head_y:.1f}" width="{head_width}" height="12" rx="14" fill="#eef2ff" stroke="none"/>'
+            f'{_svg_multiline_text(label_lines, x=center_x, y=text_y, size=13, weight=800, fill="#10172a")}'
+            "</g>"
+        )
+
+    activation_index = 0
+    for index, edge in enumerate(ordered_edges):
+        if edge.source not in centers or edge.target not in centers:
+            continue
+        source_x = centers[edge.source]
+        target_x = centers[edge.target]
+        y = message_top + index * message_gap
+        marker_id, dash_attr, semantic_kind = _sequence_edge_style(edge.kind)
+        edge_kind = escape(edge.kind or semantic_kind)
+        label = edge.label or edge.kind or semantic_kind
+        label_text = escape(label[:52])
+        label_x = (source_x + target_x) / 2 if edge.source != edge.target else source_x + 52
+        label_anchor = "middle" if edge.source != edge.target else "start"
+
+        if edge.source == edge.target:
+            path = (
+                f"M {source_x:.1f} {y:.1f} "
+                f"L {source_x+56:.1f} {y:.1f} "
+                f"L {source_x+56:.1f} {y+28:.1f} "
+                f"L {source_x:.1f} {y+28:.1f}"
+            )
+            target_y = y + 28
+        else:
+            path = f"M {source_x:.1f} {y:.1f} L {target_x:.1f} {y:.1f}"
+            target_y = y
+
+        parts.append(
+            f'<path data-edge-id="{escape(edge.id)}" data-edge-kind="{edge_kind}" data-sequence-kind="message" d="{path}" stroke="#526176" stroke-width="2" fill="none"{dash_attr} marker-end="url(#{marker_id})"/>'
+        )
+        parts.append(
+            f'<text x="{label_x:.1f}" y="{y-10:.1f}" text-anchor="{label_anchor}" font-family="Inter,Arial,sans-serif" font-size="11" fill="#44506a">{label_text}</text>'
+        )
+
+        target_node = participants_by_id.get(edge.target)
+        if target_node and not _sequence_is_actor(target_node.kind) and semantic_kind != "return_message":
+            activation_x = target_x - 7 + (activation_index % 2) * 2
+            activation_height = 38 if edge.source != edge.target else 46
+            activation_y = y - 8 if edge.source != edge.target else y + 4
+            parts.append(
+                f'<rect data-sequence-kind="activation" data-node-id="{escape(target_node.id)}" x="{activation_x:.1f}" y="{activation_y:.1f}" width="14" height="{activation_height}" fill="#eef2ff" stroke="#3047b8" stroke-width="1.2"/>'
+            )
+            activation_index += 1
+
+        source_node = participants_by_id.get(edge.source)
+        if edge.source != edge.target and source_node and _sequence_is_actor(source_node.kind):
+            parts.append(
+                f'<circle cx="{source_x:.1f}" cy="{y:.1f}" r="3.2" fill="#3047b8"/>'
+            )
+        if edge.source == edge.target:
+            parts.append(
+                f'<circle cx="{source_x:.1f}" cy="{target_y:.1f}" r="2.8" fill="#3047b8"/>'
+            )
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def render_svg(model: DiagramModel) -> str:
     if model.notation == DiagramNotation.bpmn:
         return _render_bpmn_svg(model)
+    if model.notation == DiagramNotation.sequence:
+        return _render_sequence_svg(model)
     if model.notation == DiagramNotation.uml_use_case:
         return _render_uml_use_case_svg(model)
     if model.notation == DiagramNotation.uml_activity:
