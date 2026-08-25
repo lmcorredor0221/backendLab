@@ -20,6 +20,7 @@ from app.services.llm_finops.provider_instrumentation import FinOpsSessionFactor
 from app.services.llm_finops.usage_normalization import normalize_cli_usage
 from app.services.agent_i18n import apply_agent_language_directive, get_effective_language
 from app.services.diagram_center.contracts import DiagramGenerationInput
+from app.services.diagram_center.semantic_repair import finalize_structured_diagram_artifact
 from app.services.llm_runtime.antigravity_cli.execution_service import AgyExecutionService
 from app.services.llm_runtime.builder_contracts import (
     AgentDesignCritiqueInput,
@@ -98,16 +99,23 @@ class AntigravityLocalBuilderService:
     def can_attempt(self) -> bool:
         return self.runtime_settings.active_provider == LLMProviderKey.antigravity_cli
 
+    def _has_resolved_executable(self) -> bool:
+        resolver = getattr(self.execution_service, "resolve_executable", None)
+        if callable(resolver):
+            return bool(resolver())
+        cfg = self.runtime_settings.antigravity
+        return bool(cfg.executable or cfg.executable_found or cfg.available)
+
     def is_available(self) -> bool:
         return (
             self.can_attempt()
             and self.runtime_settings.antigravity.executable_found is not False
-            and bool(self.execution_service.resolve_executable())
+            and self._has_resolved_executable()
         )
 
     def provider_summary(self) -> dict[str, str | bool]:
         cfg = self.runtime_settings.antigravity
-        executable_found = bool(self.execution_service.resolve_executable())
+        executable_found = self._has_resolved_executable()
         return {
             "provider": self.runtime_settings.active_provider.value,
             "mode": "local_exec",
@@ -254,16 +262,23 @@ class AntigravityLocalBuilderService:
                 timeout_ms=spec.timeout_ms,
             )
             audit = self.execution_service.read_last_known_result() or {}
+            normalized = spec.output_model.model_validate(parsed.model_dump(mode="json"))
+            schema_status = "valid"
+            if capability == BuilderCapability.generate_diagram_model:
+                normalized, schema_status = finalize_structured_diagram_artifact(
+                    normalized,
+                    schema_status=schema_status,
+                )
             result = replace(
                 base_result,
-                artifact=spec.output_model.model_validate(parsed.model_dump(mode="json")),
+                artifact=normalized,
                 request_id=str(audit.get("run_id", "") or ""),
                 finish_reason=str(audit.get("status", "succeeded") or "succeeded"),
                 model_name=str(
                     audit.get("selected_model", self.runtime_settings.antigravity.model)
                     or self.runtime_settings.antigravity.model
                 ),
-                schema_validation_status="valid",
+                schema_validation_status=schema_status,
             )
             return self._attach_finops_record(
                 result,

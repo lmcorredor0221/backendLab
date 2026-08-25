@@ -18,6 +18,7 @@ from app.models import (
     OpenAIProviderConfig,
     ReviewState,
 )
+from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramNotation, StructuredDiagramModel
 from app.services.llm_runtime.builder_contracts import BlueprintNarrativeOutput
 from app.services.openai_builder import DeepSeekBuilderService, OpenAIBuilderService
 
@@ -197,3 +198,195 @@ def test_deepseek_builder_uses_compact_context_for_narrative_and_reduces_inline_
     assert "DISCOVERY=" not in user_payload
     assert "[source] narrative_discovery" in user_payload
     assert len(user_payload) < len(baseline_user_payload)
+
+
+def test_openai_builder_compacts_diagram_payload_to_resolved_inputs() -> None:
+    runtime_settings = build_runtime_settings(
+        LLMProviderKey.openai,
+        backend=KnowledgeAccessBackend.inline_context,
+    )
+    service = OpenAIBuilderService(runtime_settings)
+    payload = DiagramGenerationInput(
+        diagram_key="architecture_overview",
+        title="Arquitectura propuesta",
+        objective="Mostrar la arquitectura aprobada.",
+        notation=DiagramNotation.flowchart,
+        required_inputs=["blueprint.architecture_spec", "blueprint.patterns"],
+        resolved_inputs=[
+            {
+                "input_key": "blueprint.architecture_spec",
+                "status": "resolved",
+                "matched_artifact_keys": ["design_recommendation_artifact"],
+                "artifact_refs": ["journey:design:v1"],
+                "evidence": [
+                    {
+                        "artifact_key": "design_recommendation_artifact",
+                        "ref": "journey:design:v1",
+                        "content": {
+                            "summary": "Arquitectura aprobada con supervision y handoffs.",
+                            "selected_design": {"architecture_pattern": "supervisor_with_specialists"},
+                        },
+                    }
+                ],
+            }
+        ],
+        source_context={
+            "project": {"id": "session-1", "title": "Architecture project"},
+            "coverage_summary": {"required_input_count": 2, "resolved_input_count": 1, "missing_input_count": 1},
+            "resolved_inputs": [
+                {
+                    "input_key": "blueprint.architecture_spec",
+                    "status": "resolved",
+                }
+            ],
+            "missing_required_inputs": ["blueprint.patterns"],
+            "approved_artifact_keys": ["design_recommendation_artifact"],
+            "approved_artifacts": [
+                {
+                    "key": "design_recommendation_artifact",
+                    "content": {"marker": "SHOULD_NOT_BE_IN_API_PAYLOAD", "blob": "X" * 12000},
+                }
+            ],
+        },
+        source_refs=["journey:design:v1"],
+    )
+    captured: dict[str, object] = {}
+
+    class FakeResponses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                id="resp-diagram-openai-1",
+                status="completed",
+                output_parsed=StructuredDiagramModel(
+                    diagram_key="architecture_overview",
+                    title="Arquitectura propuesta",
+                    notation="flowchart",
+                    nodes=[],
+                    edges=[],
+                    source_refs=["journey:design:v1"],
+                ),
+                usage=None,
+            )
+
+    service._client = SimpleNamespace(responses=FakeResponses())
+
+    result = service.generate_diagram_model(payload)
+
+    user_payload = str(captured["input"][1]["content"])
+    baseline_payload = json.dumps(payload.model_dump(mode="json"), ensure_ascii=True)
+
+    assert isinstance(result.artifact, StructuredDiagramModel)
+    assert "resolved_inputs" in user_payload
+    assert "blueprint.architecture_spec" in user_payload
+    assert "SHOULD_NOT_BE_IN_API_PAYLOAD" not in user_payload
+    assert len(user_payload) < len(baseline_payload)
+
+
+def test_deepseek_bpmn_retry_switches_to_compact_mode_and_repairs_bpmn_terminals() -> None:
+    runtime_settings = build_runtime_settings(
+        LLMProviderKey.deepseek,
+        backend=KnowledgeAccessBackend.inline_context,
+    )
+    service = DeepSeekBuilderService(runtime_settings)
+    payload = DiagramGenerationInput(
+        diagram_key="current_process_map",
+        title="Proceso actual",
+        objective="Representar el flujo actual.",
+        notation=DiagramNotation.bpmn,
+        source_refs=["journey:discover:v1"],
+    )
+
+    class FakeSequentialCompletionsAPI:
+        def __init__(self, responses: list[object]) -> None:
+            self.responses = list(responses)
+            self.kwargs_history: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.kwargs_history.append(dict(kwargs))
+            if not self.responses:
+                raise AssertionError("No quedan respuestas fake para DeepSeek.")
+            return self.responses.pop(0)
+
+    truncated = SimpleNamespace(
+        id="chatcmpl-deepseek-diagram-1",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content='{"diagram_key":"current_process_map"'),
+                finish_reason="length",
+            )
+        ],
+        usage=None,
+    )
+    valid_payload = {
+        "diagram_key": "current_process_map",
+        "title": "Proceso actual",
+        "notation": "bpmn",
+        "nodes": [
+            {
+                "id": "identify_context",
+                "label": "Identificar contexto",
+                "kind": "task",
+                "metadata": {"pool_id": "pool_ops", "lane_id": "lane_analyst", "attributes": []},
+                "source_refs": ["journey:discover:v1"],
+            },
+            {
+                "id": "review_code",
+                "label": "Revisar codigo fuente",
+                "kind": "task",
+                "metadata": {"pool_id": "pool_ops", "lane_id": "lane_analyst", "attributes": []},
+                "source_refs": ["journey:discover:v1"],
+            },
+        ],
+        "edges": [
+            {
+                "id": "flow_1",
+                "source": "identify_context",
+                "target": "review_code",
+                "kind": "sequence_flow",
+                "source_refs": ["journey:discover:v1"],
+            }
+        ],
+        "pools": [
+            {
+                "id": "pool_ops",
+                "label": "Operacion",
+                "lanes": [
+                    {
+                        "id": "lane_analyst",
+                        "label": "Analista",
+                        "source_refs": ["journey:discover:v1"],
+                    }
+                ],
+                "source_refs": ["journey:discover:v1"],
+            }
+        ],
+        "source_refs": ["journey:discover:v1"],
+    }
+    completed = SimpleNamespace(
+        id="chatcmpl-deepseek-diagram-2",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps(valid_payload, ensure_ascii=True)),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+    completions = FakeSequentialCompletionsAPI([truncated, completed])
+    service._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = service.generate_diagram_model(payload)
+
+    assert isinstance(result.artifact, StructuredDiagramModel)
+    assert result.retry_count == 1
+    assert result.schema_validation_status == "repaired_bpmn_terminals"
+    assert any(node.kind == "start_event" for node in result.artifact.nodes)
+    assert any(node.kind == "end_event" for node in result.artifact.nodes)
+    assert completions.kwargs_history[0]["reasoning_effort"] == "high"
+    assert completions.kwargs_history[0]["max_tokens"] == 4096
+    assert completions.kwargs_history[0]["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "reasoning_effort" not in completions.kwargs_history[1]
+    assert completions.kwargs_history[1]["max_tokens"] == 4096
+    assert completions.kwargs_history[1]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "minimo numero de nodos" in str(completions.kwargs_history[1]["messages"][-1]["content"])

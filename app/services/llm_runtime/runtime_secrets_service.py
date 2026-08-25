@@ -7,6 +7,11 @@ from uuid import UUID
 from cryptography.fernet import Fernet, InvalidToken
 from sqlmodel import Session, select
 
+try:
+    from openai import OpenAI as OpenAISDK
+except ImportError:  # pragma: no cover - optional dependency in some test environments
+    OpenAISDK = None  # type: ignore[assignment]
+
 from app.core.config import get_settings
 from app.models import (
     LLMProviderKey,
@@ -113,11 +118,11 @@ def resolve_workspace_provider_secret_value(
     )
     if not _record_is_configured(record) or record is None:
         return None
+    if record.secret_ciphertext:
+        return _decrypt_secret_value(record.secret_ciphertext)
     if record.secret_ref:
         return None
-    if not record.secret_ciphertext:
-        return None
-    return _decrypt_secret_value(record.secret_ciphertext)
+    return None
 
 
 def _record_is_configured(record: WorkspaceProviderSecretRecord | None) -> bool:
@@ -131,6 +136,8 @@ def _record_is_configured(record: WorkspaceProviderSecretRecord | None) -> bool:
 def _storage_mode(record: WorkspaceProviderSecretRecord | None) -> str:
     if record is None:
         return "none"
+    if record.secret_ciphertext and record.secret_ref:
+        return "ciphertext+reference"
     if record.secret_ref:
         return "reference"
     if record.secret_ciphertext:
@@ -138,7 +145,32 @@ def _storage_mode(record: WorkspaceProviderSecretRecord | None) -> str:
     return "none"
 
 
+def _workspace_secret_runtime_state(
+    record: WorkspaceProviderSecretRecord | None,
+) -> tuple[bool, str, str]:
+    if not _record_is_configured(record) or record is None:
+        return False, "workspace_missing", "No existe un secreto configurado para este workspace."
+    if record.secret_ciphertext:
+        if OpenAISDK is None:
+            return False, "sdk_missing", "El SDK OpenAI-compatible no esta instalado en el backend."
+        try:
+            secret_value = _decrypt_secret_value(record.secret_ciphertext)
+        except ValueError as exc:
+            return False, "workspace_invalid", str(exc)
+        if not secret_value.strip():
+            return False, "workspace_invalid", "El secreto cifrado del workspace esta vacio."
+        return True, "workspace_ready", "Se resolvio el secreto cifrado del workspace."
+    if record.secret_ref:
+        return (
+            False,
+            "workspace_reference_pending",
+            "Hay una referencia externa configurada, pero el runtime todavia no resuelve secret_ref para este provider.",
+        )
+    return False, "workspace_missing", "No existe material secreto utilizable para este workspace."
+
+
 def _build_secret_response(
+    session: Session,
     *,
     workspace_id: UUID,
     provider_key: LLMProviderKey,
@@ -181,12 +213,12 @@ def _build_secret_response(
     if active_for_runtime:
         secret_source = "workspace_managed"
         configured = workspace_configured
-        health_status = "workspace_ready" if workspace_configured else "workspace_missing"
+        _, health_status, _ = _workspace_secret_runtime_state(record)
         status = record.status if record is not None else RuntimeSecretStatus.not_configured
     elif workspace_configured:
         secret_source = "workspace_staged"
         configured = True
-        health_status = "workspace_ready"
+        _, health_status, _ = _workspace_secret_runtime_state(record)
         status = record.status
     else:
         secret_source = "platform_managed"
@@ -234,17 +266,27 @@ def _record_secret_audit(
 
 
 def _annotate_provider_secret_state(
+    session: Session,
+    record: WorkspaceProviderSecretRecord | None,
     runtime_settings: LLMRuntimeSettings,
     *,
     secret_view: WorkspaceProviderSecretResponse,
 ) -> LLMRuntimeSettings:
+    if secret_view.secret_source in {"workspace_managed", "workspace_staged"}:
+        available, _, status_note = _workspace_secret_runtime_state(record)
+    else:
+        available = None
+        status_note = ""
+
     if secret_view.provider_key == LLMProviderKey.openai:
         openai_config = runtime_settings.openai.model_copy(
             update={
                 "api_key_configured": secret_view.configured,
+                "available": runtime_settings.openai.available if available is None else available,
                 "secret_source": secret_view.secret_source,
                 "last_rotated_at": secret_view.last_rotated_at,
                 "health_status": secret_view.health_status,
+                "status_note": runtime_settings.openai.status_note if not status_note else status_note,
             }
         )
         updated_settings = runtime_settings.model_copy(update={"openai": openai_config})
@@ -252,9 +294,11 @@ def _annotate_provider_secret_state(
         deepseek_config = runtime_settings.deepseek.model_copy(
             update={
                 "api_key_configured": secret_view.configured,
+                "available": runtime_settings.deepseek.available if available is None else available,
                 "secret_source": secret_view.secret_source,
                 "last_rotated_at": secret_view.last_rotated_at,
                 "health_status": secret_view.health_status,
+                "status_note": runtime_settings.deepseek.status_note if not status_note else status_note,
             }
         )
         updated_settings = runtime_settings.model_copy(update={"deepseek": deepseek_config})
@@ -283,15 +327,17 @@ def annotate_runtime_settings_with_workspace_secrets(
     updated_settings = runtime_settings.model_copy(update={"uses_platform_credentials": uses_platform_credentials})
     for provider_key in LLMProviderKey:
         supports_workspace_secrets = _supports_workspace_secrets(session, provider_key)
+        record = secret_records.get(provider_key)
         secret_view = _build_secret_response(
+            session,
             workspace_id=workspace_id,
             provider_key=provider_key,
             runtime_settings=updated_settings,
             uses_platform_credentials=uses_platform_credentials,
-            record=secret_records.get(provider_key),
+            record=record,
             supports_workspace_secrets=supports_workspace_secrets,
         )
-        updated_settings = _annotate_provider_secret_state(updated_settings, secret_view=secret_view)
+        updated_settings = _annotate_provider_secret_state(session, record, updated_settings, secret_view=secret_view)
     return updated_settings.model_copy(update={"provider_options": build_provider_options(updated_settings)})
 
 
@@ -307,6 +353,7 @@ def build_workspace_provider_secret_view(
     record = _workspace_secret_record(session, workspace_id, provider_key)
     supports_workspace_secrets = _supports_workspace_secrets(session, provider_key)
     return _build_secret_response(
+        session,
         workspace_id=workspace_id,
         provider_key=provider_key,
         runtime_settings=runtime_settings,
@@ -341,8 +388,14 @@ def upsert_workspace_provider_secret(
         )
 
     record.secret_kind = payload.secret_kind.strip() or record.secret_kind or "api_key"
-    record.secret_ciphertext = _encrypt_secret_value(payload.secret_value.strip()) if payload.secret_value.strip() else ""
-    record.secret_ref = payload.secret_ref.strip()
+    secret_value = payload.secret_value.strip()
+    secret_ref = payload.secret_ref.strip()
+    if secret_value:
+        record.secret_ciphertext = _encrypt_secret_value(secret_value)
+        record.secret_ref = ""
+    else:
+        record.secret_ciphertext = ""
+        record.secret_ref = secret_ref
     record.status = RuntimeSecretStatus.configured
     record.last_rotated_at = now if rotate or before_view.configured else now
     record.updated_by_user_id = actor_user_id

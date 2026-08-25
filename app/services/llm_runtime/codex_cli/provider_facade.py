@@ -20,6 +20,7 @@ from app.services.llm_finops.provider_instrumentation import FinOpsSessionFactor
 from app.services.llm_finops.usage_normalization import normalize_cli_usage
 from app.services.agent_i18n import apply_agent_language_directive, get_effective_language
 from app.services.diagram_center.contracts import DiagramGenerationInput
+from app.services.diagram_center.semantic_repair import finalize_structured_diagram_artifact
 from app.services.llm_runtime.builder_contracts import (
     AgentDesignCritiqueInput,
     AgentDesignInput,
@@ -362,14 +363,21 @@ class CodexLocalBuilderService:
                 context_request=context_envelope.context_request,
             )
             audit = self.execution_service.read_last_known_result() or {}
+            normalized = spec.output_model.model_validate(parsed.model_dump(mode="json"))
+            schema_status = "valid"
+            if capability == BuilderCapability.generate_diagram_model:
+                normalized, schema_status = finalize_structured_diagram_artifact(
+                    normalized,
+                    schema_status=schema_status,
+                )
             result = self._attach_context_metadata(
                 replace(
                     base_result,
-                    artifact=spec.output_model.model_validate(parsed.model_dump(mode="json")),
+                    artifact=normalized,
                     request_id=str(audit.get("run_id", "") or ""),
                     finish_reason=str(audit.get("status", "succeeded") or "succeeded"),
                     model_name=str(audit.get("selected_model", self.runtime_settings.codex_local.model) or self.runtime_settings.codex_local.model),
-                    schema_validation_status="valid",
+                    schema_validation_status=schema_status,
                 ),
                 context_envelope=context_envelope,
             )

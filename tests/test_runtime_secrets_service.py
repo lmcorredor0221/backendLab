@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from cryptography.fernet import Fernet
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
@@ -117,6 +118,7 @@ def test_upsert_workspace_provider_secret_encrypts_storage_and_redacts_runtime_v
     assert secret_view.storage_mode == "ciphertext"
     assert runtime_view.uses_platform_credentials is False
     assert runtime_view.openai.api_key_configured is True
+    assert runtime_view.openai.available is True
     assert runtime_view.openai.secret_source == "workspace_managed"
     assert runtime_view.openai.health_status == "workspace_ready"
     assert resolved_secret == "sk-workspace-alpha"
@@ -189,6 +191,8 @@ def test_workspace_secrets_are_isolated_and_delete_reverts_to_platform_mode() ->
 
     assert runtime_a.deepseek.secret_source == "workspace_staged"
     assert runtime_a.deepseek.api_key_configured is True
+    assert runtime_a.deepseek.available is False
+    assert runtime_a.deepseek.health_status == "workspace_reference_pending"
     assert runtime_b.deepseek.secret_source == "platform_managed"
     assert runtime_b.deepseek.api_key_configured is False
     assert delete_view.secret_source == "platform_managed"
@@ -199,3 +203,51 @@ def test_workspace_secrets_are_isolated_and_delete_reverts_to_platform_mode() ->
     assert any(item.change_type == "workspace_provider_secret_upserted" for item in audit_rows)
     assert any(item.change_type == "workspace_provider_secret_deleted" for item in audit_rows)
     assert all("vault://deepseek/workspace-a" not in json.dumps(item.after_payload_redacted) for item in audit_rows)
+
+
+def test_workspace_secret_with_different_master_key_is_marked_invalid() -> None:
+    settings = get_settings()
+    original_path = settings.llm_config_path
+    original_master_key = settings.runtime_secrets_master_key
+
+    with TemporaryDirectory(prefix="lean-builder-runtime-secrets-") as runtime_dir:
+        runtime_path = Path(runtime_dir) / "llm_settings.json"
+        runtime_path.write_text(json.dumps({"active_provider": "deepseek"}, ensure_ascii=True), encoding="utf-8")
+        settings.llm_config_path = runtime_path
+        settings.runtime_secrets_master_key = Fernet.generate_key().decode("utf-8")
+        try:
+            engine = _build_engine()
+            SQLModel.metadata.create_all(engine)
+            with Session(engine) as session:
+                actor, workspace = _seed_user_and_workspace(
+                    session,
+                    email="workspace-invalid@leanbuilder.local",
+                    workspace_name="Workspace Invalid Secret",
+                )
+                upsert_workspace_provider_secret(
+                    session,
+                    workspace.id,
+                    LLMProviderKey.deepseek,
+                    WorkspaceProviderSecretUpsertRequest(
+                        secret_value="sk-workspace-invalid",
+                        activate_for_runtime=True,
+                    ),
+                    actor_user_id=actor.id,
+                )
+
+                settings.runtime_secrets_master_key = Fernet.generate_key().decode("utf-8")
+
+                runtime_view = annotate_runtime_settings_with_workspace_secrets(
+                    session,
+                    workspace.id,
+                    load_effective_runtime_settings(session, workspace.id),
+                )
+        finally:
+            settings.llm_config_path = original_path
+            settings.runtime_secrets_master_key = original_master_key
+
+    assert runtime_view.deepseek.secret_source == "workspace_managed"
+    assert runtime_view.deepseek.api_key_configured is True
+    assert runtime_view.deepseek.available is False
+    assert runtime_view.deepseek.health_status == "workspace_invalid"
+    assert "master key" in runtime_view.deepseek.status_note.lower()

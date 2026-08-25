@@ -546,9 +546,12 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
         task_instruction=(
             "Construye el modelo solicitado en `diagram_generation_input`. Aplica objetivo, reglas semánticas y "
             "exclusiones del PromptSpec. Mantén el nivel de detalle solicitado, agrega source_refs y registra como "
-            "assumptions solo inferencias indispensables claramente identificadas. No devuelvas Mermaid, SVG ni texto "
-            "explicativo fuera del contrato JSON. Para BPMN usa sequence_flow dentro del mismo pool y message_flow "
-            "entre pools; no sustituyas BPMN por un grafo dirigido genérico."
+            "assumptions solo inferencias indispensables claramente identificadas. Si `context_brief` está presente, "
+            "úsalo como digest ejecutivo de la evidencia aprobada. Si `resolved_inputs` está presente, trátalo como "
+            "el mapeo canónico entre `required_inputs` y la evidencia aprobada. No concluyas que falta contexto si "
+            "`resolved_inputs` ya contiene evidencia suficiente para modelar una vista mínima y trazable. No "
+            "devuelvas Mermaid, SVG ni texto explicativo fuera del contrato JSON. Para BPMN usa sequence_flow "
+            "dentro del mismo pool y message_flow entre pools; no sustituyas BPMN por un grafo dirigido genérico."
         ),
         output_model=StructuredDiagramModel,
         preferred_model="reasoning",

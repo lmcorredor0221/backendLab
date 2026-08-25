@@ -306,6 +306,9 @@ class DiagramGenerationInput(BaseModel):
     standard: str = ""
     detail_level: Literal["executive", "standard", "detailed"] = "standard"
     required_inputs: list[str] = Field(default_factory=list)
+    context_brief: str = ""
+    resolved_inputs: list[dict[str, Any]] = Field(default_factory=list)
+    missing_required_inputs: list[str] = Field(default_factory=list)
     source_context: dict[str, Any] = Field(default_factory=dict)
     source_refs: list[str] = Field(default_factory=list)
     source_contract: str = "diagram-model.v1"

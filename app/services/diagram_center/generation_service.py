@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlmodel import Session, func, select
@@ -26,6 +27,92 @@ from app.services.openai_builder import build_builder_service
 
 MAX_CONTEXT_ITEMS = 18
 MAX_CONTEXT_CHARS_PER_ITEM = 6000
+RESOLVED_INPUT_EVIDENCE_LIMIT = 1400
+
+_REQUIRED_INPUT_MATCHERS: dict[str, dict[str, set[str]]] = {
+    "session.discovery": {"artifact_keys": {"discovery_artifact", "discovery_analysis_artifact"}, "stages": {"discover"}},
+    "discovery.analysis": {"artifact_keys": {"discovery_analysis_artifact"}, "stages": {"discover"}},
+    "discovery.problem_context_brief": {"artifact_keys": {"discovery_analysis_artifact", "discovery_artifact"}, "stages": {"discover"}},
+    "session.canvas": {"artifact_keys": {"canvas_artifact"}, "stages": {"define"}},
+    "definition.requirements": {"artifact_keys": {"definition_artifact"}, "stages": {"define"}},
+    "design.architecture": {"artifact_keys": {"design_recommendation_artifact"}, "stages": {"design"}},
+    "blueprint.architecture_spec": {"artifact_keys": {"design_recommendation_artifact"}, "stages": {"design"}},
+    "blueprint.patterns": {"artifact_keys": {"design_recommendation_artifact"}, "stages": {"design"}},
+    "tools.minimum_set": {"artifact_keys": {"tool_recommendation_artifact"}, "stages": {"tools"}},
+    "memory.strategy": {"artifact_keys": {"memory_recommendation_artifact"}, "stages": {"memory"}},
+    "estimate.analysis": {"artifact_keys": {"estimation_report_artifact"}, "stages": {"estimate"}},
+    "validation.scenarios": {"artifact_keys": {"evaluation_artifact"}, "stages": {"validate"}},
+}
+
+_REQUIRED_INPUT_FIELD_HINTS: dict[str, list[str]] = {
+    "session.discovery": [
+        "summary",
+        "facts",
+        "problem_statement",
+        "current_user",
+        "current_process",
+        "desired_outcome",
+        "constraints",
+        "inferred_needs",
+        "open_questions",
+    ],
+    "discovery.analysis": ["summary", "facts", "inferred_needs", "domain_signals", "risk_signals", "open_questions"],
+    "discovery.problem_context_brief": ["summary", "facts", "problem_statement", "current_process", "desired_outcome"],
+    "session.canvas": ["user_goal", "mvp_scope", "success_metric", "agent_profile", "primary_risk", "summary"],
+    "definition.requirements": [
+        "summary",
+        "functional_requirements",
+        "non_functional_requirements",
+        "business_rules",
+        "acceptance_criteria",
+        "dependencies",
+        "open_questions",
+    ],
+    "design.architecture": [
+        "summary",
+        "selected_design",
+        "decision_rationale",
+        "requirements_coverage",
+        "recommended_alternative_key",
+        "open_questions",
+    ],
+    "blueprint.architecture_spec": [
+        "summary",
+        "selected_design",
+        "decision_rationale",
+        "requirements_coverage",
+        "recommended_alternative_key",
+        "open_questions",
+    ],
+    "blueprint.patterns": [
+        "summary",
+        "selected_design",
+        "alternatives",
+        "fit_matrix",
+        "decision_rationale",
+        "recommended_alternative_key",
+    ],
+    "tools.minimum_set": [
+        "summary",
+        "recommended_tools",
+        "optional_tools",
+        "approved_tools_digest",
+        "design_role_coverage",
+        "coverage_gaps",
+        "needs_information",
+    ],
+    "memory.strategy": [
+        "summary",
+        "proposed_memory_profile",
+        "knowledge_design",
+        "working_memory_design",
+        "short_term_design",
+        "long_term_design",
+        "context_budget_plan",
+    ],
+    "estimate.analysis": ["summary", "notes", "agentic", "recommendations", "risks", "assumptions"],
+    "validation.scenarios": ["summary", "findings", "scenarios", "test_cases", "gaps"],
+}
 
 
 def _compact(value: object, *, limit: int = MAX_CONTEXT_CHARS_PER_ITEM) -> object:
@@ -38,7 +125,248 @@ def _compact(value: object, *, limit: int = MAX_CONTEXT_CHARS_PER_ITEM) -> objec
     return value
 
 
-def _source_context(db: Session, record: SessionRecord) -> tuple[dict[str, object], list[str]]:
+def _compact_text(value: object, *, limit: int = 240) -> str:
+    normalized = " ".join(str(value or "").split()).strip()
+    return normalized[:limit]
+
+
+def _summarize_list(values: list[object], *, limit: int = 4, item_limit: int = 100) -> list[str]:
+    return [_compact_text(item, limit=item_limit) for item in values[:limit] if _compact_text(item, limit=item_limit)]
+
+
+def _design_architecture_brief(content: dict[str, Any]) -> tuple[object, str]:
+    selected_design = content.get("selected_design") if isinstance(content.get("selected_design"), dict) else {}
+    blueprint_projection = (
+        selected_design.get("blueprint_projection")
+        if isinstance(selected_design.get("blueprint_projection"), dict)
+        else {}
+    )
+    roles = selected_design.get("roles") if isinstance(selected_design.get("roles"), list) else []
+    handoffs = selected_design.get("handoffs") if isinstance(selected_design.get("handoffs"), list) else []
+    concise_payload = {
+        "summary": _compact_text(content.get("summary")),
+        "architecture_pattern": _compact_text(
+            selected_design.get("architecture")
+            or selected_design.get("architecture_pattern")
+            or selected_design.get("alternative_key")
+        ),
+        "coordination_model": _compact_text(selected_design.get("coordination_model")),
+        "reasoning_pattern": _compact_text(selected_design.get("reasoning_pattern")),
+        "topology": _compact_text(selected_design.get("topology"), limit=320),
+        "roles": [
+            {
+                "key": _compact_text(item.get("key")),
+                "title": _compact_text(item.get("title")),
+                "responsibility": _compact_text(item.get("responsibility"), limit=180),
+            }
+            for item in roles[:4]
+            if isinstance(item, dict)
+        ],
+        "handoffs": [
+            {
+                "from_role": _compact_text(item.get("from_role")),
+                "to_role": _compact_text(item.get("to_role")),
+                "trigger": _compact_text(item.get("trigger"), limit=160),
+            }
+            for item in handoffs[:4]
+            if isinstance(item, dict)
+        ],
+        "approval_points": _summarize_list(
+            selected_design.get("approval_points") if isinstance(selected_design.get("approval_points"), list) else [],
+            limit=4,
+            item_limit=120,
+        ),
+        "guardrails": _summarize_list(
+            blueprint_projection.get("guardrails") if isinstance(blueprint_projection.get("guardrails"), list) else [],
+            limit=4,
+            item_limit=120,
+        ),
+    }
+    role_titles = [item.get("title") or item.get("key") for item in concise_payload["roles"] if isinstance(item, dict)]
+    handoff_pairs = [
+        f"{item.get('from_role')}->{item.get('to_role')}"
+        for item in concise_payload["handoffs"]
+        if isinstance(item, dict) and item.get("from_role") and item.get("to_role")
+    ]
+    brief = (
+        "Approved architecture evidence: "
+        f"pattern={concise_payload['architecture_pattern'] or 'unknown'}; "
+        f"reasoning={concise_payload['reasoning_pattern'] or 'unknown'}; "
+        f"roles={', '.join(str(item) for item in role_titles[:4]) or 'none'}; "
+        f"handoffs={', '.join(handoff_pairs[:4]) or 'none'}; "
+        f"topology={concise_payload['topology'] or 'unknown'}."
+    )
+    return concise_payload, brief
+
+
+def _discovery_brief(content: dict[str, Any]) -> tuple[object, str]:
+    current_process = _compact_text(content.get("current_process"), limit=420)
+    desired_outcome = _compact_text(content.get("desired_outcome"), limit=260)
+    concise_payload = {
+        "problem_statement": _compact_text(content.get("problem_statement"), limit=320),
+        "current_user": _compact_text(content.get("current_user"), limit=220),
+        "current_process": current_process,
+        "desired_outcome": desired_outcome,
+        "constraints": _summarize_list(
+            content.get("constraints") if isinstance(content.get("constraints"), list) else [],
+            limit=5,
+            item_limit=140,
+        ),
+        "mvp_scope": _summarize_list(
+            (content.get("mvp_definition") or {}).get("v1_scope") if isinstance(content.get("mvp_definition"), dict) else [],
+            limit=5,
+            item_limit=140,
+        ),
+    }
+    brief = (
+        "Approved discovery evidence: "
+        f"problem={concise_payload['problem_statement'] or 'unknown'}; "
+        f"current_process={current_process or 'unknown'}; "
+        f"desired_outcome={desired_outcome or 'unknown'}."
+    )
+    return concise_payload, brief
+
+
+def _discovery_analysis_brief(content: dict[str, Any]) -> tuple[object, str]:
+    facts = content.get("facts") if isinstance(content.get("facts"), list) else []
+    concise_payload = {
+        "summary": _compact_text(content.get("summary"), limit=280),
+        "facts": [
+            {
+                "key": _compact_text(item.get("key")),
+                "statement": _compact_text(item.get("statement"), limit=220),
+                "source_refs": item.get("source_refs", [])[:3] if isinstance(item, dict) else [],
+            }
+            for item in facts[:5]
+            if isinstance(item, dict)
+        ],
+        "inferred_needs": _summarize_list(content.get("inferred_needs") if isinstance(content.get("inferred_needs"), list) else [], limit=4, item_limit=140),
+        "open_questions": _summarize_list(content.get("open_questions") if isinstance(content.get("open_questions"), list) else [], limit=4, item_limit=140),
+    }
+    fact_digest = [item.get("statement") for item in concise_payload["facts"][:3] if isinstance(item, dict) and item.get("statement")]
+    brief = (
+        "Approved discovery analysis: "
+        f"summary={concise_payload['summary'] or 'unknown'}; "
+        f"facts={'; '.join(str(item) for item in fact_digest)[:420] or 'none'}."
+    )
+    return concise_payload, brief
+
+
+def _resolved_input_evidence(required_input: str, artifact: dict[str, Any]) -> tuple[object, str]:
+    content = artifact.get("content")
+    if not isinstance(content, dict):
+        compact = _compact(content, limit=RESOLVED_INPUT_EVIDENCE_LIMIT)
+        return compact, _compact_text(compact, limit=360)
+    if required_input in {"design.architecture", "blueprint.architecture_spec", "blueprint.patterns"}:
+        return _design_architecture_brief(content)
+    if required_input == "discovery.analysis":
+        return _discovery_analysis_brief(content)
+    if required_input in {"session.discovery", "discovery.problem_context_brief"}:
+        if "facts" in content:
+            return _discovery_analysis_brief(content)
+        return _discovery_brief(content)
+    extracted = _resolved_input_excerpt(required_input, artifact)
+    return extracted, _compact_text(extracted, limit=360)
+
+
+def _normalized_lookup_tokens(*values: object) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip().lower()
+        if normalized:
+            tokens.add(normalized)
+    return tokens
+
+
+def _matches_required_input(required_input: str, artifact: dict[str, Any]) -> bool:
+    matcher = _REQUIRED_INPUT_MATCHERS.get(required_input, {})
+    expected_keys = {item.strip().lower() for item in matcher.get("artifact_keys", set()) if str(item).strip()}
+    expected_stages = {item.strip().lower() for item in matcher.get("stages", set()) if str(item).strip()}
+    artifact_key = str(artifact.get("key") or artifact.get("kind") or "").strip().lower()
+    artifact_stage = str(artifact.get("stage") or "").strip().lower()
+    artifact_tokens = _normalized_lookup_tokens(
+        artifact.get("key"),
+        artifact.get("kind"),
+        artifact.get("stage"),
+    )
+    if expected_keys & artifact_tokens:
+        return True
+    return bool(artifact_stage in expected_stages and artifact_key in expected_stages)
+
+
+def _resolved_input_excerpt(required_input: str, artifact: dict[str, Any]) -> object:
+    content = artifact.get("content")
+    if isinstance(content, dict):
+        hints = _REQUIRED_INPUT_FIELD_HINTS.get(required_input, [])
+        extracted: dict[str, object] = {}
+        for field_name in hints:
+            if field_name not in content:
+                continue
+            value = content.get(field_name)
+            if value in (None, "", [], {}):
+                continue
+            extracted[field_name] = _compact(value, limit=RESOLVED_INPUT_EVIDENCE_LIMIT)
+            if len(json.dumps(extracted, ensure_ascii=True, default=str)) >= RESOLVED_INPUT_EVIDENCE_LIMIT:
+                break
+        if extracted:
+            return extracted
+    return _compact(content, limit=RESOLVED_INPUT_EVIDENCE_LIMIT)
+
+
+def _build_resolved_inputs(
+    required_inputs: list[str],
+    sources: list[dict[str, Any]],
+) -> tuple[list[dict[str, object]], list[str]]:
+    resolved_inputs: list[dict[str, object]] = []
+    missing_required_inputs: list[str] = []
+    for required_input in required_inputs:
+        matches = [artifact for artifact in sources if _matches_required_input(required_input, artifact)]
+        if not matches:
+            missing_required_inputs.append(required_input)
+            continue
+        evidence_items: list[dict[str, object]] = []
+        brief_parts: list[str] = []
+        for item in matches[:2]:
+            evidence_payload, evidence_brief = _resolved_input_evidence(required_input, item)
+            if evidence_brief:
+                brief_parts.append(evidence_brief)
+            evidence_items.append(
+                {
+                    "artifact_key": str(item.get("key") or ""),
+                    "ref": str(item.get("ref") or ""),
+                    "content": evidence_payload,
+                }
+            )
+        resolved_inputs.append(
+            {
+                "input_key": required_input,
+                "status": "resolved",
+                "matched_artifact_keys": [str(item.get("key") or "") for item in matches[:3]],
+                "artifact_refs": [str(item.get("ref") or "") for item in matches[:3]],
+                "stage_keys": [str(item.get("stage") or "") for item in matches[:3] if str(item.get("stage") or "").strip()],
+                "brief": " ".join(part for part in brief_parts if part).strip(),
+                "evidence": evidence_items,
+            }
+        )
+    return resolved_inputs, missing_required_inputs
+
+
+def _build_context_brief(
+    resolved_inputs: list[dict[str, object]],
+    missing_required_inputs: list[str],
+) -> str:
+    parts = [str(item.get("brief") or "").strip() for item in resolved_inputs if str(item.get("brief") or "").strip()]
+    if missing_required_inputs:
+        parts.append("Missing required inputs: " + ", ".join(missing_required_inputs[:6]))
+    return " ".join(parts)[:1600].strip()
+
+
+def _source_context(
+    db: Session,
+    record: SessionRecord,
+    *,
+    required_inputs: list[str] | None = None,
+) -> tuple[dict[str, object], list[str]]:
     journey_records = db.exec(
         select(JourneyStageArtifactRecord)
         .where(
@@ -105,6 +433,8 @@ def _source_context(db: Session, record: SessionRecord) -> tuple[dict[str, objec
                 "content": f"Project baseline for {record.title}",
             }
         )
+    resolved_inputs, missing_required_inputs = _build_resolved_inputs(required_inputs or [], sources)
+    context_brief = _build_context_brief(resolved_inputs, missing_required_inputs)
     return (
         {
             "project": {
@@ -113,6 +443,15 @@ def _source_context(db: Session, record: SessionRecord) -> tuple[dict[str, objec
                 "current_stage": getattr(record.current_stage, "value", str(record.current_stage or "discover")),
                 "commercial_tier": getattr(record.commercial_tier, "value", str(record.commercial_tier or "blueprint")),
             },
+            "context_brief": context_brief,
+            "coverage_summary": {
+                "required_input_count": len(required_inputs or []),
+                "resolved_input_count": len(resolved_inputs),
+                "missing_input_count": len(missing_required_inputs),
+            },
+            "resolved_inputs": resolved_inputs,
+            "missing_required_inputs": missing_required_inputs,
+            "approved_artifact_keys": [str(item.get("key") or "") for item in sources[:MAX_CONTEXT_ITEMS]],
             "approved_artifacts": sources[:MAX_CONTEXT_ITEMS],
         },
         source_refs[:MAX_CONTEXT_ITEMS],
@@ -247,7 +586,12 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
         db.add(job)
         db.commit()
 
-        source_context, source_refs = _source_context(db, record)
+        prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
+        source_context, source_refs = _source_context(
+            db,
+            record,
+            required_inputs=list(prompt_spec["required_inputs"]),
+        )
         approved_items = [
             s for s in source_context.get("approved_artifacts", []) if s.get("key") != "session.baseline"
         ]
@@ -260,7 +604,6 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
             )
             return
 
-        prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
         effective_notation = DiagramNotation(str(prompt_spec.get("notation") or entry.notation.value))
 
         generation_input = DiagramGenerationInput(
@@ -271,6 +614,9 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
             standard=str(prompt_spec.get("standard") or entry.standard),
             detail_level=job.detail_level,
             required_inputs=list(prompt_spec["required_inputs"]),
+            context_brief=str(source_context.get("context_brief") or ""),
+            resolved_inputs=list(source_context.get("resolved_inputs", [])),
+            missing_required_inputs=list(source_context.get("missing_required_inputs", [])),
             source_context=source_context,
             source_refs=source_refs,
             source_contract=str(prompt_spec.get("source_contract") or entry.source_contract),

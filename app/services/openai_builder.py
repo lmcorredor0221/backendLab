@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -61,7 +62,8 @@ from app.services.llm_runtime.builder_contracts import (
     sanitize_discovery,
     validate_or_repair_structured_payload,
 )
-from app.services.diagram_center.contracts import DiagramGenerationInput
+from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramNotation
+from app.services.diagram_center.semantic_repair import finalize_structured_diagram_artifact
 from app.services.llm_runtime.api_context_adapter import APIProviderContextAdapter, APIProviderContextEnvelope
 from app.services.llm_runtime.capability_registry import BuilderCapability, BuilderCapabilitySpec, get_builder_capability_spec
 from app.services.llm_runtime.codex_cli.context_assembler import CodexContextInlineSource
@@ -84,6 +86,9 @@ try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - handled through runtime fallback
     OpenAI = None  # type: ignore[assignment]
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _localized_instruction(instruction: str, context_bundle: StageContextBundle | None) -> str:
@@ -147,6 +152,27 @@ def _capability_policy_payload(spec: BuilderCapabilitySpec) -> dict[str, object]
         "max_retries": spec.max_retries,
         "fallback_policy": spec.fallback_policy,
     }
+
+
+def _format_provider_bootstrap_error(detail: str | None, *, fallback: str) -> str:
+    normalized = " ".join((detail or "").split()).strip()
+    if not normalized:
+        return fallback
+    return normalized[:400]
+
+
+def _format_provider_unavailable_warning(
+    *,
+    provider_label: str,
+    capability: BuilderCapability,
+    spec: BuilderCapabilitySpec,
+    detail: str | None = None,
+) -> str:
+    base = f"{provider_label} no esta disponible para {capability.value}; policy={spec.fallback_policy}."
+    normalized_detail = " ".join((detail or "").split()).strip()
+    if not normalized_detail:
+        return base
+    return f"{base} Detalle: {normalized_detail[:240]}"
 
 
 def _runtime_config_path() -> Path:
@@ -229,6 +255,57 @@ def _normalize_deepseek_reasoning_effort(value: str, fallback: str) -> str:
     if normalized in {"max", "xhigh"}:
         return "max"
     return "high"
+
+
+def _is_bpmn_diagram_payload(payload: object) -> bool:
+    return isinstance(payload, DiagramGenerationInput) and payload.notation == DiagramNotation.bpmn
+
+
+def _effective_deepseek_reasoning_effort(
+    capability: BuilderCapability,
+    configured_effort: str,
+    *,
+    payload: object | None = None,
+) -> str:
+    normalized = _normalize_deepseek_reasoning_effort(configured_effort, configured_effort)
+    if capability == BuilderCapability.generate_diagram_model and _is_bpmn_diagram_payload(payload):
+        return "high"
+    return normalized
+
+
+def _structured_capability_max_tokens(capability: BuilderCapability, *, payload: object | None = None) -> int:
+    if capability == BuilderCapability.generate_diagram_model and _is_bpmn_diagram_payload(payload):
+        return 4096
+    return 4096
+
+
+def _preserve_deepseek_reasoning_on_retry(capability: BuilderCapability, *, payload: object | None = None) -> bool:
+    return capability == BuilderCapability.generate_diagram_model and not _is_bpmn_diagram_payload(payload)
+
+
+def _expand_deepseek_retry_budget(capability: BuilderCapability, *, payload: object | None = None) -> bool:
+    return capability == BuilderCapability.generate_diagram_model and not _is_bpmn_diagram_payload(payload)
+
+
+def _deepseek_retry_instruction(capability: BuilderCapability, *, payload: object | None = None) -> str:
+    if capability == BuilderCapability.generate_diagram_model and _is_bpmn_diagram_payload(payload):
+        return (
+            "La respuesta anterior fue truncada por longitud. Regenera desde cero un unico objeto JSON valido, "
+            "completo y mas compacto. Usa el minimo numero de nodos, edges, pools y lanes necesario para una vista "
+            "BPMN trazable de nivel standard. Elimina detalle redundante, descripciones extensas y supuestos no "
+            "esenciales. No incluyas markdown ni explicaciones."
+        )
+    if capability == BuilderCapability.generate_diagram_model:
+        return (
+            "La respuesta anterior fue truncada por longitud. Regenera desde cero un unico objeto JSON valido, "
+            "completo y compacto. Conserva nodos, edges, pools y lanes indispensables para mantener trazabilidad. "
+            "Si notation=bpmn, incluye start_event, end_event y usa sequence_flow dentro del mismo pool y "
+            "message_flow entre pools. No incluyas markdown ni explicaciones."
+        )
+    return (
+        "La respuesta anterior fue truncada por longitud. Regenera desde cero un unico objeto JSON valido, "
+        "completo y compacto. No incluyas markdown ni explicaciones."
+    )
 
 
 def _resolve_schema_node(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
@@ -325,8 +402,43 @@ def _is_deepseek_length_finish_reason(finish_reason: str) -> bool:
     return finish_reason.strip().lower() in {"length", "max_tokens"}
 
 
-def _deepseek_retry_max_tokens(max_tokens: int) -> int:
+def _deepseek_retry_max_tokens(max_tokens: int, *, expand_budget: bool) -> int:
+    if not expand_budget:
+        return max_tokens
     return min(max_tokens * 2, 8192)
+
+
+def _serialize_capability_payload_for_api(payload: BaseModel) -> dict[str, Any]:
+    serialized = payload.model_dump(mode="json")
+    if not isinstance(payload, DiagramGenerationInput):
+        return serialized
+
+    source_context = serialized.get("source_context")
+    compact_context: dict[str, Any] = {}
+    if isinstance(source_context, dict):
+        for field_name in (
+            "project",
+            "coverage_summary",
+            "resolved_inputs",
+            "missing_required_inputs",
+            "approved_artifact_keys",
+        ):
+            value = source_context.get(field_name)
+            if value not in (None, "", [], {}):
+                compact_context[field_name] = value
+        approved_artifacts = source_context.get("approved_artifacts")
+        if isinstance(approved_artifacts, list):
+            compact_context["approved_artifact_count"] = len(approved_artifacts)
+    if compact_context:
+        serialized["source_context"] = compact_context
+
+    if isinstance(serialized.get("source_refs"), list):
+        serialized["source_refs"] = serialized["source_refs"][:12]
+    if isinstance(serialized.get("resolved_inputs"), list):
+        serialized["resolved_inputs"] = serialized["resolved_inputs"][:4]
+    if isinstance(serialized.get("missing_required_inputs"), list):
+        serialized["missing_required_inputs"] = serialized["missing_required_inputs"][:8]
+    return serialized
 
 
 def _default_runtime_settings() -> dict[str, Any]:
@@ -763,6 +875,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
         self._context_adapter = APIProviderContextAdapter()
         self._finops_session_factory = finops_session_factory
         self._finops_ledger_service = finops_ledger_service
+        self._workspace_client_error = ""
         self._client = None
         if OpenAI is not None and self.settings.openai_api_key:
             self._client = OpenAI(api_key=self.settings.openai_api_key)
@@ -775,6 +888,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
             return
         if self.runtime_settings.uses_platform_credentials or self._finops_session_factory is None:
             return
+        self._workspace_client_error = ""
         try:
             with self._finops_session_factory() as session:
                 api_key = _resolve_workspace_provider_api_key(
@@ -782,10 +896,26 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
                     workspace_id=workspace_id,
                     provider_key=LLMProviderKey.openai,
                 )
-        except Exception:
+        except Exception as exc:
+            self._workspace_client_error = _format_provider_bootstrap_error(
+                str(exc),
+                fallback="No se pudo resolver la credencial OpenAI del workspace.",
+            )
+            LOGGER.warning(
+                "OpenAI workspace client bootstrap failed for workspace %s: %s",
+                workspace_id,
+                self._workspace_client_error,
+            )
             return
         if api_key:
             self._client = OpenAI(api_key=api_key)
+            self._workspace_client_error = ""
+            return
+        self._workspace_client_error = "No se resolvio una API key de OpenAI para el workspace."
+
+    def _provider_unavailable_detail(self) -> str | None:
+        detail = self._workspace_client_error.strip()
+        return detail or None
 
     def can_attempt(self) -> bool:
         return (
@@ -812,7 +942,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
         return CodexContextInlineSource(
             key=spec.source_key,
             title=spec.source_title,
-            content=json.dumps(payload.model_dump(mode="json"), ensure_ascii=True, indent=2),
+            content=json.dumps(_serialize_capability_payload_for_api(payload), ensure_ascii=True, indent=2),
             required=True,
             summary=spec.source_summary,
         )
@@ -864,12 +994,19 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
         def _call_openai() -> LLMArtifactResult:
             self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
             if not self.is_available():
+                detail = self._provider_unavailable_detail()
                 return self._attach_context_metadata(
                     replace(
                         base_result,
-                        warning=f"OpenAI no esta disponible para {capability.value}; policy={spec.fallback_policy}.",
+                        warning=_format_provider_unavailable_warning(
+                            provider_label="OpenAI",
+                            capability=capability,
+                            spec=spec,
+                            detail=detail,
+                        ),
                         finish_reason="provider_unavailable",
                         failure_kind="provider_unavailable",
+                        failure_detail=detail,
                         degraded=True,
                     ),
                     context_envelope=context_envelope,
@@ -906,13 +1043,19 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
                         context_envelope=context_envelope,
                     )
                 normalized = spec.output_model.model_validate(parsed.model_dump(mode="json"))
+                schema_status = "valid"
+                if capability == BuilderCapability.generate_diagram_model:
+                    normalized, schema_status = finalize_structured_diagram_artifact(
+                        normalized,
+                        schema_status=schema_status,
+                    )
                 return self._attach_context_metadata(
                     replace(
                         base_result,
                         artifact=normalized,
                         request_id=str(getattr(response, "id", "") or ""),
                         finish_reason=str(getattr(response, "status", "completed") or "completed"),
-                        schema_validation_status="valid",
+                        schema_validation_status=schema_status,
                         token_usage=usage.compatibility_token_usage(),
                         normalized_usage=usage,
                     ),
@@ -1464,6 +1607,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         self._context_adapter = APIProviderContextAdapter()
         self._finops_session_factory = finops_session_factory
         self._finops_ledger_service = finops_ledger_service
+        self._workspace_client_error = ""
         self._client = None
         self._last_completion_metadata: dict[str, Any] = {}
         if OpenAI is not None and self.settings.deepseek_api_key:
@@ -1480,6 +1624,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             return
         if self.runtime_settings.uses_platform_credentials or self._finops_session_factory is None:
             return
+        self._workspace_client_error = ""
         try:
             with self._finops_session_factory() as session:
                 api_key = _resolve_workspace_provider_api_key(
@@ -1487,13 +1632,29 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                     workspace_id=workspace_id,
                     provider_key=LLMProviderKey.deepseek,
                 )
-        except Exception:
+        except Exception as exc:
+            self._workspace_client_error = _format_provider_bootstrap_error(
+                str(exc),
+                fallback="No se pudo resolver la credencial DeepSeek del workspace.",
+            )
+            LOGGER.warning(
+                "DeepSeek workspace client bootstrap failed for workspace %s: %s",
+                workspace_id,
+                self._workspace_client_error,
+            )
             return
         if api_key:
             self._client = OpenAI(
                 api_key=api_key,
                 base_url=self.runtime_settings.deepseek.base_url,
             )
+            self._workspace_client_error = ""
+            return
+        self._workspace_client_error = "No se resolvio una API key de DeepSeek para el workspace."
+
+    def _provider_unavailable_detail(self) -> str | None:
+        detail = self._workspace_client_error.strip()
+        return detail or None
 
     def can_attempt(self) -> bool:
         return (
@@ -1521,7 +1682,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         return CodexContextInlineSource(
             key=spec.source_key,
             title=spec.source_title,
-            content=json.dumps(payload.model_dump(mode="json"), ensure_ascii=True, indent=2),
+            content=json.dumps(_serialize_capability_payload_for_api(payload), ensure_ascii=True, indent=2),
             required=True,
             summary=spec.source_summary,
         )
@@ -1536,6 +1697,9 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         reasoning_effort: str | None,
         max_tokens: int,
         output_model: type[BaseModel],
+        preserve_reasoning_on_retry: bool = False,
+        expand_retry_budget: bool = True,
+        retry_instruction: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if self._client is None:
             raise RuntimeError("DeepSeek client no disponible.")
@@ -1572,17 +1736,22 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                     *base_messages,
                     {
                         "role": "user",
-                        "content": (
+                        "content": retry_instruction
+                        or (
                             "La respuesta anterior fue truncada por longitud. "
                             "Regenera desde cero un unico objeto JSON valido, completo y compacto. "
                             "No incluyas markdown ni explicaciones."
                         ),
                     },
                 ]
-                request_kwargs["max_tokens"] = _deepseek_retry_max_tokens(max_tokens)
+                request_kwargs["max_tokens"] = _deepseek_retry_max_tokens(
+                    max_tokens,
+                    expand_budget=expand_retry_budget,
+                )
                 request_kwargs["temperature"] = 0
-                request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-                request_kwargs.pop("reasoning_effort", None)
+                if not preserve_reasoning_on_retry:
+                    request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+                    request_kwargs.pop("reasoning_effort", None)
 
             response = self._client.chat.completions.create(**request_kwargs)
             message = response.choices[0].message if response.choices else None
@@ -1683,28 +1852,52 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         def _call_deepseek() -> LLMArtifactResult:
             self._ensure_workspace_client(context_bundle.workspace_id if context_bundle is not None else None)
             if not self.is_available():
+                detail = self._provider_unavailable_detail()
                 return self._attach_context_metadata(
                     replace(
                         base_result,
-                        warning=f"DeepSeek no esta disponible para {capability.value}; policy={spec.fallback_policy}.",
+                        warning=_format_provider_unavailable_warning(
+                            provider_label="DeepSeek",
+                            capability=capability,
+                            spec=spec,
+                            detail=detail,
+                        ),
                         finish_reason="provider_unavailable",
                         failure_kind="provider_unavailable",
+                        failure_detail=detail,
                         degraded=True,
                     ),
                     context_envelope=context_envelope,
                 )
 
             try:
+                reasoning_effort = (
+                    _effective_deepseek_reasoning_effort(
+                        capability,
+                        self.runtime_settings.deepseek.reasoning_effort,
+                        payload=payload,
+                    )
+                    if spec.preferred_model == "reasoning"
+                    else None
+                )
                 raw_payload, metadata = self._request_structured_completion_payload(
                     model=model_name,
                     system_instruction=_localized_instruction(spec.system_instruction, context_bundle),
                     user_payload=context_envelope.user_payload,
                     thinking_mode="enabled" if spec.preferred_model == "reasoning" else "disabled",
-                    reasoning_effort=self.runtime_settings.deepseek.reasoning_effort if spec.preferred_model == "reasoning" else None,
-                    max_tokens=4096,
+                    reasoning_effort=reasoning_effort,
+                    max_tokens=_structured_capability_max_tokens(capability, payload=payload),
                     output_model=spec.output_model,
+                    preserve_reasoning_on_retry=_preserve_deepseek_reasoning_on_retry(capability, payload=payload),
+                    expand_retry_budget=_expand_deepseek_retry_budget(capability, payload=payload),
+                    retry_instruction=_deepseek_retry_instruction(capability, payload=payload),
                 )
                 normalized, schema_status = validate_or_repair_structured_payload(raw_payload, spec.output_model)
+                if capability == BuilderCapability.generate_diagram_model:
+                    normalized, schema_status = finalize_structured_diagram_artifact(
+                        normalized,
+                        schema_status=schema_status,
+                    )
                 usage = metadata.get("normalized_usage")
                 return self._attach_context_metadata(
                     replace(

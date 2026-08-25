@@ -737,6 +737,135 @@ def test_run_generation_job_passes_workspace_context_to_provider(monkeypatch: py
     assert context_bundle.capability == BuilderCapability.generate_diagram_model.value
 
 
+def test_run_generation_job_resolves_required_inputs_for_architecture_diagram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(local_engine)
+    captured: dict[str, object] = {}
+
+    class FakeProvider:
+        def generate_diagram_model(
+            self,
+            payload: DiagramGenerationInput,
+            *,
+            context_bundle=None,
+        ) -> LLMArtifactResult:
+            captured["payload"] = payload
+            artifact = DiagramModel(
+                diagram_key=payload.diagram_key,
+                title=payload.title,
+                notation=payload.notation,
+                nodes=[
+                    DiagramNode(
+                        id="architecture_overview",
+                        label="Architecture overview",
+                        kind="service",
+                        source_refs=list(payload.source_refs),
+                    )
+                ],
+                edges=[],
+                source_refs=list(payload.source_refs),
+            )
+            return LLMArtifactResult(
+                artifact=artifact,
+                provider_key="deepseek",
+                model_name="deepseek-v4-pro",
+                prompt_version="diagram-prompts.v1.0.0",
+            )
+
+    monkeypatch.setattr(
+        "app.services.diagram_center.generation_service.build_builder_service",
+        lambda runtime_settings: FakeProvider(),
+    )
+
+    with Session(local_engine) as db:
+        user = UserRecord(email="diagram-required-inputs@test.local", full_name="Diagram Inputs", password_hash="test")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        workspace = WorkspaceRecord(
+            name="Diagram Inputs Workspace",
+            slug="diagram-inputs-workspace",
+            created_by_user_id=user.id,
+        )
+        db.add(workspace)
+        db.commit()
+        db.refresh(workspace)
+
+        record = SessionRecord(user_id=user.id, workspace_id=workspace.id, title="Architecture diagram input resolution")
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        db.add(
+            JourneyStageArtifactRecord(
+                workspace_id=workspace.id,
+                session_id=record.id,
+                artifact_kind="design_recommendation_artifact",
+                stage_key="design",
+                version_number=1,
+                state=JourneyArtifactState.approved,
+                proposal_payload={
+                    "summary": "Arquitectura aprobada con handoffs y supervision.",
+                    "selected_design": {
+                        "alternative_key": "handoffs",
+                        "architecture_pattern": "supervisor_with_specialists",
+                        "reasoning_pattern": "route_then_execute",
+                    },
+                    "decision_rationale": "Separar consulta, grounding y validacion reduce riesgo y mejora trazabilidad.",
+                },
+                input_fingerprint="design-in",
+                context_fingerprint="design-ctx",
+                output_fingerprint="design-out",
+                provider_key="deepseek",
+                model="deepseek-v4-pro",
+                execution_backend="provider_native",
+                prompt_version="design-prompts.v1.0.0",
+                schema_version="design-recommendation.v1",
+                approved_by_user_id=user.id,
+            )
+        )
+        db.flush()
+
+        from app.services.diagram_center.persistence import DiagramGenerationJobRecord
+
+        job = DiagramGenerationJobRecord(
+            workspace_id=workspace.id,
+            session_id=record.id,
+            diagram_key="architecture_overview",
+            requested_by_user_id=user.id,
+            status="queued",
+            detail_level="standard",
+            reason="user_request",
+            idempotency_key="architecture-required-inputs",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+    run_generation_job(job.id, local_engine)
+
+    payload = captured.get("payload")
+    assert isinstance(payload, DiagramGenerationInput)
+    assert payload.required_inputs == ["blueprint.architecture_spec", "blueprint.patterns"]
+    assert payload.missing_required_inputs == []
+    assert {item["input_key"] for item in payload.resolved_inputs} == {
+        "blueprint.architecture_spec",
+        "blueprint.patterns",
+    }
+    assert "pattern=supervisor_with_specialists" in payload.context_brief
+    assert payload.source_context["coverage_summary"]["resolved_input_count"] == 2
+    assert payload.source_context["coverage_summary"]["missing_input_count"] == 0
+    assert payload.source_context["approved_artifact_keys"][0] == "design_recommendation_artifact"
+    assert payload.resolved_inputs[0]["matched_artifact_keys"] == ["design_recommendation_artifact"]
+
+
 def test_failed_generation_idempotency_key_can_be_retried(client: TestClient) -> None:
     headers = _auth_headers(client)
     created = client.post("/api/v1/sessions", headers=headers)
