@@ -123,6 +123,13 @@ def _default_artifact_kind(stage_key: str, artifact_kind: str | None = None) -> 
     return candidate or DEFAULT_ARTIFACT_KIND_BY_STAGE[normalized]
 
 
+def _schema_version_from_payload(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidate = payload.get("schema_version")
+    return candidate.strip() if isinstance(candidate, str) else ""
+
+
 def _hydrate_blueprint(record: BlueprintRecord) -> BlueprintArtifact:
     return hydrate_blueprint_record(record)
 
@@ -707,6 +714,7 @@ class StageProposalService:
             proposal_payload=copy.deepcopy(proposal_payload),
             user_patch={},
             source_stage_versions=self._derive_source_stage_versions(session, session_record=session_record),
+            schema_version=_schema_version_from_payload(proposal_payload),
             created_at=now,
             updated_at=now,
             reviewed_at=now if state in {JourneyArtifactState.reviewed, JourneyArtifactState.approved_legacy} else None,
@@ -1255,6 +1263,7 @@ class StageProposalService:
                 .where(JourneyStageDecisionRecord.artifact_id == record.id)
                 .order_by(JourneyStageDecisionRecord.created_at.asc())
             ).all()
+        effective_schema_version = record.schema_version or _schema_version_from_payload(record.proposal_payload)
         return JourneyStageArtifactEntry(
             id=record.id,
             workspace_id=record.workspace_id,
@@ -1275,7 +1284,7 @@ class StageProposalService:
             model=record.model,
             execution_backend=record.execution_backend,
             prompt_version=record.prompt_version,
-            schema_version=record.schema_version,
+            schema_version=effective_schema_version,
             confidence=record.confidence,
             missing_information=record.missing_information,
             warnings=record.warnings,

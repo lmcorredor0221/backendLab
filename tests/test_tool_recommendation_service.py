@@ -798,6 +798,33 @@ def test_stage_proposal_approval_reevaluates_persisted_tools_payload_before_prom
     assert promoted_payload["review_state"] == ReviewState.complete
 
 
+def test_stage_proposal_artifact_entry_uses_payload_schema_version_for_legacy_tools() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder con grounding documental aprobado.",
+            current_process="Consultar manuales internos antes de responder.",
+            desired_outcome="Entregar respuestas trazables sin depender de memoria humana.",
+        ),
+        canvas=build_canvas(user_goal="Consultar conocimiento aprobado y responder con citas."),
+        blueprint=build_blueprint(guardrails=["Mantener trazabilidad"]),
+        blueprint_version_number=7,
+    )
+    artifact_record = JourneyStageArtifactRecord(
+        workspace_id=uuid4(),
+        session_id=uuid4(),
+        artifact_kind="tool_recommendation_artifact",
+        stage_key="tools",
+        schema_version="",
+        proposal_payload=artifact.model_dump(mode="json"),
+    )
+
+    entry = StageProposalService()._build_artifact_entry(None, artifact_record, decisions=[])
+
+    assert entry is not None
+    assert entry.schema_version == "tool-recommendation.v1"
+
+
 def test_promote_tool_recommendation_builds_blueprint_tools_and_digest() -> None:
     artifact = build_placeholder_tool_recommendation(
         session_id=uuid4(),
