@@ -804,6 +804,63 @@ def resolve_design_from_stage_artifact(artifact: JourneyStageArtifactEntry) -> D
     return None
 
 
+def resolve_blueprint_from_design_stage_artifact(artifact: JourneyStageArtifactEntry) -> BlueprintArtifact | None:
+    design = resolve_design_from_stage_artifact(artifact)
+    if design is None:
+        return None
+
+    selected_design = design.selected_design
+    if selected_design is None and design.recommended_alternative_key:
+        selected_design = next(
+            (item for item in design.alternatives if item.alternative_key == design.recommended_alternative_key),
+            None,
+        )
+    if selected_design is None and design.alternatives:
+        selected_design = design.alternatives[0]
+    if selected_design is None:
+        return None
+
+    blueprint_payload = BlueprintArtifact().model_dump(mode="json")
+    projection = selected_design.blueprint_projection.model_dump(mode="json")
+    for key in ("architecture", "reasoning_pattern", "safety_checks", "guardrails", "narrative"):
+        if key in projection:
+            blueprint_payload[key] = projection[key]
+    return BlueprintArtifact.model_validate(blueprint_payload)
+
+
+def resolve_session_context_from_records_or_stage_artifacts(
+    *,
+    opportunity: OpportunityRecord | None,
+    canvas_record: CanvasRecord | None,
+    blueprint_record: BlueprintRecord | None,
+    discover_artifact: JourneyStageArtifactEntry | None,
+    define_artifact: JourneyStageArtifactEntry | None,
+    design_artifact: JourneyStageArtifactEntry | None,
+) -> tuple[DiscoveryArtifact | None, CanvasArtifact | None, BlueprintArtifact | None]:
+    discovery = (
+        hydrate_discovery(opportunity)
+        if opportunity is not None
+        else resolve_discovery_from_stage_artifact(discover_artifact)
+        if discover_artifact is not None
+        else None
+    )
+    canvas = (
+        hydrate_canvas(canvas_record)
+        if canvas_record is not None
+        else resolve_canvas_from_define_stage_artifact(define_artifact)
+        if define_artifact is not None
+        else None
+    )
+    blueprint = (
+        hydrate_blueprint(blueprint_record)
+        if blueprint_record is not None
+        else resolve_blueprint_from_design_stage_artifact(design_artifact)
+        if design_artifact is not None
+        else None
+    )
+    return discovery, canvas, blueprint
+
+
 def resolve_validation_specification_from_stage_artifact(
     artifact: JourneyStageArtifactEntry | None,
 ) -> SimulationSpecificationArtifact | None:
@@ -6543,9 +6600,17 @@ def recommend_tools_route(
         )
 
     opportunity = db.exec(select(OpportunityRecord).where(OpportunityRecord.session_id == session_id)).first()
-    canvas = db.exec(select(CanvasRecord).where(CanvasRecord.session_id == session_id)).first()
-    blueprint = db.exec(select(BlueprintRecord).where(BlueprintRecord.session_id == session_id)).first()
-    if opportunity is None or canvas is None or blueprint is None:
+    canvas_record = db.exec(select(CanvasRecord).where(CanvasRecord.session_id == session_id)).first()
+    blueprint_record = db.exec(select(BlueprintRecord).where(BlueprintRecord.session_id == session_id)).first()
+    discovery, canvas, blueprint = resolve_session_context_from_records_or_stage_artifacts(
+        opportunity=opportunity,
+        canvas_record=canvas_record,
+        blueprint_record=blueprint_record,
+        discover_artifact=latest_discover_artifact,
+        define_artifact=latest_define_artifact,
+        design_artifact=latest_design_artifact,
+    )
+    if discovery is None or canvas is None or blueprint is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Discovery, canvas and blueprint must exist before recommending tools",
@@ -6553,9 +6618,13 @@ def recommend_tools_route(
 
     blueprint_version_number = latest_blueprint_version_number(db, session_id)
     runtime_settings = load_effective_runtime_settings(db, record.workspace_id)
-    definition_artifact = validate_definition_artifact(
-        RequirementsDefinitionOutput.model_validate(latest_define_artifact.proposal_payload)
-    )
+    definition_artifact = resolve_definition_from_stage_artifact(latest_define_artifact)
+    if definition_artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The approved define proposal could not be resolved before Tools",
+        )
+    definition_artifact = validate_definition_artifact(definition_artifact)
     design_artifact = resolve_design_from_stage_artifact(latest_design_artifact)
     if design_artifact is None:
         raise HTTPException(
@@ -6574,9 +6643,9 @@ def recommend_tools_route(
     envelope, traces, react_run, react_runtime_warnings = _execute_tools_runtime(
         session_id=session_id,
         workspace_id=record.workspace_id,
-        discovery=hydrate_discovery(opportunity),
-        canvas=hydrate_canvas(canvas),
-        blueprint=hydrate_blueprint(blueprint),
+        discovery=discovery,
+        canvas=canvas,
+        blueprint=blueprint,
         definition_artifact=definition_artifact,
         design_artifact=design_artifact,
         instructions=payload.instructions if payload is not None else "",
@@ -6715,6 +6784,8 @@ def approve_tools_selection_route(
     record = get_or_404(db, session_id, current_user.id)
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
+    latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
+    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
     latest_design_artifact = proposal_service.latest(db, session_record=record, stage_key="design")
     if not is_design_stage_approved(latest_design_artifact):
         raise HTTPException(
@@ -6751,15 +6822,19 @@ def approve_tools_selection_route(
     opportunity = db.exec(select(OpportunityRecord).where(OpportunityRecord.session_id == session_id)).first()
     canvas_record = db.exec(select(CanvasRecord).where(CanvasRecord.session_id == session_id)).first()
     blueprint_record = db.exec(select(BlueprintRecord).where(BlueprintRecord.session_id == session_id)).first()
-    if opportunity is None or canvas_record is None or blueprint_record is None:
+    discovery, canvas, current_blueprint = resolve_session_context_from_records_or_stage_artifacts(
+        opportunity=opportunity,
+        canvas_record=canvas_record,
+        blueprint_record=blueprint_record,
+        discover_artifact=latest_discover_artifact,
+        define_artifact=latest_define_artifact,
+        design_artifact=latest_design_artifact,
+    )
+    if discovery is None or canvas is None or current_blueprint is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Discovery, canvas and blueprint must exist before promoting approved tools",
         )
-
-    discovery = hydrate_discovery(opportunity)
-    canvas = hydrate_canvas(canvas_record)
-    current_blueprint = hydrate_blueprint(blueprint_record)
     latest_recommendation = load_latest_tool_recommendation(
         db,
         session_id,

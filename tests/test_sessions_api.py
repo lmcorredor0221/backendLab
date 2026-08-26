@@ -15,7 +15,9 @@ from app.db import get_session
 from app.models import (
     ArtifactStatus,
     BlueprintArtifact,
+    BlueprintRecord,
     CanvasArtifact,
+    CanvasRecord,
     DiscoveryArtifact,
     EstimationBenchmarkRef,
     EstimationComplexityDriver,
@@ -27,7 +29,9 @@ from app.models import (
     PlatformRole,
     PlatformRoleAssignmentRecord,
     RuntimeCatalogEntryRecord,
+    OpportunityRecord,
     SessionRecord,
+    JourneyStageArtifactRecord,
     SkillRunArtifactRecord,
     SkillRunRecord,
     SessionStage,
@@ -633,6 +637,21 @@ def approve_tools_for_session(client: TestClient, headers: dict[str, str], sessi
     )
     assert approve_response.status_code == 200
     return recommendation_payload, approve_response.json()
+
+
+def delete_canonical_session_rows(client: TestClient, *, session_id: str) -> None:
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        session_id_uuid = UUID(session_id)
+        for model in (OpportunityRecord, CanvasRecord, BlueprintRecord):
+            record = session.exec(select(model).where(model.session_id == session_id_uuid)).first()
+            if record is not None:
+                session.delete(record)
+        session.commit()
+    finally:
+        session_generator.close()
 
 
 def approve_memory_for_session(client: TestClient, headers: dict[str, str], session_id: str) -> dict:
@@ -2640,6 +2659,30 @@ def test_recommend_tools_route_respects_workspace_feature_flag(client: TestClien
     assert "feature flag is disabled" in response.json()["detail"].lower()
 
 
+def test_recommend_tools_route_uses_stage_artifacts_when_canonical_rows_are_missing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+    monkeypatch.setattr(sessions_routes, "run_tools_react", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("react-disabled-test")))
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    delete_canonical_session_rows(client, session_id=session_id)
+
+    response = client.post(f"/api/v1/sessions/{session_id}/recommend-tools", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["schema_version"] == "tool-recommendation.v1"
+    assert payload["data"]["recommended_tools"]
+
+
 def test_recommend_tools_route_attempts_react_even_when_workspace_flag_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2724,6 +2767,60 @@ def test_approve_tools_selection_promotes_blueprint_tools_and_memory_uses_digest
     rerun_snapshot = rerun_response.json()["snapshot"]
     assert "approved_tools_digest" in rerun_snapshot["blueprint"]["memory_profile"]["retrieval_policy"]
     assert "tools aprobadas" in rerun_snapshot["blueprint"]["memory_profile"]["write_policy"]
+
+
+def test_approve_tools_selection_uses_stage_artifact_when_schema_version_only_exists_in_payload(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+    monkeypatch.setattr(sessions_routes, "run_tools_react", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("react-disabled-test")))
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+
+    recommend_response = client.post(f"/api/v1/sessions/{session_id}/recommend-tools", headers=headers)
+    assert recommend_response.status_code == 200
+    recommendation_payload = recommend_response.json()
+    optional_keys = [item["tool_key"] for item in recommendation_payload["data"]["optional_tools"]]
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        artifact = session.exec(
+            select(JourneyStageArtifactRecord)
+            .where(
+                JourneyStageArtifactRecord.session_id == UUID(session_id),
+                JourneyStageArtifactRecord.stage_key == "tools",
+            )
+            .order_by(JourneyStageArtifactRecord.version_number.desc(), JourneyStageArtifactRecord.created_at.desc())
+        ).first()
+        assert artifact is not None
+        artifact.schema_version = ""
+        session.add(artifact)
+        session.commit()
+    finally:
+        session_generator.close()
+
+    delete_canonical_session_rows(client, session_id=session_id)
+
+    approve_response = client.post(
+        f"/api/v1/sessions/{session_id}/approve-tools-selection",
+        headers=headers,
+        json={"include_optional_tool_keys": optional_keys[:1]},
+    )
+
+    assert approve_response.status_code == 200
+    snapshot = approve_response.json()
+    assert snapshot["blueprint"]["tools"]
+    assert snapshot["latest_tool_recommendation"]["approved_tools_digest"] is not None
+    assert snapshot["latest_tool_recommendation"]["review_state"] == "complete"
 
 
 def test_recommend_memory_route_persists_artifact_and_skill_runs(
