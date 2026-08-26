@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+from uuid import UUID
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -17,6 +18,9 @@ from app.models import (
     ExecutionLogRecord,
     RuntimeSettingsAuditRecord,
     SessionRecord,
+    SkillRunArtifactRecord,
+    SkillRunRecord,
+    SubagentRunRecord,
     UserRecord,
     WorkspaceMembershipRecord,
     WorkspaceProviderSecretRecord,
@@ -45,6 +49,9 @@ TABLE_IMPORT_ORDER: list[tuple[str, type[Any]]] = [
     ("artifact_records.json", ArtifactRegistryRecord),
     ("journey_stage_artifacts.json", JourneyStageArtifactRecord),
     ("stage_operations.json", StageOperationRecord),
+    ("subagent_runs.json", SubagentRunRecord),
+    ("skill_runs.json", SkillRunRecord),
+    ("skill_run_artifacts.json", SkillRunArtifactRecord),
     ("diagram_generation_jobs_v3.json", DiagramGenerationJobRecord),
     ("diagram_versions_v3.json", DiagramVersionRecord),
     ("llm_usage_ledger.json", LLMUsageLedgerRecord),
@@ -113,12 +120,107 @@ def _build_workspace_id_map(session: Session, dataset: dict[str, list[dict[str, 
     return mapping
 
 
+def _build_workspace_membership_id_map(
+    session: Session,
+    dataset: dict[str, list[dict[str, Any]]],
+    *,
+    user_id_map: dict[str, str],
+    workspace_id_map: dict[str, str],
+) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for row in dataset.get("workspace_memberships.json", []):
+        source_id = str(row.get("id") or "").strip()
+        workspace_id = _coerce_uuid(
+            workspace_id_map.get(str(row.get("workspace_id") or "").strip(), str(row.get("workspace_id") or "").strip())
+        )
+        user_id = _coerce_uuid(user_id_map.get(str(row.get("user_id") or "").strip(), str(row.get("user_id") or "").strip()))
+        if not source_id or not workspace_id or not user_id:
+            continue
+        existing = session.exec(
+            select(WorkspaceMembershipRecord).where(
+                WorkspaceMembershipRecord.workspace_id == workspace_id,
+                WorkspaceMembershipRecord.user_id == user_id,
+            )
+        ).first()
+        if existing is not None:
+            mapping[source_id] = str(existing.id)
+    return mapping
+
+
+def _build_workspace_runtime_settings_id_map(
+    session: Session,
+    dataset: dict[str, list[dict[str, Any]]],
+    *,
+    workspace_id_map: dict[str, str],
+) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for row in dataset.get("workspace_runtime_settings.json", []):
+        source_id = str(row.get("id") or "").strip()
+        workspace_id = _coerce_uuid(
+            workspace_id_map.get(str(row.get("workspace_id") or "").strip(), str(row.get("workspace_id") or "").strip())
+        )
+        version = row.get("version")
+        if not source_id or not workspace_id or version is None:
+            continue
+        existing = session.exec(
+            select(WorkspaceRuntimeSettingsRecord).where(
+                WorkspaceRuntimeSettingsRecord.workspace_id == workspace_id,
+                WorkspaceRuntimeSettingsRecord.version == version,
+            )
+        ).first()
+        if existing is not None:
+            mapping[source_id] = str(existing.id)
+    return mapping
+
+
+def _build_workspace_provider_secret_id_map(
+    session: Session,
+    dataset: dict[str, list[dict[str, Any]]],
+    *,
+    workspace_id_map: dict[str, str],
+) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for row in dataset.get("workspace_provider_secrets.json", []):
+        source_id = str(row.get("id") or "").strip()
+        workspace_id = _coerce_uuid(
+            workspace_id_map.get(str(row.get("workspace_id") or "").strip(), str(row.get("workspace_id") or "").strip())
+        )
+        provider_key = str(row.get("provider_key") or "").strip()
+        secret_kind = str(row.get("secret_kind") or "").strip()
+        if not source_id or not workspace_id or not provider_key or not secret_kind:
+            continue
+        existing = session.exec(
+            select(WorkspaceProviderSecretRecord).where(
+                WorkspaceProviderSecretRecord.workspace_id == workspace_id,
+                WorkspaceProviderSecretRecord.provider_key == provider_key,
+                WorkspaceProviderSecretRecord.secret_kind == secret_kind,
+            )
+        ).first()
+        if existing is not None:
+            mapping[source_id] = str(existing.id)
+    return mapping
+
+
+def _coerce_uuid(value: Any) -> UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    token = str(value).strip()
+    if not token:
+        return None
+    return UUID(token)
+
+
 def _remap_row_ids(
     filename: str,
     row: dict[str, Any],
     *,
     user_id_map: dict[str, str],
     workspace_id_map: dict[str, str],
+    workspace_membership_id_map: dict[str, str],
+    workspace_runtime_settings_id_map: dict[str, str],
+    workspace_provider_secret_id_map: dict[str, str],
 ) -> dict[str, Any]:
     rewritten = dict(row)
     source_row_id = str(rewritten.get("id") or "").strip()
@@ -126,6 +228,12 @@ def _remap_row_ids(
         rewritten["id"] = user_id_map[source_row_id]
     if filename == "workspaces.json" and source_row_id in workspace_id_map:
         rewritten["id"] = workspace_id_map[source_row_id]
+    if filename == "workspace_memberships.json" and source_row_id in workspace_membership_id_map:
+        rewritten["id"] = workspace_membership_id_map[source_row_id]
+    if filename == "workspace_runtime_settings.json" and source_row_id in workspace_runtime_settings_id_map:
+        rewritten["id"] = workspace_runtime_settings_id_map[source_row_id]
+    if filename == "workspace_provider_secrets.json" and source_row_id in workspace_provider_secret_id_map:
+        rewritten["id"] = workspace_provider_secret_id_map[source_row_id]
 
     for key, value in list(rewritten.items()):
         if value is None:
@@ -157,6 +265,22 @@ def import_snapshot(snapshot_dir: Path) -> dict[str, int]:
         dataset = _load_dataset(snapshot_dir)
         user_id_map = _build_user_id_map(session, dataset)
         workspace_id_map = _build_workspace_id_map(session, dataset)
+        workspace_membership_id_map = _build_workspace_membership_id_map(
+            session,
+            dataset,
+            user_id_map=user_id_map,
+            workspace_id_map=workspace_id_map,
+        )
+        workspace_runtime_settings_id_map = _build_workspace_runtime_settings_id_map(
+            session,
+            dataset,
+            workspace_id_map=workspace_id_map,
+        )
+        workspace_provider_secret_id_map = _build_workspace_provider_secret_id_map(
+            session,
+            dataset,
+            workspace_id_map=workspace_id_map,
+        )
         for filename, model_cls in TABLE_IMPORT_ORDER:
             rows = dataset.get(filename, [])
             imported = 0
@@ -168,6 +292,9 @@ def import_snapshot(snapshot_dir: Path) -> dict[str, int]:
                         row,
                         user_id_map=user_id_map,
                         workspace_id_map=workspace_id_map,
+                        workspace_membership_id_map=workspace_membership_id_map,
+                        workspace_runtime_settings_id_map=workspace_runtime_settings_id_map,
+                        workspace_provider_secret_id_map=workspace_provider_secret_id_map,
                     )
                     if deferred_fields:
                         rewritten = _without_fields(rewritten, deferred_fields)
@@ -182,6 +309,9 @@ def import_snapshot(snapshot_dir: Path) -> dict[str, int]:
                             row,
                             user_id_map=user_id_map,
                             workspace_id_map=workspace_id_map,
+                            workspace_membership_id_map=workspace_membership_id_map,
+                            workspace_runtime_settings_id_map=workspace_runtime_settings_id_map,
+                            workspace_provider_secret_id_map=workspace_provider_secret_id_map,
                         )
                         session.merge(model_cls.model_validate(rewritten))
                 session.commit()

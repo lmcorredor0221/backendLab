@@ -30,6 +30,8 @@ from app.models import (
     ReviewState,
     SessionRecord,
     SessionSnapshot,
+    StageOperationRecord,
+    StageOperationStatus,
     UserRecord,
     utc_now,
 )
@@ -66,6 +68,20 @@ from app.services.product_processing.product_build_run_service import update_pro
 
 
 PRODUCT_BUILD_ATTENTION_STEP_STATES = {"requires_attention", "locked", "error", "failed"}
+ATTENTION_SUPPRESSING_STAGE_OPERATION_STATUSES = (
+    StageOperationStatus.queued,
+    StageOperationStatus.running,
+    StageOperationStatus.waiting_for_user,
+)
+STAGE_OPERATION_RUNTIME_CAPABILITIES: dict[str, frozenset[str]] = {
+    "analyze_discovery": frozenset({"analyze_discovery", "normalize_discovery"}),
+    "define_requirements": frozenset({"build_canvas", "define_requirements", "requirements_definition_skill"}),
+    "propose_design": frozenset({"critique_agent_design", "propose_agent_design", "synthesize_blueprint_narrative"}),
+    "recommend_tools": frozenset({"recommend_minimal_tools"}),
+    "recommend_memory": frozenset({"critique_memory_architecture", "recommend_memory_architecture"}),
+    "generate_validation_scenarios": frozenset({"generate_validation_scenarios"}),
+    "generate_estimation_report": frozenset({"analyze_estimation_risks"}),
+}
 
 
 def _state_value(value) -> str:
@@ -322,6 +338,13 @@ def _build_suppression_matcher(db: Session, record: SessionRecord):
     from app.services.attention.contract import _slug
 
     answered_keys = _answered_attention_item_keys(db, record)
+    active_operations = db.exec(
+        select(StageOperationRecord).where(
+            StageOperationRecord.workspace_id == record.workspace_id,
+            StageOperationRecord.session_id == record.id,
+            StageOperationRecord.status.in_(list(ATTENTION_SUPPRESSING_STAGE_OPERATION_STATUSES)),
+        )
+    ).all()
     backlog_records = db.exec(
         select(UncertaintyBacklogRecord).where(
             UncertaintyBacklogRecord.workspace_id == record.workspace_id,
@@ -333,6 +356,16 @@ def _build_suppression_matcher(db: Session, record: SessionRecord):
     suppressed_exact_keys: set[str] = set(answered_keys)
     suppressed_entities: set[str] = set()
     suppressed_titles: set[str] = set()
+    active_stage_keys = {
+        _normalize_stage_key(getattr(operation, "stage_key", ""))
+        for operation in active_operations
+        if _normalize_stage_key(getattr(operation, "stage_key", ""))
+    }
+    active_runtime_capabilities = {
+        capability
+        for operation in active_operations
+        for capability in STAGE_OPERATION_RUNTIME_CAPABILITIES.get(str(getattr(operation, "action", "") or "").strip().lower(), ())
+    }
 
     def _add_token(token: str):
         if not token:
@@ -393,6 +426,21 @@ def _build_suppression_matcher(db: Session, record: SessionRecord):
         for s_key in suppressed_exact_keys:
             if len(s_key) >= 4 and s_key in item.key:
                 return True
+
+        item_stage = _normalize_stage_key(item.stage)
+        if item.type == "stale" and item_stage in active_stage_keys:
+            return True
+        if item.type == "runtime_error":
+            if item_stage in active_stage_keys:
+                return True
+            diagnostics = item.diagnostics
+            capability = _slug(getattr(diagnostics, "capability", ""))
+            if capability and capability in active_runtime_capabilities:
+                return True
+            trace_refs = [str(ref or "").strip().lower() for ref in getattr(diagnostics, "trace_refs", []) or []]
+            for active_capability in active_runtime_capabilities:
+                if any(f"runtime.capability:{active_capability}" in ref for ref in trace_refs):
+                    return True
 
         return False
 

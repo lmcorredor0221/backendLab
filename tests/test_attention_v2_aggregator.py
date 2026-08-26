@@ -30,6 +30,9 @@ from app.models import (
     SessionSnapshot,
     SessionStage,
     ArtifactStatus,
+    SkillRunEntry,
+    StageOperationRecord,
+    StageOperationStatus,
     UserRecord,
     WorkspaceRecord,
     WorkspaceMembershipRecord,
@@ -873,6 +876,96 @@ def test_uxa2_blueprint_tier_does_not_surface_acp_readiness_as_active_blocker() 
         session.close()
 
 
+def test_active_memory_reprocess_suppresses_stale_and_historical_runtime_attention() -> None:
+    session = _create_memory_engine_session()
+    try:
+        user, workspace, record = _seed_minimal_records(session)
+        now = utc_now()
+        snapshot = _snapshot(record)
+        snapshot.journey_latest_artifacts = {
+            "memory": JourneyStageArtifactEntry(
+                id=uuid4(),
+                workspace_id=workspace.id,
+                session_id=record.id,
+                artifact_kind="memory_recommendation_artifact",
+                stage_key="memory",
+                version_number=1,
+                state=JourneyArtifactState.stale,
+                stale_reasons=["Tools cambio despues de la ultima corrida de Memoria."],
+                created_at=now,
+                updated_at=now,
+            )
+        }
+        snapshot.skill_runs = [
+            SkillRunEntry(
+                id=uuid4(),
+                skill_key="recommend_memory_architecture",
+                label="Memory recommendation",
+                stage=SessionStage.build_blueprint,
+                source_action="recommend_memory",
+                status=ArtifactStatus.failed,
+                duration_ms=1200,
+                result_summary="No se pudo generar memoria automaticamente",
+                warnings=[],
+                evidence=[],
+                artifacts=[],
+                created_at=now,
+            )
+        ]
+        access = CommercialAccessSnapshotV2(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=user.id,
+            tier=CommercialTier.blueprint_pro,
+        )
+
+        before = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+            current_stage="memory",
+        )
+        assert any(item.type == "stale" and item.stage == "memory" for item in before.items)
+        assert any(item.type == "runtime_error" and item.source == "runtime_operation" for item in before.items)
+
+        session.add(
+            StageOperationRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                user_id=user.id,
+                stage_key="memory",
+                action="recommend_memory",
+                idempotency_key="memory-rerun",
+                status=StageOperationStatus.running,
+                current_step="profile",
+                detail="Reprocesando Memoria con el contexto aprobado.",
+                request_payload={},
+                steps=[],
+                heartbeat_at=now,
+                expires_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+        after = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+            current_stage="memory",
+        )
+
+        assert not any(item.type == "stale" and item.stage == "memory" for item in after.items)
+        assert not any(item.type == "runtime_error" and item.source == "runtime_operation" for item in after.items)
+    finally:
+        session.close()
+
+
 def test_uxa2_endpoint_filters_paginates_and_resolves_with_idempotency(client: TestClient) -> None:
     headers = _auth_headers(client)
     create_response = client.post("/api/v1/sessions", headers=headers)
@@ -1089,4 +1182,3 @@ def test_premium_enrichment_resolution_removes_item_from_attention(client: TestC
     assert attention_after.status_code == 200
     after_keys = [it["key"] for it in attention_after.json()["items"]]
     assert not any("ca-999" in k.lower() or "untraced" in k.lower() for k in after_keys)
-
