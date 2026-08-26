@@ -1440,7 +1440,7 @@ def write_react_run(
         duration_ms=sum(int(item.duration_ms or 0) for item in result.traces),
         result_summary=result.message or f"ReAct {stage} ejecutado.",
         warnings=[],
-        evidence=build_react_evidence_manifest(result),
+        evidence=[item.model_dump(mode="json") for item in build_react_evidence_manifest(result)],
     )
     session.add(record)
     session.flush()
@@ -4550,7 +4550,7 @@ def define_requirements_route(
                     artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
                     used_for="define_requirements",
                     citation_label=f"react-evidence-{index}",
-                    detail=evidence["detail"],
+                    detail=evidence.detail,
                 )
             )
     try:
@@ -4739,7 +4739,7 @@ def _execute_propose_design(
                 artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
                 used_for="propose_design",
                 citation_label=f"react-evidence-{index}",
-                detail=evidence["detail"],
+                detail=evidence.detail,
             )
             for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
         )
@@ -6646,7 +6646,7 @@ def recommend_tools_route(
                 artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
                 used_for="recommend_tools",
                 citation_label=f"react-evidence-{index}",
-                detail=evidence["detail"],
+                detail=evidence.detail,
             )
             for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
         )
@@ -7209,7 +7209,7 @@ def recommend_memory_route(
                 artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
                 used_for="recommend_memory",
                 citation_label=f"react-evidence-{index}",
-                detail=evidence["detail"],
+                detail=evidence.detail,
             )
             for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
         )
@@ -7619,7 +7619,7 @@ def generate_validation_scenarios_route(
                 artifact_ref=str(react_run.checkpoint_id or react_run.run_id),
                 used_for="generate_validation_scenarios",
                 citation_label=f"react-evidence-{index}",
-                detail=evidence["detail"],
+                detail=evidence.detail,
             )
             for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
         )

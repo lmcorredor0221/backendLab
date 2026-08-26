@@ -214,6 +214,7 @@ class EvidenceSource(str, Enum):
     form_input = "form_input"
     rule_engine = "rule_engine"
     llm_inference = "llm_inference"
+    react_runtime = "react_runtime"
 
 
 class ReviewState(str, Enum):
@@ -2629,6 +2630,7 @@ class DiscoveryInput(ContractModel):
 class EvidenceItem(ContractModel):
     source: EvidenceSource
     detail: str
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
 
 
 class LLMContextTrace(ContractModel):

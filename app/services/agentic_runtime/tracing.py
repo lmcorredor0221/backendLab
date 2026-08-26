@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+from app.models import EvidenceItem, EvidenceSource
 from app.services.agentic_runtime.contracts import (
     BuilderActionRequest,
     BuilderActionResult,
@@ -84,23 +85,23 @@ def build_synthetic_react_run(trace: Any) -> BuilderAgentRunResult:
     )
 
 
-def build_react_evidence_manifest(result: BuilderAgentRunResult) -> list[dict[str, Any]]:
+def build_react_evidence_manifest(result: BuilderAgentRunResult) -> list[EvidenceItem]:
     """Return safe operational evidence; never include model chain-of-thought."""
     return [
-        {
-            "source": "react_runtime",
-            "detail": (
+        EvidenceItem(
+            source=EvidenceSource.react_runtime,
+            detail=(
                 f"run={result.run_id}; status={result.status}; "
                 f"iterations={len(result.traces)}; checkpoint={result.checkpoint_id or 'none'}"
             ),
-            "metadata": {
+            metadata={
                 "contract_version": result.contract_version,
                 "status": result.status,
                 "iterations": len(result.traces),
                 "checkpoint_id": result.checkpoint_id,
                 "actions": [item.action.key for item in result.traces],
             },
-        }
+        )
     ]
 
 

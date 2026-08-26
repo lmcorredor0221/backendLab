@@ -28,6 +28,8 @@ from app.models import (
     PlatformRoleAssignmentRecord,
     RuntimeCatalogEntryRecord,
     SessionRecord,
+    SkillRunArtifactRecord,
+    SkillRunRecord,
     SessionStage,
     ToolRecommendationArtifact,
     ToolRecommendationConfidence,
@@ -2551,6 +2553,75 @@ def test_recommend_tools_route_persists_placeholder_contract_and_snapshot_view(c
     assert snapshot["latest_tool_recommendation"]["evaluation"]["overall_status"] == "complete"
     assert any(item["artifact_kind"] == "tool_recommendation" for item in snapshot["artifact_records"])
     assert any(item["skill_key"] == "tool_recommendation_skill" for item in snapshot["skill_runs"])
+
+
+def test_session_snapshot_accepts_persisted_react_skill_run_evidence(client: TestClient) -> None:
+    headers = auth_headers(client)
+    me_response = client.get("/api/v1/auth/me", headers=headers)
+    assert me_response.status_code == 200
+    workspace_id = me_response.json()["active_workspace_id"]
+    assert workspace_id
+
+    session_id = create_session_for_workspace(
+        client,
+        email=TEST_EMAIL,
+        workspace_id=workspace_id,
+        title="Validacion react runtime",
+    )
+    headers = {**headers, "x-workspace-id": workspace_id}
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        record = SkillRunRecord(
+            session_id=UUID(session_id),
+            skill_key="react:tools:tool_recommendation",
+            stage=SessionStage.build_blueprint,
+            source_action="recommend_tools",
+            status=ArtifactStatus.ready,
+            duration_ms=12,
+            result_summary="ReAct tools ejecutado.",
+            warnings=[],
+            evidence=[
+                {
+                    "source": "react_runtime",
+                    "detail": "run=react-run-1; status=completed; iterations=1; checkpoint=react:tools:1",
+                    "metadata": {
+                        "contract_version": "builder.react.trace.v1",
+                        "status": "completed",
+                        "iterations": 1,
+                        "checkpoint_id": "react:tools:1",
+                        "actions": ["recommend_tools"],
+                    },
+                }
+            ],
+        )
+        session.add(record)
+        session.flush()
+        session.add(
+            SkillRunArtifactRecord(
+                skill_run_id=record.id,
+                artifact_role="react_trace",
+                artifact_kind="builder.react.trace.v1",
+                payload={
+                    "run_id": "react-run-1",
+                    "status": "completed",
+                },
+            )
+        )
+        session.commit()
+    finally:
+        session_generator.close()
+
+    snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+
+    react_run = next(item for item in snapshot["skill_runs"] if item["skill_key"] == "react:tools:tool_recommendation")
+    assert react_run["evidence"][0]["source"] == "react_runtime"
+    assert react_run["evidence"][0]["metadata"]["contract_version"] == "builder.react.trace.v1"
+    assert react_run["evidence"][0]["metadata"]["actions"] == ["recommend_tools"]
 
 
 def test_recommend_tools_route_respects_workspace_feature_flag(client: TestClient) -> None:
