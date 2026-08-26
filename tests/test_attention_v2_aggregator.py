@@ -1024,6 +1024,65 @@ def test_derived_promotion_blocker_is_hidden_when_runtime_blocker_already_exists
         session.close()
 
 
+def test_approved_design_artifact_suppresses_stale_design_skill_run_attention() -> None:
+    session = _create_memory_engine_session()
+    try:
+        user, _, record = _seed_minimal_records(session)
+        now = utc_now()
+        snapshot = _snapshot(record)
+        snapshot.skill_runs = [
+            SkillRunEntry(
+                id=uuid4(),
+                skill_key="design_proposal_skill",
+                label="Design proposal",
+                stage=SessionStage.build_blueprint,
+                source_action="propose_design",
+                status=ArtifactStatus.needs_review,
+                duration_ms=1200,
+                result_summary="Design comparo 3 alternativas y recomienda handoffs.",
+                warnings=[],
+                evidence=[],
+                artifacts=[],
+                created_at=now,
+            )
+        ]
+        snapshot.journey_latest_artifacts = {
+            "design": SimpleNamespace(
+                id=uuid4(),
+                stage_key="design",
+                artifact_kind="design_recommendation_artifact",
+                state=JourneyArtifactState.approved,
+                version_number=1,
+                stale_reasons=[],
+                proposal_payload={},
+                missing_information=[],
+                warnings=[],
+                reviewed_at=now,
+                approved_at=now,
+                updated_at=now,
+            )
+        }
+        access = CommercialAccessSnapshotV2(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=user.id,
+            tier=CommercialTier.blueprint_pro,
+        )
+
+        response = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+            current_stage="estimate",
+        )
+
+        assert not any(item.source == "runtime_operation" for item in response.items)
+    finally:
+        session.close()
+
+
 def test_uxa2_endpoint_filters_paginates_and_resolves_with_idempotency(client: TestClient) -> None:
     headers = _auth_headers(client)
     create_response = client.post("/api/v1/sessions", headers=headers)

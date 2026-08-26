@@ -441,6 +441,48 @@ def _normalize_stage_key(value) -> str:
     return _state_value(value).strip() or "discover"
 
 
+_RUNTIME_RUN_STAGE_BY_SOURCE_ACTION: dict[str, str] = {
+    "analyze_discovery": "discover",
+    "define_requirements": "define",
+    "propose_design": "design",
+    "recommend_tools": "tools",
+    "recommend_memory": "memory",
+    "generate_estimation_report": "estimate",
+    "generate_validation_scenarios": "validate",
+    "generate_acp": "acp",
+}
+
+
+def _resolved_stage_for_runtime_run(run: Any) -> str:
+    source_action = str(getattr(run, "source_action", "") or "").strip().lower()
+    mapped_stage = _RUNTIME_RUN_STAGE_BY_SOURCE_ACTION.get(source_action)
+    if mapped_stage:
+        return mapped_stage
+    return _normalize_stage_key(getattr(run, "stage", getattr(run, "run_kind", "runtime")))
+
+
+def _is_runtime_run_superseded_by_approved_artifact(snapshot: SessionSnapshot, run: Any) -> bool:
+    latest_by_stage = getattr(snapshot, "journey_latest_artifacts", {}) or {}
+    artifact = latest_by_stage.get(_resolved_stage_for_runtime_run(run))
+    if artifact is None:
+        return False
+    artifact_state = _state_value(getattr(artifact, "state", "")).strip().lower()
+    if artifact_state not in {"approved", "approved_legacy"}:
+        return False
+    artifact_resolved_at = (
+        getattr(artifact, "approved_at", None)
+        or getattr(artifact, "reviewed_at", None)
+        or getattr(artifact, "updated_at", None)
+    )
+    run_created_at = getattr(run, "created_at", None)
+    if artifact_resolved_at is None or run_created_at is None:
+        return True
+    try:
+        return artifact_resolved_at >= run_created_at
+    except TypeError:
+        return True
+
+
 def _stage_href(base: str, stage: str) -> str:
     normalized = stage.strip() or "discover"
     if normalized in {"commercial", "acp"}:
@@ -775,7 +817,9 @@ def _items_from_failed_runs(snapshot: SessionSnapshot, *, base: str) -> list[Att
         status = _state_value(getattr(run, "status", ""))
         if status not in {"failed", "needs_review"}:
             continue
-        stage = _normalize_stage_key(getattr(run, "stage", getattr(run, "run_kind", "runtime")))
+        if _is_runtime_run_superseded_by_approved_artifact(snapshot, run):
+            continue
+        stage = _resolved_stage_for_runtime_run(run)
         run_id = str(getattr(run, "id", "run"))
         items.extend(
             items_from_runtime_operation(
