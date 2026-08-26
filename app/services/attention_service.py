@@ -295,16 +295,6 @@ def _pending_access_requests(db: Session, record: SessionRecord) -> list[Commerc
     ).all()
 
 
-def _approved_access_requests(db: Session, record: SessionRecord) -> list[CommercialAccessRequestRecord]:
-    return db.exec(
-        select(CommercialAccessRequestRecord).where(
-            CommercialAccessRequestRecord.workspace_id == record.workspace_id,
-            CommercialAccessRequestRecord.session_id == record.id,
-            CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.approved,
-        )
-    ).all()
-
-
 def _answered_construction_question_keys(db: Session, record: SessionRecord) -> set[str]:
     rows = db.exec(
         select(ConstructionQuestionResponseRecord).where(
@@ -959,14 +949,12 @@ def _collect_attention_v2_items(
     base = f"/projects/{record.id}"
     return_href = f"{base}/attention"
     pending_requests = _pending_access_requests(db, record)
-    approved_requests = _approved_access_requests(db, record)
     answered_question_keys = _answered_construction_question_keys(db, record)
     items: list[AttentionItemV2] = []
     items.extend(
         items_from_commercial_access(
             access,
             pending_requests,
-            approved_requests,
             base_href=base,
             return_href=return_href,
         )

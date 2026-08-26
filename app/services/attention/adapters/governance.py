@@ -10,6 +10,18 @@ def _value(value: Any) -> str:
     return str(getattr(value, "value", value) or "").strip()
 
 
+def _policy_refs(policy: Any) -> list[str]:
+    refs: list[str] = []
+    policy_key = _value(getattr(policy, "policy_key", ""))
+    if policy_key:
+        refs.append(f"policy_key={policy_key}")
+    for raw_ref in list(getattr(policy, "evidence", []) or []):
+        ref = _value(raw_ref)
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
 def items_from_handoffs(
     handoffs: list[Any],
     *,
@@ -73,7 +85,7 @@ def items_from_governance_policies(
                 href=f"{base_href}/attention",
                 return_href=return_href,
                 owner_role="governance_owner",
-                affected_artifact_refs=list(getattr(policy, "evidence", []) or []),
+                affected_artifact_refs=_policy_refs(policy),
             )
         )
     return items

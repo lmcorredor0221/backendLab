@@ -18,6 +18,7 @@ def items_from_commercial_access(
     base_href: str,
     return_href: str,
 ) -> list[AttentionItemV2]:
+    del approved_requests
     items: list[AttentionItemV2] = []
     if _value(getattr(access, "checkout_state", "")) == "pending":
         items.append(
@@ -57,41 +58,6 @@ def items_from_commercial_access(
                 href=f"{base_href}/attention",
                 return_href=return_href,
                 owner_role="owner/admin",
-            )
-        )
-    for request in approved_requests or []:
-        request_id = _value(getattr(request, "id", ""))
-        product_key = _value(getattr(request, "product_key", ""))
-        is_acp = "acp" in product_key.lower()
-
-        if is_acp:
-            product_label = "Agent Construction Package (ACP)"
-            price_label = "$490 USD"
-            target_href = f"{base_href}/acp"
-            action_btn_label = "Ir a ACP"
-        else:
-            product_label = "Blueprint Pro"
-            price_label = "$149 USD"
-            target_href = f"{base_href}/blueprint/pro"
-            action_btn_label = "Ir a Blueprint Pro"
-
-        items.append(
-            create_attention_item_v2(
-                item_type="confirmation",
-                severity="info",
-                product="commercial",
-                stage="commercial",
-                source="access_request_approved",
-                source_ref={"artifact_id": "commercial_access", "entity_id": request_id, "field_path": "approved_requests"},
-                title=f"¡{product_label} desbloqueado!",
-                reason=f"El Administrador del Sistema ha aprobado tu solicitud de acceso. El producto (Valor comercial de referencia: {price_label}) ya se encuentra completamente activo para este proyecto.",
-                impact="Tienes acceso completo a las descargas, enriquecimiento profesional y exportables.",
-                consequence_if_unresolved="Puedes utilizar todas las capacidades asignadas al proyecto.",
-                action_kind="navigate",
-                action_label=action_btn_label,
-                href=target_href,
-                return_href=return_href,
-                owner_role="user",
             )
         )
     return items

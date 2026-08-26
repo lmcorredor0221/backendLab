@@ -177,6 +177,34 @@ def _group_validation_noise(items: list[AttentionItemV2]) -> list[AttentionItemV
     return [*passthrough, *grouped_items]
 
 
+def _normalized_refs(item: AttentionItemV2) -> set[str]:
+    refs: set[str] = set()
+    for raw_ref in item.affected_artifact_refs:
+        ref = str(raw_ref or "").strip().lower()
+        if ref:
+            refs.add(ref)
+    return refs
+
+
+def _is_derived_promotion_blocker(item: AttentionItemV2) -> bool:
+    if item.source != "governance_policy" or item.type != "validation" or item.severity != "blocking":
+        return False
+    refs = _normalized_refs(item)
+    return "policy_key=promotion_blockers" in refs and "blueprint_readiness=blocked" in refs
+
+
+def _is_actionable_blueprint_blocker(item: AttentionItemV2) -> bool:
+    return item.product == "blueprint" and item.severity == "blocking" and item.source != "governance_policy"
+
+
+def _suppress_derived_promotion_blockers(items: list[AttentionItemV2]) -> list[AttentionItemV2]:
+    if not any(_is_derived_promotion_blocker(item) for item in items):
+        return items
+    if not any(_is_actionable_blueprint_blocker(item) for item in items):
+        return items
+    return [item for item in items if not _is_derived_promotion_blocker(item)]
+
+
 def govern_attention_items(
     items: Iterable[AttentionItemV2],
     *,
@@ -199,4 +227,5 @@ def govern_attention_items(
         visible = [item for item in visible if not _is_basic_blueprint_noise(item)]
         return visible
 
-    return _group_validation_noise(visible)
+    visible = _group_validation_noise(visible)
+    return _suppress_derived_promotion_blockers(visible)

@@ -22,6 +22,7 @@ from app.models import (
     ConstructionQuestionEntry,
     ConstructionQuestionResponseRecord,
     ConstructionReadinessReport,
+    GovernancePolicyEntry,
     JourneyArtifactState,
     JourneyStageArtifactEntry,
     JourneyStageArtifactRecord,
@@ -966,6 +967,63 @@ def test_active_memory_reprocess_suppresses_stale_and_historical_runtime_attenti
         session.close()
 
 
+def test_derived_promotion_blocker_is_hidden_when_runtime_blocker_already_exists() -> None:
+    session = _create_memory_engine_session()
+    try:
+        user, _, record = _seed_minimal_records(session)
+        now = utc_now()
+        snapshot = _snapshot(record)
+        snapshot.skill_runs = [
+            SkillRunEntry(
+                id=uuid4(),
+                skill_key="design_proposal_skill",
+                label="Design proposal",
+                stage=SessionStage.build_blueprint,
+                source_action="propose_design",
+                status=ArtifactStatus.failed,
+                duration_ms=1200,
+                result_summary="Codex local no pudo ejecutar propose_design; policy=needs_review_on_provider_or_schema_failure.",
+                warnings=[],
+                evidence=[],
+                artifacts=[],
+                created_at=now,
+            )
+        ]
+        snapshot.governance_policies = [
+            GovernancePolicyEntry(
+                id=uuid4(),
+                policy_key="promotion_blockers",
+                compliance_status="blocked",
+                label="Bloqueadores de promotion",
+                summary="Puede afectar aprobaciones, auditoria o autorizacion de exportacion.",
+                scope="validate",
+                evidence=["blueprint_readiness=blocked"],
+                updated_at=now,
+            )
+        ]
+        access = CommercialAccessSnapshotV2(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=user.id,
+            tier=CommercialTier.blueprint_pro,
+        )
+
+        response = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+            current_stage="validate",
+        )
+
+        assert response.blocking_count == 1
+        assert any(item.source == "runtime_operation" for item in response.items)
+        assert not any(item.source == "governance_policy" for item in response.items)
+    finally:
+        session.close()
+
+
 def test_uxa2_endpoint_filters_paginates_and_resolves_with_idempotency(client: TestClient) -> None:
     headers = _auth_headers(client)
     create_response = client.post("/api/v1/sessions", headers=headers)
@@ -1065,6 +1123,52 @@ def test_uxa2_endpoint_filters_paginates_and_resolves_with_idempotency(client: T
     remaining_approvals = client.get(f"/api/v1/sessions/{session_id}/attention-v2?type=approval", headers=headers)
     assert remaining_approvals.status_code == 200
     assert remaining_approvals.json()["total_count"] == 0
+
+
+def test_uxa2_access_request_approval_does_not_leave_success_attention_noise(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    session_data = client.post("/api/v1/sessions", headers=headers).json()
+    session_id = session_data["id"]
+
+    db_session = _db_session_from_client(client)
+    try:
+        record = db_session.get(SessionRecord, UUID(session_id))
+        user = db_session.exec(select(UserRecord).where(UserRecord.email == TEST_EMAIL)).first()
+        assert record is not None
+        assert user is not None
+        db_session.add(
+            CommercialAccessRequestRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                requester_user_id=user.id,
+                capability="blueprint.download",
+                product_key="blueprint_pro",
+                status=CommercialAccessRequestStatus.pending,
+                reason="Continuar con Blueprint Pro.",
+            )
+        )
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    pending_response = client.get(f"/api/v1/sessions/{session_id}/attention-v2?type=access_request", headers=headers)
+    assert pending_response.status_code == 200
+    pending_item = pending_response.json()["items"][0]
+
+    approve_response = client.post(
+        f"/api/v1/sessions/{session_id}/attention-v2/{pending_item['key']}/actions",
+        headers=headers,
+        json={"action_kind": "approve", "idempotency_key": "approve-blueprint-pro-access", "resolution_note": "ok"},
+    )
+    assert approve_response.status_code == 200
+    approve_payload = approve_response.json()
+
+    assert approve_payload["status"] == "applied"
+    assert not any(item["source"] == "access_request_approved" for item in approve_payload["attention"]["items"])
+
+    commercial_attention = client.get(f"/api/v1/sessions/{session_id}/attention-v2?product=commercial", headers=headers)
+    assert commercial_attention.status_code == 200
+    assert commercial_attention.json()["total_count"] == 0
 
 
 def test_uxa2_attention_v2_respects_workspace_isolation(client: TestClient) -> None:
