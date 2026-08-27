@@ -534,7 +534,8 @@ class PremiumEnrichmentWorkspace(ContractModel):
 class PremiumUncertaintyResolutionRequest(ContractModel):
     answer: str = ""
     selected_option_key: str = ""
-    regenerate: bool = True
+    regenerate: bool = False
+    execution_mode: Literal["analyze_only", "apply_reprocess"] = "analyze_only"
     max_deliverables: int = 5
 
     @field_validator("max_deliverables")
@@ -551,6 +552,10 @@ class PremiumSelectiveReprocessResult(ContractModel):
     ordered_regeneration_keys: list[str] = PydanticField(default_factory=list)
     regenerated_deliverable_keys: list[str] = PydanticField(default_factory=list)
     preserved_deliverable_keys: list[str] = PydanticField(default_factory=list)
+    material_impact: bool = False
+    reprocess_decision: Literal["document_only", "localized_reprocess", "structural_reprocess"] = "document_only"
+    recommended_action: str = ""
+    impact_summary: str = ""
     generation_job_ids: list[str] = PydanticField(default_factory=list)
     generation_status_by_deliverable: dict[str, str] = PydanticField(default_factory=dict)
     superseded_uncertainty_count: int = 0
@@ -600,4 +605,3 @@ class ProductBuildCommandRequest(ContractModel):
     action: Literal["start", "resume", "retry"] = "start"
     idempotency_key: str = ""
     allow_llm: bool = False
-

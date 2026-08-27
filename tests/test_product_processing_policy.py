@@ -154,7 +154,7 @@ def test_uncertainty_backlog_persists_and_prioritizes_items() -> None:
         assert resolved.status == UncertaintyBacklogStatus.resolved
 
 
-def test_premium_enrichment_resolves_and_reprocesses_selectively() -> None:
+def test_premium_enrichment_resolves_with_impact_analysis_before_reprocessing() -> None:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
     workspace_id = uuid4()
@@ -230,11 +230,78 @@ def test_premium_enrichment_resolves_and_reprocesses_selectively() -> None:
     assert lifecycle_before == ProductBuildLifecycle.requires_attention.value
     assert any(key.startswith("premium_backlog:") and status == "requires_attention" for key, status in step_statuses_before)
     assert "diagram.c4_context" in result.stale_deliverable_keys
-    assert len(result.regenerated_deliverable_keys) <= 2
+    assert result.material_impact is True
+    assert result.reprocess_decision == "structural_reprocess"
+    assert result.regenerated_deliverable_keys == []
     assert result.resolved_entry.status == UncertaintyBacklogStatus.resolved
     assert result.preserved_deliverable_keys
+    assert result.generation_job_ids == []
+    assert result.queue_total == 0
+    assert result.queue_completed == 0
+    assert result.queue_status == "not_requested"
     assert any(step.step_key.startswith("premium_backlog:") and step.status == "completed" for step in steps_after)
     assert runs_after[0].lifecycle != ProductBuildLifecycle.requires_attention.value
+
+
+def test_premium_enrichment_reprocesses_only_when_explicitly_requested() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+    actor_id = uuid4()
+
+    with Session(engine) as db:
+        db.add(
+            SessionRecord(
+                id=session_id,
+                user_id=actor_id,
+                workspace_id=workspace_id,
+                title="Blueprint Pro reprocessamiento explicito",
+                commercial_tier=CommercialTier.blueprint_pro,
+            )
+        )
+        classification = classify_uncertainty_for_profile(
+            "define",
+            {
+                "key": "critical_exception_flow",
+                "question": "Que excepciones criticas debe contemplar el flujo objetivo?",
+                "confidence": 0.86,
+                "priority": "high",
+                "suggested_answer": "Escalar excepciones ambiguas a revision humana.",
+                "answer_options": [{"key": "human_escalation", "label": "Escalar a humano", "recommended": True}],
+            },
+            ProductProcessingMode.premium_enrichment,
+        )
+        entry = upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=classification,
+            dependency_keys=["definition.requirements"],
+            created_from="test",
+        )
+
+        result = resolve_premium_uncertainty(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            backlog_id=UUID(entry.id),
+            actor_user_id=actor_id,
+            payload=PremiumUncertaintyResolutionRequest(
+                execution_mode="apply_reprocess",
+                max_deliverables=2,
+                regenerate=True,
+                selected_option_key="human_escalation",
+            ),
+        )
+
+    assert result.material_impact is True
+    assert result.reprocess_decision == "structural_reprocess"
+    assert len(result.regenerated_deliverable_keys) <= 2
+    assert result.generation_job_ids
+    assert result.queue_total == min(2, len(result.ordered_regeneration_keys))
+    assert result.queue_completed == len(result.regenerated_deliverable_keys)
+    assert result.queue_status == "completed"
 
 
 def test_premium_workspace_does_not_duplicate_resolved_deferred_items() -> None:

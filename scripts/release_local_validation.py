@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,10 @@ def write_json(path: Path, payload: Any) -> None:
 
 def write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
+
+
+def log_step(message: str) -> None:
+    print(f"[release-check] {message}", flush=True)
 
 
 def sanitize_health_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -189,6 +194,22 @@ def resolve_first_approval(client: httpx.Client, headers: dict[str, str], sessio
     )
 
 
+def upgrade_session_tier(client: httpx.Client, headers: dict[str, str], session_id: str, *, tier: str = "acp") -> dict[str, Any]:
+    payload = api_json(
+        client,
+        "PATCH",
+        f"/sessions/{session_id}/commercial-tier",
+        headers=headers,
+        json_payload={"tier": tier},
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("La actualizacion comercial no devolvio un objeto JSON.")
+    resolved_tier = str((((payload.get("commercial_access") or {}) if isinstance(payload, dict) else {}).get("tier")) or "")
+    if resolved_tier != tier:
+        raise RuntimeError(f"La sesion no actualizo al tier esperado '{tier}': {payload}")
+    return payload
+
+
 def answer_questions(client: httpx.Client, headers: dict[str, str], session_id: str, questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     answered: list[dict[str, Any]] = []
     for question in questions:
@@ -212,6 +233,73 @@ def answer_questions(client: httpx.Client, headers: dict[str, str], session_id: 
             raise RuntimeError(f"La pregunta {question_key} no devolvio un objeto JSON.")
         answered.append(response)
     return answered
+
+
+def wait_for_estimate_completion(
+    client: httpx.Client,
+    headers: dict[str, str],
+    session_id: str,
+    *,
+    timeout_seconds: float = 420.0,
+    poll_interval_seconds: float = 5.0,
+) -> dict[str, Any]:
+    started_operation = api_json(
+        client,
+        "POST",
+        f"/sessions/{session_id}/estimate/start",
+        headers=headers,
+        json_payload={},
+        expected_status=202,
+    )
+    if not isinstance(started_operation, dict):
+        raise RuntimeError("Estimate start no devolvio una operacion JSON.")
+
+    deadline = time.monotonic() + timeout_seconds
+    last_operation: dict[str, Any] = started_operation
+    while time.monotonic() < deadline:
+        try:
+            operation = api_json(
+                client,
+                "GET",
+                f"/sessions/{session_id}/stage-operations/current?stage_key=estimate&action=generate_estimation_report",
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            operation = last_operation
+        session_snapshot = None
+        try:
+            snapshot_candidate = api_json(client, "GET", f"/sessions/{session_id}", headers=headers)
+            if isinstance(snapshot_candidate, dict):
+                session_snapshot = snapshot_candidate
+        except httpx.HTTPError:
+            session_snapshot = None
+        if isinstance(operation, dict):
+            last_operation = operation
+            status = str(operation.get("status") or "")
+            if session_snapshot is not None:
+                estimation_report = session_snapshot.get("estimation_report")
+                if isinstance(estimation_report, dict) and estimation_report:
+                    return {
+                        "operation": operation,
+                        "estimation_report": estimation_report,
+                        "session": session_snapshot.get("session"),
+                    }
+            if status == "completed":
+                if session_snapshot is None:
+                    raise RuntimeError("Estimate completo sin snapshot accesible para validar persistencia.")
+                estimation_report = session_snapshot.get("estimation_report")
+                if not isinstance(estimation_report, dict):
+                    raise RuntimeError("Estimate completo sin estimation_report persistido.")
+                return {
+                    "operation": operation,
+                    "estimation_report": estimation_report,
+                    "session": session_snapshot.get("session"),
+                }
+            if status in {"failed", "cancelled", "expired"}:
+                raise RuntimeError(f"Estimate termino en estado terminal inesperado: {operation}")
+        time.sleep(poll_interval_seconds)
+
+    raise RuntimeError(f"Estimate no completo dentro del timeout de {timeout_seconds} segundos: {last_operation}")
 
 
 def build_markdown_summary(
@@ -269,6 +357,8 @@ def build_markdown_summary(
             "- `canvas-built.json`",
             "- `blueprint-built.json`",
             "- `evaluation.json`",
+            "- `estimate.json`",
+            "- `estimate-operation.json`",
             "- `acp-preview-initial.json`",
             "- `acp-preview-final.json`",
             "- `acp-readiness-final.json`",
@@ -286,11 +376,13 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     with httpx.Client(base_url=BASE_URL, timeout=TIMEOUT) as client:
+        log_step("Validando salud del backend")
         health_response = client.get(HEALTH_URL)
         assert_ok(health_response, 200, f"GET {HEALTH_URL}")
         health_payload = sanitize_health_payload(health_response.json())
         write_json(run_dir / "health.json", health_payload)
 
+        log_step("Autenticando usuario local")
         auth_payload = login(client)
         token = str(auth_payload["access_token"])
         headers = {"Authorization": f"Bearer {token}"}
@@ -302,12 +394,14 @@ def main() -> None:
             },
         )
 
+        log_step("Creando sesion limpia para la validacion")
         created_session = api_json(client, "POST", "/sessions", headers=headers, expected_status=201)
         if not isinstance(created_session, dict) or "id" not in created_session:
             raise RuntimeError("La creacion de sesion no devolvio id.")
         session_id = str(created_session["id"])
         write_json(run_dir / "session-created.json", created_session)
 
+        log_step("Construyendo discovery, canvas y blueprint")
         normalize_payload = api_json(
             client,
             "POST",
@@ -327,9 +421,11 @@ def main() -> None:
         write_json(run_dir / "canvas-built.json", canvas_payload)
         write_json(run_dir / "blueprint-built.json", blueprint_payload)
 
+        log_step("Resolviendo aprobacion inicial del blueprint")
         approval_resolution = resolve_first_approval(client, headers, session_id)
         write_json(run_dir / "approval-resolution.json", approval_resolution)
 
+        log_step("Preparando evaluacion base")
         bootstrap_payload = api_json(
             client,
             "POST",
@@ -344,9 +440,17 @@ def main() -> None:
             headers=headers,
             json_payload={},
         )
+        log_step("Calculando estimate antes de ACP")
+        estimate_payload = wait_for_estimate_completion(client, headers, session_id)
+        log_step("Habilitando tier ACP despues de estimate")
+        tier_upgrade = upgrade_session_tier(client, headers, session_id, tier="acp")
         write_json(run_dir / "evaluation-bootstrap.json", bootstrap_payload)
         write_json(run_dir / "evaluation.json", evaluation_payload)
+        write_json(run_dir / "estimate.json", estimate_payload)
+        write_json(run_dir / "estimate-operation.json", estimate_payload["operation"])
+        write_json(run_dir / "tier-upgrade.json", tier_upgrade)
 
+        log_step("Generando vista inicial del paquete ACP")
         preview_initial = api_json(client, "GET", f"/sessions/{session_id}/acp/preview", headers=headers)
         generated_initial = api_json(
             client,
@@ -366,9 +470,11 @@ def main() -> None:
 
         if not isinstance(questions_initial, list):
             raise RuntimeError("Las preguntas ACP no devolvieron una lista.")
+        log_step(f"Resolviendo {len(questions_initial)} preguntas ACP")
         answered_questions = answer_questions(client, headers, session_id, questions_initial)
         write_json(run_dir / "acp-questions-answered.json", answered_questions)
 
+        log_step("Regenerando ACP con respuestas aplicadas")
         preview_final = api_json(
             client,
             "POST",
@@ -396,6 +502,7 @@ def main() -> None:
         write_json(run_dir / "integrations-check.json", integrations_payload)
         write_json(run_dir / "session-final.json", session_final)
 
+        log_step("Exportando markdown, JSON y ZIP finales")
         export_markdown = api_text(client, "GET", f"/sessions/{session_id}/export/markdown", headers=headers)
         export_json = api_json(client, "GET", f"/sessions/{session_id}/export/json", headers=headers)
         zip_bytes, zip_headers = api_binary(client, "GET", f"/sessions/{session_id}/acp/export.zip", headers=headers)
@@ -475,8 +582,8 @@ def main() -> None:
         )
         write_text(latest_dir / "latest-run.txt", str(run_dir))
 
-        print(f"Release local verificado. Session ID: {session_id}")
-        print(f"Evidencia: {run_dir}")
+        log_step(f"Release local verificado. Session ID: {session_id}")
+        log_step(f"Evidencia: {run_dir}")
 
 
 if __name__ == "__main__":

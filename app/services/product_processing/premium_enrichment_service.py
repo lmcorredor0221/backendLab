@@ -134,6 +134,44 @@ def _priority_reason(item: PremiumEnrichmentItem) -> str:
     return "Aporta claridad al Blueprint Premium sin exigir reprocesar todo el proyecto."
 
 
+def _resolve_reprocess_decision(
+    ordered_regeneration_keys: list[str],
+) -> tuple[str, bool, str, str]:
+    total = len(ordered_regeneration_keys)
+    if total == 0:
+        return (
+            "document_only",
+            False,
+            "document_only",
+            "La respuesta se registra como decision trazable sin reprocesar entregables porque no se detecto impacto material.",
+        )
+    if total <= 3:
+        return (
+            "localized_reprocess",
+            True,
+            "review_and_apply_localized_reprocess",
+            f"La respuesta impacta {total} entregable(s) versionado(s) y se puede actualizar de forma localizada.",
+        )
+    return (
+        "structural_reprocess",
+        True,
+        "review_and_apply_structural_reprocess",
+        f"La respuesta impacta {total} entregable(s) y conviene reprocesar la cadena dependiente del Blueprint Pro.",
+    )
+
+
+def _should_execute_reprocess(
+    payload: PremiumUncertaintyResolutionRequest,
+    *,
+    material_impact: bool,
+) -> bool:
+    if not material_impact:
+        return False
+    if payload.execution_mode == "apply_reprocess":
+        return True
+    return bool(payload.regenerate)
+
+
 def _item_from_record(record: UncertaintyBacklogRecord) -> PremiumEnrichmentItem:
     entry = backlog_entry_from_record(record)
     changed = _dependency_keys_for_entry(record)
@@ -596,6 +634,9 @@ def resolve_premium_uncertainty(
         changed_dependency_keys=changed_dependency_keys,
         source_deliverable_key=source_key,
     )
+    reprocess_decision, material_impact, recommended_action, impact_summary = _resolve_reprocess_decision(
+        scope.ordered_regeneration_keys
+    )
     answer = _resolved_answer(record, payload)
     record.status = UncertaintyBacklogStatus.resolved.value
     record.assumed_answer = answer
@@ -609,6 +650,9 @@ def resolve_premium_uncertainty(
             "actor_user_id": str(actor_user_id),
             "changed_dependency_keys": changed_dependency_keys,
             "ordered_regeneration_keys": scope.ordered_regeneration_keys,
+            "reprocess_decision": reprocess_decision,
+            "recommended_action": recommended_action,
+            "impact_summary": impact_summary,
         },
     }
     db.add(record)
@@ -616,13 +660,13 @@ def resolve_premium_uncertainty(
 
     regenerated: list[str] = []
     job_ids: list[str] = []
-    status_by_key: dict[str, str] = []
     status_by_key_map: dict[str, str] = {}
     fifo_queue = scope.ordered_regeneration_keys[: payload.max_deliverables]
-    queue_total = len(fifo_queue)
+    execute_reprocess = _should_execute_reprocess(payload, material_impact=material_impact)
+    queue_total = len(fifo_queue) if execute_reprocess else 0
     queue_completed = 0
 
-    if payload.regenerate:
+    if execute_reprocess:
         # Procesamiento secuencial garantizado en Cola FIFO (First In, First Out)
         for deliverable_key in fifo_queue:
             try:
@@ -679,17 +723,31 @@ def resolve_premium_uncertainty(
         ordered_regeneration_keys=scope.ordered_regeneration_keys,
         regenerated_deliverable_keys=regenerated,
         preserved_deliverable_keys=scope.unaffected_deliverable_keys,
+        material_impact=material_impact,
+        reprocess_decision=reprocess_decision,
+        recommended_action=recommended_action,
+        impact_summary=impact_summary,
         generation_job_ids=job_ids,
         generation_status_by_deliverable=status_by_key_map,
         superseded_uncertainty_count=stale_report.superseded_uncertainty_count,
         comparison_summary=(
             f"Se resolvio '{resolved_entry.title}'. "
-            f"{len(regenerated)} entregable(s) fueron reprocesados en cola FIFO y "
-            f"{len(scope.unaffected_deliverable_keys)} conservaron su version."
+            + (
+                f"{len(regenerated)} entregable(s) fueron reprocesados en cola FIFO y "
+                f"{len(scope.unaffected_deliverable_keys)} conservaron su version."
+                if regenerated
+                else impact_summary
+            )
         ),
         queue_total=queue_total,
         queue_completed=queue_completed,
-        queue_status="completed" if queue_completed == queue_total else "processing",
+        queue_status=(
+            "completed"
+            if execute_reprocess and queue_completed == queue_total
+            else "processing"
+            if execute_reprocess
+            else "not_requested"
+        ),
         queue_processed_keys=regenerated,
     )
 

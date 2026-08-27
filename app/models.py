@@ -366,7 +366,7 @@ ALLOWED_ACP_FILE_STATUSES = {"complete", "incomplete", "needs_review"}
 ALLOWED_ACP_VALIDATION_SEVERITIES = {"info", "warning", "error"}
 ALLOWED_CONSTRUCTION_GAP_SEVERITIES = {"info", "warning", "blocking"}
 ALLOWED_CONSTRUCTION_GAP_STATUSES = {"open", "answered", "waived", "resolved"}
-ALLOWED_CONSTRUCTION_QUESTION_STATUSES = {"open", "answered", "resolved"}
+ALLOWED_CONSTRUCTION_QUESTION_STATUSES = {"open", "answered", "deferred", "resolved"}
 ALLOWED_CONSTRUCTION_READINESS_STATUSES = {"not_started", "needs_questions", "blocked", "ready_to_build"}
 
 
@@ -4436,7 +4436,7 @@ ACPFileStatus = Literal["complete", "incomplete", "needs_review"]
 ACPValidationSeverity = Literal["info", "warning", "error"]
 ConstructionGapSeverity = Literal["info", "warning", "blocking"]
 ConstructionGapStatus = Literal["open", "answered", "waived", "resolved"]
-ConstructionQuestionStatus = Literal["open", "answered", "resolved"]
+ConstructionQuestionStatus = Literal["open", "answered", "deferred", "resolved"]
 ConstructionReadinessStatus = Literal["not_started", "needs_questions", "blocked", "ready_to_build"]
 
 
@@ -4551,15 +4551,15 @@ class ConstructionQuestionViewEntry(ContractModel):
 class ConstructionQuestionAnswerRequest(ContractModel):
     answer_text: str = ""
     owner_role: str = ""
+    decision: Literal["answer", "delegate"] = "answer"
     impacted_artifacts: list[str] = PydanticField(default_factory=list)
 
-    @field_validator("answer_text")
-    @classmethod
-    def validate_answer_text(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
+    @model_validator(mode="after")
+    def validate_answer_payload(self) -> "ConstructionQuestionAnswerRequest":
+        normalized = self.answer_text.strip()
+        if self.decision == "answer" and not normalized:
             raise ValueError("Construction question answer cannot be empty")
-        return normalized
+        return self
 
 
 class ConstructionGapEntry(ContractModel):

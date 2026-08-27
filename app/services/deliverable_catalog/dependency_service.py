@@ -23,6 +23,18 @@ CLOSED_UNCERTAINTY_STATUSES = {
     UncertaintyBacklogStatus.superseded.value,
 }
 
+DEPENDENCY_KEY_ALIASES: dict[str, set[str]] = {
+    "session.discovery": {"stage.discover", "discovery_artifact", "discovery_analysis_artifact"},
+    "definition.requirements": {"stage.define", "definition_artifact"},
+    "design.architecture": {"stage.design", "design_recommendation_artifact"},
+    "blueprint.architecture_spec": {"stage.design", "design_recommendation_artifact"},
+    "blueprint.patterns": {"stage.design", "design_recommendation_artifact"},
+    "tools.minimum_set": {"stage.tools", "tool_recommendation_artifact"},
+    "memory.strategy": {"stage.memory", "memory_recommendation_artifact"},
+    "estimate.analysis": {"stage.estimate", "estimation_report_artifact"},
+    "validation.scenarios": {"stage.validate", "evaluation_artifact"},
+}
+
 
 def _stage_order(stage: str) -> int:
     try:
@@ -35,10 +47,25 @@ def _entry_dependency_keys(entry) -> set[str]:
     return set(entry.dependency_policy.depends_on) | set(entry.dependency_policy.invalidates_on_change)
 
 
+def _expand_dependency_aliases(changed_dependency_keys: list[str]) -> set[str]:
+    expanded: set[str] = set()
+    for raw_key in changed_dependency_keys:
+        normalized = str(raw_key or "").strip()
+        if not normalized:
+            continue
+        expanded.add(normalized)
+        expanded.update(DEPENDENCY_KEY_ALIASES.get(normalized, set()))
+        if normalized.startswith("stage.") and len(normalized) > 6:
+            expanded.add(normalized[6:])
+        elif normalized in {"discover", "define", "design", "tools", "memory", "estimate", "validate", "package"}:
+            expanded.add(f"stage.{normalized}")
+    return expanded
+
+
 def compute_deliverable_staleness(
     changed_dependency_keys: list[str],
 ) -> DeliverableStalenessReport:
-    changed = {key for key in changed_dependency_keys if str(key or "").strip()}
+    changed = _expand_dependency_aliases(changed_dependency_keys)
     if not changed:
         return DeliverableStalenessReport()
 

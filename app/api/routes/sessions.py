@@ -1,3 +1,4 @@
+import asyncio
 import io
 import hashlib
 import json
@@ -951,6 +952,20 @@ def touch_session(record: SessionRecord, stage: SessionStage, status_value: Arti
     record.updated_at = utc_now()
 
 
+def _session_stage_after_journey_approval(stage_key: str, current_stage: SessionStage) -> SessionStage:
+    next_stage_map = {
+        "discover": SessionStage.build_canvas,
+        "define": SessionStage.build_blueprint,
+        "design": SessionStage.build_blueprint,
+        "tools": SessionStage.build_blueprint,
+        "memory": SessionStage.post_validation,
+        "validate": SessionStage.post_validation,
+        "estimate": SessionStage.ready_for_export,
+        "build": SessionStage.ready_for_export,
+    }
+    return next_stage_map.get(str(stage_key or "").strip().lower(), current_stage)
+
+
 def maybe_set_session_title(record: SessionRecord, discovery: DiscoveryArtifact) -> None:
     if not discovery.problem_statement:
         return
@@ -1227,15 +1242,58 @@ def acp_preview_supports_graph(preview: ACPPreview) -> bool:
     return has_graph_json and has_svg_exports
 
 
+def ensure_acp_evaluation_seed_snapshot(
+    session: Session,
+    record: SessionRecord,
+    *,
+    current_user: UserRecord | None = None,
+    source_action: str = "acp_auto_bootstrap",
+) -> tuple[SessionSnapshot, bool]:
+    snapshot = build_snapshot(session, record, current_user=current_user)
+    if snapshot.evaluation_dataset is not None and snapshot.evaluation_rubric is not None:
+        return snapshot, False
+
+    created_dataset = snapshot.evaluation_dataset is None
+    created_rubric = snapshot.evaluation_rubric is None
+    ensure_evaluation_workbench_assets(
+        session,
+        session_id=record.id,
+        discovery=snapshot.discovery,
+        canvas=snapshot.canvas,
+        blueprint=snapshot.blueprint,
+        blueprint_version_number=latest_blueprint_version_number(session, record.id),
+    )
+    touch_session(record, record.current_stage, record.status)
+    session.add(record)
+    write_log(
+        session,
+        session_id=record.id,
+        stage=record.current_stage,
+        status_value=record.status,
+        message="ACP autocorrigio la base minima de evaluacion",
+        payload={
+            "created_dataset": created_dataset,
+            "created_rubric": created_rubric,
+            "source_action": source_action,
+        },
+    )
+    capture_operational_state(session, session_id=record.id, source_action=source_action)
+    session.commit()
+    return build_snapshot(session, record, current_user=current_user), True
+
+
 def resolve_acp_preview(session: Session, record: SessionRecord) -> ACPPreview:
+    snapshot, auto_bootstrapped = ensure_acp_evaluation_seed_snapshot(
+        session,
+        record,
+        source_action="resolve_acp_preview",
+    )
     continuity_answers = build_continuity_answer_map(load_construction_question_response_records(session, record.id))
     if continuity_answers:
-        snapshot = build_snapshot(session, record)
         return generate_acp_preview(snapshot, continuity_answers)
     preview = load_latest_persisted_acp_preview(session, record.id)
-    if preview is not None and acp_preview_supports_graph(preview):
+    if preview is not None and acp_preview_supports_graph(preview) and not auto_bootstrapped:
         return preview
-    snapshot = build_snapshot(session, record)
     return generate_acp_preview(snapshot, continuity_answers or None)
 
 
@@ -1315,14 +1373,18 @@ def upsert_construction_question_response(
     record.expected_answer_format = question.expected_answer_format
     record.target_owner = question.target_owner
     record.blocking = question.blocking
-    record.status = "answered"
-    record.answer_text = payload.answer_text.strip()
+    is_delegate = payload.decision == "delegate"
+    normalized_answer = payload.answer_text.strip()
+    if is_delegate and not normalized_answer:
+        normalized_answer = "Delegado a implementacion. Resolver durante la construccion con trazabilidad ACP."
+    record.status = "deferred" if is_delegate else "answered"
+    record.answer_text = normalized_answer
     record.owner_role = payload.owner_role.strip() or question.owner_role or question.target_owner
     record.impacted_artifacts = payload.impacted_artifacts or question.impacted_artifacts
     record.answered_by_user_id = current_user.id
     record.answered_by_display = current_user.full_name or current_user.email
     record.answered_at = now
-    record.resolved_at = None
+    record.resolved_at = now if is_delegate else None
     record.updated_at = now
     session.add(record)
     session.flush()
@@ -3724,6 +3786,12 @@ def approve_stage_artifact_route(
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
+    touch_session(
+        record,
+        _session_stage_after_journey_approval(artifact.stage_key, record.current_stage),
+        record.status,
+    )
+    db.add(record)
     sync_short_term_memory_checkpoint(db, record=record, source_action=f"journey_approve:{stage_key}")
     sync_product_builds_after_stage_approval(
         db,
@@ -5770,7 +5838,13 @@ def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
                 current_step="analysis",
                 detail="Calculando esfuerzo, riesgo, ROI y politica de avance al paquete.",
             )
-            generate_estimation_report_route(operation.session_id, db=db, current_user=user)
+            background_tasks = BackgroundTasks()
+            generate_estimation_report_route(
+                operation.session_id,
+                background_tasks=background_tasks,
+                db=db,
+                current_user=user,
+            )
             persisted_report = load_latest_persisted_estimation_report(
                 db,
                 operation.session_id,
@@ -5786,6 +5860,23 @@ def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
                 current_step="persist",
                 detail="Estimacion generada y persistida como artefacto final de Blueprint.",
             )
+            if background_tasks.tasks:
+                try:
+                    asyncio.run(background_tasks())
+                except Exception:  # noqa: BLE001
+                    db.rollback()
+                    write_log(
+                        db,
+                        session_id=operation.session_id,
+                        stage=record.current_stage,
+                        status_value=ArtifactStatus.ready,
+                        message="generate_estimation_report_async_post_tasks_failed",
+                        payload={
+                            "operation_id": str(operation.id),
+                            "task_count": len(background_tasks.tasks),
+                        },
+                    )
+                    db.commit()
         except StageOperationCancelled:
             return
         except HTTPException as exc:
@@ -7807,6 +7898,8 @@ def approve_validation_scenarios_route(
         message="Escenarios de validacion aprobados",
         payload={"scenario_keys": [item.scenario_key for item in specification.scenarios]},
     )
+    touch_session(record, SessionStage.post_validation, ArtifactStatus.ready)
+    db.add(record)
     sync_short_term_memory_checkpoint(db, record=record, source_action="approve_validation_scenarios")
     sync_product_builds_after_stage_approval(
         db,
@@ -8408,6 +8501,7 @@ def evaluate_blueprint_route(
 @router.post("/{session_id}/estimate", response_model=EstimationEnvelope)
 def generate_estimation_report_route(
     session_id: UUID,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> EstimationEnvelope:
@@ -8598,7 +8692,8 @@ def generate_estimation_report_route(
         source_action="generate_estimation_report",
         blueprint_version_number=blueprint_version_number,
     )
-    record.updated_at = utc_now()
+    next_stage = SessionStage.ready_for_export if status_value == ArtifactStatus.ready else SessionStage.post_validation
+    touch_session(record, next_stage, status_value)
     db.add(record)
     write_log(
         db,
@@ -8623,18 +8718,20 @@ def generate_estimation_report_route(
             db,
             record=record,
             current_user=current_user,
+            background_tasks=background_tasks,
             allow_llm=False,
         )
     except Exception:
         pass
     db.commit()
-    return envelope
+    return envelope.model_copy(update={"stage": record.current_stage, "status": record.status})
 
 
 @router.post("/{session_id}/estimate/analysis-decision", response_model=EstimationEnvelope)
 def apply_estimation_analysis_decision_route(
     session_id: UUID,
     payload: EstimationAnalysisDecisionRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> EstimationEnvelope:
@@ -8673,7 +8770,8 @@ def apply_estimation_analysis_decision_route(
         estimation_report=updated_report,
     )
     status_value = ArtifactStatus.ready if updated_report.package_policy.can_continue_to_package else ArtifactStatus.needs_review
-    record.updated_at = utc_now()
+    next_stage = SessionStage.ready_for_export if status_value == ArtifactStatus.ready else SessionStage.post_validation
+    touch_session(record, next_stage, status_value)
     db.add(record)
     write_validation(
         db,
@@ -8705,6 +8803,7 @@ def apply_estimation_analysis_decision_route(
             db,
             record=record,
             current_user=current_user,
+            background_tasks=background_tasks,
             allow_llm=False,
         )
     except Exception:

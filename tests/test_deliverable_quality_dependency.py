@@ -69,6 +69,17 @@ def test_dependency_service_computes_selective_staleness_and_regeneration_order(
     )
 
 
+def test_dependency_service_expands_semantic_stage_aliases() -> None:
+    report = compute_deliverable_staleness(["design.architecture"])
+    scope = resolve_regeneration_scope(changed_dependency_keys=["design.architecture"])
+
+    assert "design.architecture" in report.changed_dependency_keys
+    assert "stage.design" in report.changed_dependency_keys
+    assert "design_recommendation_artifact" in report.changed_dependency_keys
+    assert report.stale_deliverable_keys
+    assert scope.ordered_regeneration_keys
+
+
 def test_invalidation_records_stale_snapshots_and_supersedes_related_uncertainties() -> None:
     workspace_id = uuid4()
     session_id = uuid4()

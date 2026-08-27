@@ -9,17 +9,23 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
+    AgenticEstimate,
     CommercialAccessSnapshotV2,
     CommercialCapabilityDecisionEntry,
     CommercialEntitlementRecord,
     CommercialEntitlementSource,
     CommercialEntitlementStatus,
     CommercialTier,
+    ConfidenceBreakdown,
+    EstimationConfidenceLabel,
+    EstimationConstructionScenario,
+    EstimationReportArtifact,
     ExportJobCreateRequest,
     ExportJobStatus,
     ProjectTitleSource,
     SessionRecord,
     SessionStage,
+    TraditionalEstimate,
     UserRecord,
     WorkspaceMembershipRecord,
     WorkspaceRecord,
@@ -27,6 +33,7 @@ from app.models import (
 )
 from app.services.auth_service import hash_password
 from app.services.commercial_access import build_commercial_access_snapshot_v2
+from app.services import export_delivery_service
 from app.services.export_delivery_service import (
     create_export_job,
     get_export_job_response,
@@ -146,6 +153,121 @@ def test_create_export_job_blueprint_professional(db_session: Session) -> None:
     # Verify it does NOT contain ACP internal zip / runtime files
     assert "ACP/runtime/" not in content_str
     assert "ACP/manifest.json" not in content_str
+
+
+def test_create_export_job_blueprint_professional_with_estimation_report(db_session: Session) -> None:
+    user, _, record = _seed_user_and_session(db_session, tier=CommercialTier.blueprint_pro)
+    snapshot = build_snapshot(db_session, record, current_user=user)
+    preview = resolve_acp_preview(db_session, record)
+    access = build_commercial_access_snapshot_v2(db_session, record, current_user=user)
+    snapshot.estimation_report = EstimationReportArtifact(
+        traditional=TraditionalEstimate(
+            estimated_hours_total=320,
+            estimated_duration_weeks=10,
+            estimated_cost=50_000_000,
+        ),
+        agentic=AgenticEstimate(
+            estimated_hours_total=145,
+            estimated_duration_weeks=5,
+            estimated_cost=20_500_000,
+            automation_coverage_percent=59,
+            human_supervision_hours=18,
+            net_savings_vs_traditional=29_500_000,
+        ),
+        confidence=ConfidenceBreakdown(
+            score=96,
+            label=EstimationConfidenceLabel.high,
+            uncertainty_band_percent=12,
+        ),
+        construction_scenarios=[
+            EstimationConstructionScenario(
+                scenario_key="acp_agentic",
+                label="ACP + herramientas agenticas",
+                estimated_hours_total=128.7,
+                estimated_duration_weeks=4.5,
+                estimated_cost=20_511_057,
+                effort_reduction_vs_traditional_percent=59,
+                cost_savings_vs_traditional=29_405_156,
+            )
+        ],
+        assumptions=["Las integraciones externas quedan acotadas al alcance aprobado."],
+        risk_drivers=["Las decisiones de entorno pueden cambiar la banda final de costos."],
+    )
+
+    job_response = create_export_job(
+        db_session,
+        record=record,
+        current_user=user,
+        access=access,
+        snapshot=snapshot,
+        preview=preview,
+        payload=ExportJobCreateRequest(
+            artifact_kind="blueprint_professional",
+            profile="professional",
+            idempotency_key=f"{record.id}:blueprint-professional-estimation",
+        ),
+    )
+    db_session.commit()
+
+    assert job_response.status == ExportJobStatus.ready
+    _, raw_bytes = read_export_job_bytes(db_session, record=record, job_id=job_response.id)
+    content_str = raw_bytes.decode("utf-8")
+    assert "ACP + herramientas agenticas" in content_str
+    assert "59.0%" in content_str
+    assert "96%" in content_str
+
+
+def test_create_export_job_reruns_failed_existing_job_with_same_idempotency_key(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, _, record = _seed_user_and_session(db_session, tier=CommercialTier.blueprint_pro)
+    snapshot = build_snapshot(db_session, record, current_user=user)
+    preview = resolve_acp_preview(db_session, record)
+    access = build_commercial_access_snapshot_v2(db_session, record, current_user=user)
+    original_run = export_delivery_service._run_export_generation
+    calls = {"count": 0}
+
+    def flaky_run(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("transient export failure")
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(export_delivery_service, "_run_export_generation", flaky_run)
+
+    payload = ExportJobCreateRequest(
+        artifact_kind="blueprint_professional",
+        profile="professional",
+        idempotency_key=f"{record.id}:rerun-blueprint-export",
+    )
+
+    first = create_export_job(
+        db_session,
+        record=record,
+        current_user=user,
+        access=access,
+        snapshot=snapshot,
+        preview=preview,
+        payload=payload,
+    )
+    db_session.commit()
+    assert first.status == ExportJobStatus.failed
+
+    second = create_export_job(
+        db_session,
+        record=record,
+        current_user=user,
+        access=access,
+        snapshot=snapshot,
+        preview=preview,
+        payload=payload,
+    )
+    db_session.commit()
+
+    assert second.id == first.id
+    assert second.status == ExportJobStatus.ready
+    assert calls["count"] == 2
 
 
 def test_create_export_job_forbidden_for_free_tier(db_session: Session) -> None:
@@ -288,5 +410,4 @@ def test_create_export_job_acp_forbidden_without_entitlement(db_session: Session
                 profile="acp-portable",
             ),
         )
-
 

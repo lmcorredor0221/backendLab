@@ -22,6 +22,7 @@ from app.models import (
     EstimationBenchmarkRef,
     EstimationComplexityDriver,
     EstimationConfidenceAdjustmentProposal,
+    EstimationPackagePolicyState,
     EstimationRiskRegisterEntry,
     EstimationScenarioAdjustment,
     EstimationSavingsOpportunity,
@@ -669,6 +670,14 @@ def approve_memory_for_session(client: TestClient, headers: dict[str, str], sess
     )
     assert approve_response.status_code == 200
     return approve_response.json()
+
+
+def prepare_acp_session(client: TestClient, headers: dict[str, str], session_id: str, *, tier: str = "acp") -> None:
+    bootstrap_response = client.post(f"/api/v1/sessions/{session_id}/evaluation/bootstrap", headers=headers)
+    assert bootstrap_response.status_code == 200
+    estimate_response = client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers)
+    assert estimate_response.status_code == 200
+    upgrade_session_tier(client, headers, session_id, tier=tier)
 
 
 def approve_validate_for_session(client: TestClient, headers: dict[str, str], session_id: str) -> dict:
@@ -1403,6 +1412,67 @@ class FakeLLMTraceBuilderService:
         )
 
 
+class DegradingDiscoveryBuilderService(FakeLLMTraceBuilderService):
+    def _degraded_discovery(self, payload) -> DiscoveryArtifact:
+        return build_discovery_artifact_from_payload(payload).model_copy(
+            update={
+                "operational_baseline": {
+                    "current_time_spent": "unknown",
+                    "current_cost": "unknown",
+                    "frequent_errors": [],
+                    "automation_opportunities": [],
+                },
+                "mvp_definition": {
+                    "v1_scope": [],
+                    "out_of_scope": [],
+                    "north_star_metric": "unknown",
+                    "non_delegable_decisions": [],
+                },
+                "value_statement": "",
+            }
+        )
+
+    def normalize_discovery(self, payload, *, context_bundle=None) -> LLMArtifactResult:
+        del context_bundle
+        return LLMArtifactResult(
+            artifact=self._degraded_discovery(payload),
+            provider_key="openai",
+            execution_backend="provider_native",
+            execution_mode="primary",
+            route_reason="provider devuelve placeholders para campos sin suficiente confianza.",
+            knowledge_access_backend="hybrid",
+            effective_context_backend="hybrid_inline_compact",
+        )
+
+    def analyze_discovery(self, payload, *, context_bundle=None) -> LLMArtifactResult:
+        del context_bundle
+        degraded = self._degraded_discovery(payload)
+        artifact = build_discovery_analysis_artifact_from_payload(payload).model_copy(
+            update={
+                "missing_information": [
+                    "operational_baseline.current_time_spent",
+                    "operational_baseline.current_cost",
+                    "operational_baseline.frequent_errors",
+                    "operational_baseline.automation_opportunities",
+                    "mvp_definition.north_star_metric",
+                    "mvp_definition.v1_scope",
+                    "mvp_definition.out_of_scope",
+                    "mvp_definition.non_delegable_decisions",
+                ],
+                "normalized_discovery_candidate": degraded,
+            }
+        )
+        return LLMArtifactResult(
+            artifact=artifact,
+            provider_key="openai",
+            execution_backend="provider_native",
+            execution_mode="primary",
+            route_reason="provider devuelve candidato degradado con unknown y listas vacias.",
+            knowledge_access_backend="hybrid",
+            effective_context_backend="hybrid_inline_compact",
+        )
+
+
 class RuntimeBoundBuilderService:
     def __init__(self, provider_key: str, sink: list[tuple[str, str]]) -> None:
         self.provider_key = provider_key
@@ -1526,7 +1596,6 @@ class RuntimeBoundBuilderService:
 
 def test_backend_smoke_flow_covers_login_discovery_blueprint_evaluation_and_acp_export(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
-    upgrade_session_tier(client, headers, session_id)
 
     bootstrap_response = client.post(f"/api/v1/sessions/{session_id}/evaluation/bootstrap", headers=headers)
     assert bootstrap_response.status_code == 200
@@ -1534,6 +1603,11 @@ def test_backend_smoke_flow_covers_login_discovery_blueprint_evaluation_and_acp_
     evaluation_response = client.post(f"/api/v1/sessions/{session_id}/evaluate", headers=headers)
     assert evaluation_response.status_code == 200
     assert evaluation_response.json()["status"] in {"needs_review", "ready"}
+
+    estimate_response = client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers)
+    assert estimate_response.status_code == 200
+
+    upgrade_session_tier(client, headers, session_id)
 
     preview_response = client.get(f"/api/v1/sessions/{session_id}/acp/preview", headers=headers)
     assert preview_response.status_code == 200
@@ -2046,6 +2120,90 @@ def test_normalize_discovery_accepts_legacy_autonomy_aliases(client: TestClient)
         "operador_autonomo",
         "sistema_multiagente",
     }
+
+
+def test_approving_discover_and_define_advances_session_stage(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+    headers = auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    normalize_response = client.post(
+        f"/api/v1/sessions/{session_id}/normalize-discovery",
+        headers=headers,
+        json=complete_discovery_payload(),
+    )
+    assert normalize_response.status_code == 200
+
+    analyze_response = client.post(
+        f"/api/v1/sessions/{session_id}/analyze-discovery",
+        headers=headers,
+        json=complete_discovery_payload(),
+    )
+    assert analyze_response.status_code == 200
+    discover_artifact = analyze_response.json()
+
+    approve_discover_response = client.post(
+        f"/api/v1/sessions/{session_id}/journey/discover/artifacts/{discover_artifact['id']}/approve",
+        headers=headers,
+        json={"note": "Discover aprobado para continuar a Define."},
+    )
+    assert approve_discover_response.status_code == 200
+
+    after_discover = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert after_discover.status_code == 200
+    assert after_discover.json()["session"]["current_stage"] == "build_canvas"
+
+    canvas_response = client.post(f"/api/v1/sessions/{session_id}/build-canvas", headers=headers)
+    assert canvas_response.status_code == 200
+
+    define_response = client.post(f"/api/v1/sessions/{session_id}/define-requirements", headers=headers)
+    assert define_response.status_code == 200
+    define_artifact = define_response.json()
+
+    approve_define_response = client.post(
+        f"/api/v1/sessions/{session_id}/journey/define/artifacts/{define_artifact['id']}/approve",
+        headers=headers,
+        json={"note": "Define aprobado para continuar a Blueprint."},
+    )
+    assert approve_define_response.status_code == 200
+
+    after_define = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert after_define.status_code == 200
+    assert after_define.json()["session"]["current_stage"] == "build_blueprint"
+
+
+def test_build_session_flow_preserves_explicit_discovery_inputs_when_analysis_candidate_degrades_fields(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: DegradingDiscoveryBuilderService(),
+    )
+
+    headers, session_id = build_session_flow(client)
+    snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    discovery = snapshot["discovery"]
+    expected = complete_discovery_payload()
+
+    assert discovery["operational_baseline"]["current_time_spent"] == expected["operational_baseline"]["current_time_spent"]
+    assert discovery["operational_baseline"]["current_cost"] == expected["operational_baseline"]["current_cost"]
+    assert discovery["operational_baseline"]["frequent_errors"] == expected["operational_baseline"]["frequent_errors"]
+    assert discovery["operational_baseline"]["automation_opportunities"] == expected["operational_baseline"]["automation_opportunities"]
+    assert discovery["mvp_definition"]["north_star_metric"] == expected["mvp_definition"]["north_star_metric"]
+    assert discovery["mvp_definition"]["v1_scope"] == expected["mvp_definition"]["v1_scope"]
+    assert discovery["mvp_definition"]["out_of_scope"] == expected["mvp_definition"]["out_of_scope"]
+    assert discovery["mvp_definition"]["non_delegable_decisions"] == expected["mvp_definition"]["non_delegable_decisions"]
 
 
 def test_analyze_discovery_partial_draft_returns_questions_and_candidate(
@@ -3148,6 +3306,8 @@ def test_validate_simulation_flow_generates_runs_judgement_and_preserves_hard_fa
     snapshot = approve_validate.json()
     assert snapshot["journey_latest_artifacts"]["validate"]["state"] == "approved"
     assert snapshot["simulation_runs"]
+    assert snapshot["session"]["current_stage"] == "post_validation"
+    assert snapshot["session"]["status"] == "ready"
 
 
 def test_tool_recommendation_stales_after_design_change_and_blocks_memory_rerun(client: TestClient) -> None:
@@ -3253,6 +3413,71 @@ def test_generate_estimation_report_persists_snapshot_and_artifact_registry(clie
     assert snapshot["estimation_report"]["analysis"]["scenario_adjustments"]
     assert snapshot["estimation_report"]["package_policy"]["package_block_reasons"]
     assert any(item["artifact_kind"] == "estimation_report" for item in snapshot["artifact_records"])
+
+
+def test_generate_estimation_report_advances_ready_sessions_to_ready_for_export_and_uses_background_tasks(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    approve_tools_for_session(client, headers, session_id)
+    approve_memory_for_session(client, headers, session_id)
+    approve_validate_for_session(client, headers, session_id)
+
+    captured: dict[str, object] = {}
+
+    def force_package_ready(report, *, analysis, decision=None):
+        del decision
+        return report.model_copy(
+            update={
+                "analysis": analysis,
+                "package_policy": EstimationPackagePolicyState(
+                    preliminary=False,
+                    can_continue_to_package=True,
+                    package_block_reasons=[],
+                    commercial_blocked=False,
+                ),
+            }
+        )
+
+    def fake_prepare_blueprint_basic_commercial_result(
+        db,
+        *,
+        record,
+        current_user,
+        background_tasks=None,
+        allow_llm=False,
+    ):
+        del db, current_user
+        captured["background_tasks"] = background_tasks
+        captured["allow_llm"] = allow_llm
+        captured["record_stage"] = record.current_stage
+        captured["record_status"] = record.status
+        return None, None
+
+    monkeypatch.setattr("app.api.routes.sessions.apply_estimation_analysis", force_package_ready)
+    monkeypatch.setattr(
+        "app.services.product_processing.blueprint_basic_service.prepare_blueprint_basic_commercial_result",
+        fake_prepare_blueprint_basic_commercial_result,
+    )
+
+    response = client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["status"] == "ready"
+    assert payload["stage"] == "ready_for_export"
+    assert captured["allow_llm"] is False
+    assert captured["record_stage"] == SessionStage.ready_for_export
+    assert captured["record_status"] == ArtifactStatus.ready
+    assert captured["background_tasks"] is not None
+    assert hasattr(captured["background_tasks"], "add_task")
+
+    snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    assert snapshot_response.json()["session"]["current_stage"] == "ready_for_export"
+    assert snapshot_response.json()["session"]["status"] == "ready"
 
 
 def test_estimation_analysis_decision_persists_without_mutating_historical_run(
@@ -4712,27 +4937,41 @@ def test_stage5_tool_and_llm_policy_round_trip_updates_canonical_exports(client:
 
 def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
-    upgrade_session_tier(client, headers, session_id)
+    prepare_acp_session(client, headers, session_id)
 
     preview_response = client.get(f"/api/v1/sessions/{session_id}/acp/preview", headers=headers)
     assert preview_response.status_code == 200
     preview = preview_response.json()
     assert preview["manifest_path"] == "ACP/manifest.yaml"
     assert any(item["path"] == "ACP/manifest.yaml" for item in preview["files"])
-    assert any(item["path"] == "ACP/tools/contracts/tool-build-blueprint.yaml" for item in preview["files"])
+    assert any(item["path"] == "ACP/construction-readiness/required-api-contracts.yaml" for item in preview["files"])
+    assert any(item["path"].startswith("ACP/tools/external/") for item in preview["files"])
+    assert any(item["path"] == "ACP/tools/permissions.yaml" for item in preview["files"])
     assert any(item["path"] == "ACP/construction-readiness/overview.yaml" for item in preview["files"])
     assert any(item["path"] == "ACP/prompts/builder-handoff.md" for item in preview["files"])
     assert any(item["path"] == "ACP/diagrams/KnowledgeGraph.md" for item in preview["files"])
     assert any(item["path"] == "ACP/svg/KnowledgeGraph.svg" for item in preview["files"])
     assert any(item["path"] == "ACP/blueprint.graph.json" for item in preview["files"])
-    assert preview["validation"]["can_export_zip"] is False
-    assert preview["construction_readiness"]["overall_status"] == "blocked"
+    assert preview["validation"]["can_export_zip"] is True
+    assert preview["validation"]["overall_status"] == "needs_review"
     assert preview["construction_readiness"]["can_start_build"] is False
-    assert preview["construction_readiness"]["blocking_gaps"] >= 1
+    assert preview["construction_readiness"]["open_questions"] >= 1
+    assert not any(issue["code"] == "missing_evaluation_base" for issue in preview["validation"]["issues"])
+    evaluation_status_by_path = {
+        item["path"]: item["status"]
+        for item in preview["files"]
+        if item["path"].startswith("ACP/evaluation/")
+    }
+    assert evaluation_status_by_path["ACP/evaluation/golden-dataset.json"] == "complete"
+    assert evaluation_status_by_path["ACP/evaluation/rubrics.yaml"] == "complete"
+    assert evaluation_status_by_path["ACP/evaluation/test-cases.feature"] == "complete"
     assert preview["construction_readiness"]["open_questions"] >= 1
 
-    bootstrap_response = client.post(f"/api/v1/sessions/{session_id}/evaluation/bootstrap", headers=headers)
-    assert bootstrap_response.status_code == 200
+    snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    assert snapshot["evaluation_dataset"] is not None
+    assert snapshot["evaluation_rubric"] is not None
 
     generate_response = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
     assert generate_response.status_code == 200
@@ -4743,9 +4982,9 @@ def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -
     assert any(item["path"] == "ACP/estimation/estimation-report.md" for item in generated_preview["files"])
     assert any(item["path"] == "ACP/estimation/assumptions.yaml" for item in generated_preview["files"])
     assert any(item["path"] == "ACP/estimation/sensitivity-drivers.yaml" for item in generated_preview["files"])
-    assert generated_preview["construction_readiness"]["overall_status"] == "blocked"
+    assert generated_preview["construction_readiness"]["overall_status"] == "needs_questions"
     assert generated_preview["construction_readiness"]["can_start_build"] is False
-    assert generated_preview["construction_readiness"]["blocking_gaps"] >= 1
+    assert generated_preview["construction_readiness"]["blocking_gaps"] == 0
     assert generated_preview["construction_readiness"]["open_questions"] >= 1
 
     validate_response = client.get(f"/api/v1/sessions/{session_id}/acp/validate", headers=headers)
@@ -4757,8 +4996,8 @@ def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -
     readiness_response = client.get(f"/api/v1/sessions/{session_id}/acp/construction-readiness", headers=headers)
     assert readiness_response.status_code == 200
     readiness = readiness_response.json()
-    assert readiness["overall_status"] == "blocked"
-    assert readiness["blocking_gaps"] >= 1
+    assert readiness["overall_status"] == "needs_questions"
+    assert readiness["blocking_gaps"] == 0
 
     questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
     assert questions_response.status_code == 200
@@ -4824,12 +5063,26 @@ def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -
     assert any(item["artifact_metadata"].get("lineage_scope") == "estimation" for item in artifacts if item["artifact_kind"] == "acp_file")
 
 
-def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: TestClient) -> None:
+def test_acp_workspace_autobootstraps_missing_evaluation_assets(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
     upgrade_session_tier(client, headers, session_id)
 
-    bootstrap_response = client.post(f"/api/v1/sessions/{session_id}/evaluation/bootstrap", headers=headers)
-    assert bootstrap_response.status_code == 200
+    workspace_response = client.get(f"/api/v1/sessions/{session_id}/acp/workspace", headers=headers)
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    assert workspace["validation"]["can_export_zip"] is True
+    assert workspace["readiness"]["open_questions"] >= 1
+
+    snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    assert snapshot["evaluation_dataset"] is not None
+    assert snapshot["evaluation_rubric"] is not None
+
+
+def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: TestClient) -> None:
+    headers, session_id = build_session_flow(client)
+    prepare_acp_session(client, headers, session_id)
 
     generate_response = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
     assert generate_response.status_code == 200
@@ -4873,17 +5126,33 @@ def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: 
         "deployment_network_constraints": "network=solo red interna; secrets=.env local; dependencies=postgres local",
     }
 
-    for question_key in question_keys:
-        response = client.patch(
-            f"/api/v1/sessions/{session_id}/acp/questions/{question_key}",
-            headers=headers,
-            json={
-                "answer_text": answers_by_key[question_key],
-                "owner_role": "owner_resuelto",
-                "impacted_artifacts": [],
-            },
-        )
-        assert response.status_code == 200
+    answered_keys: set[str] = {"deployment_target"}
+    for _ in range(len(answers_by_key) + 2):
+        current_questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
+        assert current_questions_response.status_code == 200
+        current_questions = current_questions_response.json()
+        open_question_keys = [
+            item["question_key"]
+            for item in current_questions
+            if item["status"] == "open" and item["question_key"] not in answered_keys
+        ]
+        if not open_question_keys:
+            break
+        for question_key in open_question_keys:
+            assert question_key in answers_by_key
+            response = client.patch(
+                f"/api/v1/sessions/{session_id}/acp/questions/{question_key}",
+                headers=headers,
+                json={
+                    "answer_text": answers_by_key[question_key],
+                    "owner_role": "owner_resuelto",
+                    "impacted_artifacts": [],
+                },
+            )
+            assert response.status_code == 200
+            answered_keys.add(question_key)
+    else:
+        raise AssertionError("ACP questions did not converge to a resolved/open-free set")
 
     regenerated_response = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
     assert regenerated_response.status_code == 200
@@ -4902,6 +5171,37 @@ def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: 
     assert final_questions_response.status_code == 200
     final_questions = final_questions_response.json()
     assert any(item["question_key"] == "deployment_target" and item["status"] == "resolved" for item in final_questions)
+
+
+def test_acp_questions_can_be_delegated_without_manual_answer_text(client: TestClient) -> None:
+    headers, session_id = build_session_flow(client)
+    prepare_acp_session(client, headers, session_id)
+
+    generate_response = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
+    assert generate_response.status_code == 200
+
+    delegate_response = client.patch(
+        f"/api/v1/sessions/{session_id}/acp/questions/deployment_target",
+        headers=headers,
+        json={
+            "decision": "delegate",
+            "owner_role": "platform_owner",
+            "impacted_artifacts": ["ACP/deployment/env.template"],
+        },
+    )
+    assert delegate_response.status_code == 200
+    delegated_question = delegate_response.json()
+    assert delegated_question["status"] == "deferred"
+    assert delegated_question["owner_role"] == "platform_owner"
+    assert delegated_question["resolved_at"] is not None
+    assert delegated_question["answer_text"].startswith("Delegado a implementacion")
+
+    refreshed_questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
+    assert refreshed_questions_response.status_code == 200
+    refreshed_questions = refreshed_questions_response.json()
+    deployment_question = next(item for item in refreshed_questions if item["question_key"] == "deployment_target")
+    assert deployment_question["status"] == "deferred"
+    assert deployment_question["answer_text"].startswith("Delegado a implementacion")
 
 
 def test_canonical_export_routes_publish_metadata_and_enforce_preview_mode(client: TestClient) -> None:
@@ -5014,6 +5314,8 @@ def test_package_preview_and_canonical_exports_detect_consistency_drift_against_
     assert any("Blueprint tiene `router_parallel`" in item for item in preview_payload["readiness"]["blocking_issues"])
     assert preview_payload["topology"]["consistency_summary"]["overall_status"] == "blocked"
 
+    estimate_response = client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers)
+    assert estimate_response.status_code == 200
     upgrade_session_tier(client, headers, session_id)
     acp_response = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
     assert acp_response.status_code == 200
@@ -5044,10 +5346,7 @@ def test_blueprint_professional_markdown_export_includes_consistency_and_decisio
 
 def test_acp_design_only_profile_closes_independently_from_extended_profile(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
-    upgrade_session_tier(client, headers, session_id)
-
-    bootstrap_response = client.post(f"/api/v1/sessions/{session_id}/evaluation/bootstrap", headers=headers)
-    assert bootstrap_response.status_code == 200
+    prepare_acp_session(client, headers, session_id)
 
     initial_preview = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
     assert initial_preview.status_code == 200

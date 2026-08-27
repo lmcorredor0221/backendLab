@@ -56,6 +56,7 @@ from app.services.product_processing import (
     ProductBuildProductKey,
     ProductProcessingMode,
     ensure_product_build_run,
+    sync_premium_enrichment_product_run,
     upsert_product_build_step,
 )
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
@@ -320,6 +321,115 @@ def test_inline_attention_resolution_removes_validation_missing_information() ->
         assert refreshed.missing_information == []
         assert item.key in refreshed.user_patch["attention_resolutions"]
         assert refreshed.user_patch["attention_resolutions"][item.key]["selected_option_key"] == "link_existing_evidence"
+    finally:
+        session.close()
+
+
+def test_persisted_attention_resolution_hides_journey_item_after_snapshot_reload() -> None:
+    session = _create_memory_engine_session()
+    try:
+        _, workspace, record = _seed_minimal_records(session)
+        now = utc_now()
+        snapshot = _snapshot(record)
+        artifact = JourneyStageArtifactEntry(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            session_id=record.id,
+            artifact_kind="definition",
+            stage_key="define",
+            version_number=2,
+            state=JourneyArtifactState.generated,
+            proposal_payload={},
+            missing_information=["untraced_item:FR-001"],
+            created_at=now,
+            updated_at=now,
+        )
+        snapshot.journey_latest_artifacts = {"define": artifact}
+        access = CommercialAccessSnapshotV2(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            tier=CommercialTier.blueprint_pro,
+        )
+
+        before = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+        )
+        item = next(entry for entry in before.items if entry.source_ref.entity_id == "untraced_item:FR-001")
+        artifact.user_patch = {
+            "attention_resolutions": {
+                item.key: {
+                    "action_kind": "answer",
+                    "answer_text": "Vincular FR-001 con el canvas aprobado.",
+                    "source_ref": {
+                        "entity_id": "untraced_item:FR-001",
+                    },
+                }
+            }
+        }
+
+        after = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+        )
+
+        assert item.key not in {entry.key for entry in after.items}
+    finally:
+        session.close()
+
+
+def test_approved_journey_artifact_stops_publishing_payload_attention_items() -> None:
+    session = _create_memory_engine_session()
+    try:
+        _, workspace, record = _seed_minimal_records(session)
+        now = utc_now()
+        snapshot = _snapshot(record)
+        snapshot.journey_latest_artifacts = {
+            "design": JourneyStageArtifactEntry(
+                id=uuid4(),
+                workspace_id=workspace.id,
+                session_id=record.id,
+                artifact_kind="design_proposal_skill",
+                stage_key="design",
+                version_number=3,
+                state=JourneyArtifactState.approved,
+                proposal_payload={
+                    "open_questions": [
+                        {
+                            "key": "traceability_strategy",
+                            "question": "Como se trazan las respuestas aprobadas?",
+                        }
+                    ],
+                    "gaps": ["No se detallan los controles de loops o reintentos."],
+                    "warnings": ["La aprobacion deberia revisarse antes de exportar."],
+                },
+                created_at=now,
+                updated_at=now,
+            )
+        }
+        access = CommercialAccessSnapshotV2(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            tier=CommercialTier.blueprint_pro,
+        )
+
+        response = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+        )
+
+        assert not any(item.source.startswith("journey.") for item in response.items)
     finally:
         session.close()
 
@@ -841,6 +951,66 @@ def test_uxa2_answer_resolver_updates_acp_question_source_and_removes_item() -> 
         session.close()
 
 
+def test_uxa2_defer_resolver_hides_acp_question_from_attention() -> None:
+    session = _create_memory_engine_session()
+    try:
+        user, _, record = _seed_minimal_records(session)
+        readiness = ConstructionReadinessReport(
+            gaps=[
+                ConstructionGapEntry(
+                    gap_key="deployment_target",
+                    title="Despliegue pendiente",
+                    severity="warning",
+                    blocking_stage="deployment_design",
+                    summary="Falta definir despliegue.",
+                    questions=[
+                        ConstructionQuestionEntry(
+                            question_key="deployment_target",
+                            question_text="Define el entorno objetivo",
+                            rationale="Necesario para cerrar el paquete.",
+                            target_owner="platform_owner",
+                            blocking=True,
+                        )
+                    ],
+                )
+            ]
+        )
+        access = CommercialAccessSnapshotV2(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=user.id,
+            tier=CommercialTier.acp,
+        )
+        snapshot = _snapshot(record)
+        before = build_attention_response_v2(session, record=record, snapshot=snapshot, readiness=readiness, access=access)
+        question = next(item for item in before.items if item.source == "acp_questions")
+
+        result = apply_attention_action_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=readiness,
+            access=access,
+            current_user=user,
+            item_key=question.key,
+            payload=AttentionActionRequestV2(
+                action_kind="defer",
+                resolution_note="Resolver durante implementacion.",
+                idempotency_key="defer-deployment-target",
+            ),
+        )
+        session.commit()
+        responses = session.exec(select(ConstructionQuestionResponseRecord)).all()
+        after = build_attention_response_v2(session, record=record, snapshot=snapshot, readiness=readiness, access=access)
+
+        assert result.status == "applied"
+        assert responses[0].question_key == "deployment_target"
+        assert responses[0].status == "deferred"
+        assert question.key not in {item.key for item in after.items}
+    finally:
+        session.close()
+
+
 def test_uxa2_blueprint_tier_does_not_surface_acp_readiness_as_active_blocker() -> None:
     session = _create_memory_engine_session()
     try:
@@ -1047,8 +1217,10 @@ def test_approved_design_artifact_suppresses_stale_design_skill_run_attention() 
             )
         ]
         snapshot.journey_latest_artifacts = {
-            "design": SimpleNamespace(
+            "design": JourneyStageArtifactEntry(
                 id=uuid4(),
+                workspace_id=record.workspace_id,
+                session_id=record.id,
                 stage_key="design",
                 artifact_kind="design_recommendation_artifact",
                 state=JourneyArtifactState.approved,
@@ -1059,6 +1231,7 @@ def test_approved_design_artifact_suppresses_stale_design_skill_run_attention() 
                 warnings=[],
                 reviewed_at=now,
                 approved_at=now,
+                created_at=now,
                 updated_at=now,
             )
         }
@@ -1276,6 +1449,18 @@ def test_premium_enrichment_resolution_removes_item_from_attention(client: TestC
         assert session_record is not None
         session_record.commercial_tier = CommercialTier.blueprint_pro
         db_session.add(session_record)
+        premium_run = ensure_product_build_run(
+            db_session,
+            workspace_id=session_record.workspace_id,
+            session_id=session_record.id,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            product_mode=ProductProcessingMode.premium_enrichment,
+            idempotency_key="uxa2-premium-attention",
+            entitlement_tier=CommercialTier.blueprint_pro,
+            access_state="allowed",
+            lifecycle=ProductBuildLifecycle.requires_attention,
+        )
+        db_session.add(premium_run)
 
         # Crear un artefacto con missing_information
         artifact = JourneyStageArtifactRecord(
@@ -1322,6 +1507,14 @@ def test_premium_enrichment_resolution_removes_item_from_attention(client: TestC
         db_session.add(backlog_item)
         db_session.commit()
         db_session.refresh(backlog_item)
+        sync_premium_enrichment_product_run(
+            db_session,
+            workspace_id=session_record.workspace_id,
+            session_id=session_record.id,
+            current_tier=CommercialTier.blueprint_pro,
+            current_stage="define",
+        )
+        db_session.commit()
         backlog_id = str(backlog_item.id)
     finally:
         db_session.close()
@@ -1329,8 +1522,13 @@ def test_premium_enrichment_resolution_removes_item_from_attention(client: TestC
     # 1. Verificar que inicialmente aparece en attention
     attention_before = client.get(f"/api/v1/sessions/{session_id}/attention-v2", headers=headers)
     assert attention_before.status_code == 200
-    before_keys = [it["key"] for it in attention_before.json()["items"]]
-    assert any("ca-999" in k.lower() or "untraced" in k.lower() for k in before_keys)
+    before_items = attention_before.json()["items"]
+    assert any(
+        "ca-999" in str(item.get("title") or "").lower()
+        or "ca-999" in str(item.get("reason") or "").lower()
+        or "premium_backlog:" in str((item.get("source_ref") or {}).get("field_path") or "").lower()
+        for item in before_items
+    )
 
     # 2. Resolver el ítem mediante el endpoint de enriquecimiento premium
     resolve_resp = client.post(
@@ -1343,5 +1541,10 @@ def test_premium_enrichment_resolution_removes_item_from_attention(client: TestC
     # 3. Verificar que ahora sale completamente del panel de atencion
     attention_after = client.get(f"/api/v1/sessions/{session_id}/attention-v2", headers=headers)
     assert attention_after.status_code == 200
-    after_keys = [it["key"] for it in attention_after.json()["items"]]
-    assert not any("ca-999" in k.lower() or "untraced" in k.lower() for k in after_keys)
+    after_items = attention_after.json()["items"]
+    assert not any(
+        "ca-999" in str(item.get("title") or "").lower()
+        or "ca-999" in str(item.get("reason") or "").lower()
+        or str((item.get("source_ref") or {}).get("field_path") or "").lower() == f"premium_backlog:{backlog_id}".lower()
+        for item in after_items
+    )

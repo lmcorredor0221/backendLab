@@ -299,7 +299,7 @@ def _answered_construction_question_keys(db: Session, record: SessionRecord) -> 
     rows = db.exec(
         select(ConstructionQuestionResponseRecord).where(
             ConstructionQuestionResponseRecord.session_id == record.id,
-            ConstructionQuestionResponseRecord.status.in_(["answered", "resolved"]),
+            ConstructionQuestionResponseRecord.status.in_(["answered", "deferred", "resolved"]),
         )
     ).all()
     return {item.question_key for item in rows if item.question_key}
@@ -615,6 +615,54 @@ def _decision_entries_from_payload(payload: dict, *keys: str) -> list[dict[str, 
     return entries
 
 
+APPROVED_JOURNEY_ARTIFACT_STATES = {
+    JourneyArtifactState.approved,
+    JourneyArtifactState.approved_legacy,
+}
+
+
+def _resolved_attention_tokens_for_artifact(artifact: JourneyStageArtifactEntry) -> tuple[set[str], set[str], set[str]]:
+    resolutions = dict((artifact.user_patch or {}).get("attention_resolutions") or {})
+    resolved_keys: set[str] = set()
+    resolved_entities: set[str] = set()
+    resolved_titles: set[str] = set()
+    for resolution_key, raw_resolution in resolutions.items():
+        key = str(resolution_key or "").strip()
+        if key:
+            resolved_keys.add(key)
+        if not isinstance(raw_resolution, dict):
+            continue
+        source_ref = raw_resolution.get("source_ref") or {}
+        entity_id = str(source_ref.get("entity_id") or "").strip()
+        if entity_id:
+            resolved_entities.add(entity_id)
+        title = str(raw_resolution.get("title") or raw_resolution.get("question") or "").strip().lower()
+        if title:
+            resolved_titles.add(title)
+    return resolved_keys, resolved_entities, resolved_titles
+
+
+def _filter_resolved_artifact_attention_items(
+    artifact: JourneyStageArtifactEntry,
+    artifact_items: list[AttentionItemV2],
+) -> list[AttentionItemV2]:
+    resolved_keys, resolved_entities, resolved_titles = _resolved_attention_tokens_for_artifact(artifact)
+    if not resolved_keys and not resolved_entities and not resolved_titles:
+        return artifact_items
+    filtered: list[AttentionItemV2] = []
+    for item in artifact_items:
+        entity_id = str(item.source_ref.entity_id or "").strip()
+        title = item.title.strip().lower()
+        if item.key in resolved_keys:
+            continue
+        if entity_id and entity_id in resolved_entities:
+            continue
+        if title and title in resolved_titles:
+            continue
+        filtered.append(item)
+    return filtered
+
+
 def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> list[AttentionItemV2]:
     items: list[AttentionItemV2] = []
     artifacts = list((snapshot.journey_latest_artifacts or {}).values())
@@ -641,6 +689,8 @@ def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> li
         )
         if artifact.state == JourneyArtifactState.stale or artifact.stale_reasons:
             continue
+        if artifact.state in APPROVED_JOURNEY_ARTIFACT_STATES:
+            continue
         payload = artifact.proposal_payload or {}
         validation_issues, missing_information = split_validation_issue_codes(artifact.missing_information)
         open_questions = _entries_from_payload(payload, "guided_questions", "open_questions", "needs_information")
@@ -650,8 +700,8 @@ def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> li
         warnings.extend(_list_from_payload(payload, "warnings"))
         gaps = _list_from_payload(payload, "gaps", "coverage_gaps")
         decisions = _decision_entries_from_payload(payload, "critic_findings", "findings")
-        items.extend(
-            items_from_validation_issues(
+        artifact_items = [
+            *items_from_validation_issues(
                 validation_issues,
                 product=product,
                 stage=stage,
@@ -660,10 +710,8 @@ def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> li
                 artifact_version=artifact.version_number,
                 href=href,
                 return_href=href,
-            )
-        )
-        items.extend(
-            items_from_stage_payload(
+            ),
+            *items_from_stage_payload(
                 product=product,
                 stage=stage,
                 source=f"journey.{artifact.artifact_kind or stage}",
@@ -675,8 +723,9 @@ def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> li
                 gaps=gaps,
                 decisions=decisions,
                 warnings=warnings,
-            )
-        )
+            ),
+        ]
+        items.extend(_filter_resolved_artifact_attention_items(artifact, artifact_items))
     return items
 
 
@@ -1276,7 +1325,10 @@ def _apply_acp_question_answer(
     question_key = item.source_ref.entity_id or ""
     if not question_key:
         return AttentionActionApplyResult(status="conflict", message="La pregunta no tiene referencia de origen.")
+    is_defer = payload.action_kind == "defer"
     answer = payload.answer_text.strip()
+    if is_defer and not answer:
+        answer = "Delegado a implementacion. Resolver durante la construccion con trazabilidad ACP."
     if not answer:
         return AttentionActionApplyResult(status="conflict", message="La respuesta no puede estar vacia.")
     now = utc_now()
@@ -1298,18 +1350,21 @@ def _apply_acp_question_answer(
     response.expected_answer_format = str(payload.payload.get("expected_answer_format", ""))
     response.target_owner = item.owner_role
     response.blocking = item.blocking
-    response.status = "answered"
+    response.status = "deferred" if is_defer else "answered"
     response.answer_text = answer
     response.owner_role = payload.payload.get("owner_role", "") or item.owner_role
     response.impacted_artifacts = item.affected_artifact_refs
     response.answered_by_user_id = current_user.id
     response.answered_by_display = current_user.full_name or current_user.email
     response.answered_at = now
-    response.resolved_at = None
+    response.resolved_at = now if is_defer else None
     response.updated_at = now
     db.add(response)
     db.flush()
-    return AttentionActionApplyResult(status="applied", message="Pregunta ACP respondida.")
+    return AttentionActionApplyResult(
+        status="applied",
+        message="Pregunta ACP diferida." if is_defer else "Pregunta ACP respondida.",
+    )
 
 
 def _apply_approval_action(
@@ -1584,7 +1639,7 @@ def apply_attention_action_v2(
     if payload.source_artifact_version is not None and item.source_ref.artifact_version != payload.source_artifact_version:
         return AttentionActionApplyResult(status="conflict", message="La version del artefacto cambio; refresca antes de resolver.")
 
-    if item.source == "acp_questions" and payload.action_kind == "answer":
+    if item.source == "acp_questions" and payload.action_kind in {"answer", "defer"}:
         result = _apply_acp_question_answer(db, record=record, item=item, payload=payload, current_user=current_user)
     elif item.source == "approval_gate" and payload.action_kind in {"approve", "reject"}:
         result = _apply_approval_action(db, record=record, item=item, payload=payload)

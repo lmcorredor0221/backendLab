@@ -11,6 +11,7 @@ from app.api.routes.sessions import (
     build_construction_readiness_view,
     build_safe_download_filename,
     build_snapshot,
+    ensure_acp_evaluation_seed_snapshot,
     ensure_commercial_capability,
     get_acp_file_entry,
     get_acp_knowledge_graph,
@@ -199,7 +200,14 @@ def resolve_profiled_preview(
     *,
     profile: str,
 ) -> ACPPreview:
-    return apply_acp_export_profile(resolve_acp_preview(db, record), profile)
+    preview = apply_acp_export_profile(resolve_acp_preview(db, record), profile)
+    response_records = load_construction_question_response_records(db, record.id)
+    readiness = build_construction_readiness_view(preview, response_records)
+    return rebuild_profile_conformance_with_readiness(
+        preview,
+        profile=profile,
+        readiness=readiness,
+    )
 
 
 def ensure_acp_build_access(record, *, db: Session, current_user: UserRecord) -> None:
@@ -350,10 +358,13 @@ def get_acp_direct_resolution_route(
 ) -> AcpDirectRouteResolution:
     record = get_or_404(db, session_id, current_user.id)
     ensure_commercial_capability(record, "acp.invite", db=db, current_user=current_user)
-    snapshot = build_snapshot(db, record, current_user=current_user)
+    snapshot, _ = ensure_acp_evaluation_seed_snapshot(
+        db,
+        record,
+        current_user=current_user,
+        source_action="acp_direct_resolution",
+    )
     try:
-        ensure_acp_product_orchestration(db, record=record, snapshot=snapshot, current_user=current_user)
-        db.commit()
         return build_acp_direct_resolution(db, record=record, snapshot=snapshot)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -369,7 +380,12 @@ def generate_acp_route(
     normalized_profile = resolve_acp_profile(profile)
     record = get_or_404(db, session_id, current_user.id)
     ensure_acp_build_access(record, db=db, current_user=current_user)
-    snapshot = build_snapshot(db, record, current_user=current_user)
+    snapshot, _ = ensure_acp_evaluation_seed_snapshot(
+        db,
+        record,
+        current_user=current_user,
+        source_action="generate_acp_preview",
+    )
     ensure_acp_route_ready_for_package(db, record=record, current_user=current_user, snapshot=snapshot)
     response_records = load_construction_question_response_records(db, session_id)
     continuity_answers = build_continuity_answer_map(response_records)
@@ -452,7 +468,7 @@ def generate_acp_route(
     )
     capture_operational_state(db, session_id=session_id, source_action="generate_acp_preview")
     db.commit()
-    return apply_acp_export_profile(preview, normalized_profile)
+    return resolve_profiled_preview(db, record, profile=normalized_profile)
 
 
 @router.get("/{session_id}/acp/preview", response_model=ACPPreview)
@@ -608,7 +624,12 @@ def export_acp_zip_route(
     normalized_profile = resolve_acp_profile(profile)
     record = get_or_404(db, session_id, current_user.id)
     ensure_commercial_capability(record, "acp.download", db=db, current_user=current_user)
-    export_snapshot = build_snapshot(db, record, current_user=current_user)
+    export_snapshot, _ = ensure_acp_evaluation_seed_snapshot(
+        db,
+        record,
+        current_user=current_user,
+        source_action="export_acp_zip",
+    )
     direct_resolution = ensure_acp_route_ready_for_package(
         db,
         record=record,

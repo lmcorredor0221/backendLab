@@ -194,6 +194,18 @@ def _format_currency(value: Any) -> str:
         return str(value or "$0.00 COP")
 
 
+def _percentage_savings(traditional_cost: Any, agentic_cost: Any) -> str:
+    try:
+        traditional_value = float(traditional_cost or 0)
+        agentic_value = float(agentic_cost or 0)
+    except (TypeError, ValueError):
+        return "Calculado"
+    if traditional_value <= 0:
+        return "Calculado"
+    savings_percent = ((traditional_value - agentic_value) / traditional_value) * 100
+    return f"{savings_percent:.1f}%"
+
+
 def _blueprint_markdown(snapshot: SessionSnapshot, preview: ACPPreview) -> bytes:
     discovery = snapshot.discovery
     canvas = snapshot.canvas
@@ -345,11 +357,14 @@ def _blueprint_markdown(snapshot: SessionSnapshot, preview: ACPPreview) -> bytes
         agent_hours = estimation.agentic.estimated_hours_total
         agent_cost = _format_currency(estimation.agentic.estimated_cost)
         savings = _format_currency(estimation.agentic.net_savings_vs_traditional)
-        pct_savings = f"{estimation.agentic.percentage_savings_vs_traditional:.1f}%" if estimation.agentic.percentage_savings_vs_traditional else "Calculado"
+        pct_savings = _percentage_savings(
+            getattr(estimation.traditional, "estimated_cost", 0),
+            getattr(estimation.agentic, "estimated_cost", 0),
+        )
         aut_cov = f"{estimation.agentic.automation_coverage_percent:.0f}%" if estimation.agentic.automation_coverage_percent else "75%"
         sup_hours = f"{estimation.agentic.human_supervision_hours:.1f} hrs" if estimation.agentic.human_supervision_hours else "15 hrs"
-        conf_score = f"{estimation.confidence.score * 100:.0f}%" if estimation.confidence else "85%"
-        conf_label = estimation.confidence.label if estimation.confidence else "Alta"
+        conf_score = f"{getattr(estimation.confidence, 'score', 85):.0f}%" if estimation.confidence else "85%"
+        conf_label = getattr(estimation.confidence.label, "value", estimation.confidence.label) if estimation.confidence else "Alta"
         band = f"±{estimation.confidence.uncertainty_band_percent:.0f}%" if estimation.confidence and estimation.confidence.uncertainty_band_percent else "±15%"
 
         lines.extend(
@@ -371,7 +386,12 @@ def _blueprint_markdown(snapshot: SessionSnapshot, preview: ACPPreview) -> bytes
         )
         if estimation.construction_scenarios:
             for sc in estimation.construction_scenarios:
-                lines.append(f"| **{sc.scenario_name}** | {sc.estimated_hours:.1f} hrs | {_format_currency(sc.estimated_cost)} | {_format_currency(sc.savings_vs_traditional)} |")
+                label = getattr(sc, "label", "") or getattr(sc, "scenario_name", "") or getattr(sc, "scenario_key", "Escenario")
+                estimated_hours = float(getattr(sc, "estimated_hours_total", getattr(sc, "estimated_hours", 0)) or 0)
+                cost_savings = getattr(sc, "cost_savings_vs_traditional", getattr(sc, "savings_vs_traditional", 0))
+                lines.append(
+                    f"| **{label}** | {estimated_hours:.1f} hrs | {_format_currency(getattr(sc, 'estimated_cost', 0))} | {_format_currency(cost_savings)} |"
+                )
         else:
             lines.append(f"| **MVP Agéntico Base** | {agent_hours:.1f} hrs | {agent_cost} | {savings} |")
 
@@ -527,7 +547,7 @@ def _run_export_generation(
     current_user: UserRecord,
     snapshot: SessionSnapshot,
     preview: ACPPreview,
-) -> None:
+    ) -> None:
     conformance_errors = _conformance_errors(definition, preview)
     if conformance_errors:
         raise ValueError("; ".join(conformance_errors))
@@ -558,6 +578,48 @@ def _run_export_generation(
     )
 
 
+def _rerun_existing_export_job(
+    db: Session,
+    *,
+    job: ExportJobRecord,
+    definition: ExportDefinition,
+    current_user: UserRecord,
+    snapshot: SessionSnapshot,
+    preview: ACPPreview,
+) -> None:
+    now = utc_now()
+    auto_regeneration_count = int(job.metadata_payload.get("auto_regeneration_count", 0) or 0) + 1
+    job.status = ExportJobStatus.running
+    job.error_message = ""
+    job.checksum_sha256 = ""
+    job.size_bytes = 0
+    job.updated_at = now
+    job.completed_at = None
+    job.expires_at = now + timedelta(hours=24)
+    job.metadata_payload = {
+        **job.metadata_payload,
+        "auto_regeneration_count": auto_regeneration_count,
+        "auto_regenerated_at": now.isoformat(),
+        "blueprint_version_number": preview.blueprint_version_number,
+    }
+    db.add(job)
+    db.flush()
+    try:
+        _run_export_generation(
+            db,
+            job=job,
+            definition=definition,
+            current_user=current_user,
+            snapshot=snapshot,
+            preview=preview,
+        )
+    except Exception as exc:
+        job.status = ExportJobStatus.failed
+        job.error_message = str(exc)[:500]
+        job.updated_at = utc_now()
+    db.add(job)
+
+
 def create_export_job(
     db: Session,
     *,
@@ -582,6 +644,19 @@ def create_export_job(
         )
     ).first()
     if existing is not None:
+        if existing.status == ExportJobStatus.ready and existing.expires_at is not None and existing.expires_at < utc_now():
+            existing.status = ExportJobStatus.expired
+            existing.updated_at = utc_now()
+            db.add(existing)
+        if existing.status in {ExportJobStatus.failed, ExportJobStatus.expired, ExportJobStatus.canceled}:
+            _rerun_existing_export_job(
+                db,
+                job=existing,
+                definition=definition,
+                current_user=current_user,
+                snapshot=snapshot,
+                preview=preview,
+            )
         return _serialize_job(existing)
 
     now = utc_now()

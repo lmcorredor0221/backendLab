@@ -32,6 +32,8 @@ from app.models import (
     MemoryRecommendationArtifact,
     MemoryRecommendationSourceStageVersions,
     MemoryProfile,
+    MvpDefinition,
+    OperationalBaseline,
     ReviewState,
     SafetyCheck,
     SessionSnapshot,
@@ -1058,6 +1060,102 @@ def _fallback_discovery_artifact_from_payload(payload: DiscoveryInput) -> Discov
     )
 
 
+_DISCOVERY_PLACEHOLDER_VALUES = {"unknown", "desconocido", "n/a", "na", "none", "null"}
+
+
+def _is_placeholder_discovery_text(value: str | None) -> bool:
+    if not isinstance(value, str):
+        return True
+    normalized = normalize_text(value).lower()
+    return not normalized or normalized in _DISCOVERY_PLACEHOLDER_VALUES
+
+
+def _normalized_discovery_list(items: list[str] | None) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    normalized_items: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        normalized = normalize_text(item)
+        if not normalized or normalized.lower() in _DISCOVERY_PLACEHOLDER_VALUES:
+            continue
+        normalized_items.append(normalized)
+    return normalized_items
+
+
+def _coerce_operational_baseline(value: OperationalBaseline | dict[str, Any] | None) -> OperationalBaseline:
+    if isinstance(value, OperationalBaseline):
+        return value.model_copy()
+    if isinstance(value, dict):
+        return OperationalBaseline.model_validate(value)
+    return OperationalBaseline()
+
+
+def _coerce_mvp_definition(value: MvpDefinition | dict[str, Any] | None) -> MvpDefinition:
+    if isinstance(value, MvpDefinition):
+        return value.model_copy()
+    if isinstance(value, dict):
+        return MvpDefinition.model_validate(value)
+    return MvpDefinition()
+
+
+def _preserve_explicit_discovery_input(
+    artifact: DiscoveryArtifact,
+    payload: DiscoveryInput,
+) -> DiscoveryArtifact:
+    fallback = _fallback_discovery_artifact_from_payload(payload)
+    baseline = _coerce_operational_baseline(artifact.operational_baseline)
+    fallback_baseline = fallback.operational_baseline
+    mvp_definition = _coerce_mvp_definition(artifact.mvp_definition)
+    fallback_mvp_definition = fallback.mvp_definition
+
+    if _is_placeholder_discovery_text(baseline.current_time_spent):
+        baseline.current_time_spent = fallback_baseline.current_time_spent
+    if _is_placeholder_discovery_text(baseline.current_cost):
+        baseline.current_cost = fallback_baseline.current_cost
+    if not _normalized_discovery_list(baseline.frequent_errors):
+        baseline.frequent_errors = list(fallback_baseline.frequent_errors)
+    if not _normalized_discovery_list(baseline.automation_opportunities):
+        baseline.automation_opportunities = list(fallback_baseline.automation_opportunities)
+
+    if _is_placeholder_discovery_text(mvp_definition.north_star_metric):
+        mvp_definition.north_star_metric = fallback_mvp_definition.north_star_metric
+    if not _normalized_discovery_list(mvp_definition.v1_scope):
+        mvp_definition.v1_scope = list(fallback_mvp_definition.v1_scope)
+    if not _normalized_discovery_list(mvp_definition.out_of_scope):
+        mvp_definition.out_of_scope = list(fallback_mvp_definition.out_of_scope)
+    if not _normalized_discovery_list(mvp_definition.non_delegable_decisions):
+        mvp_definition.non_delegable_decisions = list(fallback_mvp_definition.non_delegable_decisions)
+
+    updates: dict[str, object] = {
+        "operational_baseline": baseline,
+        "mvp_definition": mvp_definition,
+    }
+    if _is_placeholder_discovery_text(artifact.problem_statement):
+        updates["problem_statement"] = fallback.problem_statement
+    if _is_placeholder_discovery_text(artifact.current_user):
+        updates["current_user"] = fallback.current_user
+    if _is_placeholder_discovery_text(artifact.current_process):
+        updates["current_process"] = fallback.current_process
+    if _is_placeholder_discovery_text(artifact.desired_outcome):
+        updates["desired_outcome"] = fallback.desired_outcome
+    if _is_placeholder_discovery_text(artifact.autonomy_level):
+        updates["autonomy_level"] = fallback.autonomy_level
+    if not _normalized_discovery_list(list(artifact.constraints)):
+        updates["constraints"] = list(fallback.constraints)
+    if _is_placeholder_discovery_text(artifact.case_type):
+        updates["case_type"] = fallback.case_type
+    if _is_placeholder_discovery_text(artifact.value_statement):
+        updates["value_statement"] = build_value_statement(
+            str(updates.get("problem_statement") or artifact.problem_statement or fallback.problem_statement),
+            str(updates.get("desired_outcome") or artifact.desired_outcome or fallback.desired_outcome),
+            baseline.current_time_spent,
+            baseline.current_cost,
+        )
+    return artifact.model_copy(update=updates)
+
+
 def _prepare_discovery_analysis_input(context: SkillRunContext) -> DiscoveryAnalysisSkillInput:
     if context.discovery_input is None:
         raise ValueError("discovery_input is required for discovery_analysis_skill")
@@ -1355,6 +1453,7 @@ def _run_discovery_skill(input_model: BaseModel, context: SkillRunContext) -> Sk
         if llm_result is not None and isinstance(llm_result.artifact, DiscoveryArtifact)
         else _fallback_discovery_artifact_from_payload(payload)
     )
+    artifact = _preserve_explicit_discovery_input(artifact, payload)
     warnings = ["Hay campos pendientes antes de avanzar."] if missing_fields else []
     if llm_result is not None:
         _append_warning(warnings, llm_result.warning)
@@ -1411,6 +1510,14 @@ def _run_discovery_analysis_skill(input_model: BaseModel, context: SkillRunConte
     )
     if artifact.normalized_discovery_candidate is None:
         artifact = artifact.model_copy(update={"normalized_discovery_candidate": candidate})
+    artifact = artifact.model_copy(
+        update={
+            "normalized_discovery_candidate": _preserve_explicit_discovery_input(
+                artifact.normalized_discovery_candidate,
+                payload,
+            )
+        }
+    )
     artifact = sanitize_discovery_analysis_output(artifact)
 
     warnings = []

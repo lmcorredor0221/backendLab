@@ -13,6 +13,9 @@ from app.models import JourneyStageArtifactEntry, SessionRecord, StageOperationR
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
+REAL_RUN_GENERATE_ESTIMATION_REPORT_OPERATION = sessions_routes._run_generate_estimation_report_operation
+
+
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     monkeypatch.setattr(sessions_routes, "_run_analyze_discovery_operation", lambda *_args, **_kwargs: None)
@@ -264,6 +267,82 @@ def test_tools_memory_and_estimate_stage_operation_starts_are_idempotent(client:
         "analysis",
         "persist",
     ]
+
+
+def test_generate_estimation_report_stage_operation_runner_executes_background_tasks(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = auth_headers(client)
+    session_id = create_session(client, headers)
+
+    db, session_generator = db_session_from_client(client)
+    try:
+        record = db.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        now = utc_now()
+        operation = StageOperationRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            stage_key="estimate",
+            action="generate_estimation_report",
+            idempotency_key="estimate-worker-test",
+            attempt_count=1,
+            status=StageOperationStatus.queued,
+            current_step="queued",
+            detail="Solicitud recibida.",
+            request_payload={},
+            steps=[],
+            heartbeat_at=now,
+            expires_at=now + timedelta(minutes=30),
+        )
+        db.add(operation)
+        db.commit()
+        db.refresh(operation)
+        operation_id = operation.id
+        bind = db.get_bind()
+    finally:
+        session_generator.close()
+
+    captured: dict[str, object] = {}
+
+    def fake_generate_estimation_report_route(session_id_arg, background_tasks, db, current_user):  # noqa: ANN001
+        del db, current_user
+        captured["session_id"] = str(session_id_arg)
+        captured["background_tasks_type"] = type(background_tasks).__name__
+
+        def mark_task() -> None:
+            captured["background_task_executed"] = True
+
+        background_tasks.add_task(mark_task)
+
+    monkeypatch.setattr(sessions_routes, "generate_estimation_report_route", fake_generate_estimation_report_route)
+    monkeypatch.setattr(
+        sessions_routes,
+        "load_latest_persisted_estimation_report",
+        lambda db, session_id, current_blueprint_version_number: {
+            "session_id": str(session_id),
+            "blueprint_version": current_blueprint_version_number,
+        },
+    )
+    monkeypatch.setattr(sessions_routes, "latest_blueprint_version_number", lambda db, session_id: 1)
+
+    REAL_RUN_GENERATE_ESTIMATION_REPORT_OPERATION(operation_id, bind)
+
+    db, session_generator = db_session_from_client(client)
+    try:
+        refreshed = db.get(StageOperationRecord, operation_id)
+        assert refreshed is not None
+        assert refreshed.status == StageOperationStatus.completed
+        assert refreshed.current_step == "persist"
+        assert refreshed.error_message == ""
+    finally:
+        session_generator.close()
+
+    assert captured["session_id"] == session_id
+    assert captured["background_tasks_type"] == "BackgroundTasks"
+    assert captured["background_task_executed"] is True
 
 
 def test_stage_operation_current_recovers_stale_active_operation_with_retry(client: TestClient) -> None:

@@ -11,6 +11,7 @@ from app.api.routes.sessions import (
     build_construction_readiness_view,
     build_snapshot,
     define_requirements_route,
+    ensure_acp_evaluation_seed_snapshot,
     ensure_commercial_capability,
     get_or_404,
     resolve_acp_preview,
@@ -91,7 +92,12 @@ def _context(
     record: SessionRecord,
     current_user: UserRecord,
 ):
-    snapshot = build_snapshot(db, record, current_user=current_user)
+    snapshot, _ = ensure_acp_evaluation_seed_snapshot(
+        db,
+        record,
+        current_user=current_user,
+        source_action="acp_workspace_context",
+    )
     preview = resolve_acp_preview(db, record)
     response_records = load_construction_question_response_records(db, record.id)
     readiness = build_construction_readiness_view(preview, response_records)

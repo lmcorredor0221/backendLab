@@ -21,7 +21,8 @@ from app.services.acp_paths import slugify_acp_token
 CURRENT_QUESTION_STATUS_ORDER = {
     "open": 0,
     "answered": 1,
-    "resolved": 2,
+    "deferred": 2,
+    "resolved": 3,
 }
 
 
@@ -122,12 +123,16 @@ def overlay_construction_readiness(
     )
     blocking_gaps = sum(1 for gap in gaps if gap.severity == "blocking" and gap.status not in {"answered", "resolved"})
     has_answered_gap = any(gap.status == "answered" for gap in gaps)
+    validation_allows_build = bool(preview.validation.can_export_zip)
 
     overall_status = base.overall_status
     next_recommended_action = base.next_recommended_action
-    can_start_build = blocking_gaps == 0 and open_questions == 0
+    can_start_build = validation_allows_build and blocking_gaps == 0 and open_questions == 0
 
-    if not gaps:
+    if not validation_allows_build:
+        overall_status = "blocked"
+        next_recommended_action = "resolve_blocking_construction_gaps"
+    elif not gaps:
         overall_status = "ready_to_build"
         next_recommended_action = "start_agentic_build"
     elif blocking_gaps > 0:
@@ -169,6 +174,8 @@ def sync_construction_question_response_records(
 
     for record in records:
         if not record.answer_text.strip():
+            if record.status == "deferred":
+                continue
             continue
         if record.question_key in current_keys:
             if record.status == "resolved":
@@ -178,7 +185,7 @@ def sync_construction_question_response_records(
                 session.add(record)
                 changed = True
             continue
-        if record.status != "resolved":
+        if record.status not in {"resolved", "deferred"}:
             record.status = "resolved"
             record.resolved_at = now
             record.updated_at = now
@@ -268,7 +275,11 @@ def _current_question_status(
     question_key: str,
     record: ConstructionQuestionResponseRecord | None,
 ) -> str:
-    if record is None or not record.answer_text.strip():
+    if record is None:
+        return "open"
+    if record.status == "deferred":
+        return "deferred"
+    if not record.answer_text.strip():
         return "open"
     if record.status == "resolved":
         return "answered"
