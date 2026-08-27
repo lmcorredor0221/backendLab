@@ -1,6 +1,7 @@
 from collections.abc import Generator
 
 from sqlalchemy import inspect, text
+from sqlalchemy.engine import make_url
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.config import (
@@ -16,8 +17,28 @@ from app.diagnostics import LEGACY_AUTONOMY_LEVEL_MAP, LEGACY_CASE_TYPE_MAP
 from app.services.session_migration import apply_session_contract_migration
 
 
+def _build_engine_kwargs():
+    settings = get_settings()
+    kwargs = {
+        "echo": settings.app_debug,
+        "pool_pre_ping": True,
+    }
+    parsed = make_url(settings.database_url)
+    if not parsed.drivername.startswith("sqlite") and (parsed.host or "").strip().lower() not in {"127.0.0.1", "localhost"}:
+        kwargs.update(
+            {
+                "pool_size": settings.database_pool_size if settings.database_pool_size is not None else 1,
+                "max_overflow": settings.database_max_overflow if settings.database_max_overflow is not None else 1,
+                "pool_timeout": settings.database_pool_timeout_seconds,
+                "pool_recycle": settings.database_pool_recycle_seconds,
+                "pool_use_lifo": True,
+            }
+        )
+    return kwargs
+
+
 settings = get_settings()
-engine = create_engine(settings.database_url, echo=settings.app_debug, pool_pre_ping=True)
+engine = create_engine(settings.database_url, **_build_engine_kwargs())
 
 
 def _json_default_literal(dialect_name: str) -> str:

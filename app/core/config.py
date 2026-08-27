@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     app_debug: bool = True
     api_v1_prefix: str = "/api/v1"
     database_url: str = "postgresql+psycopg://lean_builder:lean_builder@localhost:5432/lean_builder"
+    database_pool_size: int | None = None
+    database_max_overflow: int | None = None
+    database_pool_timeout_seconds: int = 30
+    database_pool_recycle_seconds: int = 1800
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3200", "http://127.0.0.1:3200"]
     )
