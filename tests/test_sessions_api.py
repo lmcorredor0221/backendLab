@@ -2,12 +2,13 @@ import json
 from io import BytesIO
 from collections.abc import Generator
 from pathlib import Path
-from uuid import UUID
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlmodel import select
 
 from app.core.config import get_settings
@@ -32,10 +33,14 @@ from app.models import (
     RuntimeCatalogEntryRecord,
     OpportunityRecord,
     SessionRecord,
+    JourneyArtifactState,
     JourneyStageArtifactRecord,
+    MemoryToolDependency,
     SkillRunArtifactRecord,
     SkillRunRecord,
     SessionStage,
+    StageOperationRecord,
+    StageOperationStatus,
     ToolRecommendationArtifact,
     ToolRecommendationConfidence,
     ToolRecommendationEnvelope,
@@ -48,6 +53,8 @@ from app.models import (
     WorkspaceRole,
     utc_now,
 )
+from app.services.agentic_runtime.contracts import BuilderAgentRunResult, BuilderAgentState
+from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
 from app.services.auth_service import hash_password
 from app.services.llm_runtime.builder_contracts import (
     AcceptanceCriterion,
@@ -638,6 +645,102 @@ def approve_tools_for_session(client: TestClient, headers: dict[str, str], sessi
     )
     assert approve_response.status_code == 200
     return recommendation_payload, approve_response.json()
+
+
+def seed_memory_dependency_pause(
+    client: TestClient,
+    *,
+    session_id: str,
+    missing_tool_keys: list[str],
+) -> str:
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        record = session.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        now = utc_now()
+        latest_memory_version = session.exec(
+            select(func.max(JourneyStageArtifactRecord.version_number)).where(
+                JourneyStageArtifactRecord.session_id == record.id,
+                JourneyStageArtifactRecord.stage_key == "memory",
+            )
+        ).one()
+        artifact = MemoryRecommendationArtifact(
+            source_session_id=record.id,
+            summary="Memoria quedo pausada hasta resolver dependencias de Herramientas.",
+            tool_dependencies=[
+                MemoryToolDependency(
+                    tool_key=tool_key,
+                    required=True,
+                    status="missing",
+                    reason=f"Memoria necesita {tool_key} para completar la arquitectura propuesta.",
+                    capabilities=["dependency_resolution"],
+                )
+                for tool_key in missing_tool_keys
+            ],
+            missing_information=[f"Resolver dependencia de Herramientas: {tool_key}" for tool_key in missing_tool_keys],
+        )
+        memory_record = JourneyStageArtifactRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            artifact_kind="memory_recommendation_artifact",
+            stage_key="memory",
+            version_number=int(latest_memory_version or 0) + 1,
+            state=JourneyArtifactState.generated,
+            source_action="recommend_memory",
+            proposal_payload=artifact.model_dump(mode="json"),
+            source_stage_versions={},
+            schema_version="memory-recommendation.v1",
+            missing_information=list(artifact.missing_information),
+            warnings=[],
+            evidence_manifest=[],
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(memory_record)
+        session.flush()
+
+        operation = StageOperationRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            stage_key="memory",
+            action="recommend_memory",
+            idempotency_key="memory-react-pause",
+            attempt_count=1,
+            status=StageOperationStatus.waiting_for_user,
+            current_step="questions",
+            detail="Memoria espera resolver dependencias de Herramientas.",
+            request_payload={"instructions": "Retomar memoria cuando Tools cierre dependencias."},
+            steps=[],
+            result_artifact_id=memory_record.id,
+            heartbeat_at=now,
+            expires_at=now,
+        )
+        session.add(operation)
+
+        checkpoint_id = BuilderReActCheckpointStore.save(
+            session,
+            BuilderAgentState(
+                run_id=uuid4(),
+                session_id=record.id,
+                workspace_id=record.workspace_id,
+                stage="memory",
+                capability="recommend_memory_architecture",
+                status="waiting_human",
+                iteration=4,
+                checkpoint_id="react:memory:dependency-pause",
+                resume_action="recommend_memory",
+                resume_scope="stage",
+            ),
+            summary="Memoria pausada por dependencia transversal de Herramientas.",
+            source_action="recommend_memory_waiting_human",
+        )
+        session.commit()
+        return checkpoint_id
+    finally:
+        session_generator.close()
 
 
 def delete_canonical_session_rows(client: TestClient, *, session_id: str) -> None:
@@ -2838,7 +2941,102 @@ def test_recommend_tools_route_uses_stage_artifacts_when_canonical_rows_are_miss
     assert response.status_code == 200
     payload = response.json()
     assert payload["data"]["schema_version"] == "tool-recommendation.v1"
-    assert payload["data"]["recommended_tools"]
+
+
+def test_recommend_tools_route_resumes_react_checkpoint_and_marks_it_completed(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+
+    captured: dict[str, object] = {}
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        record = session.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        checkpoint_id = BuilderReActCheckpointStore.save(
+            session,
+            BuilderAgentState(
+                run_id=uuid4(),
+                session_id=record.id,
+                workspace_id=record.workspace_id,
+                stage="tools",
+                capability="recommend_minimal_tools",
+                status="waiting_human",
+                iteration=3,
+                checkpoint_id="react:tools:resume-test",
+                resume_action="recommend_tools",
+                resume_scope="stage",
+            ),
+            summary="Tools pausado hasta resolver una decision.",
+            source_action="recommend_tools_waiting_human",
+        )
+        session.commit()
+    finally:
+        session_generator.close()
+
+    def fake_run_tools_react(**kwargs):
+        captured["initial_state"] = kwargs.get("initial_state")
+        artifact = ToolRecommendationArtifact(source_session_id=UUID(session_id))
+        react_run = BuilderAgentRunResult(
+            run_id=uuid4(),
+            status="completed",
+            state=BuilderAgentState(
+                run_id=uuid4(),
+                session_id=UUID(session_id),
+                workspace_id=kwargs["workspace_id"],
+                stage="tools",
+                capability="recommend_minimal_tools",
+                status="completed",
+                iteration=4,
+                checkpoint_id=checkpoint_id,
+                resume_action="recommend_tools",
+                resume_scope="stage",
+            ),
+            traces=[],
+            output={},
+            checkpoint_id=checkpoint_id,
+            message="Herramientas reanudadas correctamente.",
+        )
+        return SimpleNamespace(
+            value=artifact,
+            traces=[],
+            react_run=react_run,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(sessions_routes, "run_tools_react", fake_run_tools_react)
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/recommend-tools",
+        headers=headers,
+        json={"instructions": "Retomar herramientas", "resume_checkpoint_id": checkpoint_id},
+    )
+
+    assert response.status_code == 200
+    initial_state = captured["initial_state"]
+    assert initial_state is not None
+    assert getattr(initial_state, "checkpoint_id", "") == checkpoint_id
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        assert BuilderReActCheckpointStore.load(session, session_id=UUID(session_id)) is None
+    finally:
+        session_generator.close()
+    assert response.json()["data"]["source_session_id"] == session_id
 
 
 def test_recommend_tools_route_attempts_react_even_when_workspace_flag_is_disabled(
@@ -2925,6 +3123,71 @@ def test_approve_tools_selection_promotes_blueprint_tools_and_memory_uses_digest
     rerun_snapshot = rerun_response.json()["snapshot"]
     assert "approved_tools_digest" in rerun_snapshot["blueprint"]["memory_profile"]["retrieval_policy"]
     assert "tools aprobadas" in rerun_snapshot["blueprint"]["memory_profile"]["write_policy"]
+
+
+def test_approve_tools_selection_auto_resumes_memory_when_required_dependencies_are_resolved(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+
+    resumed_operations: list[str] = []
+
+    def fake_run_recommend_memory_operation(operation_id, bind) -> None:  # noqa: ANN001
+        del bind
+        resumed_operations.append(str(operation_id))
+
+    monkeypatch.setattr(sessions_routes, "_run_recommend_memory_operation", fake_run_recommend_memory_operation)
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+
+    first_recommendation = client.post(f"/api/v1/sessions/{session_id}/recommend-tools", headers=headers)
+    assert first_recommendation.status_code == 200
+    first_payload = first_recommendation.json()
+    recommended_tool_keys = [item["tool_key"] for item in first_payload["data"]["recommended_tools"]]
+    assert recommended_tool_keys
+
+    checkpoint_id = seed_memory_dependency_pause(
+        client,
+        session_id=session_id,
+        missing_tool_keys=[recommended_tool_keys[0]],
+    )
+
+    initial_approval = client.post(
+        f"/api/v1/sessions/{session_id}/approve-tools-selection",
+        headers=headers,
+        json={"include_optional_tool_keys": []},
+    )
+    assert initial_approval.status_code == 200
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        operations = list(
+            session.exec(
+                select(StageOperationRecord)
+                .where(
+                    StageOperationRecord.session_id == UUID(session_id),
+                    StageOperationRecord.stage_key == "memory",
+                    StageOperationRecord.action == "recommend_memory",
+                )
+                .order_by(StageOperationRecord.created_at.desc())
+            ).all()
+        )
+        resumed_operation = next(operation for operation in operations if operation.idempotency_key != "memory-react-pause")
+        assert resumed_operation.status == StageOperationStatus.queued
+        assert resumed_operation.request_payload["resume_checkpoint_id"] == checkpoint_id
+    finally:
+        session_generator.close()
+
+    assert resumed_operations == [str(resumed_operation.id)]
 
 
 def test_approve_tools_selection_uses_stage_artifact_when_schema_version_only_exists_in_payload(
@@ -3025,6 +3288,81 @@ def test_recommend_memory_route_persists_artifact_and_skill_runs(
     skill_runs_by_key = {item["skill_key"]: item for item in snapshot["skill_runs"]}
     assert "memory_recommendation_skill" in skill_runs_by_key
     assert "memory_critique_skill" in skill_runs_by_key
+
+
+def test_recommend_memory_route_resumes_react_checkpoint_and_marks_it_completed(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+
+    captured: dict[str, object] = {}
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    approve_tools_for_session(client, headers, session_id)
+
+    checkpoint_id = seed_memory_dependency_pause(
+        client,
+        session_id=session_id,
+        missing_tool_keys=["document_ingestion"],
+    )
+
+    def fake_run_memory_react(**kwargs):
+        captured["initial_state"] = kwargs.get("initial_state")
+        artifact = MemoryRecommendationArtifact(source_session_id=UUID(session_id))
+        react_run = BuilderAgentRunResult(
+            run_id=uuid4(),
+            status="completed",
+            state=BuilderAgentState(
+                run_id=uuid4(),
+                session_id=UUID(session_id),
+                workspace_id=kwargs["workspace_id"],
+                stage="memory",
+                capability="recommend_memory_architecture",
+                status="completed",
+                iteration=5,
+                checkpoint_id=checkpoint_id,
+                resume_action="recommend_memory",
+                resume_scope="stage",
+            ),
+            traces=[],
+            output={},
+            checkpoint_id=checkpoint_id,
+            message="Memoria reanudada correctamente.",
+        )
+        return SimpleNamespace(
+            value=artifact,
+            traces=[],
+            react_run=react_run,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(sessions_routes, "run_memory_react", fake_run_memory_react)
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/recommend-memory",
+        headers=headers,
+        json={"instructions": "Retomar desde checkpoint", "resume_checkpoint_id": checkpoint_id},
+    )
+
+    assert response.status_code == 200
+    initial_state = captured["initial_state"]
+    assert initial_state is not None
+    assert getattr(initial_state, "checkpoint_id", "") == checkpoint_id
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        assert BuilderReActCheckpointStore.load(session, session_id=UUID(session_id)) is None
+    finally:
+        session_generator.close()
 
 
 def test_recommend_memory_route_attempts_react_even_when_workspace_flag_is_disabled(

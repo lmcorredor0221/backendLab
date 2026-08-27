@@ -372,8 +372,8 @@ STAGE_OPERATION_HEARTBEAT_TTL = timedelta(minutes=30)
 STAGE_OPERATION_ACTIVE_STATUSES = {
     StageOperationStatus.queued,
     StageOperationStatus.running,
-    StageOperationStatus.waiting_for_user,
 }
+STAGE_OPERATION_PAUSED_STATUSES = {StageOperationStatus.waiting_for_user}
 STAGE_OPERATION_TERMINAL_STATUSES = {
     StageOperationStatus.completed,
     StageOperationStatus.failed,
@@ -4997,6 +4997,10 @@ def _is_operation_active(operation: StageOperationRecord) -> bool:
     return operation.status in STAGE_OPERATION_ACTIVE_STATUSES
 
 
+def _is_operation_paused(operation: StageOperationRecord) -> bool:
+    return operation.status in STAGE_OPERATION_PAUSED_STATUSES
+
+
 def _is_operation_stale(operation: StageOperationRecord, now: datetime | None = None) -> bool:
     if not _is_operation_active(operation):
         return False
@@ -5102,6 +5106,8 @@ def _update_stage_operation(
     if status_value in STAGE_OPERATION_TERMINAL_STATUSES:
         operation.completed_at = now
         operation.expires_at = None
+    elif status_value in STAGE_OPERATION_PAUSED_STATUSES:
+        operation.expires_at = None
     else:
         operation.expires_at = _operation_expires_at(now)
     db.add(operation)
@@ -5196,6 +5202,26 @@ def _get_or_create_stage_operation(
         _recover_stale_stage_operation(db, idempotent_operation)
         if _is_operation_active(idempotent_operation):
             return idempotent_operation, False
+        if _is_operation_paused(idempotent_operation):
+            now = utc_now()
+            idempotent_operation.status = StageOperationStatus.queued
+            idempotent_operation.attempt_count = max(1, idempotent_operation.attempt_count) + 1
+            idempotent_operation.current_step = "queued"
+            idempotent_operation.detail = queued_detail
+            idempotent_operation.request_payload = request_payload
+            idempotent_operation.steps = _stage_operation_steps("queued", action=action)
+            idempotent_operation.error_message = ""
+            idempotent_operation.technical_detail = ""
+            idempotent_operation.cancel_requested_at = None
+            idempotent_operation.result_artifact_id = None
+            idempotent_operation.completed_at = None
+            idempotent_operation.updated_at = now
+            idempotent_operation.heartbeat_at = now
+            idempotent_operation.expires_at = _operation_expires_at(now)
+            db.add(idempotent_operation)
+            db.commit()
+            db.refresh(idempotent_operation)
+            return idempotent_operation, True
 
     active_operation = db.exec(
         select(StageOperationRecord)
@@ -5235,6 +5261,133 @@ def _get_or_create_stage_operation(
     db.commit()
     db.refresh(operation)
     return operation, True
+
+
+def _resolve_react_initial_state(
+    db: Session,
+    *,
+    session_id: UUID,
+    stage_key: str,
+    resume_checkpoint_id: str = "",
+):
+    checkpoint_id = resume_checkpoint_id.strip()
+    if checkpoint_id:
+        state = BuilderReActCheckpointStore.load(
+            db,
+            session_id=session_id,
+            checkpoint_id=checkpoint_id,
+        )
+        if state is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"No se encontro el checkpoint ReAct solicitado para {stage_key}.",
+            )
+        if state.stage != stage_key:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"El checkpoint ReAct solicitado pertenece a {state.stage} y no a {stage_key}.",
+            )
+        return state
+
+    state = BuilderReActCheckpointStore.load(db, session_id=session_id)
+    if state is None or state.stage != stage_key or state.status != "running":
+        return None
+    return state
+
+
+def resume_react_stage_from_checkpoint(
+    *,
+    session_id: UUID,
+    stage_key: str,
+    checkpoint_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session,
+    current_user: UserRecord,
+) -> bool:
+    checkpoint_id = checkpoint_id.strip()
+    if not checkpoint_id:
+        return False
+    if stage_key == "define":
+        define_requirements_route(
+            session_id=session_id,
+            resume_checkpoint_id=checkpoint_id,
+            db=db,
+            current_user=current_user,
+        )
+        return True
+    if stage_key == "tools":
+        start_recommend_tools_route(
+            session_id=session_id,
+            background_tasks=background_tasks,
+            request=request,
+            payload=ToolRecommendationRequest(resume_checkpoint_id=checkpoint_id),
+            db=db,
+            current_user=current_user,
+        )
+        return True
+    if stage_key == "memory":
+        start_recommend_memory_route(
+            session_id=session_id,
+            background_tasks=background_tasks,
+            request=request,
+            payload=MemoryRecommendationRequest(resume_checkpoint_id=checkpoint_id),
+            db=db,
+            current_user=current_user,
+        )
+        return True
+    return False
+
+
+def _missing_required_memory_tool_keys(artifact: JourneyStageArtifactEntry | None) -> set[str]:
+    if artifact is None:
+        return set()
+    try:
+        memory_artifact = MemoryRecommendationArtifact.model_validate(artifact.proposal_payload)
+    except Exception:  # noqa: BLE001
+        return set()
+    return {
+        str(item.tool_key).strip().lower()
+        for item in memory_artifact.tool_dependencies
+        if item.required and str(item.status).strip().lower() == "missing" and str(item.tool_key).strip()
+    }
+
+
+def _resume_memory_after_tools_approval_if_needed(
+    *,
+    proposal_service: StageProposalService,
+    record: SessionRecord,
+    approved_tool_keys: list[str],
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session,
+    current_user: UserRecord,
+) -> bool:
+    latest_memory_artifact = proposal_service.latest(db, session_record=record, stage_key="memory")
+    missing_tool_keys = _missing_required_memory_tool_keys(latest_memory_artifact)
+    if not missing_tool_keys:
+        return False
+    normalized_approved = {str(item).strip().lower() for item in approved_tool_keys if str(item).strip()}
+    if not missing_tool_keys.issubset(normalized_approved):
+        return False
+    resumed_state = BuilderReActCheckpointStore.mark_resume_requested(
+        db,
+        session_id=record.id,
+        action="recommend_memory",
+        scope="stage",
+        expected_stage="memory",
+    )
+    if resumed_state is None:
+        return False
+    return resume_react_stage_from_checkpoint(
+        session_id=record.id,
+        stage_key="memory",
+        checkpoint_id=resumed_state.checkpoint_id,
+        background_tasks=background_tasks,
+        request=request,
+        db=db,
+        current_user=current_user,
+    )
 
 
 def _raise_if_stage_operation_cancelled(
@@ -5647,13 +5800,12 @@ def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
             artifact = StageProposalService().latest(db, session_record=record, stage_key="tools")
             if artifact is None:
                 raise RuntimeError("Tools operation completed without a persisted journey artifact.")
-            _update_stage_operation(
+            _complete_stage_operation_with_artifact(
                 db,
                 operation,
-                status_value=StageOperationStatus.completed,
-                current_step="persist",
-                detail="Herramientas generadas y publicadas como artefacto revisable.",
-                result_artifact_id=artifact.id,
+                artifact=artifact,
+                completed_detail="Herramientas generadas y publicadas como artefacto revisable.",
+                waiting_detail="Herramientas genero preguntas accionables antes de promover la seleccion.",
             )
         except StageOperationCancelled:
             return
@@ -6610,6 +6762,7 @@ def _execute_tools_runtime(
     blueprint_version_number: int | None,
     runtime_settings,
     stage_context,
+    initial_state=None,
 ) -> tuple[ToolRecommendationEnvelope, list, object | None, list[str]]:
     react_run = None
     react_runtime_warnings: list[str] = []
@@ -6626,6 +6779,7 @@ def _execute_tools_runtime(
             blueprint_version_number=blueprint_version_number,
             runtime_settings=runtime_settings,
             stage_context=stage_context,
+            initial_state=initial_state,
         )
         envelope = ToolRecommendationEnvelope(
             status=ArtifactStatus.needs_review if react_execution.react_run and react_execution.react_run.status != "completed" else ArtifactStatus.ready,
@@ -6731,6 +6885,13 @@ def recommend_tools_route(
         task_source_keys=["tool_recommendation_case", "tool_recommendation_catalog"],
         allow_second_page=True,
     )
+    request_payload = payload or ToolRecommendationRequest()
+    initial_react_state = _resolve_react_initial_state(
+        db,
+        session_id=session_id,
+        stage_key="tools",
+        resume_checkpoint_id=request_payload.resume_checkpoint_id,
+    )
     envelope, traces, react_run, react_runtime_warnings = _execute_tools_runtime(
         session_id=session_id,
         workspace_id=record.workspace_id,
@@ -6739,10 +6900,11 @@ def recommend_tools_route(
         blueprint=blueprint,
         definition_artifact=definition_artifact,
         design_artifact=design_artifact,
-        instructions=payload.instructions if payload is not None else "",
+        instructions=request_payload.instructions,
         blueprint_version_number=blueprint_version_number,
         runtime_settings=runtime_settings,
         stage_context=stage_context,
+        initial_state=initial_react_state,
     )
     envelope = envelope.model_copy(
         update={
@@ -6759,6 +6921,20 @@ def recommend_tools_route(
     )
     if react_runtime_warnings:
         envelope = envelope.model_copy(update={"warnings": list(dict.fromkeys([*envelope.warnings, *react_runtime_warnings]))})
+    if react_run is not None and react_run.status == "waiting_human":
+        checkpoint_id = BuilderReActCheckpointStore.save(
+            db,
+            react_run.state,
+            summary=react_run.message,
+            source_action="recommend_tools_waiting_human",
+        )
+        react_run = react_run.model_copy(update={"checkpoint_id": checkpoint_id})
+    elif react_run is not None and react_run.status == "completed" and initial_react_state is not None:
+        BuilderReActCheckpointStore.mark_completed(
+            db,
+            session_id=session_id,
+            checkpoint_id=initial_react_state.checkpoint_id,
+        )
 
     record_tool_recommendation_artifact(
         db,
@@ -6868,6 +7044,8 @@ def recommend_tools_route(
 @router.post("/{session_id}/approve-tools-selection", response_model=SessionSnapshot)
 def approve_tools_selection_route(
     session_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
     payload: ApproveToolsSelectionRequest,
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
@@ -6908,6 +7086,22 @@ def approve_tools_selection_route(
         )
         capture_operational_state(db, session_id=session_id, source_action="approve_tools_selection")
         db.commit()
+        approved_snapshot = build_snapshot(db, record)
+        approved_tool_keys = (
+            list(approved_snapshot.latest_tool_recommendation.approved_tools_digest.approved_tool_keys)
+            if approved_snapshot.latest_tool_recommendation is not None
+            and approved_snapshot.latest_tool_recommendation.approved_tools_digest is not None
+            else []
+        )
+        _resume_memory_after_tools_approval_if_needed(
+            proposal_service=proposal_service,
+            record=record,
+            approved_tool_keys=approved_tool_keys,
+            background_tasks=background_tasks,
+            request=request,
+            db=db,
+            current_user=current_user,
+        )
         return build_snapshot(db, record)
 
     opportunity = db.exec(select(OpportunityRecord).where(OpportunityRecord.session_id == session_id)).first()
@@ -7045,6 +7239,15 @@ def approve_tools_selection_route(
     )
     capture_operational_state(db, session_id=session_id, source_action="approve_tools_selection")
     db.commit()
+    _resume_memory_after_tools_approval_if_needed(
+        proposal_service=proposal_service,
+        record=record,
+        approved_tool_keys=list(promoted_digest.approved_tool_keys),
+        background_tasks=background_tasks,
+        request=request,
+        db=db,
+        current_user=current_user,
+    )
     return build_snapshot(db, record)
 
 
@@ -7066,6 +7269,7 @@ def _execute_memory_runtime(
     runtime_settings,
     proposal_stage_context,
     critique_stage_context,
+    initial_state=None,
 ) -> tuple[MemoryRecommendationArtifact, list, object | None, list[str]]:
     react_run = None
     react_runtime_warnings: list[str] = []
@@ -7087,6 +7291,7 @@ def _execute_memory_runtime(
             runtime_settings=runtime_settings,
             proposal_stage_context=proposal_stage_context,
             critique_stage_context=critique_stage_context,
+            initial_state=initial_state,
         )
         artifact = react_execution.value
         traces = react_execution.traces
@@ -7328,6 +7533,13 @@ def recommend_memory_route(
         task_source_keys=["memory_architecture_critique_input"],
         allow_second_page=True,
     )
+    request_payload = payload or MemoryRecommendationRequest()
+    initial_react_state = _resolve_react_initial_state(
+        db,
+        session_id=session_id,
+        stage_key="memory",
+        resume_checkpoint_id=request_payload.resume_checkpoint_id,
+    )
     session_snapshot = build_snapshot(db, record)
     artifact, traces, react_run, react_runtime_warnings = _execute_memory_runtime(
         session_id=session_id,
@@ -7340,13 +7552,28 @@ def recommend_memory_route(
         approved_tools_digest=latest_recommendation.approved_tools_digest,
         tools_artifact=latest_recommendation,
         session_snapshot=session_snapshot,
-        instructions=payload.instructions if payload is not None else "",
+        instructions=request_payload.instructions,
         blueprint_version_number=blueprint_version_number,
         source_stage_versions=source_stage_versions,
         runtime_settings=runtime_settings,
         proposal_stage_context=proposal_stage_context,
         critique_stage_context=critique_stage_context,
+        initial_state=initial_react_state,
     )
+    if react_run is not None and react_run.status == "waiting_human":
+        checkpoint_id = BuilderReActCheckpointStore.save(
+            db,
+            react_run.state,
+            summary=react_run.message,
+            source_action="recommend_memory_waiting_human",
+        )
+        react_run = react_run.model_copy(update={"checkpoint_id": checkpoint_id})
+    elif react_run is not None and react_run.status == "completed" and initial_react_state is not None:
+        BuilderReActCheckpointStore.mark_completed(
+            db,
+            session_id=session_id,
+            checkpoint_id=initial_react_state.checkpoint_id,
+        )
     stage_trace = next((trace.llm_trace for trace in reversed(traces) if trace.llm_trace is not None), None)
     combined_warnings = list(
         dict.fromkeys(

@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import desc
 from sqlmodel import Session, select
 
-from app.models import ShortTermCheckpointRecord, ShortTermSessionStateRecord, utc_now
+from app.models import ShortTermCheckpointRecord, utc_now
 from app.services.agentic_runtime.contracts import BuilderAgentState
 
 
@@ -17,7 +17,12 @@ def _state_hash(payload: dict[str, Any]) -> str:
 
 
 class BuilderReActCheckpointStore:
-    """Persists ReAct checkpoints through the existing short-term memory tables."""
+    """Persists ReAct checkpoints through the existing checkpoint table only.
+
+    ReAct state shares checkpoint persistence with short-term memory history, but it
+    must not overwrite the active short-term session payload that powers the UI
+    snapshot and branch runtime state.
+    """
 
     @staticmethod
     def save(
@@ -41,6 +46,7 @@ class BuilderReActCheckpointStore:
             select(ShortTermCheckpointRecord).where(
                 ShortTermCheckpointRecord.session_id == state.session_id,
                 ShortTermCheckpointRecord.is_active == True,  # noqa: E712
+                ShortTermCheckpointRecord.checkpoint_key.startswith("react:"),
             )
         ).all()
         for record in active_records:
@@ -72,22 +78,6 @@ class BuilderReActCheckpointStore:
         checkpoint.is_active = True
         checkpoint.updated_at = utc_now()
         session.add(checkpoint)
-
-        session_state = session.exec(
-            select(ShortTermSessionStateRecord).where(
-                ShortTermSessionStateRecord.session_id == state.session_id
-            )
-        ).first()
-        if session_state is None:
-            session_state = ShortTermSessionStateRecord(session_id=state.session_id)
-        session_state.active_branch_key = "main"
-        session_state.active_checkpoint_key = checkpoint_key
-        session_state.last_consistent_checkpoint_key = checkpoint_key
-        session_state.source_action = source_action
-        session_state.state_hash = digest
-        session_state.state_payload = payload
-        session_state.updated_at = utc_now()
-        session.add(session_state)
         session.flush()
         return checkpoint_key
 
@@ -124,9 +114,12 @@ class BuilderReActCheckpointStore:
         session_id: Any,
         action: str,
         scope: str,
+        expected_stage: str = "",
     ) -> BuilderAgentState | None:
         state = BuilderReActCheckpointStore.load(session, session_id=session_id)
         if state is None:
+            return None
+        if expected_stage and state.stage != expected_stage:
             return None
         state = state.model_copy(
             update={
@@ -170,14 +163,4 @@ class BuilderReActCheckpointStore:
         record.is_active = False
         record.updated_at = utc_now()
         session.add(record)
-        session_state = session.exec(
-            select(ShortTermSessionStateRecord).where(
-                ShortTermSessionStateRecord.session_id == session_id
-            )
-        ).first()
-        if session_state is not None and session_state.active_checkpoint_key == record.checkpoint_key:
-            session_state.active_checkpoint_key = ""
-            session_state.source_action = "react_completed"
-            session_state.updated_at = utc_now()
-            session.add(session_state)
         session.flush()

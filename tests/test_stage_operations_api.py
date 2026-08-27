@@ -443,6 +443,51 @@ def test_stage_operation_with_missing_information_waits_for_user(client: TestCli
         assert operation.current_step == "questions"
         assert operation.result_artifact_id == artifact.id
         assert "respuesta accionable" in operation.detail
-        assert operation.expires_at is not None
+        assert operation.expires_at is None
     finally:
         session_generator.close()
+
+
+def test_waiting_memory_stage_operation_does_not_block_a_new_start_request(client: TestClient) -> None:
+    headers = {**auth_headers(client), "x-idempotency-key": "memory-waiting"}
+    session_id = create_session(client, headers)
+    db, session_generator = db_session_from_client(client)
+    try:
+        record = db.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        now = utc_now()
+        operation = StageOperationRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            stage_key="memory",
+            action="recommend_memory",
+            idempotency_key="memory-waiting",
+            attempt_count=1,
+            status=StageOperationStatus.waiting_for_user,
+            current_step="questions",
+            detail="Memoria espera resolver una dependencia antes de continuar.",
+            request_payload={"instructions": "RAG gobernado con fuentes aprobadas."},
+            steps=[],
+            heartbeat_at=now,
+            expires_at=now + timedelta(minutes=30),
+        )
+        db.add(operation)
+        db.commit()
+        db.refresh(operation)
+        waiting_operation_id = str(operation.id)
+    finally:
+        session_generator.close()
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/recommend-memory/start",
+        headers=headers,
+        json={"instructions": "RAG gobernado con fuentes aprobadas."},
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["id"] == waiting_operation_id
+    assert payload["status"] == "queued"
+    assert payload["action"] == "recommend_memory"
+    assert payload["attempt_count"] == 2

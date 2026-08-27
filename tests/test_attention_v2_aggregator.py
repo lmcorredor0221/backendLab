@@ -49,7 +49,14 @@ from app.services.attention.adapters import (
     items_from_stage_artifact_state,
     items_from_stage_payload,
 )
-from app.services.attention_service import apply_attention_action_v2, build_attention_metrics_v2, build_attention_response_v2
+from app.services.agentic_runtime.contracts import BuilderAgentState
+from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
+from app.services.attention_service import (
+    AttentionActionApplyResult,
+    apply_attention_action_v2,
+    build_attention_metrics_v2,
+    build_attention_response_v2,
+)
 from app.services.auth_service import hash_password
 from app.services.product_processing import (
     ProductBuildLifecycle,
@@ -1401,6 +1408,93 @@ def test_uxa2_access_request_approval_does_not_leave_success_attention_noise(cli
     commercial_attention = client.get(f"/api/v1/sessions/{session_id}/attention-v2?product=commercial", headers=headers)
     assert commercial_attention.status_code == 200
     assert commercial_attention.json()["total_count"] == 0
+
+
+def test_attention_v2_retry_restarts_memory_checkpoint_when_resume_is_eligible(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.productization as productization_routes
+
+    headers = _auth_headers(client)
+    session_data = client.post("/api/v1/sessions", headers=headers).json()
+    session_id = session_data["id"]
+
+    db_session = _db_session_from_client(client)
+    try:
+        record = db_session.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        checkpoint_id = BuilderReActCheckpointStore.save(
+            db_session,
+            BuilderAgentState(
+                run_id=uuid4(),
+                session_id=record.id,
+                workspace_id=record.workspace_id,
+                stage="memory",
+                capability="recommend_memory_architecture",
+                status="waiting_human",
+                iteration=4,
+                checkpoint_id="react:memory:attention-resume",
+                resume_action="recommend_memory",
+                resume_scope="stage",
+            ),
+            summary="Memoria pausada hasta resolver Attention.",
+            source_action="recommend_memory_waiting_human",
+        )
+        db_session.commit()
+    finally:
+        db_session.close()
+
+    resumed: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        productization_routes,
+        "apply_attention_action_v2",
+        lambda *args, **kwargs: AttentionActionApplyResult(
+            status="applied",
+            message="Solicitud de reintento registrada para recuperar Memoria.",
+            resume_eligible=True,
+        ),
+    )
+
+    def fake_resume_react_stage_from_checkpoint(**kwargs):
+        resumed["session_id"] = str(kwargs["session_id"])
+        resumed["stage_key"] = kwargs["stage_key"]
+        resumed["checkpoint_id"] = kwargs["checkpoint_id"]
+        return True
+
+    monkeypatch.setattr(
+        productization_routes,
+        "resume_react_stage_from_checkpoint",
+        fake_resume_react_stage_from_checkpoint,
+    )
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/attention-v2/runtime-resume/actions?current_stage=memory",
+        headers=headers,
+        json={"action_kind": "retry", "idempotency_key": "attention-memory-retry"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "applied"
+    assert "se reanudo desde el checkpoint" in payload["message"]
+    assert resumed == {
+        "session_id": session_id,
+        "stage_key": "memory",
+        "checkpoint_id": checkpoint_id,
+    }
+
+    db_session = _db_session_from_client(client)
+    try:
+        resumed_state = BuilderReActCheckpointStore.load(db_session, session_id=UUID(session_id))
+        assert resumed_state is not None
+        assert resumed_state.stage == "memory"
+        assert resumed_state.checkpoint_id == checkpoint_id
+        assert resumed_state.resume_action == "retry"
+        assert resumed_state.status == "running"
+    finally:
+        db_session.close()
 
 
 def test_uxa2_attention_v2_respects_workspace_isolation(client: TestClient) -> None:

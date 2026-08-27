@@ -3,17 +3,17 @@ from __future__ import annotations
 import io
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
 from app.api.routes.sessions import (
     build_construction_readiness_view,
     build_snapshot,
-    define_requirements_route,
     ensure_acp_evaluation_seed_snapshot,
     ensure_commercial_capability,
     get_or_404,
+    resume_react_stage_from_checkpoint,
     resolve_acp_preview,
 )
 from app.db import get_session
@@ -411,6 +411,8 @@ def post_attention_v2_action_route(
     session_id: UUID,
     item_key: str,
     payload: AttentionActionRequestV2,
+    background_tasks: BackgroundTasks,
+    request: Request,
     current_stage: str = Query(default=""),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
@@ -433,6 +435,7 @@ def post_attention_v2_action_route(
             session_id=record.id,
             action=payload.action_kind,
             scope=current_stage or "stage",
+            expected_stage=current_stage or "",
         )
         if resumed_state is None:
             result = type(result)(
@@ -448,18 +451,22 @@ def post_attention_v2_action_route(
                 f"{result.message} Checkpoint {resumed_state.checkpoint_id} listo para reanudar "
                 f"la etapa {resumed_state.stage}."
             )
-            if resumed_state.stage == "define":
+            if resumed_state.stage in {"define", "tools", "memory"}:
                 try:
-                    define_requirements_route(
+                    resumed = resume_react_stage_from_checkpoint(
                         session_id=record.id,
-                        resume_checkpoint_id=resumed_state.checkpoint_id,
+                        stage_key=resumed_state.stage,
+                        checkpoint_id=resumed_state.checkpoint_id,
+                        background_tasks=background_tasks,
+                        request=request,
                         db=db,
                         current_user=current_user,
                     )
-                    resume_message = (
-                        f"{result.message} La etapa {resumed_state.stage} se reanudo desde el checkpoint "
-                        f"{resumed_state.checkpoint_id}."
-                    )
+                    if resumed:
+                        resume_message = (
+                            f"{result.message} La etapa {resumed_state.stage} se reanudo desde el checkpoint "
+                            f"{resumed_state.checkpoint_id}."
+                        )
                 except Exception:  # noqa: BLE001
                     resume_message = (
                         f"{result.message} El checkpoint {resumed_state.checkpoint_id} quedo listo para "
