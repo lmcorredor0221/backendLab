@@ -689,12 +689,15 @@ def get_hotmart_club_overview(
 ) -> HotmartClubOverviewResponse:
     env = normalize_hotmart_environment(environment)
     latest_run = _latest_club_run(session, workspace_id=workspace_id, environment=env)
-    issue_count = len(
-        [
-            issue
-            for issue in session.exec(_club_issue_query(workspace_id=workspace_id, environment=env)).all()
-            if issue.issue_type in CLUB_ISSUE_TYPES
-        ]
+    issue_count = int(
+        session.exec(
+            select(func.count()).select_from(HotmartReconciliationIssueRecord).where(
+                HotmartReconciliationIssueRecord.workspace_id == workspace_id,
+                HotmartReconciliationIssueRecord.environment == env,
+                HotmartReconciliationIssueRecord.status == "open",
+                HotmartReconciliationIssueRecord.issue_type.in_(CLUB_ISSUE_TYPES),
+            )
+        ).one()
     )
     counts = latest_run.metadata_payload.get("club_counts", {}) if latest_run is not None else {}
     return HotmartClubOverviewResponse(

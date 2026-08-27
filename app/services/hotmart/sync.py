@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.core.config import get_settings
@@ -85,6 +86,14 @@ class HotmartResourcePage:
 class HotmartFetchedPayload:
     payload: dict[str, Any]
     payload_redacted: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class HotmartMappingSnapshot:
+    id: UUID
+    hotmart_product_id: str
+    hotmart_product_ucode: str
+    internal_product_key: str
 
 
 class HotmartSyncApiClient:
@@ -301,20 +310,29 @@ def _cursor_record(
     ).first()
 
 
-def _active_mappings(session: Session, *, workspace_id: UUID, environment: str) -> list[HotmartProductMappingRecord]:
-    return session.exec(
+def _active_mapping_snapshots(session: Session, *, workspace_id: UUID, environment: str) -> list[HotmartMappingSnapshot]:
+    rows = session.exec(
         select(HotmartProductMappingRecord).where(
             HotmartProductMappingRecord.workspace_id == workspace_id,
             HotmartProductMappingRecord.environment == environment,
             HotmartProductMappingRecord.is_active == True,  # noqa: E712
         )
     ).all()
+    return [
+        HotmartMappingSnapshot(
+            id=row.id,
+            hotmart_product_id=row.hotmart_product_id,
+            hotmart_product_ucode=row.hotmart_product_ucode,
+            internal_product_key=row.internal_product_key,
+        )
+        for row in rows
+    ]
 
 
 def _resource_paths(
     *,
     resource: str,
-    mappings: list[HotmartProductMappingRecord],
+    mappings: list[HotmartMappingSnapshot],
     product_id: str = "",
 ) -> list[str]:
     settings = get_settings()
@@ -347,7 +365,7 @@ def _fetch_resource_page(
     client: HotmartSyncApiClient,
     access_token: str,
     resource: str,
-    mappings: list[HotmartProductMappingRecord],
+    mappings: list[HotmartMappingSnapshot],
     cursor_before: str,
     payload: HotmartSyncRequest,
 ) -> HotmartResourcePage:
@@ -385,10 +403,10 @@ def _fetch_resource_page(
 
 
 def _matching_mapping(
-    mappings: list[HotmartProductMappingRecord],
+    mappings: list[HotmartMappingSnapshot],
     *,
     product_ref: str,
-) -> HotmartProductMappingRecord | None:
+) -> HotmartMappingSnapshot | None:
     ref = product_ref.strip()
     if not ref:
         return None
@@ -479,7 +497,7 @@ def _reconcile_remote_products(
     workspace_id: UUID,
     environment: str,
     items: list[dict[str, Any]],
-    mappings: list[HotmartProductMappingRecord],
+    mappings: list[HotmartMappingSnapshot],
     actor_user_id: UUID | None,
 ) -> SyncIssueStats:
     stats = SyncIssueStats()
@@ -533,10 +551,41 @@ def _reconcile_remote_sales(
     workspace_id: UUID,
     environment: str,
     items: list[dict[str, Any]],
-    mappings: list[HotmartProductMappingRecord],
+    mappings: list[HotmartMappingSnapshot],
     actor_user_id: UUID | None,
 ) -> SyncIssueStats:
     stats = SyncIssueStats()
+    transactions = {_extract_transaction(item) for item in items if _extract_transaction(item)}
+    existing_payments = (
+        {
+            ref
+            for ref in session.exec(
+                select(CommercialPaymentRecord.provider_payment_id).where(
+                    CommercialPaymentRecord.workspace_id == workspace_id,
+                    CommercialPaymentRecord.provider == "hotmart",
+                    CommercialPaymentRecord.provider_payment_id.in_(transactions),
+                )
+            ).all()
+            if ref
+        }
+        if transactions
+        else set()
+    )
+    existing_orders = (
+        {
+            ref
+            for ref in session.exec(
+                select(CommercialOrderRecord.checkout_ref).where(
+                    CommercialOrderRecord.workspace_id == workspace_id,
+                    CommercialOrderRecord.provider == "hotmart",
+                    CommercialOrderRecord.checkout_ref.in_(transactions),
+                )
+            ).all()
+            if ref
+        }
+        if transactions
+        else set()
+    )
     for item in items:
         transaction = _extract_transaction(item)
         status = _extract_sale_status(item)
@@ -544,21 +593,7 @@ def _reconcile_remote_sales(
         if not transaction:
             stats.skipped += 1
             continue
-        payment = session.exec(
-            select(CommercialPaymentRecord).where(
-                CommercialPaymentRecord.workspace_id == workspace_id,
-                CommercialPaymentRecord.provider == "hotmart",
-                CommercialPaymentRecord.provider_payment_id == transaction,
-            )
-        ).first()
-        order = session.exec(
-            select(CommercialOrderRecord).where(
-                CommercialOrderRecord.workspace_id == workspace_id,
-                CommercialOrderRecord.provider == "hotmart",
-                CommercialOrderRecord.checkout_ref == transaction,
-            )
-        ).first()
-        if status in APPROVED_SALE_STATUSES and payment is None and order is None:
+        if status in APPROVED_SALE_STATUSES and transaction not in existing_payments and transaction not in existing_orders:
             result = _open_or_update_issue(
                 session,
                 workspace_id=workspace_id,
@@ -572,7 +607,7 @@ def _reconcile_remote_sales(
                 actor_user_id=actor_user_id,
             )
             _count_issue_result(stats, result)
-        elif status in REFUNDED_SALE_STATUSES and payment is not None:
+        elif status in REFUNDED_SALE_STATUSES and transaction in existing_payments:
             stats.skipped += 1
         else:
             stats.skipped += 1
@@ -604,21 +639,32 @@ def _reconcile_remote_coupons(
     actor_user_id: UUID | None,
 ) -> SyncIssueStats:
     stats = SyncIssueStats()
+    coupon_refs = {_extract_coupon_ref(item) for item in items if _extract_coupon_ref(item)}
+    coupon_codes = {_first_text(item, "coupon_code", "code").upper() for item in items if _first_text(item, "coupon_code", "code")}
+    existing_coupon_refs: set[str] = set()
+    existing_coupon_codes: set[str] = set()
+    if coupon_refs or coupon_codes:
+        filters = []
+        if coupon_refs:
+            filters.append(HotmartPromotionRecord.coupon_id.in_(coupon_refs))
+        if coupon_codes:
+            filters.append(HotmartPromotionRecord.coupon_code.in_(coupon_codes))
+        promotions = session.exec(
+            select(HotmartPromotionRecord).where(
+                HotmartPromotionRecord.workspace_id == workspace_id,
+                HotmartPromotionRecord.environment == environment,
+                or_(*filters),
+            )
+        ).all()
+        existing_coupon_refs = {promotion.coupon_id for promotion in promotions if promotion.coupon_id}
+        existing_coupon_codes = {promotion.coupon_code.upper() for promotion in promotions if promotion.coupon_code}
     for item in items:
         coupon_ref = _extract_coupon_ref(item)
         coupon_code = _first_text(item, "coupon_code", "code")
         if not coupon_ref and not coupon_code:
             stats.skipped += 1
             continue
-        promotion = session.exec(
-            select(HotmartPromotionRecord).where(
-                HotmartPromotionRecord.workspace_id == workspace_id,
-                HotmartPromotionRecord.environment == environment,
-                (HotmartPromotionRecord.coupon_id == coupon_ref)
-                | (HotmartPromotionRecord.coupon_code == coupon_code.upper()),
-            )
-        ).first()
-        if promotion is None:
+        if coupon_ref not in existing_coupon_refs and coupon_code.upper() not in existing_coupon_codes:
             result = _open_or_update_issue(
                 session,
                 workspace_id=workspace_id,
@@ -680,14 +726,23 @@ def _reconcile_local_state(
             CommercialOrderRecord.status == CommercialOrderStatus.pending,
         )
     ).all()
+    pending_order_ids = [order.id for order in orders]
+    succeeded_pending_order_ids = (
+        {
+            order_id
+            for order_id in session.exec(
+                select(CommercialPaymentRecord.order_id).where(
+                    CommercialPaymentRecord.order_id.in_(pending_order_ids),
+                    CommercialPaymentRecord.status == CommercialPaymentStatus.succeeded,
+                )
+            ).all()
+            if order_id is not None
+        }
+        if pending_order_ids
+        else set()
+    )
     for order in orders:
-        payment = session.exec(
-            select(CommercialPaymentRecord).where(
-                CommercialPaymentRecord.order_id == order.id,
-                CommercialPaymentRecord.status == CommercialPaymentStatus.succeeded,
-            )
-        ).first()
-        if payment is None:
+        if order.id not in succeeded_pending_order_ids:
             result = _open_or_update_issue(
                 session,
                 workspace_id=workspace_id,
@@ -710,31 +765,6 @@ def _reconcile_local_state(
             CommercialPaymentRecord.status == CommercialPaymentStatus.refunded,
         )
     ).all()
-    for payment in refunded_payments:
-        entitlement = session.exec(
-            select(CommercialEntitlementRecord).where(
-                CommercialEntitlementRecord.workspace_id == workspace_id,
-                CommercialEntitlementRecord.status == CommercialEntitlementStatus.active,
-                (CommercialEntitlementRecord.payment_id == payment.id)
-                | (CommercialEntitlementRecord.order_id == payment.order_id),
-            )
-        ).first()
-        if entitlement is not None:
-            result = _open_or_update_issue(
-                session,
-                workspace_id=workspace_id,
-                environment=environment,
-                issue_type="entitlement_active_with_refunded_payment",
-                provider_ref=payment.provider_payment_id,
-                internal_ref=str(entitlement.id),
-                severity="critical",
-                summary="An active entitlement is linked to a refunded Hotmart payment.",
-                suggested_action="Suspend or revoke entitlement after validating refund status.",
-                metadata={"payment_id": str(payment.id), "entitlement_id": str(entitlement.id)},
-                actor_user_id=actor_user_id,
-            )
-            _count_issue_result(stats, result)
-
     succeeded_payments = session.exec(
         select(CommercialPaymentRecord).where(
             CommercialPaymentRecord.workspace_id == workspace_id,
@@ -742,15 +772,57 @@ def _reconcile_local_state(
             CommercialPaymentRecord.status == CommercialPaymentStatus.succeeded,
         )
     ).all()
-    for payment in succeeded_payments:
-        entitlement = session.exec(
+    entitlement_payment_ids = {payment.id for payment in refunded_payments}
+    entitlement_payment_ids.update(payment.id for payment in succeeded_payments)
+    entitlement_order_ids = {payment.order_id for payment in refunded_payments if payment.order_id is not None}
+    entitlement_order_ids.update(payment.order_id for payment in succeeded_payments if payment.order_id is not None)
+    entitlement_matches: list[CommercialEntitlementRecord] = []
+    if entitlement_payment_ids or entitlement_order_ids:
+        filters = []
+        if entitlement_payment_ids:
+            filters.append(CommercialEntitlementRecord.payment_id.in_(entitlement_payment_ids))
+        if entitlement_order_ids:
+            filters.append(CommercialEntitlementRecord.order_id.in_(entitlement_order_ids))
+        entitlement_matches = session.exec(
             select(CommercialEntitlementRecord).where(
                 CommercialEntitlementRecord.workspace_id == workspace_id,
-                (CommercialEntitlementRecord.payment_id == payment.id)
-                | (CommercialEntitlementRecord.order_id == payment.order_id),
+                or_(*filters),
             )
-        ).first()
-        if entitlement is None:
+        ).all()
+    active_entitlement_payment_ids = {
+        entitlement.payment_id
+        for entitlement in entitlement_matches
+        if entitlement.status == CommercialEntitlementStatus.active and entitlement.payment_id is not None
+    }
+    active_entitlement_order_ids = {
+        entitlement.order_id
+        for entitlement in entitlement_matches
+        if entitlement.status == CommercialEntitlementStatus.active and entitlement.order_id is not None
+    }
+    any_entitlement_payment_ids = {
+        entitlement.payment_id for entitlement in entitlement_matches if entitlement.payment_id is not None
+    }
+    any_entitlement_order_ids = {
+        entitlement.order_id for entitlement in entitlement_matches if entitlement.order_id is not None
+    }
+    for payment in refunded_payments:
+        if payment.id in active_entitlement_payment_ids or payment.order_id in active_entitlement_order_ids:
+            result = _open_or_update_issue(
+                session,
+                workspace_id=workspace_id,
+                environment=environment,
+                issue_type="entitlement_active_with_refunded_payment",
+                provider_ref=payment.provider_payment_id,
+                internal_ref=str(payment.id),
+                severity="critical",
+                summary="An active entitlement is linked to a refunded Hotmart payment.",
+                suggested_action="Suspend or revoke entitlement after validating refund status.",
+                metadata={"payment_id": str(payment.id), "order_id": str(payment.order_id)},
+                actor_user_id=actor_user_id,
+            )
+            _count_issue_result(stats, result)
+    for payment in succeeded_payments:
+        if payment.id not in any_entitlement_payment_ids and payment.order_id not in any_entitlement_order_ids:
             result = _open_or_update_issue(
                 session,
                 workspace_id=workspace_id,
@@ -799,9 +871,9 @@ def _reconcile_resource(
     environment: str,
     resource: str,
     items: list[dict[str, Any]],
+    mappings: list[HotmartMappingSnapshot],
     actor_user_id: UUID | None,
 ) -> SyncIssueStats:
-    mappings = _active_mappings(session, workspace_id=workspace_id, environment=environment)
     total = SyncIssueStats()
     if resource == "products":
         remote_stats = _reconcile_remote_products(
@@ -919,6 +991,7 @@ def run_hotmart_manual_sync(
     )
     session.add(run)
     session.flush()
+    run_id = run.id
     record_commercial_event(
         session,
         workspace_id=workspace_id,
@@ -930,10 +1003,16 @@ def run_hotmart_manual_sync(
         metadata={"run_id": str(run.id), "cursor_before": cursor_before},
         correlation_id=str(run.id),
     )
+    session.commit()
 
     status = build_hotmart_status(session, workspace_id=workspace_id, environment=env)
     credentials = load_hotmart_credentials(session, workspace_id=workspace_id, environment=env)
+    mappings = _active_mapping_snapshots(session, workspace_id=workspace_id, environment=env)
+    session.rollback()
     if credentials is None:
+        run = session.get(HotmartSyncRunRecord, run_id)
+        if run is None:
+            raise RuntimeError("Hotmart sync run state was lost before completion.")
         run.status = "failed"
         run.finished_at = utc_now()
         run.error_summary = "Hotmart OAuth credentials are required before syncing resources."
@@ -949,10 +1028,9 @@ def run_hotmart_manual_sync(
             metadata={"run_id": str(run.id), "error_summary": run.error_summary},
             correlation_id=str(run.id),
         )
-        session.flush()
+        session.commit()
         raise ValueError(run.error_summary)
 
-    mappings = _active_mappings(session, workspace_id=workspace_id, environment=env)
     client = HotmartSyncApiClient(
         api_base_url=status.api_base_url or default_hotmart_api_base_url(env),
         timeout_seconds=get_settings().hotmart_request_timeout_seconds,
@@ -979,9 +1057,13 @@ def run_hotmart_manual_sync(
             environment=env,
             resource=resource,
             items=page.items,
+            mappings=mappings,
             actor_user_id=actor_user_id,
         )
     except HotmartAuthError as exc:
+        run = session.get(HotmartSyncRunRecord, run_id)
+        if run is None:
+            raise RuntimeError("Hotmart sync run state was lost before completion.")
         run.status = "failed"
         run.finished_at = utc_now()
         run.error_summary = "Hotmart OAuth failed while syncing resources."
@@ -998,9 +1080,12 @@ def run_hotmart_manual_sync(
             metadata={"run_id": str(run.id), "error_code": exc.code},
             correlation_id=str(run.id),
         )
-        session.flush()
+        session.commit()
         raise HotmartSyncError("sync_auth_failed", run.error_summary, http_status=exc.http_status, payload=exc.payload) from exc
     except HotmartSyncError as exc:
+        run = session.get(HotmartSyncRunRecord, run_id)
+        if run is None:
+            raise RuntimeError("Hotmart sync run state was lost before completion.")
         run.status = "rate_limited" if exc.code == "rate_limited" else "failed"
         run.finished_at = utc_now()
         run.error_summary = str(exc)
@@ -1017,7 +1102,7 @@ def run_hotmart_manual_sync(
             metadata={"run_id": str(run.id), "error_code": exc.code},
             correlation_id=str(run.id),
         )
-        session.flush()
+        session.commit()
         raise
 
     cursor = _update_cursor(
@@ -1029,6 +1114,9 @@ def run_hotmart_manual_sync(
         last_transaction=page.last_transaction,
     )
     _update_config_last_sync(session, workspace_id=workspace_id, environment=env)
+    run = session.get(HotmartSyncRunRecord, run_id)
+    if run is None:
+        raise RuntimeError("Hotmart sync run state was lost before completion.")
     run.status = "succeeded"
     run.finished_at = utc_now()
     run.cursor_after = cursor.page_token
@@ -1060,7 +1148,8 @@ def run_hotmart_manual_sync(
         },
         correlation_id=str(run.id),
     )
-    session.flush()
+    session.commit()
+    session.refresh(run)
     return _serialize_sync_run(run)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.models import (
@@ -34,7 +35,7 @@ REQUIRED_SYNC_RESOURCES = {"club", "coupons", "payment_links", "products", "sale
 
 
 def _count_rows(session: Session, statement) -> int:  # noqa: ANN001 - SQLModel statement type is verbose and not useful here.
-    return len(session.exec(statement).all())
+    return int(session.exec(select(func.count()).select_from(statement.subquery())).one())
 
 
 def _check(
@@ -90,17 +91,14 @@ def _commercial_event_count(session: Session, *, workspace_id: UUID, event_keys:
 
 
 def _sync_success_count(session: Session, *, workspace_id: UUID, environment: str) -> int:
-    return len(
-        {
-            record.resource
-            for record in session.exec(
-                select(HotmartSyncRunRecord).where(
-                    HotmartSyncRunRecord.workspace_id == workspace_id,
-                    HotmartSyncRunRecord.environment == environment,
-                    HotmartSyncRunRecord.status == "succeeded",
-                )
-            ).all()
-        }
+    return int(
+        session.exec(
+            select(func.count(func.distinct(HotmartSyncRunRecord.resource))).where(
+                HotmartSyncRunRecord.workspace_id == workspace_id,
+                HotmartSyncRunRecord.environment == environment,
+                HotmartSyncRunRecord.status == "succeeded",
+            )
+        ).one()
     )
 
 

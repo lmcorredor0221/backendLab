@@ -23,6 +23,7 @@ from app.models import (
 
 
 security = HTTPBearer(auto_error=False)
+TOKEN_LAST_USED_WRITE_INTERVAL = timedelta(minutes=5)
 
 
 def utc_now() -> datetime:
@@ -85,18 +86,20 @@ def get_current_user(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
+    now = utc_now()
     token_hash = hash_token(credentials.credentials)
     token_record = db.exec(select(AuthTokenRecord).where(AuthTokenRecord.token_hash == token_hash)).first()
-    if token_record is None or token_record.expires_at <= utc_now():
+    if token_record is None or token_record.expires_at <= now:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
     user = db.get(UserRecord, token_record.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
 
-    token_record.last_used_at = utc_now()
-    db.add(token_record)
-    db.commit()
+    if token_record.last_used_at <= now - TOKEN_LAST_USED_WRITE_INTERVAL:
+        token_record.last_used_at = now
+        db.add(token_record)
+        db.commit()
     return user
 
 

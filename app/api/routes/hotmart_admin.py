@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models import (
+    CommercialAdminBootstrapResponse,
     CommercialBalanceLedgerResponse,
     CommercialBalanceSnapshotResponse,
     CommercialDebtResponse,
@@ -60,7 +61,7 @@ from app.services.commercial_catalog_service import (
     recommend_package_for_product,
     upsert_package_catalog_entry,
 )
-from app.services.commercial_debt_service import list_commercial_debts, settle_commercial_debt
+from app.services.commercial_debt_service import count_commercial_debts, list_commercial_debts, settle_commercial_debt
 from app.services.commerce_service import record_commercial_event
 from app.services.commercial_package_fulfillment_service import (
     list_legacy_package_resolutions,
@@ -134,7 +135,6 @@ def get_hotmart_status_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartIntegrationStatusResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_hotmart_status(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -172,7 +172,6 @@ def list_hotmart_mappings_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartProductMappingResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_product_mappings(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -208,7 +207,6 @@ def list_hotmart_payment_links_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartPaymentLinkResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_payment_links(db, workspace_id=workspace_context.workspace.id)
 
 
@@ -269,7 +267,6 @@ def list_hotmart_coupon_promotions_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartPromotionResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_promotions(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -285,7 +282,6 @@ def get_hotmart_coupon_metrics_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPromotionMetricsResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_hotmart_promotion_metrics(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -380,7 +376,6 @@ def list_hotmart_sync_runs_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartSyncRunResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_sync_runs(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -397,7 +392,6 @@ def list_hotmart_sync_cursors_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartSyncCursorResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_sync_cursors(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -414,7 +408,6 @@ def list_hotmart_reconciliation_issues_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartReconciliationIssueResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_reconciliation_issues(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -494,7 +487,6 @@ def get_hotmart_club_overview_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartClubOverviewResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return get_hotmart_club_overview(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -537,7 +529,6 @@ def list_hotmart_club_modules_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubModuleResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_modules(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -553,7 +544,6 @@ def list_hotmart_club_pages_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubPageResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_pages(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -569,7 +559,6 @@ def list_hotmart_club_students_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubStudentResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_students(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -585,7 +574,6 @@ def list_hotmart_club_progress_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubProgressResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_club_progress(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -601,7 +589,6 @@ def get_hotmart_release_readiness_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartReleaseReadinessResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return build_hotmart_release_readiness(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -617,7 +604,6 @@ def list_hotmart_operational_alerts_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartOperationalAlertResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_operational_alerts(
         db,
         workspace_id=workspace_context.workspace.id,
@@ -632,7 +618,6 @@ def list_hotmart_runbook_sections_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartRunbookSectionResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
     return list_hotmart_runbook_sections()
 
 
@@ -789,6 +774,63 @@ def list_commercial_quota_products_route(
     return [_serialize_quota_product_config(item) for item in list_quota_product_configs(db)]
 
 
+@router.get("/commercial/bootstrap", response_model=CommercialAdminBootstrapResponse)
+def get_commercial_bootstrap_route(
+    product_key: str,
+    workspace_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> CommercialAdminBootstrapResponse:
+    _ensure_platform_admin_or_403(db, current_user)
+    target_workspace_id = workspace_id or workspace_context.workspace.id
+    quota_configs = [_serialize_quota_product_config(item) for item in list_quota_product_configs(db)]
+    workspace_overrides = [
+        _serialize_workspace_override(row)
+        for row in db.exec(
+            select(CommercialQuotaWorkspaceOverrideRecord)
+            .where(CommercialQuotaWorkspaceOverrideRecord.workspace_id == target_workspace_id)
+            .order_by(CommercialQuotaWorkspaceOverrideRecord.product_key.asc())
+        ).all()
+    ]
+    effective_config = _serialize_effective_quota(
+        workspace_id=target_workspace_id,
+        config=resolve_effective_quota_config(
+            db,
+            workspace_id=target_workspace_id,
+            product_key=product_key,
+        ),
+    )
+    balance_snapshot = _serialize_balance_snapshot(
+        get_balance_snapshot(
+            db,
+            workspace_id=target_workspace_id,
+            product_key=product_key,
+        )
+    )
+    recommendation = recommend_package_for_product(
+        db,
+        product_key=product_key,
+        required_units=1,
+        workspace_id=target_workspace_id,
+    )
+    return CommercialAdminBootstrapResponse(
+        workspace_id=target_workspace_id,
+        product_key=product_key,
+        balance_snapshot=balance_snapshot,
+        effective_config=effective_config,
+        open_debt_count=count_commercial_debts(
+            db,
+            workspace_id=target_workspace_id,
+            status="open",
+            product_key=product_key,
+        ),
+        quota_configs=quota_configs,
+        recommendation=recommendation,
+        workspace_overrides=workspace_overrides,
+    )
+
+
 @router.post("/commercial/quota-products", response_model=CommercialQuotaProductConfigResponse)
 def upsert_commercial_quota_product_route(
     payload: CommercialQuotaProductConfigUpsertRequest,
@@ -877,7 +919,6 @@ def get_commercial_effective_config_route(
 ) -> CommercialQuotaEffectiveConfigResponse:
     _ensure_platform_admin_or_403(db, current_user)
     target_workspace_id = workspace_id or workspace_context.workspace.id
-    apply_workspace_bootstrap(db, target_workspace_id)
     resolved = resolve_effective_quota_config(
         db,
         workspace_id=target_workspace_id,
@@ -896,7 +937,6 @@ def get_commercial_balance_snapshot_route(
 ) -> CommercialBalanceSnapshotResponse:
     _ensure_platform_admin_or_403(db, current_user)
     target_workspace_id = workspace_id or workspace_context.workspace.id
-    apply_workspace_bootstrap(db, target_workspace_id)
     snapshot = get_balance_snapshot(
         db,
         workspace_id=target_workspace_id,
@@ -915,7 +955,6 @@ def list_commercial_balance_ledger_route(
 ) -> list[CommercialBalanceLedgerResponse]:
     _ensure_platform_admin_or_403(db, current_user)
     target_workspace_id = workspace_id or workspace_context.workspace.id
-    apply_workspace_bootstrap(db, target_workspace_id)
     return [
         _serialize_balance_ledger_entry(item)
         for item in list_balance_ledger(db, workspace_id=target_workspace_id, product_key=product_key)

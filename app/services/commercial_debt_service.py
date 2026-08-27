@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.models import (
@@ -51,6 +52,21 @@ def list_commercial_debts(
         statement = statement.where(CommercialDebtRecord.product_key == product_key.strip())
     rows = session.exec(statement.order_by(CommercialDebtRecord.created_at.asc(), CommercialDebtRecord.id.asc())).all()
     return [serialize_commercial_debt(row) for row in rows]
+
+
+def count_commercial_debts(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    status: str = "open",
+    product_key: str = "",
+) -> int:
+    statement = select(func.count()).select_from(CommercialDebtRecord).where(CommercialDebtRecord.workspace_id == workspace_id)
+    if status.strip() and status != "all":
+        statement = statement.where(CommercialDebtRecord.status == CommercialDebtStatus(status.strip()))
+    if product_key.strip():
+        statement = statement.where(CommercialDebtRecord.product_key == product_key.strip())
+    return int(session.exec(statement).one())
 
 
 def has_open_commercial_debt(

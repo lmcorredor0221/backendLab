@@ -5390,10 +5390,12 @@ class ApproveToolsSelectionRequest(ContractModel):
 
 class ToolRecommendationRequest(ContractModel):
     instructions: str = ""
+    resume_checkpoint_id: str = ""
 
 
 class MemoryRecommendationRequest(ContractModel):
     instructions: str = ""
+    resume_checkpoint_id: str = ""
 
 
 class SessionOwnerSummary(ContractModel):
@@ -6345,6 +6347,18 @@ class CommercialBalanceSnapshotResponse(ContractModel):
     total_available_units: int
     by_source_kind: dict[str, int] = PydanticField(default_factory=dict)
     buckets: list[CommercialBalanceBucketResponse] = PydanticField(default_factory=list)
+
+
+class CommercialAdminBootstrapResponse(ContractModel):
+    contract_version: str = "commercial-admin-bootstrap.v1"
+    workspace_id: UUID
+    product_key: str
+    balance_snapshot: CommercialBalanceSnapshotResponse
+    effective_config: CommercialQuotaEffectiveConfigResponse
+    open_debt_count: int = 0
+    quota_configs: list[CommercialQuotaProductConfigResponse] = PydanticField(default_factory=list)
+    recommendation: CommercialPackageRecommendationResponse
+    workspace_overrides: list[CommercialQuotaWorkspaceOverrideResponse] = PydanticField(default_factory=list)
 
 
 class CommercialBalanceLedgerResponse(ContractModel):

@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.services.auth_service import get_current_user
 from app.services.workspace_membership_service import (
+    is_platform_admin_user,
     list_active_platform_roles_for_user,
     list_effective_workspace_memberships,
 )
@@ -79,6 +80,16 @@ def list_workspace_memberships(session: Session, user: UserRecord) -> list[tuple
 
 def workspace_ids_for_user(session: Session, user: UserRecord) -> set[UUID]:
     return {workspace.id for _, workspace in list_workspace_memberships(session, user)}
+
+
+def _persist_default_workspace(session: Session, user: UserRecord, workspace_id: UUID) -> None:
+    if _coerce_uuid(cast(UUID | str | None, user.default_workspace_id)) == workspace_id:
+        return
+    user.default_workspace_id = workspace_id
+    user.updated_at = utc_now()
+    session.add(user)
+    session.commit()
+    session.refresh(user)
 
 
 def ensure_personal_workspace(session: Session, user: UserRecord, default_name: str = "") -> WorkspaceAccessContext:
@@ -164,24 +175,35 @@ def resolve_workspace_access(
     *,
     requested_workspace_id: UUID | None = None,
 ) -> WorkspaceAccessContext:
-    ensure_personal_workspace(session, user)
-    memberships = list_effective_workspace_memberships(session, user=user)
+    personal_context = ensure_personal_workspace(session, user)
+    memberships = list_workspace_memberships(session, user)
     if not memberships:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The user has no active workspace memberships.")
+        return personal_context
 
+    membership_by_workspace_id = {workspace.id: (membership, workspace) for membership, workspace in memberships}
     resolved_requested_workspace_id = _coerce_uuid(requested_workspace_id)
-    if resolved_requested_workspace_id is None:
-        resolved_requested_workspace_id = _coerce_uuid(cast(UUID | str | None, user.default_workspace_id)) or memberships[0][1].id
+    default_workspace_id = _coerce_uuid(cast(UUID | str | None, user.default_workspace_id))
+    target_workspace_id = resolved_requested_workspace_id or default_workspace_id or memberships[0][1].id
 
-    for membership, workspace in memberships:
-        if workspace.id == resolved_requested_workspace_id:
-            if _coerce_uuid(cast(UUID | str | None, user.default_workspace_id)) != workspace.id:
-                user.default_workspace_id = workspace.id
-                user.updated_at = utc_now()
-                session.add(user)
-                session.commit()
-                session.refresh(user)
-            return WorkspaceAccessContext(workspace=workspace, membership=membership)
+    resolved_membership = membership_by_workspace_id.get(target_workspace_id)
+    if resolved_membership is not None:
+        membership, workspace = resolved_membership
+        _persist_default_workspace(session, user, workspace.id)
+        return WorkspaceAccessContext(workspace=workspace, membership=membership)
+
+    if is_platform_admin_user(session, user=user):
+        workspace = session.get(WorkspaceRecord, target_workspace_id)
+        if workspace is not None and workspace.is_active:
+            _persist_default_workspace(session, user, workspace.id)
+            return WorkspaceAccessContext(
+                workspace=workspace,
+                membership=WorkspaceMembershipRecord(
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    role=WorkspaceRole.owner,
+                    is_active=True,
+                ),
+            )
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,

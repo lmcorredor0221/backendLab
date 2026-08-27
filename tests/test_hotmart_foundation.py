@@ -316,6 +316,17 @@ def test_hotmart_commercial_admin_routes_expose_quota_and_effective_config_for_p
     assert effective_response.status_code == 200
     assert effective_response.json()["initial_free_units"] == 2
 
+    bootstrap_response = client.get(
+        "/api/v1/admin/integrations/hotmart/commercial/bootstrap?product_key=blueprint_pro",
+        headers=headers,
+    )
+    assert bootstrap_response.status_code == 200
+    bootstrap_payload = bootstrap_response.json()
+    assert bootstrap_payload["product_key"] == "blueprint_pro"
+    assert bootstrap_payload["effective_config"]["initial_free_units"] == 2
+    assert bootstrap_payload["balance_snapshot"]["product_key"] == "blueprint_pro"
+    assert bootstrap_payload["open_debt_count"] == 0
+
     legacy_response = client.get(
         "/api/v1/admin/integrations/hotmart/commercial/legacy-package-resolutions?status=pending&product_key=blueprint_pro",
         headers=headers,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any
 
 from sqlmodel import Session, select
@@ -24,6 +25,10 @@ from app.models import (
     utc_now,
 )
 from app.services.openai_builder import load_llm_runtime_settings
+
+
+_RUNTIME_GOVERNANCE_CACHE_LOCK = Lock()
+_RUNTIME_GOVERNANCE_CACHE: set[tuple[int, str]] = set()
 
 
 def _normalize_model_list(*values: str) -> list[str]:
@@ -296,6 +301,47 @@ def sync_configured_platform_admin(session: Session) -> None:
     session.commit()
 
 
+def _runtime_governance_cache_key(session: Session) -> tuple[int, str]:
+    bind = session.get_bind()
+    engine = getattr(bind, "engine", bind)
+    return id(engine), get_settings().local_admin_email.strip().lower()
+
+
+def _runtime_governance_seed_present(session: Session) -> bool:
+    provider_exists = session.exec(select(PlatformRuntimeProviderRecord.id)).first() is not None
+    if not provider_exists:
+        return False
+
+    configured_email = get_settings().local_admin_email.strip().lower()
+    if not configured_email:
+        return True
+
+    configured_user_id = session.exec(select(UserRecord.id).where(UserRecord.email == configured_email)).first()
+    if configured_user_id is None:
+        return True
+
+    assignment_exists = session.exec(
+        select(PlatformRoleAssignmentRecord.id).where(
+            PlatformRoleAssignmentRecord.user_id == configured_user_id,
+            PlatformRoleAssignmentRecord.role == PlatformRole.platform_admin,
+            PlatformRoleAssignmentRecord.is_active == True,  # noqa: E712
+        )
+    ).first()
+    return assignment_exists is not None
+
+
 def backfill_platform_runtime_governance(session: Session) -> None:
+    cache_key = _runtime_governance_cache_key(session)
+    with _RUNTIME_GOVERNANCE_CACHE_LOCK:
+        if cache_key in _RUNTIME_GOVERNANCE_CACHE:
+            return
+
+    if _runtime_governance_seed_present(session):
+        with _RUNTIME_GOVERNANCE_CACHE_LOCK:
+            _RUNTIME_GOVERNANCE_CACHE.add(cache_key)
+        return
+
     seed_platform_runtime_governance(session, seed_defaults=False)
     sync_configured_platform_admin(session)
+    with _RUNTIME_GOVERNANCE_CACHE_LOCK:
+        _RUNTIME_GOVERNANCE_CACHE.add(cache_key)

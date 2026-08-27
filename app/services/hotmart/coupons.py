@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.core.config import get_settings
@@ -459,23 +460,32 @@ def build_hotmart_promotion_metrics(
 ) -> HotmartPromotionMetricsResponse:
     env = normalize_hotmart_environment(environment)
     rows = session.exec(
-        select(HotmartPromotionRecord).where(
+        select(
+            HotmartPromotionRecord.status,
+            HotmartPromotionRecord.discount_origin,
+            func.count(),
+        )
+        .where(
             HotmartPromotionRecord.workspace_id == workspace_id,
             HotmartPromotionRecord.environment == env,
         )
+        .group_by(HotmartPromotionRecord.status, HotmartPromotionRecord.discount_origin)
     ).all()
     statuses = {status: 0 for status in ("active", "scheduled", "expired", "deleted", "sync_error")}
     provider_coupon_count = 0
     internal_upgrade_credit_count = 0
-    for row in rows:
-        if row.status in statuses:
-            statuses[row.status] += 1
-        if row.discount_origin == "provider_coupon":
-            provider_coupon_count += 1
-        if row.discount_origin == "internal_upgrade_credit":
-            internal_upgrade_credit_count += 1
+    total = 0
+    for status_value, discount_origin, count in rows:
+        normalized_count = int(count)
+        total += normalized_count
+        if status_value in statuses:
+            statuses[status_value] += normalized_count
+        if discount_origin == "provider_coupon":
+            provider_coupon_count += normalized_count
+        if discount_origin == "internal_upgrade_credit":
+            internal_upgrade_credit_count += normalized_count
     return HotmartPromotionMetricsResponse(
-        total=len(rows),
+        total=total,
         active=statuses["active"],
         scheduled=statuses["scheduled"],
         expired=statuses["expired"],

@@ -4,6 +4,8 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
+from sqlalchemy import event
+from sqlalchemy.pool import QueuePool
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
@@ -146,6 +148,52 @@ def test_hotmart_sales_sync_opens_and_resolves_reconciliation_issue(db_session: 
         select(CommercialEventRecord).where(CommercialEventRecord.event_key == "hotmart_reconciliation_resolved")
     ).one()
     assert event.product_key == "hotmart_payment_without_internal_order"
+
+
+def test_hotmart_manual_sync_releases_db_connection_before_provider_calls(tmp_path) -> None:
+    database_path = tmp_path / "hotmart-sync-pool.db"
+    engine = create_engine(
+        f"sqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+    )
+    SQLModel.metadata.create_all(engine)
+    lifecycle: list[str] = []
+
+    @event.listens_for(engine, "checkout")
+    def _record_checkout(*_args) -> None:
+        lifecycle.append("checkout")
+
+    @event.listens_for(engine, "checkin")
+    def _record_checkin(*_args) -> None:
+        lifecycle.append("checkin")
+
+    with Session(engine) as session:
+        user, workspace = _seed_workspace(session)
+        _configure_credentials(session, workspace)
+        lifecycle.clear()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            lifecycle.append(f"http:{request.url.path}")
+            if request.url.path == "/security/oauth/token":
+                return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
+            assert request.url.path == "/products/api/v1/products"
+            return httpx.Response(200, json={"items": [], "page_info": {}})
+
+        run = run_hotmart_manual_sync(
+            session,
+            workspace_id=workspace.id,
+            payload=HotmartSyncRequest(environment="sandbox", resource="products"),
+            actor_user_id=user.id,
+            transport=httpx.MockTransport(handler),
+        )
+
+    assert run.status == "succeeded"
+    first_http_index = lifecycle.index("http:/security/oauth/token")
+    assert "checkin" in lifecycle[:first_http_index]
+    assert "checkout" in lifecycle[first_http_index + 1 :]
 
 
 def test_hotmart_webhook_replay_opens_review_issue(db_session: Session) -> None:

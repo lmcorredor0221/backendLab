@@ -147,6 +147,23 @@ def _merge_configured_flags(
     return {secret_kind: bool(record_flags.get(secret_kind) or settings_flags.get(secret_kind)) for secret_kind in HOTMART_SECRET_KINDS}
 
 
+def _resolved_configured_flags(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    environment: str,
+) -> dict[str, bool]:
+    return _merge_configured_flags(
+        _configured_flags(session, workspace_id=workspace_id, environment=environment),
+        _settings_credentials_configured(environment),
+    )
+
+
+def _status_from_configured_flags(flags: dict[str, bool]) -> str:
+    oauth_ready = all(flags[kind] for kind in HOTMART_OAUTH_SECRET_KINDS)
+    return "configured" if oauth_ready else ("partial_configured" if any(flags.values()) else "not_configured")
+
+
 def _storage_mode(records: dict[str, HotmartIntegrationSecretRecord], *, environment: str) -> str:
     configured = [record for record in records.values() if _is_configured(record)]
     if not configured:
@@ -169,16 +186,12 @@ def _storage_mode(records: dict[str, HotmartIntegrationSecretRecord], *, environ
 
 
 def _sync_configured_flags(session: Session, config: HotmartIntegrationConfigRecord) -> None:
-    flags = _merge_configured_flags(
-        _configured_flags(session, workspace_id=config.workspace_id, environment=config.environment),
-        _settings_credentials_configured(config.environment),
-    )
+    flags = _resolved_configured_flags(session, workspace_id=config.workspace_id, environment=config.environment)
     config.client_id_configured = flags["client_id"]
     config.client_secret_configured = flags["client_secret"]
     config.basic_token_configured = flags["basic_token"]
     config.hottok_configured = flags["hottok"]
-    oauth_ready = all(flags[kind] for kind in HOTMART_OAUTH_SECRET_KINDS)
-    config.status = "configured" if oauth_ready else ("partial_configured" if any(flags.values()) else "not_configured")
+    config.status = _status_from_configured_flags(flags)
     config.updated_at = utc_now()
     session.add(config)
 
@@ -192,15 +205,15 @@ def build_hotmart_status(
     env = normalize_hotmart_environment(environment)
     config = _config_record(session, workspace_id=workspace_id, environment=env)
     records = _secret_records(session, workspace_id=workspace_id, environment=env)
+    flags = _resolved_configured_flags(session, workspace_id=workspace_id, environment=env)
+    computed_status = _status_from_configured_flags(flags)
 
     if config is None:
-        flags = _settings_credentials_configured(env)
-        oauth_ready = all(flags[kind] for kind in HOTMART_OAUTH_SECRET_KINDS)
         return HotmartIntegrationStatusResponse(
             workspace_id=workspace_id,
             environment=env,  # type: ignore[arg-type]
             enabled=bool(get_settings().hotmart_enabled),
-            status="configured" if oauth_ready else ("partial_configured" if any(flags.values()) else "not_configured"),
+            status=computed_status,
             client_id_configured=flags["client_id"],
             client_secret_configured=flags["client_secret"],
             basic_token_configured=flags["basic_token"],
@@ -211,16 +224,15 @@ def build_hotmart_status(
             storage_mode=_storage_mode(records, environment=env),
         )
 
-    _sync_configured_flags(session, config)
     return HotmartIntegrationStatusResponse(
         workspace_id=workspace_id,
         environment=env,  # type: ignore[arg-type]
         enabled=config.enabled,
-        status=config.status,
-        client_id_configured=config.client_id_configured,
-        client_secret_configured=config.client_secret_configured,
-        basic_token_configured=config.basic_token_configured,
-        hottok_configured=config.hottok_configured,
+        status=computed_status,
+        client_id_configured=flags["client_id"],
+        client_secret_configured=flags["client_secret"],
+        basic_token_configured=flags["basic_token"],
+        hottok_configured=flags["hottok"],
         api_base_url=_resolved_api_base_url(env, config.api_base_url),
         auth_base_url=_resolved_auth_base_url(env, config.auth_base_url),
         webhook_public_url=config.webhook_public_url or _resolved_webhook_public_url(),
