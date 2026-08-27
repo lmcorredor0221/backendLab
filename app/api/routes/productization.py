@@ -271,29 +271,40 @@ def post_product_build_action_route(
     from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
     from app.services.product_processing.product_build_orchestrator import (
         ProductBuildOrchestrationOptions,
+        enqueue_product_build_processing,
         ensure_product_build_orchestration,
         reconcile_product_build_run,
+        run_product_build_processing,
     )
 
     record = get_or_404(db, session_id, current_user.id)
+    if payload.action in {"process_pending", "retry_failed"}:
+        run, status, queued_now = enqueue_product_build_processing(
+            db,
+            record=record,
+            product_key=product_key,
+            current_user=current_user,
+            mode=payload.action,
+            allow_llm=payload.allow_llm,
+            catalog_stage_override=PRODUCT_SURFACE_STAGE,
+        )
+        db.commit()
+        if queued_now and run is not None:
+            background_tasks.add_task(run_product_build_processing, run.id, db.get_bind())
+        return status
     if product_key == ProductBuildProductKey.blueprint_basic:
-        execute_blueprint_basic_action(
+        response = execute_blueprint_basic_action(
             db,
             record=record,
             current_user=current_user,
             payload=payload,
             background_tasks=background_tasks,
         )
-        return build_product_build_status(
-            db,
-            record=record,
-            product_key=product_key,
-            current_user=current_user,
-            catalog_stage_override=PRODUCT_SURFACE_STAGE,
-        )
+        db.commit()
+        return response
     if payload.action in {"start", "resume", "retry"}:
         if product_key == ProductBuildProductKey.acp:
-            return ensure_acp_product_orchestration(
+            response = ensure_acp_product_orchestration(
                 db,
                 record=record,
                 current_user=current_user,
@@ -304,7 +315,9 @@ def post_product_build_action_route(
                     "idempotency_key": payload.idempotency_key,
                 },
             )
-        return ensure_product_build_orchestration(
+            db.commit()
+            return response
+        response = ensure_product_build_orchestration(
             db,
             record=record,
             product_key=product_key,
@@ -316,13 +329,17 @@ def post_product_build_action_route(
             ),
             catalog_stage_override=PRODUCT_SURFACE_STAGE,
         )
-    return reconcile_product_build_run(
+        db.commit()
+        return response
+    response = reconcile_product_build_run(
         db,
         record=record,
         product_key=product_key,
         current_user=current_user,
         catalog_stage_override=PRODUCT_SURFACE_STAGE,
     )
+    db.commit()
+    return response
 
 
 

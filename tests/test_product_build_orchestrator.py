@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
@@ -13,17 +14,22 @@ from app.models import (
     WorkspaceMembershipRecord,
     WorkspaceRecord,
     WorkspaceRole,
+    utc_now,
 )
 from app.services.auth_service import hash_password
 from app.services.commerce_service import tier_rank
 from app.services.deliverable_catalog.catalog_service import build_deliverable_catalog_response
 from app.services.deliverable_catalog.contracts import DeliverableGenerationResult, DeliverableGenerationTask
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
+from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing import (
     ProductBuildLifecycle,
     ProductBuildOrchestrationOptions,
     ProductBuildProductKey,
+    build_product_build_status,
+    enqueue_product_build_processing,
     ensure_product_build_orchestration,
+    run_product_build_processing,
 )
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 from app.services.product_processing.product_build_run_service import list_product_build_runs, list_product_build_steps
@@ -286,3 +292,163 @@ def test_activate_product_builds_for_paid_order_queues_blueprint_pro_run() -> No
     assert len(statuses) == 1
     assert statuses[0].product_key == ProductBuildProductKey.blueprint_pro
 
+
+def test_enqueue_product_build_processing_persists_queue_selection() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint_pro,
+            current_stage="package",
+        )
+        failed_item = next(item for item in catalog.entries if item.access.can_generate or item.access.can_regenerate)
+        db.add(
+            DeliverableGenerationJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                deliverable_key=failed_item.key,
+                status="failed",
+                product_mode="premium_enrichment",
+                idempotency_key=f"queue-failed-{uuid4()}",
+            )
+        )
+        db.commit()
+
+        run, status, queued_now = enqueue_product_build_processing(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            mode="process_pending",
+            allow_llm=False,
+            catalog_stage_override="package",
+        )
+        db.commit()
+        run_id = run.id if run is not None else None
+
+    assert queued_now is True
+    assert run is not None
+    assert status.processing_queue is not None
+    assert status.processing_queue.active is True
+    assert status.processing_queue.total_count > 0
+    with Session(engine) as db:
+        persisted_run = db.get(ProductBuildRunRecord, run_id)
+        assert persisted_run is not None
+        assert failed_item.key in (persisted_run.checkpoint_payload or {}).get("processing_queue", {}).get("selected_deliverable_keys", [])
+        selected_steps = [
+            step
+            for step in list_product_build_steps(db, run_id=run_id)
+            if step.checkpoint_payload.get("queue_selected")
+        ]
+    assert selected_steps
+    assert all(step.status == "queued" for step in selected_steps)
+
+
+def test_run_product_build_processing_retries_failed_items_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    def fake_runner(db: Session, task: DeliverableGenerationTask):
+        job = DeliverableGenerationJobRecord(
+            workspace_id=task.workspace_id,
+            session_id=task.session_id,
+            deliverable_key=task.deliverable_key,
+            status="error",
+            product_mode=task.product_mode,
+            idempotency_key=task.idempotency_key,
+            error_code="forced_failure",
+            error_message=f"Forced failure for {task.deliverable_key}",
+        )
+        db.add(job)
+        db.flush()
+        return job, DeliverableGenerationResult(
+            deliverable_key=task.deliverable_key,
+            status="failed",
+            error_code="forced_failure",
+            error_message=f"Forced failure for {task.deliverable_key}",
+        )
+
+    def fake_create_diagram_job(
+        db: Session,
+        *,
+        record: SessionRecord,
+        diagram_key: str,
+        user_id,
+        detail_level: str,
+        reason: str,
+        idempotency_key: str,
+    ):
+        job = DiagramGenerationJobRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            diagram_key=diagram_key,
+            requested_by_user_id=user_id,
+            detail_level=detail_level,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            status="queued",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job
+
+    def fake_run_diagram_job(job_id, database_engine=None):
+        with Session(database_engine or engine) as db:
+            job = db.get(DiagramGenerationJobRecord, job_id)
+            assert job is not None
+            job.status = "error"
+            job.error_code = "forced_diagram_failure"
+            job.error_message = f"Forced failure for {job.diagram_key}"
+            job.completed_at = utc_now()
+            job.updated_at = utc_now()
+            db.add(job)
+            db.commit()
+
+    monkeypatch.setattr("app.services.product_processing.product_build_orchestrator.run_deliverable_generation_task", fake_runner)
+    monkeypatch.setattr("app.services.product_processing.product_build_orchestrator.create_generation_job", fake_create_diagram_job)
+    monkeypatch.setattr("app.services.product_processing.product_build_orchestrator.run_generation_job", fake_run_diagram_job)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        run, _, queued_now = enqueue_product_build_processing(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            mode="process_pending",
+            allow_llm=False,
+            catalog_stage_override="package",
+        )
+        assert run is not None
+        assert queued_now is True
+
+        run_product_build_processing(run.id, engine)
+        db.expire_all()
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+        steps = [
+            step
+            for step in list_product_build_steps(db, run_id=run.id)
+            if step.checkpoint_payload.get("queue_selected")
+        ]
+
+    assert status.processing_queue is not None
+    assert status.processing_queue.active is False
+    assert status.processing_queue.failed_count == status.processing_queue.total_count
+    assert status.processing_queue.retried_count == status.processing_queue.total_count
+    assert status.processing_queue.status == "completed_with_errors"
+    assert status.lifecycle == ProductBuildLifecycle.requires_attention
+    assert steps
+    assert all(step.checkpoint_payload.get("attempt_count") == 2 for step in steps)

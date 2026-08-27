@@ -23,6 +23,10 @@ from app.services.product_processing.contracts import (
     ProductBuildDeliverableStatus,
     ProductBuildEntitlement,
     ProductBuildLifecycle,
+    ProductBuildProcessingItemStatus,
+    ProductBuildProcessingQueueItem,
+    ProductBuildProcessingQueueMode,
+    ProductBuildProcessingQueueStatus,
     ProductBuildProductKey,
     ProductBuildProgress,
     ProductBuildRecoverableError,
@@ -75,6 +79,8 @@ PRODUCT_BUILD_META: dict[ProductBuildProductKey, ProductBuildMeta] = {
 
 ACTIVE_JOB_STATES = {"queued", "generating", "updating", "running"}
 ERROR_JOB_STATES = {"error", "failed"}
+PROCESSING_STEP_ACTIVE_STATES = {"queued", "running", "generating"}
+PROCESSING_STEP_COMPLETED_STATES = {"available", "completed", "skipped"}
 CLOSED_UNCERTAINTY_STATUSES = {
     UncertaintyBacklogStatus.resolved.value,
     UncertaintyBacklogStatus.dismissed.value,
@@ -152,6 +158,12 @@ def build_product_build_status(
         [*product_jobs_by_key.values(), *diagram_jobs_by_deliverable_key.values()],
         lifecycle,
     )
+    steps_by_key = _steps_by_key(db, run)
+    processing_queue = _build_processing_queue(
+        run,
+        deliverables=deliverables,
+        jobs_by_key=steps_by_key,
+    )
     actions = _build_actions(meta, lifecycle, entitlement, record_id=str(record.id))
     last_error = _build_last_error(run, deliverables)
     stages = _build_stage_statuses(
@@ -177,6 +189,7 @@ def build_product_build_status(
         attention=_summarize_attention(attention_items),
         actions=actions,
         last_error=last_error,
+        processing_queue=processing_queue,
         generated_at=utc_now().isoformat(),
         source_contracts=[
             "commercial-access.v2",
@@ -687,6 +700,133 @@ def _build_last_error(
         retry_action_key="retry_deliverable_generation",
         trace_refs=[failed.deliverable_key],
     )
+
+
+def _build_processing_queue(
+    run: ProductBuildRunRecord | None,
+    *,
+    deliverables: list[ProductBuildDeliverableStatus],
+    jobs_by_key: dict[str, ProductBuildStepRecord],
+) -> ProductBuildProcessingQueueStatus | None:
+    if run is None:
+        return None
+    queue_checkpoint = (run.checkpoint_payload or {}).get("processing_queue")
+    if not isinstance(queue_checkpoint, dict):
+        return None
+    selected_keys = [str(value) for value in queue_checkpoint.get("selected_deliverable_keys", []) if str(value or "").strip()]
+    if not selected_keys:
+        return ProductBuildProcessingQueueStatus(
+            active=False,
+            queue_id=str(queue_checkpoint.get("queue_id") or ""),
+            mode=_queue_mode(queue_checkpoint.get("mode")),
+            status=str(queue_checkpoint.get("status") or "completed"),
+            updated_at=str(queue_checkpoint.get("updated_at") or ""),
+            started_at=str(queue_checkpoint.get("started_at") or ""),
+            completed_at=str(queue_checkpoint.get("completed_at") or ""),
+            summary=str(queue_checkpoint.get("summary") or "No habia entregables elegibles para procesar."),
+        )
+
+    deliverables_by_key = {item.deliverable_key: item for item in deliverables}
+    queue_items: list[ProductBuildProcessingQueueItem] = []
+    for deliverable_key in selected_keys:
+        deliverable = deliverables_by_key.get(deliverable_key)
+        step = jobs_by_key.get(f"deliverable:{deliverable_key}")
+        checkpoint = step.checkpoint_payload if step is not None else {}
+        error_payload = step.error_payload if step is not None else {}
+        queue_items.append(
+            ProductBuildProcessingQueueItem(
+                deliverable_key=deliverable_key,
+                title=deliverable.title if deliverable is not None else str(checkpoint.get("title") or deliverable_key),
+                deliverable_type=(
+                    deliverable.deliverable_type
+                    if deliverable is not None
+                    else str(checkpoint.get("type") or "artifact")
+                ),
+                stage_key=deliverable.stage_key if deliverable is not None else str(checkpoint.get("stage_key") or ""),
+                status=_queue_item_status(step.status if step is not None else "pending"),
+                attempt_count=int(checkpoint.get("attempt_count") or 0),
+                retried=bool(checkpoint.get("retried")) or int(checkpoint.get("attempt_count") or 0) > 1,
+                error_message=str(error_payload.get("message") or error_payload.get("title") or ""),
+                href=deliverable.href if deliverable is not None else "",
+                job_id=str(step.job_id) if step is not None and step.job_id is not None else "",
+                updated_at=(
+                    step.updated_at.isoformat()
+                    if step is not None and step.updated_at is not None
+                    else deliverable.updated_at if deliverable is not None else ""
+                ),
+            )
+        )
+
+    completed_items = [item for item in queue_items if item.status == ProductBuildProcessingItemStatus.completed]
+    failed_items = [item for item in queue_items if item.status == ProductBuildProcessingItemStatus.failed]
+    processing_count = sum(1 for item in queue_items if item.status in {ProductBuildProcessingItemStatus.queued, ProductBuildProcessingItemStatus.processing})
+    pending_count = sum(1 for item in queue_items if item.status == ProductBuildProcessingItemStatus.pending)
+    retried_count = sum(1 for item in queue_items if item.retried)
+    active = str(queue_checkpoint.get("status") or "").strip().lower() in {"queued", "running"}
+    summary = str(queue_checkpoint.get("summary") or "").strip()
+    if not summary:
+        summary = _default_processing_summary(
+            total_count=len(queue_items),
+            completed_count=len(completed_items),
+            failed_count=len(failed_items),
+            processing_count=processing_count,
+        )
+
+    return ProductBuildProcessingQueueStatus(
+        active=active,
+        queue_id=str(queue_checkpoint.get("queue_id") or ""),
+        mode=_queue_mode(queue_checkpoint.get("mode")),
+        status=str(queue_checkpoint.get("status") or ("running" if active else "completed")),
+        total_count=len(queue_items),
+        pending_count=pending_count,
+        processing_count=processing_count,
+        completed_count=len(completed_items),
+        failed_count=len(failed_items),
+        retried_count=retried_count,
+        started_at=str(queue_checkpoint.get("started_at") or ""),
+        completed_at=str(queue_checkpoint.get("completed_at") or ""),
+        updated_at=str(queue_checkpoint.get("updated_at") or run.updated_at.isoformat()),
+        current_deliverable_key=str(queue_checkpoint.get("current_deliverable_key") or ""),
+        summary=summary,
+        completed_items=completed_items,
+        failed_items=failed_items,
+    )
+
+
+def _queue_mode(value: object) -> ProductBuildProcessingQueueMode:
+    try:
+        return ProductBuildProcessingQueueMode(str(value or ProductBuildProcessingQueueMode.process_pending.value))
+    except ValueError:
+        return ProductBuildProcessingQueueMode.process_pending
+
+
+def _queue_item_status(value: str) -> ProductBuildProcessingItemStatus:
+    status = str(value or "").strip().lower()
+    if status in PROCESSING_STEP_COMPLETED_STATES:
+        return ProductBuildProcessingItemStatus.completed
+    if status in {"error", "failed", "requires_attention", "locked"}:
+        return ProductBuildProcessingItemStatus.failed
+    if status == "queued":
+        return ProductBuildProcessingItemStatus.queued
+    if status in {"running", "generating"}:
+        return ProductBuildProcessingItemStatus.processing
+    return ProductBuildProcessingItemStatus.pending
+
+
+def _default_processing_summary(
+    *,
+    total_count: int,
+    completed_count: int,
+    failed_count: int,
+    processing_count: int,
+) -> str:
+    if total_count <= 0:
+        return "No habia entregables elegibles para procesar."
+    if processing_count > 0:
+        return f"Procesando {completed_count} de {total_count} entregables elegibles."
+    if failed_count > 0:
+        return f"Se completaron {completed_count} de {total_count} entregables; {failed_count} siguen con error."
+    return f"Se completaron {completed_count} de {total_count} entregables elegibles."
 
 
 STAGE_FLOW_ORDER = (

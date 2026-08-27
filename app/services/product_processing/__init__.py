@@ -20,6 +20,10 @@ from app.services.product_processing.contracts import (
     ProductBuildLifecycle,
     ProductBuildProductKey,
     ProductBuildProgress,
+    ProductBuildProcessingItemStatus,
+    ProductBuildProcessingQueueItem,
+    ProductBuildProcessingQueueMode,
+    ProductBuildProcessingQueueStatus,
     ProductBuildRecoverableError,
     ProductBuildStageStatus,
     ProductBuildStatus,
@@ -73,7 +77,9 @@ from app.services.product_processing.product_journey_overview_service import bui
 from app.services.product_processing.product_build_telemetry_service import build_product_build_telemetry_report
 from app.services.product_processing.product_build_orchestrator import (
     ProductBuildOrchestrationOptions,
+    enqueue_product_build_processing,
     ensure_product_build_orchestration,
+    run_product_build_processing,
 )
 from app.services.product_processing.product_build_activation_service import (
     activate_product_builds_for_paid_order,
@@ -101,6 +107,10 @@ __all__ = [
     "ProductBuildLifecycle",
     "ProductBuildProductKey",
     "ProductBuildProgress",
+    "ProductBuildProcessingItemStatus",
+    "ProductBuildProcessingQueueItem",
+    "ProductBuildProcessingQueueMode",
+    "ProductBuildProcessingQueueStatus",
     "ProductBuildRecoverableError",
     "ProductBuildStageStatus",
     "ProductBuildStatus",
@@ -115,6 +125,7 @@ __all__ = [
     "ProductJourneyProductSummary",
     "ProductJourneyRecommendedAction",
     "ProductBuildOrchestrationOptions",
+    "enqueue_product_build_processing",
     "UncertaintyBacklogEntry",
     "UncertaintyBacklogStatus",
     "ProductProcessingMode",
@@ -139,6 +150,7 @@ __all__ = [
     "build_product_journey_overview",
     "build_product_build_telemetry_report",
     "ensure_product_build_orchestration",
+    "run_product_build_processing",
     "ensure_acp_product_orchestration",
     "activate_product_builds_for_paid_order",
     "build_acp_direct_resolution",

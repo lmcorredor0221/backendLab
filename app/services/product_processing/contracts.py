@@ -64,6 +64,19 @@ class ProductBuildAttentionSeverity(StrEnum):
     technical_error = "technical_error"
 
 
+class ProductBuildProcessingQueueMode(StrEnum):
+    process_pending = "process_pending"
+    retry_failed = "retry_failed"
+
+
+class ProductBuildProcessingItemStatus(StrEnum):
+    pending = "pending"
+    queued = "queued"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+
+
 def calculate_product_build_percent(completed_units: float, total_units: float) -> int:
     if total_units <= 0:
         return 0
@@ -167,6 +180,40 @@ class ProductBuildRecoverableError(ContractModel):
     trace_refs: list[str] = PydanticField(default_factory=list)
 
 
+class ProductBuildProcessingQueueItem(ContractModel):
+    deliverable_key: str
+    title: str = ""
+    deliverable_type: Literal["diagram", "document", "artifact", "prompt", "contract", "test", "package", "lineage"] = "artifact"
+    stage_key: str = ""
+    status: ProductBuildProcessingItemStatus = ProductBuildProcessingItemStatus.pending
+    attempt_count: int = 0
+    retried: bool = False
+    error_message: str = ""
+    href: str = ""
+    job_id: str = ""
+    updated_at: str = ""
+
+
+class ProductBuildProcessingQueueStatus(ContractModel):
+    active: bool = False
+    queue_id: str = ""
+    mode: ProductBuildProcessingQueueMode = ProductBuildProcessingQueueMode.process_pending
+    status: Literal["idle", "queued", "running", "completed", "completed_with_errors"] = "idle"
+    total_count: int = 0
+    pending_count: int = 0
+    processing_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    retried_count: int = 0
+    started_at: str = ""
+    completed_at: str = ""
+    updated_at: str = ""
+    current_deliverable_key: str = ""
+    summary: str = ""
+    completed_items: list[ProductBuildProcessingQueueItem] = PydanticField(default_factory=list)
+    failed_items: list[ProductBuildProcessingQueueItem] = PydanticField(default_factory=list)
+
+
 class ProductBuildStatus(ContractModel):
     contract_version: Literal["product-build-status.v1"] = "product-build-status.v1"
     workspace_id: UUID
@@ -183,6 +230,7 @@ class ProductBuildStatus(ContractModel):
     attention: ProductBuildAttentionSummary = PydanticField(default_factory=ProductBuildAttentionSummary)
     actions: list[ProductBuildAction] = PydanticField(default_factory=list)
     last_error: ProductBuildRecoverableError | None = None
+    processing_queue: ProductBuildProcessingQueueStatus | None = None
     generated_at: str = ""
     source_contracts: list[str] = PydanticField(default_factory=list)
 
@@ -602,6 +650,6 @@ class AcpDirectRouteResolution(ContractModel):
 
 
 class ProductBuildCommandRequest(ContractModel):
-    action: Literal["start", "resume", "retry"] = "start"
+    action: Literal["start", "resume", "retry", "process_pending", "retry_failed"] = "start"
     idempotency_key: str = ""
     allow_llm: bool = False
