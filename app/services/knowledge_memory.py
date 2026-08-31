@@ -679,6 +679,7 @@ class KnowledgeMemoryService:
         session_id: UUID | None = None,
         stage: str | None = None,
         authority_allowlist: list[str] | None = None,
+        preferred_paths: list[str] | None = None,
         corpus_hash: str | None = None,
         limit: int = 10,
         ensure_ingested: bool = True,
@@ -694,6 +695,7 @@ class KnowledgeMemoryService:
             session_id=session_id,
             stage=stage,
             authority_allowlist=authority_allowlist or [],
+            preferred_paths=preferred_paths or [],
             cursor=cursor,
             governed=True,
         )
@@ -821,6 +823,7 @@ class KnowledgeMemoryService:
         session_id: UUID | None,
         stage: str | None,
         authority_allowlist: list[str],
+        preferred_paths: list[str],
         cursor: str | None,
         governed: bool,
     ) -> KnowledgeSearchResponse:
@@ -856,6 +859,8 @@ class KnowledgeMemoryService:
             applied_filters.append(f"stage={stage.strip().lower()}")
         if authority_allowlist:
             applied_filters.append("authority=" + ",".join(sorted({item.strip().lower() for item in authority_allowlist if item.strip()})))
+        if preferred_paths:
+            applied_filters.append("preferred_paths=" + ",".join(sorted({item.strip() for item in preferred_paths if item.strip()})))
 
         if governed and not allowed_usages:
             response = KnowledgeSearchResponse(
@@ -943,6 +948,7 @@ class KnowledgeMemoryService:
             score = round(
                 ((lexical_score * 0.72) + (vector_score * 0.28))
                 * _governance_weight(section.authority_level, section.memory_usage)
+                * self._preferred_path_weight(section.relative_path, preferred_paths)
                 * (1.0 + (precedence_rank * 0.05)),
                 6,
             )
@@ -1051,6 +1057,14 @@ class KnowledgeMemoryService:
         if item.scope == KnowledgeScope.session and item.status == KnowledgeDocumentStatus.approved:
             return 2
         return 1
+
+    def _preferred_path_weight(self, relative_path: str, preferred_paths: list[str]) -> float:
+        normalized_path = str(relative_path or "").replace("\\", "/").lower()
+        for preferred in preferred_paths:
+            marker = str(preferred or "").replace("\\", "/").lower().strip()
+            if marker and normalized_path.endswith(marker):
+                return 1.35
+        return 1.0
 
     def _diversify_hits(self, items: list[KnowledgeSearchHit]) -> list[KnowledgeSearchHit]:
         primary: list[KnowledgeSearchHit] = []

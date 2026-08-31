@@ -49,6 +49,7 @@ class BuilderActionRegistry:
             BuilderActionDefinition("retrieve_context", "Recuperar contexto aprobado y memoria compacta."),
             BuilderActionDefinition("invoke_capability", "Invocar una capability gobernada del builder.", requires_capability_stage_match=True),
             BuilderActionDefinition("invoke_critique", "Ejecutar la critica gobernada de una propuesta.", requires_capability_stage_match=True),
+            BuilderActionDefinition("infer_gap_resolutions", "Inferir respuestas trazables antes del gate de calidad."),
             BuilderActionDefinition("run_validator", "Validar estructura, consistencia y alcance de la salida."),
             BuilderActionDefinition("repair_structured_output", "Reparar un payload estructurado recuperable."),
             BuilderActionDefinition("create_attention_decision", "Crear una decision HITL guiada."),

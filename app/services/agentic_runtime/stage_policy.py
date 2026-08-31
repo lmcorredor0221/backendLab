@@ -26,6 +26,7 @@ _COMMON_ACTIONS = [
     "retrieve_context",
     "invoke_capability",
     "invoke_critique",
+    "infer_gap_resolutions",
     "run_validator",
     "repair_structured_output",
     "create_attention_decision",

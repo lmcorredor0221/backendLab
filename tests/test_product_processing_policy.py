@@ -10,6 +10,7 @@ from app.services.product_processing import (
     acp_route_blocking_reasons,
     build_acp_direct_resolution,
     build_premium_enrichment_workspace,
+    classify_inference_permission,
     classify_uncertainty_for_profile,
     defer_premium_uncertainty_to_acp,
     get_product_processing_profile,
@@ -72,6 +73,37 @@ def test_basic_free_infers_or_defers_without_user_attention() -> None:
     assert classification.should_continue_processing is True
     assert classification.should_surface_to_user is False
     assert classification.should_create_attention is False
+
+
+def test_inference_permission_respects_free_vs_acp_boundary() -> None:
+    assert (
+        classify_inference_permission(
+            "define",
+            {
+                "key": "define_runtime",
+                "question": "Que runtime, credenciales y despliegue final se usaran?",
+                "suggested_answer": "Usar contenedor administrado y vault del cliente.",
+            },
+            ProductProcessingMode.basic_free,
+            inferred_answer="Usar contenedor administrado y vault del cliente.",
+            confidence=0.93,
+        )
+        == "defer_to_acp"
+    )
+    assert (
+        classify_inference_permission(
+            "design",
+            {
+                "key": "design_pattern",
+                "question": "Que patron de coordinacion encaja mejor con el flujo principal?",
+                "suggested_answer": "Supervisor con handoffs trazables.",
+            },
+            ProductProcessingMode.basic_free,
+            inferred_answer="Supervisor con handoffs trazables.",
+            confidence=0.91,
+        )
+        == "apply_now"
+    )
 
 
 def test_basic_free_delegation_does_not_touch_build_state_or_stale_artifacts() -> None:

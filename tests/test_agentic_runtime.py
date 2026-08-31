@@ -304,15 +304,15 @@ def test_quality_gate_requests_bounded_repair_for_low_quality_output() -> None:
 
 def test_quality_gate_delegates_free_questions_without_quality_penalty() -> None:
     result = run_react_stage(
-        stage="design",
-        capability="propose_agent_design",
+        stage="discover",
+        capability="analyze_discovery",
         session_id=uuid4(),
         workspace_id=uuid4(),
-        context_refs=["session.define", "knowledge.design"],
+        context_refs=["session.discovery", "knowledge.discovery"],
         primary_runner=lambda: ReactCapabilityOutput(
             value=SimpleNamespace(
                 confidence=SimpleNamespace(overall=0.58),
-                open_questions=["Confirmar proveedor de autenticacion en Blueprint Pro."],
+                open_questions=["Cual es el alcance exacto del modo limitado inicial?"],
             ),
             summary="proposal with delegated question",
         ),
@@ -325,7 +325,102 @@ def test_quality_gate_delegates_free_questions_without_quality_penalty() -> None
     assert gate["repair_policy"] == "document_and_delegate"
     assert gate["quality_confidence"] >= 0.85
     assert gate["evidence_confidence"] < gate["quality_confidence"]
+    assert gate["delegated_resolution"] == 1
+    assert gate["blocking_resolution"] == 0
     assert result.react_run.state.quality_repair_cycles == 0
+
+
+def test_quality_gate_tracks_inferred_answers_before_validation() -> None:
+    result = run_react_stage(
+        stage="design",
+        capability="propose_agent_design",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.define", "knowledge.design"],
+        primary_runner=lambda: ReactCapabilityOutput(
+            value={
+                "confidence": {"overall": 0.91},
+                "guided_questions": [
+                    {
+                        "key": "design_coordination",
+                        "question": "Que patron de coordinacion conviene para el flujo principal?",
+                        "suggested_answer": "Supervisor con handoffs trazables y checkpoints visibles.",
+                        "confidence": 0.91,
+                    }
+                ],
+            },
+            summary="design with inferable guidance",
+        ),
+        validator=lambda _value: ([], False, "valid"),
+        answer_inference_enabled=True,
+        product_mode="basic_free",
+    )
+
+    assert result.react_run is not None
+    gate = result.react_run.output["quality_gate"]
+    assert gate["pending_resolution"] == 0
+    assert gate["inferred_resolution"] == 1
+    assert gate["hypothesis_resolution"] == 0
+    assert gate["inference_trace"]["resolution_count"] == 1
+    assert gate["inference_trace"]["resolutions"][0]["permission_status"] == "apply_now"
+
+
+def test_quality_gate_does_not_apply_reserved_acp_inference_in_free() -> None:
+    result = run_react_stage(
+        stage="define",
+        capability="define_requirements",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.discovery", "knowledge.define"],
+        primary_runner=lambda: ReactCapabilityOutput(
+            value={
+                "confidence": {"overall": 0.9},
+                "open_questions": [
+                    {
+                        "key": "define_deployment_runtime",
+                        "question": "Que runtime, credenciales y despliegue final se usaran?",
+                        "suggested_answer": "Usar contenedor administrado y secretos por vault del cliente.",
+                        "confidence": 0.92,
+                    }
+                ],
+            },
+            summary="define with acp-only question",
+        ),
+        validator=lambda _value: ([], False, "valid"),
+        answer_inference_enabled=True,
+        product_mode="basic_free",
+    )
+
+    assert result.react_run is not None
+    gate = result.react_run.output["quality_gate"]
+    assert gate["pending_resolution"] == 1
+    assert gate["delegated_resolution"] == 1
+    assert gate["inferred_resolution"] == 0
+    assert gate["inference_trace"]["resolutions"][0]["permission_status"] == "defer_to_acp"
+
+
+def test_quality_gate_keeps_blocking_resolution_for_required_discovery_gap() -> None:
+    result = run_react_stage(
+        stage="discover",
+        capability="analyze_discovery",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.discovery", "knowledge.discovery"],
+        primary_runner=lambda: ReactCapabilityOutput(
+            value=SimpleNamespace(
+                confidence=SimpleNamespace(overall=0.9),
+                missing_information=["problem_statement"],
+            ),
+            summary="missing required field",
+        ),
+        validator=lambda _value: ([], False, "valid"),
+    )
+
+    assert result.react_run is not None
+    gate = result.react_run.output["quality_gate"]
+    assert gate["blocking_resolution"] == 1
+    assert gate["delegated_resolution"] == 0
+    assert gate["repair_policy"] != "document_and_delegate"
 
 
 def test_quality_gate_repairs_language_mismatch_for_user_visible_output() -> None:

@@ -5,16 +5,25 @@ from typing import Any, Callable
 from uuid import UUID
 
 from app.services.agent_i18n import detect_user_visible_language_status, get_effective_language
+from app.services.lean_question_policy import classify_stage_question
 from app.services.agentic_runtime.contracts import (
     BuilderActionRequest,
     BuilderActionResult,
     BuilderAgentRunRequest,
     BuilderAgentRunResult,
     BuilderAgentState,
+    BuilderInferenceTrace,
     BuilderQualityGateResult,
 )
 from app.services.agentic_runtime.controller import BuilderReActController
+from app.services.agentic_runtime.stage_answer_inference_service import (
+    StageAnswerInferenceService,
+    build_inference_resolution_map,
+    build_pending_item_key,
+    iter_pending_items,
+)
 from app.services.agentic_runtime.stage_policy import StageAgentPolicy, get_stage_agent_policy
+from app.services.product_processing.contracts import ProductProcessingMode
 
 
 @dataclass
@@ -91,6 +100,83 @@ def _count_pending_resolution(value: Any) -> int:
     return pending
 
 
+def _resolved_by_inference(
+    *,
+    stage: str,
+    source_ref: str,
+    index: int,
+    item: Any,
+    inference_map: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    key = build_pending_item_key(stage, source_ref, index, item)
+    resolution = inference_map.get(key)
+    if not resolution:
+        return None
+    if str(resolution.get("contradiction_status") or "none").strip().lower() != "none":
+        return None
+    if str(resolution.get("final_disposition") or "").strip().lower() not in {"apply_now", "record_as_hypothesis"}:
+        return None
+    return resolution
+
+
+def _iter_quality_gate_pending_items(value: Any) -> list[tuple[str, int, Any]]:
+    items: list[tuple[str, int, Any]] = []
+    for source_ref in ("open_questions", "guided_questions", "missing_information", "needs_information", "coverage_gaps"):
+        for index, item in enumerate(_field(value, source_ref, []) or [], start=1):
+            items.append((source_ref, index, item))
+    for index, item in enumerate(_field(value, "dependency_gaps", []) or [], start=1):
+        items.append(("dependency_gaps", index, item))
+    return items
+
+
+def _classify_pending_resolution(
+    stage: str,
+    value: Any,
+    *,
+    inference_trace: BuilderInferenceTrace | None = None,
+) -> dict[str, int]:
+    total = 0
+    delegated = 0
+    blocking = 0
+    inferred = 0
+    hypothesis = 0
+    inference_map = build_inference_resolution_map(inference_trace)
+
+    for source_ref, index, item in _iter_quality_gate_pending_items(value):
+        if source_ref == "dependency_gaps":
+            status = str(_field(item, "status", "open") or "open").strip().lower()
+            if status not in {"", "open", "pending"}:
+                continue
+        total += 1
+        inferred_resolution = _resolved_by_inference(
+            stage=stage,
+            source_ref=source_ref,
+            index=index,
+            item=item,
+            inference_map=inference_map,
+        )
+        if inferred_resolution is not None:
+            disposition = str(inferred_resolution.get("final_disposition") or "").strip().lower()
+            if disposition == "apply_now":
+                inferred += 1
+            elif disposition == "record_as_hypothesis":
+                hypothesis += 1
+            total -= 1
+            continue
+        decision = classify_stage_question(stage, item)
+        if decision.status in {"defer_to_next_stage", "defer_to_acp"}:
+            delegated += 1
+        else:
+            blocking += 1
+    return {
+        "total": total,
+        "delegated": delegated,
+        "blocking": blocking,
+        "inferred": inferred,
+        "hypothesis": hypothesis,
+    }
+
+
 def _coerce_validation_result(validation: Any) -> tuple[list[str], bool, str, BuilderQualityGateResult | None]:
     if isinstance(validation, BuilderQualityGateResult):
         return list(validation.issues), bool(validation.blocking), validation.reason_summary, validation
@@ -113,6 +199,7 @@ def _build_quality_gate(
     cross_stage_remediation: bool,
     effective_language: str,
     runtime_warnings: list[str] | None = None,
+    inference_trace: BuilderInferenceTrace | None = None,
 ) -> BuilderQualityGateResult:
     issues, blocking, summary, explicit_gate = _coerce_validation_result(validation)
     if explicit_gate is not None:
@@ -122,8 +209,14 @@ def _build_quality_gate(
     if base_confidence is None:
         base_confidence = 0.65 if issues or blocking else 0.9
 
-    pending_resolution = _count_pending_resolution(value)
-    evidence_confidence = _clamp_confidence(base_confidence - min(0.3, pending_resolution * 0.04))
+    pending_summary = _classify_pending_resolution(stage, value, inference_trace=inference_trace)
+    pending_resolution = pending_summary["total"]
+    delegated_resolution = pending_summary["delegated"]
+    blocking_resolution = pending_summary["blocking"]
+    inferred_resolution = pending_summary["inferred"]
+    hypothesis_resolution = pending_summary["hypothesis"]
+    evidence_penalty_count = pending_resolution
+    evidence_confidence = _clamp_confidence(base_confidence - min(0.3, evidence_penalty_count * 0.04))
     quality_confidence = base_confidence
     free_delegation_stage = stage in {"discover", "define", "design"}
     repair_policy = "none"
@@ -164,7 +257,8 @@ def _build_quality_gate(
     if (
         policy.allow_free_delegation_without_quality_penalty
         and free_delegation_stage
-        and pending_resolution > 0
+        and delegated_resolution > 0
+        and blocking_resolution == 0
         and not blocking
     ):
         quality_confidence = max(quality_confidence, policy.quality_threshold)
@@ -210,9 +304,15 @@ def _build_quality_gate(
         quality_confidence=_clamp_confidence(quality_confidence),
         evidence_confidence=evidence_confidence,
         pending_resolution=pending_resolution,
+        delegated_resolution=delegated_resolution,
+        blocking_resolution=blocking_resolution,
+        inferred_resolution=inferred_resolution,
+        hypothesis_resolution=hypothesis_resolution,
+        evidence_penalty_count=evidence_penalty_count,
         flow_readiness=flow_readiness,
         issues=list(dict.fromkeys(issues)),
         warnings=list(dict.fromkeys(normalized_warnings)),
+        inference_trace=inference_trace,
         repair_policy=repair_policy,
         language_status=language_status,
         schema_status="invalid" if value is None else "valid",
@@ -227,6 +327,8 @@ def _build_quality_gate(
         ),
         should_repair=can_repair_quality,
         blocking=blocking,
+        minimum_repair_cycles=policy.min_repair_cycles,
+        quality_repair_cycles=state.quality_repair_cycles,
     )
 
 
@@ -252,6 +354,8 @@ def run_react_stage(
     remediation_action: str = "",
     initial_state: BuilderAgentState | None = None,
     effective_language: str = "es",
+    answer_inference_enabled: bool = False,
+    product_mode: ProductProcessingMode | str = ProductProcessingMode.basic_free,
 ) -> ReactStageExecution:
     """Run one bounded ReAct loop around an existing stage capability.
 
@@ -265,6 +369,7 @@ def run_react_stage(
     collected_traces: list[Any] = []
     warnings: list[str] = []
     last_runtime_warnings: list[str] = []
+    last_inference_trace: BuilderInferenceTrace | None = None
 
     def reasoner(request: BuilderAgentRunRequest, state: BuilderAgentState, previous: BuilderActionResult | None) -> BuilderActionRequest:
         previous_key = previous.key if previous else ""
@@ -318,6 +423,10 @@ def run_react_stage(
                 arguments={"phase": "critique"},
             )
         if previous_key in {"invoke_capability", "invoke_critique", "repair_structured_output"}:
+            if answer_inference_enabled and current_value is not None and _count_pending_resolution(current_value) > 0:
+                return BuilderActionRequest(key="infer_gap_resolutions", stage=stage)
+            return BuilderActionRequest(key="run_validator", stage=stage)
+        if previous_key == "infer_gap_resolutions":
             return BuilderActionRequest(key="run_validator", stage=stage)
         if previous_key == "run_validator":
             issues = [str(item) for item in (previous.output if previous else {}).get("issues", []) if str(item).strip()]
@@ -338,7 +447,7 @@ def run_react_stage(
         return BuilderActionRequest(key="finish_stage", stage=stage)
 
     def execute(action: BuilderActionRequest, _state: BuilderAgentState) -> BuilderActionResult:
-        nonlocal current_value, collected_traces, warnings, last_runtime_warnings
+        nonlocal current_value, collected_traces, warnings, last_runtime_warnings, last_inference_trace
         if action.key == "retrieve_context":
             return BuilderActionResult(
                 key=action.key,
@@ -416,6 +525,48 @@ def run_react_stage(
                 warnings=list(result.warnings),
                 token_usage=result.token_usage,
             )
+        if action.key == "infer_gap_resolutions":
+            if current_value is None:
+                return BuilderActionResult(
+                    key=action.key,
+                    status="failed",
+                    summary="No existe una salida de etapa para inferir pendientes.",
+                    error_kind="missing_stage_output",
+                )
+            if not answer_inference_enabled or _count_pending_resolution(current_value) <= 0:
+                last_inference_trace = None
+                return BuilderActionResult(
+                    key=action.key,
+                    output={"inference_trace": None, "output_refs": list(context_refs)},
+                    summary="No hubo pendientes inferibles antes del gate de calidad.",
+                )
+            provider_key = ""
+            model_name = ""
+            if collected_traces:
+                llm_trace = getattr(collected_traces[-1], "llm_trace", None)
+                provider_key = str(getattr(llm_trace, "provider_key", "") or "")
+                model_name = str(getattr(llm_trace, "model_name", "") or "")
+            last_inference_trace = StageAnswerInferenceService().run(
+                stage=stage,
+                value=current_value,
+                effective_language=language,
+                product_mode=product_mode,
+                provider_key=provider_key,
+                model_name=model_name,
+                context_refs=context_refs,
+            )
+            return BuilderActionResult(
+                key=action.key,
+                output={
+                    "inference_trace": last_inference_trace.model_dump(mode="json"),
+                    "output_refs": list(context_refs),
+                },
+                summary=(
+                    f"Se evaluaron {last_inference_trace.resolution_count} pendientes antes del gate de calidad; "
+                    f"{last_inference_trace.applied_count} quedaron aplicados y "
+                    f"{last_inference_trace.hypothesis_count} como hipotesis."
+                ),
+            )
         if action.key == "run_validator":
             validation = validator(current_value)
             quality_gate = _build_quality_gate(
@@ -428,6 +579,7 @@ def run_react_stage(
                 cross_stage_remediation=False,
                 effective_language=language,
                 runtime_warnings=last_runtime_warnings,
+                inference_trace=last_inference_trace,
             )
             return BuilderActionResult(
                 key=action.key,
@@ -468,6 +620,7 @@ def run_react_stage(
                 cross_stage_remediation=True,
                 effective_language=language,
                 runtime_warnings=last_runtime_warnings,
+                inference_trace=last_inference_trace,
             )
             return BuilderActionResult(
                 key=action.key,

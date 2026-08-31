@@ -44,6 +44,30 @@ class RetrievedKnowledgeEvidence:
 
 
 @dataclass(frozen=True)
+class KnowledgeEnrichmentItem:
+    key: str
+    source_ref: str
+    authority: str = "global_knowledge"
+    stage_scope: list[str] = field(default_factory=list)
+    recommendation: str = ""
+    rationale: str = ""
+    risk_if_ignored: str = ""
+    confidence: float = 0.0
+
+
+@dataclass(frozen=True)
+class StageKnowledgeEnrichment:
+    stage: str
+    kb_version: str = ""
+    corpus_hash: str = ""
+    matched_patterns: list[KnowledgeEnrichmentItem] = field(default_factory=list)
+    inferred_recommendations: list[KnowledgeEnrichmentItem] = field(default_factory=list)
+    risk_controls: list[KnowledgeEnrichmentItem] = field(default_factory=list)
+    delegated_decision_candidates: list[KnowledgeEnrichmentItem] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class StageContextBundle:
     capability: str
     role: str
@@ -55,6 +79,7 @@ class StageContextBundle:
     knowledge_manifest: KnowledgeManifestV1 | None
     memory_policy: MemoryPolicyV1 | None
     short_term_memory: ShortTermMemoryV1 | None
+    knowledge_enrichment: StageKnowledgeEnrichment | None = None
     approved_refs: list[ApprovedArtifactReference] = field(default_factory=list)
     retrieved_hits: list[RetrievedKnowledgeEvidence] = field(default_factory=list)
     retrieval_response: KnowledgeSearchResponse | None = None

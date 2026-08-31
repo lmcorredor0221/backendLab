@@ -5,7 +5,7 @@ import json
 import re
 import unicodedata
 from datetime import UTC, datetime, timedelta
-from typing import Callable
+from typing import Any, Callable
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
@@ -262,6 +262,7 @@ from app.services.agentic_runtime.tracing import (
 )
 from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
 from app.services.agentic_runtime.stages.define import run_define_react
+from app.services.agentic_runtime.stage_answer_inference_service import build_inference_resolution_map
 from app.services.agentic_runtime.stages.extended import (
     ReactCapabilityOutput,
     run_design_react,
@@ -315,6 +316,7 @@ from app.services.stage5_service import (
     FEATURE_FLAG_SUBAGENTS,
     FEATURE_FLAG_TOOL_RECOMMENDATION,
     FEATURE_FLAG_REACT_RUNTIME,
+    FEATURE_FLAG_STAGE_ANSWER_INFERENCE,
     FEATURE_FLAG_WORKFLOWS,
     HANDOFF_STATUS_COMPLETED,
     HANDOFF_STATUS_RETURNED,
@@ -345,6 +347,18 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 def utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _is_stage_answer_inference_enabled(db: Session, *, workspace_id: UUID) -> bool:
+    return is_feature_flag_enabled(
+        db,
+        FEATURE_FLAG_REACT_RUNTIME,
+        workspace_id=workspace_id,
+    ) and is_feature_flag_enabled(
+        db,
+        FEATURE_FLAG_STAGE_ANSWER_INFERENCE,
+        workspace_id=workspace_id,
+    )
 
 
 class StageOperationStepResponse(BaseModel):
@@ -715,29 +729,35 @@ def _iter_uncertainty_values(value: object) -> list[object]:
     return [value]
 
 
+def _uncertainty_attr(value: object, key: str, default: object = None) -> object:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
 def _stage_uncertainty_items(stage: str, output: object) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
     sources: list[tuple[str, str, bool, object]] = [
-        ("open_questions", "question", False, getattr(output, "open_questions", [])),
-        ("guided_questions", "question", False, getattr(output, "guided_questions", [])),
-        ("missing_information", "gap", True, getattr(output, "missing_information", [])),
-        ("coverage_gaps", "gap", True, getattr(output, "coverage_gaps", [])),
-        ("needs_information", "question", False, getattr(output, "needs_information", [])),
+        ("open_questions", "question", False, _uncertainty_attr(output, "open_questions", [])),
+        ("guided_questions", "question", False, _uncertainty_attr(output, "guided_questions", [])),
+        ("missing_information", "gap", True, _uncertainty_attr(output, "missing_information", [])),
+        ("coverage_gaps", "gap", True, _uncertainty_attr(output, "coverage_gaps", [])),
+        ("needs_information", "question", False, _uncertainty_attr(output, "needs_information", [])),
     ]
-    validation = getattr(output, "validation", None)
+    validation = _uncertainty_attr(output, "validation", None)
     if validation is not None:
         sources.extend(
             [
-                ("validation.blocking_open_questions", "question", True, getattr(validation, "blocking_open_questions", [])),
-                ("validation.blocking_issues", "gap", True, getattr(validation, "blocking_issues", [])),
+                ("validation.blocking_open_questions", "question", True, _uncertainty_attr(validation, "blocking_open_questions", [])),
+                ("validation.blocking_issues", "gap", True, _uncertainty_attr(validation, "blocking_issues", [])),
             ]
         )
-    preflight = getattr(output, "preflight", None)
+    preflight = _uncertainty_attr(output, "preflight", None)
     if preflight is not None:
-        sources.append(("preflight.missing_information", "gap", True, getattr(preflight, "missing_information", [])))
-    dry_compile = getattr(output, "dry_compile_status", None)
+        sources.append(("preflight.missing_information", "gap", True, _uncertainty_attr(preflight, "missing_information", [])))
+    dry_compile = _uncertainty_attr(output, "dry_compile_status", None)
     if dry_compile is not None:
-        sources.append(("dry_compile.blocking_issues", "gap", True, getattr(dry_compile, "blocking_issues", [])))
+        sources.append(("dry_compile.blocking_issues", "gap", True, _uncertainty_attr(dry_compile, "blocking_issues", [])))
     seen: set[str] = set()
     for source_ref, kind, blocking, raw_values in sources:
         for index, raw_value in enumerate(_iter_uncertainty_values(raw_values), start=1):
@@ -776,7 +796,28 @@ def _record_stage_uncertainties(
         return
     tier = record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
     mode = resolve_product_processing_mode(tier)
+    quality_gate = (
+        output.get("quality_gate", {})
+        if isinstance(output, dict)
+        else getattr(output, "quality_gate", {})
+    ) if output is not None else {}
+    if not isinstance(quality_gate, dict):
+        quality_gate = {}
+    inference_map = build_inference_resolution_map(quality_gate.get("inference_trace"))
     for item in _stage_uncertainty_items(stage, output):
+        inferred_resolution = inference_map.get(str(item.get("key") or "").strip())
+        if inferred_resolution:
+            inferred_answer = str(inferred_resolution.get("inferred_answer") or "").strip()
+            if inferred_answer:
+                item.setdefault("assumed_answer", inferred_answer)
+                item.setdefault("suggested_answer", inferred_answer)
+            try:
+                item["confidence"] = max(
+                    float(item.get("confidence") or 0.0),
+                    float(inferred_resolution.get("confidence") or 0.0),
+                )
+            except (TypeError, ValueError):
+                pass
         try:
             classification = classify_uncertainty_for_profile(stage, item, mode)
             upsert_uncertainty_backlog(
@@ -4453,6 +4494,12 @@ def normalize_discovery_route(
     return envelope
 
 
+def _validate_discovery_analysis_output(value: Any) -> tuple[list[str], bool, str]:
+    if isinstance(value, DiscoveryAnalysisOutput):
+        return [], False, "Discovery valido el analisis estructurado."
+    return ["Discovery no produjo un analisis estructurado."], True, "Discovery requiere revision."
+
+
 @router.post("/{session_id}/analyze-discovery", response_model=JourneyStageArtifactEntry)
 def analyze_discovery_route(
     session_id: UUID,
@@ -4472,6 +4519,10 @@ def analyze_discovery_route(
     )
     react_run = None
     react_runtime_warnings: list[str] = []
+    product_mode = resolve_product_processing_mode(
+        record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    )
+    answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
 
     def run_discovery_analysis_capability() -> ReactCapabilityOutput:
         analysis_value, trace_items = run_discovery_analysis_stage(
@@ -4501,12 +4552,10 @@ def analyze_discovery_route(
                 workspace_id=record.workspace_id,
                 context_refs=["session.discovery_input", "knowledge.discovery_patterns"],
                 runner=run_discovery_analysis_capability,
-                validator=lambda value: (
-                    ["Discovery no produjo un analisis estructurado."],
-                    not isinstance(value, DiscoveryAnalysisOutput),
-                    "Discovery valido el analisis estructurado." if isinstance(value, DiscoveryAnalysisOutput) else "Discovery requiere revision.",
-                ),
+                validator=_validate_discovery_analysis_output,
                 effective_language=current_user.preferred_language,
+                answer_inference_enabled=answer_inference_enabled,
+                product_mode=product_mode.value,
             )
             analysis = react_execution.value
             traces = react_execution.traces
@@ -4584,7 +4633,7 @@ def analyze_discovery_route(
         db,
         record=record,
         stage="discover",
-        output=analysis,
+        output=proposal_payload,
         created_from="analyze_discovery",
     )
     write_skill_runs(
@@ -4601,11 +4650,18 @@ def analyze_discovery_route(
         capability="analyze_discovery",
         source_action="analyze_discovery",
     )
+    quality_gate_payload = proposal_payload.get("quality_gate") if isinstance(proposal_payload.get("quality_gate"), dict) else {}
+    blocking_resolution = (
+        int(quality_gate_payload.get("blocking_resolution", 0) or 0)
+        if quality_gate_payload
+        else len(list(analysis.missing_information))
+    )
+    discovery_status = ArtifactStatus.ready if blocking_resolution == 0 else ArtifactStatus.needs_review
     write_validation(
         db,
         session_id=session_id,
         artifact_name="discovery_analysis",
-        status_value=ArtifactStatus.ready if not analysis.missing_information else ArtifactStatus.needs_review,
+        status_value=discovery_status,
         missing_fields=list(analysis.missing_information),
         warnings=warnings,
     )
@@ -4613,7 +4669,7 @@ def analyze_discovery_route(
         db,
         session_id=session_id,
         stage=SessionStage.normalize_discovery,
-        status_value=ArtifactStatus.ready if not analysis.missing_information else ArtifactStatus.needs_review,
+        status_value=discovery_status,
         message="Discovery analizado",
         payload=proposal_payload,
     )
@@ -4756,6 +4812,10 @@ def define_requirements_route(
     runtime_warnings: list[str] = []
     react_run = None
     react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    product_mode = resolve_product_processing_mode(
+        record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    )
+    answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
     initial_react_state = (
         BuilderReActCheckpointStore.load(
             db,
@@ -4775,6 +4835,8 @@ def define_requirements_route(
                 session_id=session_id,
                 workspace_id=record.workspace_id,
                 initial_state=initial_react_state,
+                answer_inference_enabled=answer_inference_enabled,
+                product_mode=product_mode.value,
             )
             definition = react_execution.definition
             traces = react_execution.skill_traces
@@ -4865,7 +4927,7 @@ def define_requirements_route(
         db,
         record=record,
         stage="define",
-        output=definition,
+        output=proposal_payload,
         created_from="define_requirements",
     )
     write_skill_runs(
@@ -4960,6 +5022,10 @@ def _execute_propose_design(
         workspace_id=record.workspace_id,
     )
     react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    product_mode = resolve_product_processing_mode(
+        record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    )
+    answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
     if react_enabled:
         try:
             react_execution = run_design_react(
@@ -4973,6 +5039,8 @@ def _execute_propose_design(
                 session_id=session_id,
                 workspace_id=record.workspace_id,
                 progress_callback=progress_callback,
+                answer_inference_enabled=answer_inference_enabled,
+                product_mode=product_mode.value,
             )
             artifact_payload = react_execution.value
             traces = react_execution.traces
@@ -7291,6 +7359,8 @@ def _execute_tools_runtime(
     stage_context,
     initial_state=None,
     react_enabled: bool = False,
+    answer_inference_enabled: bool = False,
+    product_mode: str = "basic_free",
 ) -> tuple[ToolRecommendationEnvelope, list, object | None, list[str]]:
     react_run = None
     react_runtime_warnings: list[str] = []
@@ -7322,6 +7392,8 @@ def _execute_tools_runtime(
             runtime_settings=runtime_settings,
             stage_context=stage_context,
             initial_state=initial_state,
+            answer_inference_enabled=answer_inference_enabled,
+            product_mode=product_mode,
         )
         recommendation = react_execution.value
         if react_execution.react_run is not None and isinstance(
@@ -7437,6 +7509,10 @@ def recommend_tools_route(
     )
     request_payload = payload or ToolRecommendationRequest()
     react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    product_mode = resolve_product_processing_mode(
+        record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    )
+    answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
     initial_react_state = _resolve_react_initial_state(
         db,
         session_id=session_id,
@@ -7457,6 +7533,8 @@ def recommend_tools_route(
         stage_context=stage_context,
         initial_state=initial_react_state,
         react_enabled=react_enabled,
+        answer_inference_enabled=answer_inference_enabled,
+        product_mode=product_mode.value,
     )
     envelope = envelope.model_copy(
         update={
@@ -7838,6 +7916,8 @@ def _execute_memory_runtime(
     critique_stage_context,
     initial_state=None,
     react_enabled: bool = False,
+    answer_inference_enabled: bool = False,
+    product_mode: str = "basic_free",
 ) -> tuple[MemoryRecommendationArtifact, list, object | None, list[str]]:
     react_run = None
     react_runtime_warnings: list[str] = []
@@ -7879,6 +7959,8 @@ def _execute_memory_runtime(
             proposal_stage_context=proposal_stage_context,
             critique_stage_context=critique_stage_context,
             initial_state=initial_state,
+            answer_inference_enabled=answer_inference_enabled,
+            product_mode=product_mode,
         )
         artifact = react_execution.value
         traces = react_execution.traces
@@ -8189,6 +8271,10 @@ def recommend_memory_route(
     )
     request_payload = payload or MemoryRecommendationRequest()
     react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    product_mode = resolve_product_processing_mode(
+        record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    )
+    answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
     initial_react_state = _resolve_react_initial_state(
         db,
         session_id=session_id,
@@ -8215,6 +8301,8 @@ def recommend_memory_route(
         critique_stage_context=critique_stage_context,
         initial_state=initial_react_state,
         react_enabled=react_enabled,
+        answer_inference_enabled=answer_inference_enabled,
+        product_mode=product_mode.value,
     )
     missing_memory_tool_keys = [
         str(dependency.tool_key or "").strip().lower()
@@ -9419,6 +9507,10 @@ def evaluate_blueprint_route(
         allow_second_page=True,
     )
     react_run = None
+    product_mode = resolve_product_processing_mode(
+        record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    )
+    answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
     if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
         react_execution = run_evaluation_react(
             session_id=session_id,
@@ -9605,6 +9697,8 @@ def generate_estimation_report_route(
                 "Estimate valido sus insumos deterministas." if value is not None else "Estimate requiere revision.",
             ),
             effective_language=current_user.preferred_language,
+            answer_inference_enabled=answer_inference_enabled,
+            product_mode=product_mode.value,
         )
         analysis = react_execution.value
         trace = react_execution.traces[0]

@@ -50,6 +50,7 @@ from app.services.product_processing.contracts import (
 )
 from app.services.product_processing.policy import (
     BLUEPRINT_TIER_POLICY,
+    classify_inference_permission,
     classify_uncertainty_for_profile,
     get_product_processing_profile,
     resolve_product_processing_mode,
@@ -135,6 +136,7 @@ __all__ = [
     "UncertaintyDisposition",
     "UncertaintyKind",
     "UncertaintyOption",
+    "classify_inference_permission",
     "classify_uncertainty_for_profile",
     "get_product_processing_profile",
     "backlog_entry_from_record",

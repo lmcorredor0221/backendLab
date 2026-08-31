@@ -8,7 +8,7 @@ from sqlalchemy import event
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import RuntimeFeatureFlagRecord, WorkspaceRecord
-from app.services.stage5_service import FEATURE_FLAG_DESIGN_INTELLIGENCE
+from app.services.stage5_service import FEATURE_FLAG_DESIGN_INTELLIGENCE, FEATURE_FLAG_STAGE_ANSWER_INFERENCE
 from app.services.workspace_bootstrap import DEFAULT_FEATURE_FLAGS, seed_runtime_feature_flags
 
 
@@ -18,6 +18,9 @@ def test_default_feature_flags_include_design_intelligence_rollout_switch() -> N
     assert FEATURE_FLAG_DESIGN_INTELLIGENCE in flags
     assert flags[FEATURE_FLAG_DESIGN_INTELLIGENCE]["enabled"] is True
     assert flags[FEATURE_FLAG_DESIGN_INTELLIGENCE]["stage_hint"] == "di141"
+    assert FEATURE_FLAG_STAGE_ANSWER_INFERENCE in flags
+    assert flags[FEATURE_FLAG_STAGE_ANSWER_INFERENCE]["enabled"] is False
+    assert flags[FEATURE_FLAG_STAGE_ANSWER_INFERENCE]["stage_hint"] == "iai148"
 
 
 def test_seed_runtime_feature_flags_recovers_from_concurrent_insert_race() -> None:

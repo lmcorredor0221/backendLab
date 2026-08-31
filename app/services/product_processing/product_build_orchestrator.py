@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -42,6 +43,7 @@ from app.services.product_processing.product_build_status_service import (
     PRODUCT_BUILD_META,
     build_product_build_status,
 )
+from app.services.product_processing.approved_context_service import build_approved_deliverable_context
 
 
 ACTIVE_JOB_STATES = {"queued", "generating", "updating", "running"}
@@ -53,6 +55,7 @@ QUEUE_ELIGIBLE_STATES = {"pending", "stale"}
 QUEUE_RETRY_ONLY_STATES = {"error"}
 QUEUE_ACTIVE_STATUSES = {"queued", "running"}
 MAX_PROCESSING_ATTEMPTS = 2
+ORPHANED_JOB_TIMEOUT = timedelta(minutes=5)
 
 JobRunner = Callable[[Session, DeliverableGenerationTask], tuple[DeliverableGenerationJobRecord, DeliverableGenerationResult | None]]
 
@@ -235,6 +238,7 @@ def reconcile_product_build_run(
         )
 
     run = runs[0]
+    _recover_orphaned_processing_queue(db, run=run)
     stage_val = getattr(record.current_stage, "value", str(record.current_stage or "discover"))
     current_stage = str(
         catalog_stage_override
@@ -333,6 +337,7 @@ def enqueue_product_build_processing(
         },
     )
 
+    _recover_orphaned_processing_queue(db, run=run)
     current_queue = _processing_queue_checkpoint(run)
     if str(run.lifecycle or "") in {
         ProductBuildLifecycle.queued.value,
@@ -820,6 +825,11 @@ def _execute_expected_jobs(
             continue
         if not item.access.can_generate:
             continue
+        context_payload, approved_context_refs = build_approved_deliverable_context(
+            db,
+            record=record,
+            deliverable_key=item.key,
+        )
         task = DeliverableGenerationTask(
             workspace_id=run.workspace_id,
             session_id=record.id,
@@ -1167,6 +1177,11 @@ def _process_single_queue_item(
             )
             return True
 
+        context_payload, approved_context_refs = build_approved_deliverable_context(
+            db,
+            record=record,
+            deliverable_key=item.key,
+        )
         task = DeliverableGenerationTask(
             workspace_id=run.workspace_id,
             session_id=record.id,
@@ -1176,8 +1191,8 @@ def _process_single_queue_item(
             tier=_safe_tier(run.entitlement_tier),
             idempotency_key=_queue_job_idempotency_key(run=run, item=item, phase=phase),
             requested_by_user_id=run.created_by_user_id,
-            context_payload={},
-            approved_context_refs=[],
+            context_payload=context_payload,
+            approved_context_refs=approved_context_refs,
             allow_llm=allow_llm,
         )
         job, result = run_deliverable_generation_task(db, task)
@@ -1405,11 +1420,78 @@ def _finalize_processing_queue(
     db.commit()
 
 
+def _recover_orphaned_processing_queue(db: Session, *, run: ProductBuildRunRecord) -> bool:
+    """Close jobs abandoned by a process restart without starting new LLM work."""
+    queue_checkpoint = _processing_queue_checkpoint(run)
+    if str(queue_checkpoint.get("status") or "") not in QUEUE_ACTIVE_STATUSES:
+        return False
+
+    cutoff = utc_now() - ORPHANED_JOB_TIMEOUT
+    selected_keys = [str(value) for value in queue_checkpoint.get("selected_deliverable_keys", [])]
+    active_steps = [
+        step
+        for step in list_product_build_steps(db, run_id=run.id)
+        if step.deliverable_key in selected_keys and str(step.status or "") in QUEUE_ACTIVE_STEP_STATES
+    ]
+    stale_steps = [step for step in active_steps if step.updated_at <= cutoff]
+    if not stale_steps:
+        return False
+
+    orphaned_keys: list[str] = []
+    for step in stale_steps:
+        deliverable_key = str(step.deliverable_key or "")
+        if not deliverable_key:
+            continue
+        orphaned_keys.append(deliverable_key)
+        step.status = "error"
+        step.progress_percent = 0
+        step.error_payload = {
+            "code": "processing_queue_orphaned",
+            "message": "El procesamiento fue interrumpido antes de persistir un resultado final. Se requiere un reintento controlado.",
+        }
+        step.checkpoint_payload = {
+            **(step.checkpoint_payload or {}),
+            "orphaned_at": utc_now().isoformat(),
+            "queue_selected": True,
+        }
+        db.add(step)
+
+    if not orphaned_keys:
+        return False
+    _mark_failed_queue_jobs_as_error(db, session_id=run.session_id, failed_keys=orphaned_keys, include_started_jobs=True)
+    _update_processing_queue_checkpoint(
+        db,
+        run=run,
+        status="completed_with_errors",
+        current_deliverable_key="",
+        summary=(
+            f"Se detectaron {len(orphaned_keys)} jobs interrumpidos. "
+            "No se reintentaron automáticamente para preservar idempotencia y control de costos."
+        ),
+    )
+    update_product_build_run_state(
+        db,
+        run=run,
+        lifecycle=ProductBuildLifecycle.requires_attention,
+        checkpoint_payload=run.checkpoint_payload,
+        error_payload={
+            "code": "processing_queue_orphaned",
+            "title": "El procesamiento fue interrumpido",
+            "message": "Algunos entregables requieren un reintento controlado.",
+            "retry_action_key": ProductBuildProcessingQueueMode.retry_failed.value,
+            "trace_refs": orphaned_keys,
+        },
+    )
+    db.commit()
+    return True
+
+
 def _mark_failed_queue_jobs_as_error(
     db: Session,
     *,
     session_id: UUID,
     failed_keys: list[str],
+    include_started_jobs: bool = False,
 ) -> None:
     failure_code = "processing_queue_orphaned"
     for deliverable_key in failed_keys:
@@ -1424,7 +1506,7 @@ def _mark_failed_queue_jobs_as_error(
         if (
             latest_deliverable_job is not None
             and str(latest_deliverable_job.status or "") in ACTIVE_JOB_STATES
-            and latest_deliverable_job.started_at is None
+            and (include_started_jobs or latest_deliverable_job.started_at is None)
             and latest_deliverable_job.completed_at is None
         ):
             latest_deliverable_job.status = "error"
@@ -1449,7 +1531,7 @@ def _mark_failed_queue_jobs_as_error(
             .order_by(DiagramGenerationJobRecord.updated_at.desc())
         ).all()
         for diagram_job in active_diagram_jobs:
-            if diagram_job.started_at is not None or diagram_job.completed_at is not None:
+            if (not include_started_jobs and diagram_job.started_at is not None) or diagram_job.completed_at is not None:
                 continue
             diagram_job.status = "error"
             diagram_job.error_code = failure_code

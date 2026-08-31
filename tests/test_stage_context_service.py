@@ -416,6 +416,67 @@ def test_stage_knowledge_planner_supports_explicit_second_page() -> None:
     assert response.corpus_hash == "corp-001"
 
 
+def test_stage_knowledge_planner_enables_discover_retrieval_with_stage_profile() -> None:
+    snapshot = _manual_snapshot()
+    fake_service = _FakeKnowledgeService(
+        [
+            _search_response(
+                items=[
+                    _search_hit(
+                        key="discover-patterns",
+                        preview="Patrones comunes para discovery de agentes de soporte con preguntas delegables.",
+                        relative_path="Docs/agentic-knowledge-base/patterns-playbook-2026.md",
+                        title="Patterns",
+                        score=0.9,
+                        source_lineage="Docs/agentic-knowledge-base/patterns-playbook-2026.md#discover-patterns",
+                    )
+                ],
+                corpus_hash="corp-discover",
+                query="etapa discover patrones comunes de agentes",
+            )
+        ]
+    )
+    service = StageContextService(
+        knowledge_planner=StageKnowledgePlanner(knowledge_service=fake_service)
+    )
+
+    bundle = service.build(
+        cast(Session, object()),
+        workspace_id=snapshot.session.workspace_id,
+        session_id=snapshot.session.id,
+        session_snapshot=snapshot,
+        capability="analyze_discovery",
+        role="builder",
+        stage="discover",
+        task_source_keys=["discovery_analysis_input"],
+    )
+
+    assert bundle.retrieved_hits
+    assert bundle.knowledge_enrichment is not None
+    assert bundle.knowledge_enrichment.stage == "discover"
+    assert fake_service.calls[0]["stage"] == "discover"
+    assert "patterns-playbook-2026.md" in fake_service.calls[0]["preferred_paths"]
+
+
+def test_stage_knowledge_planner_passes_preferred_paths_for_memory_ranking() -> None:
+    snapshot = _manual_snapshot()
+    fake_service = _FakeKnowledgeService([_search_response(items=[], corpus_hash="corp-memory", query="etapa memory rag checkpoints")])
+    planner = StageKnowledgePlanner(knowledge_service=fake_service)
+    approved_refs = StageContextService().approved_artifact_resolver.resolve(snapshot, stage="memory")
+
+    planner.plan(
+        cast(Session, object()),
+        snapshot=snapshot,
+        workspace_id=snapshot.session.workspace_id,
+        session_id=snapshot.session.id,
+        stage="memory",
+        role="builder",
+        approved_refs=approved_refs,
+    )
+
+    assert "memory-architecture-playbook-2026.md" in fake_service.calls[0]["preferred_paths"]
+
+
 def test_stage_context_bundle_is_deterministic_and_changes_when_evidence_changes() -> None:
     snapshot = _manual_snapshot()
     fake_service = _FakeKnowledgeService(

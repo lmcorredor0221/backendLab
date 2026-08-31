@@ -397,9 +397,21 @@ def _stage_quality(stage: str, artifact: dict[str, Any] | None, source_terms: li
             "continuity_score": 0.0,
         }
     payload = artifact["proposal_payload"]
-    confidence = _confidence_from_payload(stage, payload, artifact.get("confidence"))
+    quality_gate = payload.get("quality_gate") if isinstance(payload, dict) else None
+    confidence = (
+        float(quality_gate.get("quality_confidence"))
+        if isinstance(quality_gate, dict) and isinstance(quality_gate.get("quality_confidence"), (int, float))
+        else _confidence_from_payload(stage, payload, artifact.get("confidence"))
+    )
+    evidence_confidence = (
+        float(quality_gate.get("evidence_confidence"))
+        if isinstance(quality_gate, dict) and isinstance(quality_gate.get("evidence_confidence"), (int, float))
+        else confidence
+    )
     missing_count = int(artifact.get("missing_information_count") or len(payload.get("missing_information") or []))
     warnings_count = int(artifact.get("warnings_count") or 0)
+    delegated_resolution = int(quality_gate.get("delegated_resolution") or 0) if isinstance(quality_gate, dict) else 0
+    blocking_resolution = int(quality_gate.get("blocking_resolution") or 0) if isinstance(quality_gate, dict) else missing_count
     continuity = _continuity_score(payload, source_terms)
     structural_bonus = 0.0
     if stage == "define":
@@ -433,7 +445,7 @@ def _stage_quality(stage: str, artifact: dict[str, Any] | None, source_terms: li
     quality_score = (confidence if confidence is not None else 0.55) * 0.65
     quality_score += continuity["score"] * 0.25
     quality_score += structural_bonus
-    quality_score -= min(0.25, missing_count * 0.04 + warnings_count * 0.02)
+    quality_score -= min(0.25, blocking_resolution * 0.05 + warnings_count * 0.02)
     quality_score = round(max(0.0, min(1.0, quality_score)), 3)
     return {
         "stage": stage,
@@ -445,8 +457,11 @@ def _stage_quality(stage: str, artifact: dict[str, Any] | None, source_terms: li
         "provider_key": artifact["provider_key"],
         "model": artifact["model"],
         "confidence": confidence,
+        "evidence_confidence": evidence_confidence,
         "quality_score": quality_score,
         "missing_information_count": missing_count,
+        "delegated_resolution": delegated_resolution,
+        "blocking_resolution": blocking_resolution,
         "warnings_count": warnings_count,
         "continuity_score": continuity["score"],
         "continuity_missing_terms": continuity["missing_terms"][:8],

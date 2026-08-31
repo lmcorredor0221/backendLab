@@ -2482,6 +2482,18 @@ def test_analyze_discovery_partial_draft_returns_questions_and_candidate(
     assert artifact["missing_information"]
 
 
+def test_validate_discovery_analysis_output_returns_no_false_issue_for_valid_model() -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    issues, blocking, summary = sessions_routes._validate_discovery_analysis_output(
+        DiscoveryAnalysisOutput(summary="ok")
+    )
+
+    assert issues == []
+    assert blocking is False
+    assert "valido" in summary.lower()
+
+
 def test_analyze_discovery_requires_approval_before_canvas(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

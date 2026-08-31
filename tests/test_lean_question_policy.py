@@ -76,6 +76,44 @@ def test_attention_filter_hides_historical_discovery_questions_from_future_stage
     ]
 
 
+def test_discovery_policy_defers_business_clarifications_without_treating_them_as_missing_now() -> None:
+    analysis = DiscoveryAnalysisOutput(
+        open_questions=[
+            PrioritizedQuestion(
+                key="mvp_scope_precision",
+                question="Cual es el alcance exacto del modo limitado inicial?",
+                rationale="Ayuda a precisar el MVP, pero no bloquea el entendimiento actual del problema.",
+                priority="medium",
+                blocking_stages=["define"],
+                suggested_answer="Empezar con clasificacion y propuesta de respuesta para casos repetitivos.",
+            )
+        ],
+        missing_information=["Grupo de usuarios prioritario para la primera version."],
+    )
+
+    sanitized = sanitize_discovery_analysis_output(analysis)
+
+    assert sanitized.open_questions == []
+    assert sanitized.missing_information == []
+    assert len(sanitized.deferred_resolution_items) == 2
+    assert sanitized.deferred_resolution_items[0].target_stage == "define"
+    assert sanitized.deferred_resolution_items[1].target_stage == "define"
+    assert all(item.kind for item in sanitized.deferred_resolution_items)
+
+
+def test_discovery_policy_routes_tools_memory_and_estimation_clarifications_to_the_right_stage() -> None:
+    tools = classify_stage_question("discover", "Que ERP y API debe consultar el agente para resolver tickets?")
+    memory = classify_stage_question("discover", "Que fuentes documentales y estrategia RAG necesita el agente?")
+    estimate = classify_stage_question("discover", "Cuales son las metricas actuales de tiempo y costo por caso?")
+
+    assert tools.status == "defer_to_next_stage"
+    assert tools.deferral_target_stage == "tools"
+    assert memory.status == "defer_to_next_stage"
+    assert memory.deferral_target_stage == "memory"
+    assert estimate.status == "defer_to_next_stage"
+    assert estimate.deferral_target_stage == "estimate"
+
+
 def test_define_policy_defers_implementation_stack_questions_to_acp() -> None:
     decision = classify_stage_question(
         "define",

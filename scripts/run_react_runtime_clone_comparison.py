@@ -443,6 +443,9 @@ def _append_step(steps: list[dict[str, Any]], *, name: str, response: Any, start
             if isinstance(quality_gate, dict):
                 item["quality_gate"] = {
                     "quality_confidence": quality_gate.get("quality_confidence"),
+                    "evidence_confidence": quality_gate.get("evidence_confidence"),
+                    "delegated_resolution": quality_gate.get("delegated_resolution"),
+                    "blocking_resolution": quality_gate.get("blocking_resolution"),
                     "repair_policy": quality_gate.get("repair_policy"),
                     "should_repair": quality_gate.get("should_repair"),
                     "minimum_repair_cycles": quality_gate.get("minimum_repair_cycles"),
@@ -808,8 +811,14 @@ def compare_results(react_off: dict[str, Any], react_on: dict[str, Any]) -> dict
                 "confidence_off": off.get("confidence"),
                 "confidence_on": on.get("confidence"),
                 "confidence_delta": round(float(on.get("confidence") or 0) - float(off.get("confidence") or 0), 3),
+                "evidence_off": off.get("evidence_confidence"),
+                "evidence_on": on.get("evidence_confidence"),
                 "missing_off": off.get("missing_information_count"),
                 "missing_on": on.get("missing_information_count"),
+                "delegated_off": off.get("delegated_resolution"),
+                "delegated_on": on.get("delegated_resolution"),
+                "blocking_off": off.get("blocking_resolution"),
+                "blocking_on": on.get("blocking_resolution"),
                 "warnings_off": off.get("warnings_count"),
                 "warnings_on": on.get("warnings_count"),
                 "continuity_off": off.get("continuity_score"),
@@ -863,13 +872,14 @@ def _markdown_report(result: dict[str, Any]) -> str:
         "",
         "## Delta Por Etapa",
         "",
-        "| Etapa | Calidad OFF | Calidad ON | Delta | Conf OFF | Conf ON | Faltantes OFF/ON | Warnings OFF/ON | Continuidad OFF/ON |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Etapa | Calidad OFF | Calidad ON | Delta | Conf OFF | Conf ON | Evidencia OFF | Evidencia ON | Delegados OFF/ON | Bloqueantes OFF/ON | Faltantes OFF/ON | Warnings OFF/ON | Continuidad OFF/ON |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for item in comparison["stage_delta"]:
         lines.append(
             "| {stage} | {quality_score_off} | {quality_score_on} | {quality_delta} | "
-            "{confidence_off} | {confidence_on} | {missing_off}/{missing_on} | "
+            "{confidence_off} | {confidence_on} | {evidence_off} | {evidence_on} | "
+            "{delegated_off}/{delegated_on} | {blocking_off}/{blocking_on} | {missing_off}/{missing_on} | "
             "{warnings_off}/{warnings_on} | {continuity_off}/{continuity_on} |".format(**item)
         )
     lines.extend(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from app.models import CommercialTier
 from app.services.lean_question_policy import classify_stage_question
@@ -16,6 +16,17 @@ from app.services.product_processing.contracts import (
     UncertaintyKind,
     UncertaintyOption,
 )
+
+InferencePermissionStatus = Literal[
+    "apply_now",
+    "record_as_hypothesis",
+    "defer_to_next_stage",
+    "defer_to_blueprint_pro",
+    "defer_to_acp",
+    "requires_human",
+    "reject_as_noise",
+    "not_inferable",
+]
 
 
 BLUEPRINT_TIER_POLICY = BlueprintTierPolicy(
@@ -272,3 +283,65 @@ def classify_uncertainty_for_profile(
         should_create_attention=True,
         should_continue_processing=should_continue,
     )
+
+
+def classify_inference_permission(
+    stage: str,
+    question: Any,
+    profile: ProductProcessingProfile | ProductProcessingMode | str,
+    *,
+    inferred_answer: str = "",
+    confidence: float = 0.0,
+    policy: BlueprintTierPolicy = BLUEPRINT_TIER_POLICY,
+) -> InferencePermissionStatus:
+    resolved_profile = (
+        get_product_processing_profile(profile, policy=policy)
+        if not isinstance(profile, ProductProcessingProfile)
+        else profile
+    )
+    classification = classify_uncertainty_for_profile(stage, question, resolved_profile, policy=policy)
+    stage_decision = classify_stage_question(stage, question)
+    answer = str(
+        inferred_answer
+        or _field(question, "assumed_answer", "")
+        or _field(question, "suggested_answer", "")
+    ).strip()
+    score = min(max(float(confidence or 0.0), 0.0), 1.0)
+    tentative = score >= policy.infer_confidence_threshold
+    high_confidence = score >= 0.85
+
+    if stage_decision.status == "reject_as_noise":
+        return "reject_as_noise"
+    if classification.disposition == UncertaintyDisposition.block:
+        return "requires_human"
+    if not answer:
+        if stage_decision.status == "defer_to_acp":
+            return "defer_to_acp"
+        if stage_decision.status == "defer_to_next_stage":
+            return "defer_to_next_stage"
+        return "not_inferable"
+
+    if stage_decision.status == "defer_to_acp" or classification.target_stage == "acp":
+        return "defer_to_acp"
+
+    if resolved_profile.mode == ProductProcessingMode.basic_free:
+        if stage_decision.status == "defer_to_next_stage":
+            return "record_as_hypothesis" if tentative else "defer_to_next_stage"
+        if high_confidence:
+            return "apply_now"
+        if tentative:
+            return "record_as_hypothesis"
+        return "not_inferable"
+
+    if resolved_profile.mode == ProductProcessingMode.premium_enrichment:
+        if stage_decision.status == "defer_to_next_stage" and classification.target_stage:
+            return "defer_to_blueprint_pro" if classification.target_stage != "acp" else "defer_to_acp"
+        if high_confidence:
+            return "apply_now"
+        if tentative:
+            return "record_as_hypothesis"
+        return "not_inferable"
+
+    if high_confidence or tentative:
+        return "apply_now"
+    return "requires_human"

@@ -54,6 +54,16 @@ class PrioritizedQuestion(BaseModel):
     answer_options: list[GuidedAnswerOption] = []
 
 
+class DeferredResolutionItem(BaseModel):
+    source_stage: str = ""
+    target_stage: str = ""
+    kind: str = ""
+    question: str = ""
+    recommendation: str = ""
+    reason: str = ""
+    source_refs: list[str] = []
+
+
 class DiscoveryAnalysisOutput(BaseModel):
     summary: str = ""
     facts: list[StructuredInsight] = []
@@ -65,6 +75,7 @@ class DiscoveryAnalysisOutput(BaseModel):
     risk_signals: list[StructuredInsight] = []
     sensitive_data_signals: list[StructuredInsight] = []
     missing_information: list[str] = []
+    deferred_resolution_items: list[DeferredResolutionItem] = []
     evidence_refs: list[str] = []
     confidence: float = 0.0
     normalized_discovery_candidate: DiscoveryArtifact = DiscoveryArtifact()

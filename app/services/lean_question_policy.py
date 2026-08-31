@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from app.services.llm_runtime.builder_contracts import DiscoveryAnalysisOutput, PrioritizedQuestion, StructuredInsight
+from app.services.llm_runtime.builder_contracts import (
+    DeferredResolutionItem,
+    DiscoveryAnalysisOutput,
+    PrioritizedQuestion,
+    StructuredInsight,
+)
 
 
 DISCOVERY_REQUIRED_FIELD_PATHS = {
@@ -102,6 +107,93 @@ DISCOVERY_DEFERRED_TERMS = (
     "tono",
     "volumen",
     "webhook",
+)
+
+DISCOVERY_BUSINESS_CLARIFICATION_TERMS = (
+    "alcance",
+    "alcance exacto",
+    "alcance inicial",
+    "alcance limitado",
+    "aceptacion",
+    "criterio de aceptacion",
+    "criterios de aceptacion",
+    "grupo de usuarios",
+    "mvp",
+    "primera version",
+    "primera versión",
+    "segmento prioritario",
+    "usuario prioritario",
+    "usuarios prioritarios",
+    "metrica",
+    "metricas",
+    "métrica",
+    "métricas",
+    "tiempo actual",
+    "costo actual",
+    "frecuencia",
+    "volumen",
+    "casos por semana",
+)
+
+DISCOVERY_TOOLS_TARGET_TERMS = (
+    "api",
+    "apis",
+    "canal",
+    "crm",
+    "erp",
+    "herramienta",
+    "herramientas",
+    "integracion",
+    "integraciones",
+    "ticketing",
+    "webhook",
+)
+
+DISCOVERY_MEMORY_TARGET_TERMS = (
+    "chunking",
+    "fuente",
+    "fuentes",
+    "knowledge",
+    "memoria",
+    "rag",
+    "retencion",
+    "retrieval",
+)
+
+DISCOVERY_ESTIMATE_TARGET_TERMS = (
+    "costo",
+    "costos",
+    "metrica",
+    "metricas",
+    "métrica",
+    "métricas",
+    "roi",
+    "tiempo",
+    "volumen",
+)
+
+DISCOVERY_IMPLEMENTATION_TARGET_TERMS = (
+    "aws",
+    "azure",
+    "base de datos",
+    "cloud",
+    "credencial",
+    "credenciales",
+    "deployment",
+    "despliegue",
+    "endpoint",
+    "framework",
+    "gcp",
+    "infraestructura",
+    "postgres",
+    "runtime",
+    "schema",
+    "secret",
+    "secrets",
+    "sqlite",
+    "stack",
+    "tecnologia",
+    "tecnologias",
 )
 
 TECHNICAL_IMPLEMENTATION_TERMS = (
@@ -343,13 +435,86 @@ def _is_required_field_reference(value: Any) -> bool:
     return normalized in DISCOVERY_REQUIRED_FIELD_PATHS
 
 
+def _is_discovery_current_stage_required_gap(value: Any) -> bool:
+    return _is_required_field_reference(value)
+
+
+def _is_discovery_delegable_business_clarification(value: Any) -> bool:
+    normalized = _normalize_text(value)
+    return bool(normalized) and not _is_discovery_current_stage_required_gap(normalized) and any(
+        term in normalized for term in DISCOVERY_BUSINESS_CLARIFICATION_TERMS
+    )
+
+
+def _discovery_deferral_target(value: Any) -> str:
+    normalized = _normalize_text(value)
+    if any(term in normalized for term in DISCOVERY_IMPLEMENTATION_TARGET_TERMS):
+        return "acp"
+    if any(term in normalized for term in DISCOVERY_MEMORY_TARGET_TERMS):
+        return "memory"
+    if any(term in normalized for term in DISCOVERY_TOOLS_TARGET_TERMS):
+        return "tools"
+    if any(term in normalized for term in DISCOVERY_ESTIMATE_TARGET_TERMS):
+        return "estimate"
+    return "define"
+
+
+def _deferred_resolution_kind(value: Any) -> str:
+    normalized = _normalize_text(value)
+    if _is_discovery_delegable_business_clarification(normalized):
+        return "business_clarification"
+    if any(term in normalized for term in DISCOVERY_MEMORY_TARGET_TERMS):
+        return "memory_dependency"
+    if any(term in normalized for term in DISCOVERY_TOOLS_TARGET_TERMS):
+        return "tool_dependency"
+    if any(term in normalized for term in DISCOVERY_IMPLEMENTATION_TARGET_TERMS):
+        return "implementation_decision"
+    if any(term in normalized for term in DISCOVERY_ESTIMATE_TARGET_TERMS):
+        return "estimation_input"
+    return "later_stage_question"
+
+
+def _default_discovery_recommendation(target_stage: str) -> str:
+    if target_stage == "tools":
+        return "Usar la inferencia actual en Free y confirmar la capacidad requerida al promover Herramientas."
+    if target_stage == "memory":
+        return "Continuar con la inferencia actual y confirmar la estrategia de memoria cuando llegue la etapa Memoria."
+    if target_stage == "estimate":
+        return "Mantener la inferencia actual y confirmar metricas o volumen al llegar a Estimar."
+    if target_stage == "acp":
+        return "Documentar la decision y resolverla en ACP o implementacion cuando exista contexto tecnico suficiente."
+    return "Usar la inferencia actual en Free y confirmar la aclaracion en la siguiente etapa."
+
+
+def _build_deferred_resolution_item(
+    *,
+    question_text: str,
+    source_stage: str,
+    target_stage: str,
+    reason: str,
+    recommendation: str,
+    source_refs: list[str],
+) -> DeferredResolutionItem:
+    return DeferredResolutionItem(
+        source_stage=source_stage,
+        target_stage=target_stage,
+        kind=_deferred_resolution_kind(question_text),
+        question=question_text,
+        recommendation=recommendation or _default_discovery_recommendation(target_stage),
+        reason=reason,
+        source_refs=source_refs,
+    )
+
+
 def is_discovery_later_stage_question(question: PrioritizedQuestion | Mapping[str, Any] | str) -> bool:
     if isinstance(question, PrioritizedQuestion) and question.key.startswith("question:"):
         return False
     text = _normalize_text(_question_text(question))
-    if _is_required_field_reference(text):
+    if _is_discovery_current_stage_required_gap(text):
         return False
     if any(term in text for term in DISCOVERY_DEFERRED_TERMS):
+        return True
+    if _is_discovery_delegable_business_clarification(text):
         return True
     stages = _blocking_stages(question)
     return bool(stages) and stages.isdisjoint(DISCOVERY_ALLOWED_BLOCKING_STAGES)
@@ -361,9 +526,10 @@ def classify_stage_question(stage: str, question: Any) -> StageQuestionDecision:
         return StageQuestionDecision(status="allowed_now")
 
     text = _normalize_text(_question_text(question))
+    question_key = _field_value(question, "key")
     if not text:
         return StageQuestionDecision(status="reject_as_noise", reason="Pregunta vacia.")
-    if _is_required_field_reference(text):
+    if _is_discovery_current_stage_required_gap(text) or _is_discovery_current_stage_required_gap(question_key):
         return StageQuestionDecision(status="allowed_now", reason="Campo obligatorio de la etapa.")
 
     explicit_scope = _normalize_stage_target(_field_value(question, "stage_scope"))
@@ -392,10 +558,11 @@ def classify_stage_question(stage: str, question: Any) -> StageQuestionDecision:
         )
 
     if normalized_stage == "discover" and is_discovery_later_stage_question(question):
+        target_stage = _discovery_deferral_target(question)
         return StageQuestionDecision(
-            status="defer_to_next_stage",
+            status="defer_to_acp" if target_stage == "acp" else "defer_to_next_stage",
             reason="Discover solo acepta dudas de problema, usuario, proceso actual y resultado esperado.",
-            deferral_target_stage="define",
+            deferral_target_stage=target_stage,
         )
 
     policy = STAGE_POLICIES.get(normalized_stage)
@@ -471,55 +638,79 @@ def deferred_stage_questions(stage: str, questions: Iterable[Any]) -> list[dict[
 
 
 def sanitize_discovery_analysis_output(analysis: DiscoveryAnalysisOutput) -> DiscoveryAnalysisOutput:
-    deferred_open_questions = [
-        question for question in analysis.open_questions if is_discovery_later_stage_question(question)
-    ]
-    open_questions = [
-        question for question in analysis.open_questions if not is_discovery_later_stage_question(question)
-    ]
+    deferred_open_questions = []
+    open_questions = []
+    for question in analysis.open_questions:
+        decision = classify_stage_question("discover", question)
+        if decision.status in {"defer_to_next_stage", "defer_to_acp"}:
+            deferred_open_questions.append((question, decision))
+        else:
+            open_questions.append(question)
     deferred_missing_information = [
         item
         for item in analysis.missing_information
-        if not _is_required_field_reference(item) and is_discovery_later_stage_question(str(item))
+        if not _is_discovery_current_stage_required_gap(item)
     ]
     missing_information = [
         item
         for item in analysis.missing_information
-        if _is_required_field_reference(item) or not is_discovery_later_stage_question(str(item))
+        if _is_discovery_current_stage_required_gap(item)
     ]
     risk_signals = list(analysis.risk_signals)
-    for index, question in enumerate(deferred_open_questions, start=1):
-        decision = classify_stage_question("discover", question)
-        if decision.status not in {"defer_to_next_stage", "defer_to_acp"}:
-            continue
+    deferred_resolution_items = list(analysis.deferred_resolution_items)
+    for index, pair in enumerate(deferred_open_questions, start=1):
+        question, decision = pair
         key = _field_value(question, "key") or f"deferred_question_{index}"
+        question_text = _question_text(question).strip()
         risk_signals.append(
             StructuredInsight(
                 key=f"deferred:{key}",
                 statement=(
                     f"Pregunta diferida a {decision.deferral_target_stage or 'etapa posterior'}: "
-                    f"{_question_text(question).strip()}"
+                    f"{question_text}"
                 ),
                 source_refs=["discovery.open_questions"],
                 confidence=0.72,
+            )
+        )
+        deferred_resolution_items.append(
+            _build_deferred_resolution_item(
+                question_text=question_text,
+                source_stage="discover",
+                target_stage=decision.deferral_target_stage or "define",
+                reason=decision.reason,
+                recommendation=_field_value(question, "suggested_answer") or _default_discovery_recommendation(decision.deferral_target_stage or "define"),
+                source_refs=["discovery.open_questions"],
             )
         )
     for index, item in enumerate(deferred_missing_information, start=1):
         decision = classify_stage_question("discover", item)
         if decision.status not in {"defer_to_next_stage", "defer_to_acp"}:
             continue
+        question_text = str(item).strip()
         risk_signals.append(
             StructuredInsight(
                 key=f"deferred:missing_information_{index}",
-                statement=f"Informacion diferida a {decision.deferral_target_stage or 'etapa posterior'}: {item}",
+                statement=f"Informacion diferida a {decision.deferral_target_stage or 'etapa posterior'}: {question_text}",
                 source_refs=["discovery.missing_information"],
                 confidence=0.66,
+            )
+        )
+        deferred_resolution_items.append(
+            _build_deferred_resolution_item(
+                question_text=question_text,
+                source_stage="discover",
+                target_stage=decision.deferral_target_stage or "define",
+                reason=decision.reason,
+                recommendation=_default_discovery_recommendation(decision.deferral_target_stage or "define"),
+                source_refs=["discovery.missing_information"],
             )
         )
     return analysis.model_copy(
         update={
             "open_questions": open_questions,
             "missing_information": missing_information,
+            "deferred_resolution_items": deferred_resolution_items,
             "risk_signals": risk_signals,
         }
     )

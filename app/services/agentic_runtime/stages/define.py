@@ -36,6 +36,8 @@ def run_define_react(
     session_id: UUID,
     workspace_id: UUID,
     initial_state: BuilderAgentState | None = None,
+    answer_inference_enabled: bool = False,
+    product_mode: str = "basic_free",
 ) -> DefineReactExecution:
     """Runs Define through ReAct while delegating generation to the current skill runtime."""
 
@@ -87,6 +89,8 @@ def run_define_react(
         validator=validate_definition,
         initial_state=initial_state,
         effective_language=stage_context.effective_language,
+        answer_inference_enabled=answer_inference_enabled,
+        product_mode=product_mode,
     )
     definition = react_execution.value
     react_run = react_execution.react_run

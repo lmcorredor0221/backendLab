@@ -103,6 +103,8 @@ def run_design_react(
     workspace_id: UUID,
     initial_state: Any = None,
     progress_callback: Callable[[str, str], None] | None = None,
+    answer_inference_enabled: bool = False,
+    product_mode: str = "basic_free",
 ) -> ReactStageExecution:
     return run_react_stage(
         stage="design",
@@ -133,6 +135,8 @@ def run_design_react(
         validator=_validate_design,
         initial_state=initial_state,
         effective_language=getattr(proposal_stage_context, "effective_language", "es"),
+        answer_inference_enabled=answer_inference_enabled,
+        product_mode=product_mode,
     )
 
 
@@ -165,7 +169,7 @@ def _validate_tools(value: Any) -> tuple[list[str], bool, str]:
     return list(dict.fromkeys(blocking_findings)), is_blocked, "Tools clasifico capacidades y valido minimalidad." if not is_blocked else "Tools requiere resolver una dependencia o decision."
 
 
-def run_tools_react(*, session_id: UUID, workspace_id: UUID, discovery: DiscoveryArtifact, canvas: CanvasArtifact, blueprint: BlueprintArtifact, definition_artifact: RequirementsDefinitionOutput, design_artifact: DesignRecommendationArtifact, instructions: str, blueprint_version_number: int | None, runtime_settings: LLMRuntimeSettings, stage_context: Any, initial_state: Any = None) -> ReactStageExecution:
+def run_tools_react(*, session_id: UUID, workspace_id: UUID, discovery: DiscoveryArtifact, canvas: CanvasArtifact, blueprint: BlueprintArtifact, definition_artifact: RequirementsDefinitionOutput, design_artifact: DesignRecommendationArtifact, instructions: str, blueprint_version_number: int | None, runtime_settings: LLMRuntimeSettings, stage_context: Any, initial_state: Any = None, answer_inference_enabled: bool = False, product_mode: str = "basic_free") -> ReactStageExecution:
     return run_react_stage(
         stage="tools",
         capability="recommend_minimal_tools",
@@ -177,6 +181,8 @@ def run_tools_react(*, session_id: UUID, workspace_id: UUID, discovery: Discover
         remediation_action="raise_cross_stage_remediation",
         initial_state=initial_state,
         effective_language=getattr(stage_context, "effective_language", "es"),
+        answer_inference_enabled=answer_inference_enabled,
+        product_mode=product_mode,
     )
 
 
@@ -195,7 +201,7 @@ def _validate_memory(value: Any, tools: ToolRecommendationArtifact | None) -> tu
     return list(dict.fromkeys([*issues, *findings])), bool(blocking or findings), summary if not findings else "Memory requiere resolver una dependencia de Tools."
 
 
-def run_memory_react(*, session_id: UUID, workspace_id: UUID, discovery: DiscoveryArtifact, canvas: CanvasArtifact, blueprint: BlueprintArtifact, definition_artifact: RequirementsDefinitionOutput | None, design_artifact: DesignRecommendationArtifact | None, approved_tools_digest: ApprovedToolsDigest, tools_artifact: ToolRecommendationArtifact | None, session_snapshot: SessionSnapshot, instructions: str, blueprint_version_number: int | None, source_stage_versions: Any, runtime_settings: LLMRuntimeSettings, proposal_stage_context: Any, critique_stage_context: Any, initial_state: Any = None) -> ReactStageExecution:
+def run_memory_react(*, session_id: UUID, workspace_id: UUID, discovery: DiscoveryArtifact, canvas: CanvasArtifact, blueprint: BlueprintArtifact, definition_artifact: RequirementsDefinitionOutput | None, design_artifact: DesignRecommendationArtifact | None, approved_tools_digest: ApprovedToolsDigest, tools_artifact: ToolRecommendationArtifact | None, session_snapshot: SessionSnapshot, instructions: str, blueprint_version_number: int | None, source_stage_versions: Any, runtime_settings: LLMRuntimeSettings, proposal_stage_context: Any, critique_stage_context: Any, initial_state: Any = None, answer_inference_enabled: bool = False, product_mode: str = "basic_free") -> ReactStageExecution:
     return run_react_stage(
         stage="memory",
         capability="recommend_memory_architecture",
@@ -209,6 +215,8 @@ def run_memory_react(*, session_id: UUID, workspace_id: UUID, discovery: Discove
         remediation_action="raise_cross_stage_remediation",
         initial_state=initial_state,
         effective_language=getattr(proposal_stage_context, "effective_language", "es"),
+        answer_inference_enabled=answer_inference_enabled,
+        product_mode=product_mode,
     )
 
 
@@ -279,7 +287,7 @@ def run_validation_spec_react(*, session_id: UUID, workspace_id: UUID, discovery
     )
 
 
-def run_callable_react(*, stage: str, capability: str, session_id: UUID, workspace_id: UUID, context_refs: list[str], runner: CapabilityRunner, validator: Validator, initial_state: Any = None, effective_language: str = "es") -> ReactStageExecution:
+def run_callable_react(*, stage: str, capability: str, session_id: UUID, workspace_id: UUID, context_refs: list[str], runner: CapabilityRunner, validator: Validator, initial_state: Any = None, effective_language: str = "es", answer_inference_enabled: bool = False, product_mode: str = "basic_free") -> ReactStageExecution:
     return run_react_stage(
         stage=stage,
         capability=capability,
@@ -290,4 +298,6 @@ def run_callable_react(*, stage: str, capability: str, session_id: UUID, workspa
         validator=validator,
         initial_state=initial_state,
         effective_language=effective_language,
+        answer_inference_enabled=answer_inference_enabled,
+        product_mode=product_mode,
     )

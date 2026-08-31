@@ -21,6 +21,7 @@ from app.services.stage5_service import (
     FEATURE_FLAG_DELIVERABLE_CATALOG,
     FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN,
     FEATURE_FLAG_DESIGN_INTELLIGENCE,
+    FEATURE_FLAG_STAGE_ANSWER_INFERENCE,
     seed_governance_policies,
     seed_workflow_templates,
 )
@@ -67,6 +68,12 @@ DEFAULT_FEATURE_FLAGS = [
         "enabled": False,
         "description": "Activa el controlador ReAct nativo por workspace para pilotos controlados.",
         "stage_hint": "runtime",
+    },
+    {
+        "key": FEATURE_FLAG_STAGE_ANSWER_INFERENCE,
+        "enabled": False,
+        "description": "Activa la inferencia de respuestas por etapa antes del quality gate dentro de ReAct.",
+        "stage_hint": "iai148",
     },
     {
         "key": FEATURE_FLAG_BLUEPRINT_TIER_POLICY,

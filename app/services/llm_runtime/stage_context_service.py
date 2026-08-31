@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from dataclasses import asdict
 from typing import Any
 from uuid import UUID
@@ -15,8 +16,10 @@ from app.services.canonical_exports import build_knowledge_manifest, build_memor
 from app.services.knowledge_memory import KnowledgeMemoryService
 from app.services.llm_runtime.stage_context_types import (
     ApprovedArtifactReference,
+    KnowledgeEnrichmentItem,
     RetrievedKnowledgeEvidence,
     StageContextBundle,
+    StageKnowledgeEnrichment,
 )
 
 
@@ -54,8 +57,77 @@ CAPABILITY_STAGE_DEFAULTS = {
     "generate_diagram_model": "blueprint",
 }
 
-RETRIEVAL_ENABLED_STAGES = {"define", "design", "tools", "memory", "validate", "estimate", "package"}
+RETRIEVAL_ENABLED_STAGES = {"discover", "define", "design", "tools", "memory", "validate", "estimate", "package"}
 _MAX_RETRIEVED_KNOWLEDGE_EXCERPT_CHARS = 1_600
+
+
+@dataclass(frozen=True)
+class StageKnowledgeProfile:
+    query_cues: tuple[str, ...] = ()
+    preferred_paths: tuple[str, ...] = ()
+    authority_allowlist: tuple[str, ...] = ()
+
+
+STAGE_KNOWLEDGE_PROFILES: dict[str, StageKnowledgeProfile] = {
+    "discover": StageKnowledgeProfile(
+        query_cues=(
+            "patrones comunes de agentes",
+            "riesgos tipicos de discovery",
+            "preguntas delegables de free",
+            "alcance inicial",
+        ),
+        preferred_paths=(
+            "common-agent-catalog-2026.md",
+            "patterns-playbook-2026.md",
+            "README.md",
+        ),
+        authority_allowlist=("canonical", "operational"),
+    ),
+    "define": StageKnowledgeProfile(
+        query_cues=("requisitos funcionales", "nfr", "reglas de negocio", "seguridad e integraciones"),
+        preferred_paths=(
+            "patterns-playbook-2026.md",
+            "integration-security-playbook-2026.md",
+            "README.md",
+        ),
+        authority_allowlist=("canonical", "operational"),
+    ),
+    "design": StageKnowledgeProfile(
+        query_cues=("patrones agentivos", "handoffs", "guardrails", "seguridad", "integraciones"),
+        preferred_paths=(
+            "patterns-playbook-2026.md",
+            "common-agent-catalog-2026.md",
+            "integration-security-playbook-2026.md",
+        ),
+        authority_allowlist=("canonical", "operational"),
+    ),
+    "tools": StageKnowledgeProfile(
+        query_cues=("capabilidades minimas", "contratos funcionales", "side effects", "aprobaciones"),
+        preferred_paths=(
+            "tools-governance-catalog-playbook-2026.md",
+            "integration-security-playbook-2026.md",
+            "common-agent-catalog-2026.md",
+        ),
+        authority_allowlist=("canonical", "operational"),
+    ),
+    "memory": StageKnowledgeProfile(
+        query_cues=("rag", "checkpoints", "decision log", "audit trail", "source grounding"),
+        preferred_paths=(
+            "memory-architecture-playbook-2026.md",
+            "tools-governance-catalog-playbook-2026.md",
+            "integration-security-playbook-2026.md",
+        ),
+        authority_allowlist=("canonical", "operational"),
+    ),
+    "estimate": StageKnowledgeProfile(
+        query_cues=("estimacion", "riesgos", "costos", "impacto", "integraciones"),
+        preferred_paths=(
+            "patterns-playbook-2026.md",
+            "integration-security-playbook-2026.md",
+        ),
+        authority_allowlist=("canonical", "operational"),
+    ),
+}
 
 
 def _stable_hash(value: Any) -> str:
@@ -417,6 +489,7 @@ class StageKnowledgePlanner:
         if normalized_stage not in RETRIEVAL_ENABLED_STAGES:
             return None, [], 0
 
+        profile = STAGE_KNOWLEDGE_PROFILES.get(normalized_stage, StageKnowledgeProfile())
         query = self._build_query(snapshot=snapshot, stage=normalized_stage, approved_refs=approved_refs)
         if not query:
             return None, [], 0
@@ -428,6 +501,8 @@ class StageKnowledgePlanner:
             workspace_id=workspace_id,
             session_id=session_id,
             stage=normalized_stage,
+            authority_allowlist=list(profile.authority_allowlist),
+            preferred_paths=list(profile.preferred_paths),
             limit=max(1, page_size),
             ensure_ingested=True,
         )
@@ -442,6 +517,8 @@ class StageKnowledgePlanner:
                 workspace_id=workspace_id,
                 session_id=session_id,
                 stage=normalized_stage,
+                authority_allowlist=list(profile.authority_allowlist),
+                preferred_paths=list(profile.preferred_paths),
                 limit=max(1, page_size),
                 ensure_ingested=True,
                 cursor=response.next_cursor,
@@ -472,20 +549,39 @@ class StageKnowledgePlanner:
         stage: str,
         approved_refs: list[ApprovedArtifactReference],
     ) -> str:
-        parts = [
-            f"etapa {stage}",
-            snapshot.discovery.problem_statement if snapshot.discovery is not None else "",
-            snapshot.discovery.desired_outcome if snapshot.discovery is not None else "",
-            snapshot.canvas.user_goal if snapshot.canvas is not None else "",
-            snapshot.canvas.success_metric if snapshot.canvas is not None else "",
-            snapshot.blueprint.architecture if snapshot.blueprint is not None else "",
-            snapshot.blueprint.reasoning_pattern if snapshot.blueprint is not None else "",
-            snapshot.blueprint.memory_strategy if snapshot.blueprint is not None else "",
-            " ".join(item.name for item in snapshot.blueprint.tools[:4]) if snapshot.blueprint is not None else "",
-        ]
-        parts.extend(_definition_query_terms(snapshot))
-        parts.extend(_design_query_terms(snapshot))
-        parts.extend(_tools_query_terms(snapshot))
+        profile = STAGE_KNOWLEDGE_PROFILES.get(stage, StageKnowledgeProfile())
+        parts = [f"etapa {stage}", *profile.query_cues]
+        if stage == "discover":
+            parts.extend(
+                [
+                    snapshot.discovery.problem_statement if snapshot.discovery is not None else "",
+                    snapshot.discovery.current_user if snapshot.discovery is not None else "",
+                    snapshot.discovery.current_process if snapshot.discovery is not None else "",
+                    snapshot.discovery.desired_outcome if snapshot.discovery is not None else "",
+                    _join_compact(snapshot.discovery.constraints[:4], limit=4) if snapshot.discovery is not None else "",
+                    _join_compact(snapshot.discovery.mvp_definition.v1_scope[:4], limit=4) if snapshot.discovery is not None else "",
+                    snapshot.discovery.mvp_definition.north_star_metric if snapshot.discovery is not None else "",
+                ]
+            )
+        else:
+            parts.extend(
+                [
+                    snapshot.discovery.problem_statement if snapshot.discovery is not None else "",
+                    snapshot.discovery.desired_outcome if snapshot.discovery is not None else "",
+                    snapshot.canvas.user_goal if snapshot.canvas is not None else "",
+                    snapshot.canvas.success_metric if snapshot.canvas is not None else "",
+                    snapshot.blueprint.architecture if snapshot.blueprint is not None else "",
+                    snapshot.blueprint.reasoning_pattern if snapshot.blueprint is not None else "",
+                    snapshot.blueprint.memory_strategy if snapshot.blueprint is not None else "",
+                    " ".join(item.name for item in snapshot.blueprint.tools[:4]) if snapshot.blueprint is not None else "",
+                ]
+            )
+        if stage in {"define", "design", "tools", "memory", "estimate"}:
+            parts.extend(_definition_query_terms(snapshot))
+        if stage in {"design", "tools", "memory", "estimate"}:
+            parts.extend(_design_query_terms(snapshot))
+        if stage in {"tools", "memory", "estimate"}:
+            parts.extend(_tools_query_terms(snapshot))
         parts.extend(item.summary for item in approved_refs[:4])
         compact_parts = [_compact_text(item, fallback="") for item in parts]
         compact_parts = [item for item in compact_parts if item]
@@ -552,6 +648,7 @@ class StageContextService:
         retrieved_hits: list[RetrievedKnowledgeEvidence] = []
         retrieval_pages = 0
         knowledge_manifest = None
+        knowledge_enrichment = None
         if normalized_stage in RETRIEVAL_ENABLED_STAGES:
             knowledge_manifest = build_knowledge_manifest(session_snapshot)
             retrieval_response, retrieved_hits, retrieval_pages = self.knowledge_planner.plan(
@@ -564,6 +661,12 @@ class StageContextService:
                 approved_refs=approved_refs,
                 allow_second_page=allow_second_page,
                 page_size=max(1, min(strict_budget.max_items, 4)),
+            )
+            knowledge_enrichment = self._build_knowledge_enrichment(
+                stage=normalized_stage,
+                knowledge_manifest=knowledge_manifest,
+                retrieved_hits=retrieved_hits,
+                corpus_hash=retrieval_response.corpus_hash if retrieval_response is not None else "",
             )
 
         context_fingerprint = self._build_context_fingerprint(
@@ -587,6 +690,7 @@ class StageContextService:
             knowledge_manifest=knowledge_manifest,
             memory_policy=memory_policy,
             short_term_memory=short_term_memory,
+            knowledge_enrichment=knowledge_enrichment,
             approved_refs=approved_refs,
             retrieved_hits=retrieved_hits,
             retrieval_response=retrieval_response,
@@ -595,6 +699,39 @@ class StageContextService:
             corpus_hash=retrieval_response.corpus_hash if retrieval_response is not None else "",
             retrieval_pages=retrieval_pages,
             absence_reason=retrieval_response.absence_reason if retrieval_response is not None else "",
+        )
+
+    def _build_knowledge_enrichment(
+        self,
+        *,
+        stage: str,
+        knowledge_manifest,
+        retrieved_hits: list[RetrievedKnowledgeEvidence],
+        corpus_hash: str,
+    ) -> StageKnowledgeEnrichment | None:
+        if not retrieved_hits:
+            return None
+        matched_patterns = [
+            KnowledgeEnrichmentItem(
+                key=item.key,
+                source_ref=item.relative_path,
+                authority="global_knowledge",
+                stage_scope=list(item.stage_affinity),
+                recommendation=item.summary,
+                rationale=item.excerpt,
+                confidence=min(0.95, max(0.45, float(item.score or 0.0))),
+            )
+            for item in retrieved_hits[:3]
+        ]
+        return StageKnowledgeEnrichment(
+            stage=stage,
+            kb_version=getattr(knowledge_manifest, "schema_version", ""),
+            corpus_hash=corpus_hash,
+            matched_patterns=matched_patterns,
+            inferred_recommendations=matched_patterns,
+            risk_controls=[item for item in matched_patterns if any(token in item.rationale.lower() for token in ("risk", "guardrail", "approval", "security"))],
+            delegated_decision_candidates=[item for item in matched_patterns if any(token in item.rationale.lower() for token in ("acp", "implement", "decision"))],
+            source_refs=list(dict.fromkeys(hit.relative_path for hit in retrieved_hits if hit.relative_path)),
         )
 
     def _resolve_budget(

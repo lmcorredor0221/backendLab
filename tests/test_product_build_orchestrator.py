@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -33,6 +34,8 @@ from app.services.product_processing import (
 )
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 from app.services.product_processing.product_build_orchestrator import _finalize_processing_queue
+from app.services.product_processing.product_build_orchestrator import _process_single_queue_item
+from app.services.product_processing.product_build_orchestrator import _recover_orphaned_processing_queue
 from app.services.product_processing.product_build_run_service import list_product_build_runs, list_product_build_steps
 
 
@@ -550,6 +553,91 @@ def test_run_product_build_processing_retries_failed_items_once(monkeypatch: pyt
     assert all(step.checkpoint_payload.get("attempt_count") == 2 for step in steps)
 
 
+def test_process_single_queue_item_sends_approved_context_to_deliverable_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+    captured_task: DeliverableGenerationTask | None = None
+
+    def fake_context_builder(db: Session, *, record: SessionRecord, deliverable_key: str):
+        return {"approved": True, "deliverable_key": deliverable_key}, ["journey:approved:v1"]
+
+    def fake_runner(db: Session, task: DeliverableGenerationTask):
+        nonlocal captured_task
+        captured_task = task
+        job = DeliverableGenerationJobRecord(
+            workspace_id=task.workspace_id,
+            session_id=task.session_id,
+            deliverable_key=task.deliverable_key,
+            status="available",
+            product_mode=task.product_mode,
+            idempotency_key=task.idempotency_key,
+        )
+        db.add(job)
+        db.flush()
+        return job, DeliverableGenerationResult(deliverable_key=task.deliverable_key, status="available")
+
+    monkeypatch.setattr(
+        "app.services.product_processing.product_build_orchestrator.build_approved_deliverable_context",
+        fake_context_builder,
+    )
+    monkeypatch.setattr(
+        "app.services.product_processing.product_build_orchestrator.run_deliverable_generation_task",
+        fake_runner,
+    )
+    monkeypatch.setattr(
+        "app.services.product_processing.product_build_orchestrator._dependency_error_for_item",
+        lambda *args, **kwargs: None,
+    )
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        ensure_product_build_orchestration(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            options=ProductBuildOrchestrationOptions(current_stage="package"),
+            catalog_stage_override="package",
+        )
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint_pro,
+            current_stage="package",
+        )
+        item = next(
+            entry
+            for entry in catalog.entries
+            if entry.deliverable_type.value != "diagram" and (entry.access.can_generate or entry.access.can_regenerate)
+        )
+        items_by_key = {entry.key: entry for entry in catalog.entries}
+        run = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro,
+        )[0]
+
+        processed = _process_single_queue_item(
+            db,
+            run=run,
+            record=record,
+            item=item,
+            items_by_key=items_by_key,
+            allow_llm=False,
+            phase="initial",
+            position=1,
+            total_count=1,
+        )
+
+    assert processed is True
+    assert captured_task is not None
+    assert captured_task.context_payload == {"approved": True, "deliverable_key": item.key}
+    assert captured_task.approved_context_refs == ["journey:approved:v1"]
+
+
 def test_run_product_build_processing_marks_orphaned_diagram_jobs_as_error(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
@@ -655,6 +743,93 @@ def test_run_product_build_processing_marks_orphaned_diagram_jobs_as_error(monke
     assert status.processing_queue.failed_count == 1
     assert status.processing_queue.processing_count == 0
     assert step.status == "error"
+
+
+def test_reconcile_marks_started_stale_diagram_job_as_orphaned() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        ensure_product_build_orchestration(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            options=ProductBuildOrchestrationOptions(current_stage="package"),
+            catalog_stage_override="package",
+        )
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint_pro,
+            current_stage="package",
+        )
+        queued_diagram = next(item for item in catalog.entries if item.deliverable_type.value == "diagram")
+        run = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro,
+        )[0]
+        stale_at = utc_now() - timedelta(minutes=10)
+        step = next(
+            candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
+        )
+        step.status = "generating"
+        step.updated_at = stale_at
+        step.checkpoint_payload = {
+            **(step.checkpoint_payload or {}),
+            "queue_selected": True,
+            "job_source": "diagram_center",
+        }
+        db.add(step)
+        job = DiagramGenerationJobRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            diagram_key=queued_diagram.key.removeprefix("diagram."),
+            requested_by_user_id=user.id,
+            detail_level="standard",
+            reason="regenerate",
+            idempotency_key=f"stale-diagram-{uuid4()}",
+            status="generating",
+            started_at=stale_at,
+            updated_at=stale_at,
+        )
+        db.add(job)
+        run.checkpoint_payload = {
+            **(run.checkpoint_payload or {}),
+            "processing_queue": {
+                "queue_id": f"queue-{uuid4()}",
+                "mode": "process_pending",
+                "status": "running",
+                "selected_deliverable_keys": [queued_diagram.key],
+                "retry_deliverable_keys": [],
+                "allow_llm": False,
+                "summary": "Procesando 1 de 1 entregables elegibles.",
+            },
+        }
+        db.add(run)
+        db.commit()
+
+        recovered = _recover_orphaned_processing_queue(db, run=run)
+        db.expire_all()
+        refreshed_run = db.get(ProductBuildRunRecord, run.id)
+        refreshed_job = db.get(DiagramGenerationJobRecord, job.id)
+        refreshed_step = db.get(ProductBuildStepRecord, step.id)
+
+    assert recovered is True
+    assert refreshed_run is not None
+    assert refreshed_run.lifecycle == ProductBuildLifecycle.requires_attention
+    assert refreshed_job is not None
+    assert refreshed_job.status == "error"
+    assert refreshed_job.error_code == "processing_queue_orphaned"
+    assert refreshed_job.started_at is not None
+    assert refreshed_job.completed_at is not None
+    assert refreshed_step is not None
+    assert refreshed_step.status == "error"
 
 
 def test_ensure_product_build_orchestration_execute_jobs_skips_exhausted_failures(
