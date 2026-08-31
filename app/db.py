@@ -27,8 +27,10 @@ def _build_engine_kwargs():
     if not parsed.drivername.startswith("sqlite") and (parsed.host or "").strip().lower() not in {"127.0.0.1", "localhost"}:
         kwargs.update(
             {
-                "pool_size": settings.database_pool_size if settings.database_pool_size is not None else 1,
-                "max_overflow": settings.database_max_overflow if settings.database_max_overflow is not None else 1,
+                # Shared remote databases need modest headroom because the browser
+                # routinely fans out auth, snapshot, attention, and export calls.
+                "pool_size": settings.database_pool_size if settings.database_pool_size is not None else 5,
+                "max_overflow": settings.database_max_overflow if settings.database_max_overflow is not None else 5,
                 "pool_timeout": settings.database_pool_timeout_seconds,
                 "pool_recycle": settings.database_pool_recycle_seconds,
                 "pool_use_lifo": True,

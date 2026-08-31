@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 
 from app.models import CommercialOrderLineRecord, CommercialOrderRecord, CommercialOrderStatus, SessionRecord, UserRecord
 from app.services.product_processing.contracts import ProductBuildProductKey, ProductBuildStatus
+from app.services.product_processing.journey_state_machine_service import transition_for_paid_product_activation
 from app.services.product_processing.product_build_orchestrator import (
     ProductBuildOrchestrationOptions,
     ensure_product_build_orchestration,
@@ -40,6 +41,14 @@ def activate_product_builds_for_paid_order(
 
     statuses: list[ProductBuildStatus] = []
     for product_key in _ordered_build_products_for_order(db, order):
+        transition_for_paid_product_activation(
+            db,
+            record=record,
+            order_id=order.id,
+            product_key=product_key.value,
+            actor_user_id=current_user.id if current_user is not None else None,
+            source=source,
+        )
         activation_payload = _activation_payload(order=order, product_key=product_key, source=source)
         if product_key == ProductBuildProductKey.acp:
             statuses.append(

@@ -4,6 +4,7 @@ from app.models import CommercialTier, SessionRecord, SessionSnapshot, UserRecor
 from app.services.commerce_service import tier_rank
 from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
 from app.services.product_processing.contracts import ProductBuildProductKey, ProductBuildStatus
+from app.services.product_processing.journey_state_machine_service import transition_for_stage_approval
 from app.services.product_processing.premium_enrichment_service import sync_premium_enrichment_product_run
 from app.services.product_processing.product_build_orchestrator import (
     ProductBuildOrchestrationOptions,
@@ -33,6 +34,15 @@ def sync_product_builds_after_stage_approval(
     current_user: UserRecord | None = None,
 ) -> list[ProductBuildStatus]:
     normalized_stage = _normalize_stage_key(stage_key)
+    transition_for_stage_approval(
+        db,
+        record=record,
+        approved_stage_key=normalized_stage,
+        actor_user_id=current_user.id if current_user is not None else None,
+        # The proposal service/touch_session updates this timestamp for every actual approval,
+        # while retried work in the same transaction remains idempotent.
+        correlation_id=f"stage-approval:{record.id}:{normalized_stage}:{record.updated_at.isoformat()}",
+    )
     return sync_product_builds_for_stage_progress(
         db,
         record=record,

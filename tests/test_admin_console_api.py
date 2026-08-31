@@ -326,6 +326,18 @@ def test_admin_routes_forbid_workspace_owner_without_platform_admin(client: Test
     assert response.json()["detail"] == "Solo un platform admin puede ejecutar esta accion."
 
 
+def test_commerce_access_requests_forbid_workspace_owner_without_traceback(client: TestClient) -> None:
+    admin_headers = auth_headers(client)
+    workspace_id = active_workspace_id(client, admin_headers)
+    _, owner_email, owner_password = seed_workspace_owner(client, workspace_id)
+    owner_headers = auth_headers_for(client, email=owner_email, password=owner_password)
+
+    response = client.get("/api/v1/commerce/access-requests", headers=owner_headers)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Solo un platform admin puede ejecutar esta accion."
+
+
 def test_platform_admin_can_select_and_administer_external_workspace(client: TestClient) -> None:
     headers = auth_headers(client)
     external_workspace_id, _, external_viewer_email = seed_external_workspace(client)

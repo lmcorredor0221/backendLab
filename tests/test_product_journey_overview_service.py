@@ -6,6 +6,8 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.models import (
+    CommercialAccessRequestRecord,
+    CommercialAccessRequestStatus,
     CommercialTier,
     SessionRecord,
     SessionStage,
@@ -28,7 +30,12 @@ def _engine():
     return create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 
 
-def _seed_session(db: Session, *, tier: CommercialTier = CommercialTier.blueprint) -> tuple[UserRecord, SessionRecord]:
+def _seed_session(
+    db: Session,
+    *,
+    tier: CommercialTier = CommercialTier.blueprint,
+    stage: SessionStage = SessionStage.ready_for_export,
+) -> tuple[UserRecord, SessionRecord]:
     user = UserRecord(
         email=f"journey-{uuid4()}@leanbuilder.local",
         full_name="Journey Tester",
@@ -44,7 +51,7 @@ def _seed_session(db: Session, *, tier: CommercialTier = CommercialTier.blueprin
         user_id=user.id,
         workspace_id=workspace.id,
         title="Journey Project",
-        current_stage=SessionStage.ready_for_export,
+        current_stage=stage,
         commercial_tier=tier,
     )
     db.add(record)
@@ -97,6 +104,46 @@ def test_product_journey_overview_exposes_single_recommended_next_action() -> No
     assert overview.recommended_next_action is not None
     assert overview.recommended_next_action.primary is True
     assert overview.recommended_next_action.product_key == ProductBuildProductKey.blueprint_basic
+
+
+def test_product_journey_overview_exposes_blueprint_pro_request_state() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint, stage=SessionStage.post_validation)
+        db.add(
+            CommercialAccessRequestRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                requester_user_id=user.id,
+                capability="blueprint_pro",
+                product_key="blueprint_pro",
+                target_tier=CommercialTier.blueprint_pro,
+                status=CommercialAccessRequestStatus.pending,
+                reason="Quiero generar Blueprint Pro",
+            )
+        )
+        db.commit()
+
+        overview = build_product_journey_overview(db, record=record, current_user=user)
+
+    assert overview.journey_state_machine is not None
+    assert overview.journey_state_machine.current.state_key.value == "blueprint_pro_access_requested"
+    assert overview.journey_state_machine.current.href.endswith("/blueprint/pro/overview")
+
+
+def test_product_journey_overview_exposes_validate_state_for_acp() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.acp, stage=SessionStage.post_validation)
+        overview = build_product_journey_overview(db, record=record, current_user=user)
+
+    assert overview.journey_state_machine is not None
+    assert overview.journey_state_machine.current.state_key.value == "validate"
+    assert overview.journey_state_machine.current.href.endswith("/acp?acp_tab=validate")
 
 
 def test_product_journey_overview_prioritizes_blocking_attention_over_upsell() -> None:

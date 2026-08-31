@@ -21,6 +21,7 @@ from app.services.product_processing.contracts import (
     QuestionPolicyMode,
     UncertaintyDisposition,
 )
+from app.services.stage5_service import FEATURE_FLAG_ESTIMATION, is_feature_flag_enabled
 
 
 ACP_REQUIRED_STAGE_KEYS: tuple[str, ...] = (
@@ -144,6 +145,11 @@ def build_acp_direct_resolution(
         for key, value in (stage_justifications or {}).items()
         if str(key).strip() in ACP_REQUIRED_STAGE_KEYS and str(value).strip()
     }
+    if not is_feature_flag_enabled(db, FEATURE_FLAG_ESTIMATION, workspace_id=record.workspace_id):
+        justifications.setdefault(
+            "estimate",
+            "Estimate omitido porque estimation_comparative_v1 esta deshabilitado para este workspace.",
+        )
     completed = _dedupe(
         [
             *_approved_journey_stages(db, record),

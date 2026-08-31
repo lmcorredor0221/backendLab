@@ -29,6 +29,25 @@ def _auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def test_platform_admin_lists_access_requests_with_status_alias(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    request_response = client.post(
+        f"/api/v1/sessions/{session_id}/access-requests",
+        headers=headers,
+        json={"session_id": session_id, "capability": "blueprint.build", "reason": "Necesito Blueprint Pro."},
+    )
+    assert request_response.status_code == 200
+
+    list_response = client.get("/api/v1/commerce/access-requests?status=pending", headers=headers)
+
+    assert list_response.status_code == 200
+    assert any(item["id"] == request_response.json()["id"] for item in list_response.json())
+
+
 def test_acp_routes_are_backend_blocked_without_acp_entitlement(client: TestClient) -> None:
     headers = _auth_headers(client)
     create_response = client.post("/api/v1/sessions", headers=headers)

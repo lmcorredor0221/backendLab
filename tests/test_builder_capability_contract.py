@@ -35,6 +35,7 @@ from app.models import (
     ToolRecommendationPromptInput,
     ToolRecommendationPromptToolOption,
 )
+from app.services.diagram_center.contracts import DiagramGenerationInput, StructuredDiagramModel
 from app.services.llm_runtime.builder_contracts import (
     AcceptanceCriterion,
     AgentDesignCritiqueInput,
@@ -769,6 +770,10 @@ class FakeCapabilityService:
         del payload, context_bundle
         return self._result("analyze_estimation_risks")
 
+    def generate_diagram_model(self, payload: DiagramGenerationInput, *, context_bundle=None) -> LLMArtifactResult:
+        del payload, context_bundle
+        return self._result("generate_diagram_model")
+
 
 def _fake_results() -> dict[str, LLMArtifactResult]:
     return {
@@ -801,6 +806,16 @@ def _fake_results() -> dict[str, LLMArtifactResult]:
         "simulate_validation_scenario": LLMArtifactResult(artifact=sample_validation_simulation_output()),
         "judge_validation_run": LLMArtifactResult(artifact=sample_validation_judgment_output()),
         "analyze_estimation_risks": LLMArtifactResult(artifact=sample_estimation_risk_output()),
+        "generate_diagram_model": LLMArtifactResult(
+            artifact=StructuredDiagramModel(
+                diagram_key="test_diagram",
+                title="Diagrama de prueba",
+                description="Modelo minimo generado por el fake provider de tests.",
+                nodes=[],
+                edges=[],
+                source_refs=["test.fake_provider"],
+            )
+        ),
     }
 
 
@@ -932,8 +947,11 @@ def test_openai_builder_analyze_discovery_returns_typed_output_with_metadata() -
     service = OpenAIBuilderService(runtime_settings)
 
     class FakeResponses:
+        def __init__(self) -> None:
+            self.kwargs_history: list[dict[str, object]] = []
+
         def parse(self, **kwargs):
-            del kwargs
+            self.kwargs_history.append(dict(kwargs))
             return SimpleNamespace(
                 id="resp-openai-1",
                 status="completed",
@@ -941,7 +959,8 @@ def test_openai_builder_analyze_discovery_returns_typed_output_with_metadata() -
                 output_parsed=sample_discovery_analysis_output(),
             )
 
-    service._client = SimpleNamespace(responses=FakeResponses())
+    fake_responses = FakeResponses()
+    service._client = SimpleNamespace(responses=fake_responses)
     result = service.analyze_discovery(sample_discovery_analysis_input())
 
     assert isinstance(result.artifact, DiscoveryAnalysisOutput)
@@ -951,6 +970,7 @@ def test_openai_builder_analyze_discovery_returns_typed_output_with_metadata() -
     assert result.finish_reason == "completed"
     assert result.schema_validation_status == "valid"
     assert result.token_usage["total_tokens"] == 168
+    assert fake_responses.kwargs_history[0]["max_output_tokens"] == 4096
 
 
 def test_deepseek_builder_define_requirements_repairs_wrapped_payload() -> None:

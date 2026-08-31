@@ -15,6 +15,7 @@ from app.services.agentic_runtime.contracts import (
     BuilderEvaluation,
     BuilderIterationTrace,
     BuilderObservation,
+    BuilderQualityGateResult,
 )
 from app.services.agentic_runtime.guards import (
     BuilderLoopGuardConfig,
@@ -54,7 +55,9 @@ def _default_next_action(
     if not previous_key:
         key = "retrieve_context"
     elif previous is not None and previous.status == "retryable":
-        if previous_key == "invoke_capability" and bool(output.get("can_auto_retry", False)):
+        if previous_key in {"run_validator", "invoke_critique"} and bool(output.get("quality_repair_allowed", False)):
+            key = "invoke_capability"
+        elif previous_key == "invoke_capability" and bool(output.get("can_auto_retry", False)):
             key = "invoke_capability"
         elif bool(output.get("repairable", False)):
             key = "repair_structured_output"
@@ -88,7 +91,15 @@ def _default_next_action(
         key=key,
         stage=request.stage,
         capability=request.capability if key == "invoke_capability" else "",
-        arguments={"phase": "retry"} if key == "invoke_capability" and previous_key == "invoke_capability" else {},
+        arguments={
+            "phase": (
+                "quality_repair"
+                if previous_key in {"run_validator", "invoke_critique"}
+                else "retry"
+            )
+        }
+        if key == "invoke_capability" and previous_key in {"invoke_capability", "run_validator", "invoke_critique"}
+        else {},
     )
 
 
@@ -121,6 +132,7 @@ class BuilderReActController:
             BuilderLoopGuardConfig(
                 max_iterations=policy.max_iterations,
                 max_llm_calls=policy.max_llm_calls,
+                max_total_ms=policy.max_total_ms,
             )
         )
         runtime = BuilderLoopGuardState()
@@ -224,6 +236,9 @@ class BuilderReActController:
                     "iteration": state.iteration + 1,
                     "llm_calls": state.llm_calls + (1 if action.key in {"invoke_capability", "invoke_critique"} else 0),
                     "token_usage": state.token_usage + result.token_usage,
+                    "quality_repair_cycles": state.quality_repair_cycles
+                    + (1 if bool(result.output.get("quality_repair_requested", False)) else 0),
+                    "quality_gate": result.output.get("quality_gate") or state.quality_gate,
                     "last_action": action.key,
                     "last_observation": observation.model_dump(mode="json"),
                     "last_evaluation": evaluation.model_dump(mode="json"),
@@ -296,6 +311,13 @@ class BuilderReActController:
     @staticmethod
     def _evaluate(action: BuilderActionRequest, result: BuilderActionResult) -> BuilderEvaluation:
         issues = [str(item) for item in result.output.get("issues", []) if str(item).strip()]
+        quality_gate = None
+        raw_quality_gate = result.output.get("quality_gate")
+        if isinstance(raw_quality_gate, dict):
+            try:
+                quality_gate = BuilderQualityGateResult.model_validate(raw_quality_gate)
+            except Exception:  # noqa: BLE001
+                quality_gate = None
         if action.key in {"create_attention_decision", "raise_cross_stage_remediation"}:
             return BuilderEvaluation(
                 status="continue",
@@ -304,35 +326,44 @@ class BuilderReActController:
                     if action.key == "raise_cross_stage_remediation"
                     else "La decision HITL fue registrada; se persiste el checkpoint antes de pausar."
                 ),
-                confidence=0.0,
+                confidence=quality_gate.quality_confidence if quality_gate is not None else 0.0,
                 issues=issues,
                 next_action="checkpoint",
+                quality_gate=quality_gate,
             )
         if action.key == "checkpoint" or result.status == "waiting_human":
             return BuilderEvaluation(
                 status="waiting_human",
                 reason_summary="La salida requiere una decision humana antes de continuar.",
-                confidence=0.0,
+                confidence=quality_gate.quality_confidence if quality_gate is not None else 0.0,
                 issues=issues,
                 next_action="checkpoint",
+                quality_gate=quality_gate,
             )
         if result.status == "failed":
             return BuilderEvaluation(
                 status="fail",
                 reason_summary=result.summary or "La ejecucion fallo.",
-                confidence=0.0,
+                confidence=quality_gate.quality_confidence if quality_gate is not None else 0.0,
                 issues=issues,
+                quality_gate=quality_gate,
             )
         if action.key == "finish_stage":
             return BuilderEvaluation(
                 status="finish",
                 reason_summary="La salida paso las validaciones de la etapa.",
-                confidence=1.0,
+                confidence=quality_gate.quality_confidence if quality_gate is not None else 1.0,
+                quality_gate=quality_gate,
             )
         return BuilderEvaluation(
             status="continue",
-            reason_summary="La salida es procesable; continua el flujo gobernado.",
-            confidence=0.8,
+            reason_summary=(
+                quality_gate.reason_summary
+                if quality_gate is not None and quality_gate.reason_summary
+                else "La salida es procesable; continua el flujo gobernado."
+            ),
+            confidence=quality_gate.quality_confidence if quality_gate is not None else 0.8,
             issues=issues,
-            next_action="continue",
+            next_action="quality_repair" if result.status == "retryable" else "continue",
+            quality_gate=quality_gate,
         )

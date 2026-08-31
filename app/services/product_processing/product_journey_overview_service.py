@@ -21,6 +21,12 @@ from app.services.product_processing.contracts import (
     ProductJourneyOverview,
     ProductJourneyProductSummary,
     ProductJourneyRecommendedAction,
+    JourneyStateMachine,
+    JourneyStateSubstate,
+)
+from app.services.product_processing.journey_state_machine_service import (
+    build_journey_state_machine,
+    load_persisted_journey_state_machine,
 )
 from app.services.product_processing.product_build_status_service import build_all_product_build_statuses
 
@@ -65,12 +71,12 @@ def build_product_journey_overview(
     products = [_summarize_product(status) for status in statuses]
     recommended_next_action = _select_recommended_next_action(statuses)
     attention_items = _unique_attention_items(statuses)
-
-    return ProductJourneyOverview(
+    current_stage = _select_current_stage(statuses, record)
+    overview = ProductJourneyOverview(
         workspace_id=record.workspace_id,
         session_id=record.id,
         project_title=record.title,
-        current_stage=_select_current_stage(statuses, record),
+        current_stage=current_stage,
         achieved_outcomes=_build_achieved_outcomes(statuses),
         active_operation=_select_active_operation(statuses),
         blocking_attention_count=sum(1 for item in attention_items if item.blocking),
@@ -82,6 +88,19 @@ def build_product_journey_overview(
         generated_at=utc_now().isoformat(),
         source_contracts=_source_contracts(statuses),
     )
+    journey_state = load_persisted_journey_state_machine(db, record=record)
+    if journey_state is None:
+        journey_state = build_journey_state_machine(
+            db,
+            record=record,
+            overview=overview,
+            current_user=current_user,
+        )
+    else:
+        overview.current_stage = _current_stage_from_journey_state(journey_state)
+        overview.source_contracts = sorted({*overview.source_contracts, "journey-state-persistence.v1"})
+    overview.journey_state_machine = journey_state
+    return overview
 
 
 def _summarize_product(status: ProductBuildStatus) -> ProductJourneyProductSummary:
@@ -243,6 +262,25 @@ def _stage_to_current(status: ProductBuildStatus, stage: ProductBuildStageStatus
         lifecycle=stage.lifecycle,
         progress_percent=stage.progress.percent,
         product_key=status.product_key,
+    )
+
+
+def _current_stage_from_journey_state(state_machine: JourneyStateMachine) -> ProductJourneyCurrentStage:
+    current = state_machine.current
+    lifecycle_by_substate = {
+        JourneyStateSubstate.running: ProductBuildLifecycle.running,
+        JourneyStateSubstate.blocked: ProductBuildLifecycle.requires_attention,
+        JourneyStateSubstate.waiting_user: ProductBuildLifecycle.requires_attention,
+        JourneyStateSubstate.waiting_dependency: ProductBuildLifecycle.requires_attention,
+        JourneyStateSubstate.failed: ProductBuildLifecycle.error,
+        JourneyStateSubstate.completed: ProductBuildLifecycle.completed,
+    }
+    return ProductJourneyCurrentStage(
+        stage_key=current.stage_key,
+        label=current.label,
+        lifecycle=lifecycle_by_substate.get(current.substate, ProductBuildLifecycle.ready_to_start),
+        progress_percent=current.progress_percent,
+        product_key=current.product_key,
     )
 
 

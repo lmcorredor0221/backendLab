@@ -22,6 +22,7 @@ Copy-Item .env.example .env
 - `.env`, bases locales, logs, `runtime/`, `tmp/` y `.venv/` no se versionan.
 - Las migraciones Alembic y pruebas forman parte del repositorio.
 - Para usar Supabase como Postgres de produccion, revisa [SUPABASE_DEPLOY.md](./SUPABASE_DEPLOY.md).
+- Para depurar proyectos de produccion desde local, revisa [docs/project-debug-memory.md](./docs/project-debug-memory.md).
 
 ## Deploy desde GitHub
 

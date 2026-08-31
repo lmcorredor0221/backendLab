@@ -155,6 +155,15 @@ def test_deepseek_structured_call_records_successful_usage_in_ledger() -> None:
     assert record.provider_metrics["cache_hit_tokens"] == 30
     assert record.stage == "define"
     assert record.capability_key == "define_requirements"
+    assert record.metadata_payload["effective_context_backend"] == "workspace_staged_unavailable_inline_compact"
+    assert record.metadata_payload["context_stats"]["api_context_contract"] == "provider_api_inline.v1"
+    assert record.prompt_hash
+    assert record.response_hash
+    assert record.prompt_hash == record.metadata_payload["context_stats"]["context_user_payload_sha256"]
+    assert record.metadata_payload["context_used_sources"][0]["key"] == "requirements_definition_input"
+    assert record.metadata_payload["context_used_sources"][0]["metadata"]["context_quality_version"] == "context-quality.v1"
+    assert record.metadata_payload["context_used_sources"][0]["metadata"]["input_payload_chars"] > 0
+    assert "context_prompt_truncated_keys" in record.metadata_payload
 
 
 def test_deepseek_structured_call_records_provider_exception() -> None:

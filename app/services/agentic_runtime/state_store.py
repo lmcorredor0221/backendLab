@@ -16,6 +16,11 @@ def _state_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _react_branch_key(stage: str) -> str:
+    normalized_stage = str(stage or "").strip().lower() or "runtime"
+    return f"react:{normalized_stage}"
+
+
 class BuilderReActCheckpointStore:
     """Persists ReAct checkpoints through the existing checkpoint table only.
 
@@ -35,6 +40,8 @@ class BuilderReActCheckpointStore:
         if state.session_id is None:
             raise ValueError("No se puede persistir un checkpoint ReAct sin session_id.")
         checkpoint_key = state.checkpoint_id or f"react:{state.run_id}:checkpoint:{state.iteration}"
+        stage_key = str(state.stage or "").strip().lower() or "runtime"
+        branch_key = _react_branch_key(stage_key)
         payload = state.model_dump(mode="json")
         digest = _state_hash(payload)
         previous = session.exec(
@@ -47,6 +54,7 @@ class BuilderReActCheckpointStore:
                 ShortTermCheckpointRecord.session_id == state.session_id,
                 ShortTermCheckpointRecord.is_active == True,  # noqa: E712
                 ShortTermCheckpointRecord.checkpoint_key.startswith("react:"),
+                ShortTermCheckpointRecord.stage == stage_key,
             )
         ).all()
         for record in active_records:
@@ -63,12 +71,13 @@ class BuilderReActCheckpointStore:
         if checkpoint is None:
             checkpoint = ShortTermCheckpointRecord(
                 session_id=state.session_id,
-                branch_key="main",
+                branch_key=branch_key,
                 checkpoint_key=checkpoint_key,
                 parent_checkpoint_key=previous.checkpoint_key if previous else "",
                 checkpoint_number=(previous.checkpoint_number + 1) if previous else 1,
             )
-        checkpoint.stage = state.stage
+        checkpoint.branch_key = branch_key
+        checkpoint.stage = stage_key
         checkpoint.source_action = source_action
         checkpoint.status = state.status
         checkpoint.summary = summary
@@ -87,6 +96,8 @@ class BuilderReActCheckpointStore:
         *,
         session_id: Any,
         checkpoint_id: str = "",
+        stage: str = "",
+        include_inactive: bool = False,
     ) -> BuilderAgentState | None:
         if checkpoint_id:
             record = session.exec(
@@ -96,15 +107,25 @@ class BuilderReActCheckpointStore:
                 )
             ).first()
         else:
-            record = session.exec(
-                select(ShortTermCheckpointRecord)
-                .where(
-                    ShortTermCheckpointRecord.session_id == session_id,
-                    ShortTermCheckpointRecord.is_active == True,  # noqa: E712
-                    ShortTermCheckpointRecord.checkpoint_key.startswith("react:"),
-                )
-                .order_by(desc(ShortTermCheckpointRecord.created_at))
-            ).first()
+            stage_key = str(stage or "").strip().lower()
+            statement = select(ShortTermCheckpointRecord).where(
+                ShortTermCheckpointRecord.session_id == session_id,
+                ShortTermCheckpointRecord.checkpoint_key.startswith("react:"),
+            )
+            if stage_key:
+                statement = statement.where(ShortTermCheckpointRecord.stage == stage_key)
+            if not include_inactive:
+                statement = statement.where(ShortTermCheckpointRecord.is_active == True)  # noqa: E712
+            records = session.exec(
+                statement.order_by(desc(ShortTermCheckpointRecord.updated_at), desc(ShortTermCheckpointRecord.created_at))
+            ).all()
+            record = None
+            for candidate in records:
+                state = BuilderAgentState.model_validate(candidate.state_payload)
+                if include_inactive and state.status in {"completed", "failed", "cancelled"}:
+                    continue
+                record = candidate
+                break
         return BuilderAgentState.model_validate(record.state_payload) if record else None
 
     @staticmethod
@@ -115,11 +136,25 @@ class BuilderReActCheckpointStore:
         action: str,
         scope: str,
         expected_stage: str = "",
+        source_action: str = "attention_resume_requested",
+        summary: str = "Decision humana resuelta; checkpoint listo para reanudar.",
     ) -> BuilderAgentState | None:
-        state = BuilderReActCheckpointStore.load(session, session_id=session_id)
+        stage_key = str(expected_stage or "").strip().lower()
+        state = BuilderReActCheckpointStore.load(
+            session,
+            session_id=session_id,
+            stage=stage_key,
+        ) if stage_key else BuilderReActCheckpointStore.load(session, session_id=session_id)
+        if state is None and stage_key:
+            state = BuilderReActCheckpointStore.load(
+                session,
+                session_id=session_id,
+                stage=stage_key,
+                include_inactive=True,
+            )
         if state is None:
             return None
-        if expected_stage and state.stage != expected_stage:
+        if stage_key and str(state.stage or "").strip().lower() != stage_key:
             return None
         state = state.model_copy(
             update={
@@ -132,8 +167,8 @@ class BuilderReActCheckpointStore:
         BuilderReActCheckpointStore.save(
             session,
             state,
-            summary="Decision humana resuelta; checkpoint listo para reanudar.",
-            source_action="attention_resume_requested",
+            summary=summary,
+            source_action=source_action,
         )
         return state
 

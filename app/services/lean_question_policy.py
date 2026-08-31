@@ -163,7 +163,31 @@ MEMORY_STAGE_ALLOWED_TERMS = (
     "retrieval",
 )
 
+LEAN_STAGE_KEYS = {"discover", "define", "design", "tools", "memory", "estimate"}
+PRODUCT_STAGE_KEYS = {"blueprint", "blueprint_free", "blueprint_pro", "validate", "package"}
 ACP_STAGE_KEYS = {"acp", "package", "implementation", "implementation_questions", "construction"}
+CANONICAL_DELEGATION_TARGET_STAGES = LEAN_STAGE_KEYS | PRODUCT_STAGE_KEYS | ACP_STAGE_KEYS
+DELEGATION_TARGET_STAGE_ALIASES = {
+    "descubrir": "discover",
+    "discovery": "discover",
+    "definir": "define",
+    "disenar": "design",
+    "diseñar": "design",
+    "herramientas": "tools",
+    "memoria": "memory",
+    "estimar": "estimate",
+    "estimacion": "estimate",
+    "validar": "validate",
+    "validacion": "validate",
+    "blueprint_basic": "blueprint",
+    "blueprint_basico": "blueprint",
+    "blueprint_free": "blueprint",
+    "blueprint_pro": "blueprint_pro",
+    "bp": "blueprint",
+    "bp_pro": "blueprint_pro",
+    "empaquetado": "package",
+    "implementacion": "implementation",
+}
 
 
 @dataclass(frozen=True)
@@ -237,6 +261,15 @@ def _normalize_text(value: Any) -> str:
     return " ".join(text.split())
 
 
+def _normalize_stage_target(value: Any) -> str:
+    normalized = _normalize_text(value).replace("-", "_").replace(" ", "_")
+    return DELEGATION_TARGET_STAGE_ALIASES.get(normalized, normalized)
+
+
+def _is_allowed_delegation_target(stage: str) -> bool:
+    return _normalize_stage_target(stage) in CANONICAL_DELEGATION_TARGET_STAGES
+
+
 def _question_text(question: PrioritizedQuestion | Mapping[str, Any] | str) -> str:
     if isinstance(question, PrioritizedQuestion):
         return " ".join(
@@ -268,13 +301,13 @@ def _question_text(question: PrioritizedQuestion | Mapping[str, Any] | str) -> s
 
 def _blocking_stages(question: PrioritizedQuestion | Mapping[str, Any] | str) -> set[str]:
     if isinstance(question, PrioritizedQuestion):
-        return {_normalize_text(stage) for stage in question.blocking_stages if _normalize_text(stage)}
+        return {_normalize_stage_target(stage) for stage in question.blocking_stages if _normalize_text(stage)}
     if isinstance(question, Mapping):
         raw = question.get("blocking_stages") or []
         if isinstance(raw, str):
             raw = [raw]
         if isinstance(raw, Iterable):
-            return {_normalize_text(stage) for stage in raw if _normalize_text(stage)}
+            return {_normalize_stage_target(stage) for stage in raw if _normalize_text(stage)}
     return set()
 
 
@@ -298,7 +331,7 @@ def _is_blocking_question(question: Any) -> bool:
 
 
 def _is_acp_stage(stage: str) -> bool:
-    return _normalize_text(stage) in ACP_STAGE_KEYS
+    return _normalize_stage_target(stage) in ACP_STAGE_KEYS
 
 
 def _is_required_field_reference(value: Any) -> bool:
@@ -323,7 +356,7 @@ def is_discovery_later_stage_question(question: PrioritizedQuestion | Mapping[st
 
 
 def classify_stage_question(stage: str, question: Any) -> StageQuestionDecision:
-    normalized_stage = _normalize_text(stage) or "discover"
+    normalized_stage = _normalize_stage_target(stage) or "discover"
     if _is_acp_stage(normalized_stage):
         return StageQuestionDecision(status="allowed_now")
 
@@ -333,15 +366,25 @@ def classify_stage_question(stage: str, question: Any) -> StageQuestionDecision:
     if _is_required_field_reference(text):
         return StageQuestionDecision(status="allowed_now", reason="Campo obligatorio de la etapa.")
 
-    explicit_scope = _field_value(question, "stage_scope")
-    explicit_deferral = _field_value(question, "deferral_target_stage")
+    explicit_scope = _normalize_stage_target(_field_value(question, "stage_scope"))
+    explicit_deferral = _normalize_stage_target(_field_value(question, "deferral_target_stage"))
     if explicit_deferral and explicit_deferral not in {normalized_stage, "none"}:
+        if not _is_allowed_delegation_target(explicit_deferral):
+            return StageQuestionDecision(
+                status="reject_as_noise",
+                reason=f"Destino de diferimiento no gobernado: {explicit_deferral}.",
+            )
         return StageQuestionDecision(
             status="defer_to_acp" if explicit_deferral in ACP_STAGE_KEYS else "defer_to_next_stage",
             reason=f"La pregunta declara diferimiento a {explicit_deferral}.",
             deferral_target_stage=explicit_deferral,
         )
     if explicit_scope and explicit_scope not in {normalized_stage, "cross_stage", "transversal"}:
+        if not _is_allowed_delegation_target(explicit_scope):
+            return StageQuestionDecision(
+                status="reject_as_noise",
+                reason=f"Alcance de etapa no gobernado: {explicit_scope}.",
+            )
         return StageQuestionDecision(
             status="defer_to_next_stage",
             reason=f"La pregunta pertenece a {explicit_scope}, no a {normalized_stage}.",
@@ -368,6 +411,14 @@ def classify_stage_question(stage: str, question: Any) -> StageQuestionDecision:
         )
 
     stages = _blocking_stages(question)
+    unmanaged_targets = sorted(
+        stage for stage in stages if stage != "transversal" and not _is_allowed_delegation_target(stage)
+    )
+    if unmanaged_targets:
+        return StageQuestionDecision(
+            status="reject_as_noise",
+            reason=f"Etapa bloqueante no gobernada: {unmanaged_targets[0]}.",
+        )
     if normalized_stage == "discover" and stages and not stages.isdisjoint(DISCOVERY_ALLOWED_BLOCKING_STAGES):
         return StageQuestionDecision(status="allowed_now")
     if stages and normalized_stage not in stages and "transversal" not in stages:
@@ -385,7 +436,7 @@ def should_surface_stage_question(stage: str, question: Any) -> bool:
 
 
 def filter_stage_question_texts(stage: str, questions: Iterable[Any]) -> list[Any]:
-    normalized_stage = _normalize_text(stage) or "discover"
+    normalized_stage = _normalize_stage_target(stage) or "discover"
     policy = STAGE_POLICIES.get(normalized_stage)
     allowed = [question for question in questions if should_surface_stage_question(normalized_stage, question)]
     if policy is None:
@@ -410,7 +461,7 @@ def deferred_stage_questions(stage: str, questions: Iterable[Any]) -> list[dict[
         deferred.append(
             {
                 "question": _question_text(question).strip(),
-                "source_stage": _normalize_text(stage) or "discover",
+                "source_stage": _normalize_stage_target(stage) or "discover",
                 "target_stage": decision.deferral_target_stage or ("acp" if decision.status == "defer_to_acp" else ""),
                 "reason": decision.reason,
                 "status": decision.status,
@@ -439,6 +490,8 @@ def sanitize_discovery_analysis_output(analysis: DiscoveryAnalysisOutput) -> Dis
     risk_signals = list(analysis.risk_signals)
     for index, question in enumerate(deferred_open_questions, start=1):
         decision = classify_stage_question("discover", question)
+        if decision.status not in {"defer_to_next_stage", "defer_to_acp"}:
+            continue
         key = _field_value(question, "key") or f"deferred_question_{index}"
         risk_signals.append(
             StructuredInsight(
@@ -453,6 +506,8 @@ def sanitize_discovery_analysis_output(analysis: DiscoveryAnalysisOutput) -> Dis
         )
     for index, item in enumerate(deferred_missing_information, start=1):
         decision = classify_stage_question("discover", item)
+        if decision.status not in {"defer_to_next_stage", "defer_to_acp"}:
+            continue
         risk_signals.append(
             StructuredInsight(
                 key=f"deferred:missing_information_{index}",

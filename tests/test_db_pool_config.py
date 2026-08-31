@@ -27,7 +27,7 @@ def test_build_engine_kwargs_keeps_local_databases_unpooled_by_default(
     }
 
 
-def test_build_engine_kwargs_uses_conservative_pool_defaults_for_remote_databases(
+def test_build_engine_kwargs_uses_interactive_pool_defaults_for_remote_databases(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -48,8 +48,8 @@ def test_build_engine_kwargs_uses_conservative_pool_defaults_for_remote_database
     assert kwargs == {
         "echo": False,
         "pool_pre_ping": True,
-        "pool_size": 1,
-        "max_overflow": 1,
+        "pool_size": 5,
+        "max_overflow": 5,
         "pool_timeout": 45,
         "pool_recycle": 900,
         "pool_use_lifo": True,

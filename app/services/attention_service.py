@@ -1666,7 +1666,7 @@ def apply_attention_action_v2(
     elif payload.action_kind == "regenerate" and item.type == "stale":
         result = AttentionActionApplyResult(
             status="applied",
-            message="Solicitud de regeneracion registrada. La vista de etapa debe iniciar el reproceso seguro.",
+            message="Solicitud de regeneracion registrada. La vista de etapa debe iniciar la reconciliacion segura.",
             )
     elif payload.action_kind in {"navigate", "retry", "regenerate"}:
         result = AttentionActionApplyResult(

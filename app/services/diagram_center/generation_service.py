@@ -9,7 +9,7 @@ from sqlmodel import Session, func, select
 from sqlalchemy.engine import Engine
 
 from app.db import engine
-from app.models import ArtifactRegistryRecord, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord, utc_now
+from app.models import ArtifactRegistryRecord, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord, UserRecord, utc_now
 from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramGenerationJobResponse, DiagramModel, DiagramNotation
 from app.services.diagram_center.persistence import (
     DiagramGenerationJobRecord,
@@ -468,6 +468,7 @@ def _build_generation_context_bundle(
     record: SessionRecord,
     job: DiagramGenerationJobRecord,
     stage: str,
+    effective_language: str = "es",
 ) -> StageContextBundle:
     return StageContextBundle(
         capability=BuilderCapability.generate_diagram_model.value,
@@ -476,7 +477,7 @@ def _build_generation_context_bundle(
         workspace_id=record.workspace_id,
         session_id=record.id,
         session_snapshot=None,
-        effective_language="es",
+        effective_language=effective_language,
         knowledge_manifest=None,
         memory_policy=None,
         short_term_memory=None,
@@ -563,29 +564,42 @@ def _fail_job(db: Session, job: DiagramGenerationJobRecord, code: str, message: 
     db.commit()
 
 
-def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> None:
+def run_generation_job(
+    job_id: UUID,
+    database_engine: Engine | None = None,
+    *,
+    db_session: Session | None = None,
+) -> None:
+    if db_session is not None:
+        _run_generation_job_in_session(db_session, job_id)
+        return
     with Session(database_engine or engine) as db:
-        job = db.get(DiagramGenerationJobRecord, job_id)
-        if job is None or job.status not in {"queued", "updating"}:
-            return
-        record = db.get(SessionRecord, job.session_id)
-        entry = get_registry_entry(job.diagram_key)
-        if record is None or entry is None:
-            _fail_job(db, job, "source_not_found", "El proyecto o el tipo de diagrama ya no está disponible.")
-            return
-        governance = db.exec(
-            select(DiagramGovernanceRecord).where(DiagramGovernanceRecord.diagram_key == entry.key)
-        ).first()
-        if governance is not None and (not governance.enabled or not governance.generation_enabled):
-            _fail_job(db, job, "generation_disabled", "La generación fue deshabilitada por el administrador.")
-            return
+        _run_generation_job_in_session(db, job_id)
 
-        job.status = "generating"
-        job.started_at = utc_now()
-        job.updated_at = utc_now()
-        db.add(job)
-        db.commit()
 
+def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
+    job = db.get(DiagramGenerationJobRecord, job_id)
+    if job is None or job.status not in {"queued", "updating"}:
+        return
+    record = db.get(SessionRecord, job.session_id)
+    entry = get_registry_entry(job.diagram_key)
+    if record is None or entry is None:
+        _fail_job(db, job, "source_not_found", "El proyecto o el tipo de diagrama ya no está disponible.")
+        return
+    governance = db.exec(
+        select(DiagramGovernanceRecord).where(DiagramGovernanceRecord.diagram_key == entry.key)
+    ).first()
+    if governance is not None and (not governance.enabled or not governance.generation_enabled):
+        _fail_job(db, job, "generation_disabled", "La generación fue deshabilitada por el administrador.")
+        return
+
+    job.status = "generating"
+    job.started_at = utc_now()
+    job.updated_at = utc_now()
+    db.add(job)
+    db.commit()
+
+    try:
         prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
         source_context, source_refs = _source_context(
             db,
@@ -635,7 +649,16 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
         )
         runtime_settings = load_effective_runtime_settings(db, record.workspace_id)
         provider = build_builder_service(runtime_settings)
-        stage_context = _build_generation_context_bundle(record=record, job=job, stage=entry.stage)
+        requesting_user = db.get(UserRecord, job.requested_by_user_id)
+        effective_language = (
+            str(getattr(requesting_user, "preferred_language", "") or "").strip().lower() or "es"
+        )
+        stage_context = _build_generation_context_bundle(
+            record=record,
+            job=job,
+            stage=entry.stage,
+            effective_language=effective_language,
+        )
         result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
         if result.artifact is None and result.failure_kind in {
             "provider_error",
@@ -749,3 +772,14 @@ def run_generation_job(job_id: UUID, database_engine: Engine | None = None) -> N
                 db.commit()
             except Exception:
                 pass
+    except Exception as exc:
+        db.rollback()
+        refreshed_job = db.get(DiagramGenerationJobRecord, job_id)
+        if refreshed_job is not None and str(refreshed_job.status or "") in {"queued", "updating", "generating"}:
+            _fail_job(
+                db,
+                refreshed_job,
+                type(exc).__name__,
+                str(exc) or "La generacion del diagrama fallo antes de persistir un estado final.",
+            )
+        raise

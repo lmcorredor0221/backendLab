@@ -273,6 +273,7 @@ def test_stage1_golden_contracts_match_generated_bundles(canonical_bundles: dict
     for case in FIXTURE_CASES:
         bundle = canonical_bundles[case["key"]]
         case_root = STAGE1_GOLDEN_ROOT / case["key"]
+        uuid_registry: dict[str, str] = {}
         for contract_key in (
             "blueprint-core.v1",
             "construction-pack.v1",
@@ -282,6 +283,5 @@ def test_stage1_golden_contracts_match_generated_bundles(canonical_bundles: dict
             "test-pack.v1",
         ):
             expected_payload = json.loads((case_root / f"{contract_key}.json").read_text(encoding="utf-8"))
-            uuid_registry: dict[str, str] = {}
             payload = sanitize_dynamic_contract_value(bundle[contract_key].model_dump(mode="json"), uuid_registry)
             assert payload == expected_payload

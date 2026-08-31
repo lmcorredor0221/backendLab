@@ -47,7 +47,7 @@ class BuilderLoopGuards:
             raise BuilderLoopGuardViolation("max_iterations", "El loop alcanzo el maximo de iteraciones permitido.")
         if (monotonic() - runtime.started_monotonic) * 1000 >= self.config.max_total_ms:
             raise BuilderLoopGuardViolation("timeout", "El loop alcanzo el timeout total permitido.")
-        if state.llm_calls >= self.config.max_llm_calls and action.key == "invoke_capability":
+        if state.llm_calls >= self.config.max_llm_calls and action.key in {"invoke_capability", "invoke_critique"}:
             raise BuilderLoopGuardViolation("max_llm_calls", "El loop alcanzo el maximo de llamadas LLM permitido.")
         if state.token_usage >= self.config.max_token_usage:
             raise BuilderLoopGuardViolation("token_budget", "El loop alcanzo el presupuesto de tokens permitido.")

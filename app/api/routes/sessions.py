@@ -161,10 +161,13 @@ from app.services.estimation_analysis_service import (
     run_estimation_analysis,
 )
 from app.services.acp_continuity import (
+    build_construction_gaps_from_uncertainty_backlog,
     build_construction_gap_entries,
     build_construction_question_views as build_construction_question_views_with_answers,
     build_continuity_answer_map,
     load_construction_question_response_records,
+    load_uncertainty_backlog_records,
+    merge_construction_question_records_with_uncertainty_backlog,
     overlay_construction_readiness,
     sync_construction_question_response_records,
 )
@@ -214,6 +217,10 @@ from app.services.estimation_calibration import (
     upsert_project_actuals,
 )
 from app.services.estimation_service import build_estimation_report
+from app.services.design_recommendation_service import (
+    build_design_intelligence_shadow_report,
+    downgrade_design_recommendation_to_legacy,
+)
 from app.services.journey_stage_migration import JourneyStageMigrationService
 from app.services.memory_recommendation_service import build_memory_recommendation_artifact
 from app.services.memory_rollout import FEATURE_FLAG_MEMORY_HYBRID_EXTENDED_JOURNEY
@@ -233,6 +240,7 @@ from app.services.canonical_export_delivery import (
     should_block_canonical_export,
 )
 from app.services.skill_runtime import (
+    _resolve_stage_llm_trace,
     list_skill_definitions,
     rerun_skill_for_session,
     run_discovery_analysis_stage,
@@ -274,18 +282,25 @@ from app.services.product_processing import (
     classify_uncertainty_for_profile,
     defer_premium_uncertainty_to_acp,
     dismiss_premium_uncertainty,
+    list_uncertainty_backlog,
     resolve_premium_uncertainty,
     resolve_product_processing_mode,
     sync_product_builds_after_stage_approval,
+    UncertaintyBacklogStatus,
+    UncertaintyDisposition,
     upsert_uncertainty_backlog,
 )
+from app.services.product_processing.journey_state_machine_service import initialize_journey_state
 from app.services.rules import derive_knowledge_profile, find_missing_discovery_fields
 from app.services.short_term_memory import MAIN_BRANCH_KEY, ShortTermMemoryService
+from app.services.knowledge_tool_policy import build_memory_tool_dependencies
 from app.services.tool_recommendation_service import (
     annotate_tool_recommendation_status,
     ensure_document_ingestion_for_knowledge_retrieval,
+    ensure_memory_tool_dependencies,
     promote_tool_recommendation_to_blueprint_tools,
 )
+from app.services.tool_pattern_learning_service import persist_tool_pattern_learning_candidates
 from app.services.validation_simulation_service import (
     build_validation_simulation_specification,
     execute_validation_simulation,
@@ -293,6 +308,7 @@ from app.services.validation_simulation_service import (
 )
 from app.services.stage5_service import (
     FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
+    FEATURE_FLAG_DESIGN_INTELLIGENCE,
     FEATURE_FLAG_ESTIMATION,
     FEATURE_FLAG_GOVERNANCE,
     FEATURE_FLAG_MULTI_AGENT_RUNTIME,
@@ -966,6 +982,21 @@ def _session_stage_after_journey_approval(stage_key: str, current_stage: Session
     return next_stage_map.get(str(stage_key or "").strip().lower(), current_stage)
 
 
+def _ensure_validate_evidence_exists(
+    db: Session,
+    *,
+    record: SessionRecord,
+    current_user: UserRecord,
+) -> None:
+    snapshot = build_snapshot(db, record, current_user=current_user)
+    if snapshot.evaluation_runs or snapshot.simulation_runs:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Validate requires at least one persisted evaluation or simulation run before approval",
+    )
+
+
 def maybe_set_session_title(record: SessionRecord, discovery: DiscoveryArtifact) -> None:
     if not discovery.problem_statement:
         return
@@ -1229,6 +1260,9 @@ def record_tool_recommendation_artifact(
             "approved_tools_digest_sha256": recommendation.approved_tools_digest.digest_sha256
             if recommendation.approved_tools_digest is not None
             else "",
+            "learning_candidate_count": recommendation.learning_report.candidate_count,
+            "learning_ready_for_global_review_count": recommendation.learning_report.ready_for_global_review_count,
+            "learning_global_write_allowed": recommendation.learning_report.global_write_allowed,
         },
     )
     session.add(record)
@@ -1248,9 +1282,12 @@ def ensure_acp_evaluation_seed_snapshot(
     *,
     current_user: UserRecord | None = None,
     source_action: str = "acp_auto_bootstrap",
+    allow_write: bool = True,
 ) -> tuple[SessionSnapshot, bool]:
     snapshot = build_snapshot(session, record, current_user=current_user)
     if snapshot.evaluation_dataset is not None and snapshot.evaluation_rubric is not None:
+        return snapshot, False
+    if not allow_write:
         return snapshot, False
 
     created_dataset = snapshot.evaluation_dataset is None
@@ -1282,19 +1319,42 @@ def ensure_acp_evaluation_seed_snapshot(
     return build_snapshot(session, record, current_user=current_user), True
 
 
-def resolve_acp_preview(session: Session, record: SessionRecord) -> ACPPreview:
+def resolve_acp_preview(
+    session: Session,
+    record: SessionRecord,
+    *,
+    allow_auto_bootstrap: bool = False,
+) -> ACPPreview:
     snapshot, auto_bootstrapped = ensure_acp_evaluation_seed_snapshot(
         session,
         record,
         source_action="resolve_acp_preview",
+        allow_write=allow_auto_bootstrap,
     )
-    continuity_answers = build_continuity_answer_map(load_construction_question_response_records(session, record.id))
-    if continuity_answers:
-        return generate_acp_preview(snapshot, continuity_answers)
+    response_records = load_construction_question_response_records(session, record.id)
+    backlog_records = load_uncertainty_backlog_records(session, record.id)
+    merged_response_records = merge_construction_question_records_with_uncertainty_backlog(
+        response_records,
+        backlog_records,
+    )
+    extra_readiness_gaps = build_construction_gaps_from_uncertainty_backlog(backlog_records)
+    continuity_answers = build_continuity_answer_map(merged_response_records)
+    if merged_response_records or extra_readiness_gaps:
+        return generate_acp_preview(
+            snapshot,
+            continuity_answers or None,
+            merged_response_records,
+            extra_readiness_gaps,
+        )
     preview = load_latest_persisted_acp_preview(session, record.id)
     if preview is not None and acp_preview_supports_graph(preview) and not auto_bootstrapped:
         return preview
-    return generate_acp_preview(snapshot, continuity_answers or None)
+    return generate_acp_preview(
+        snapshot,
+        continuity_answers or None,
+        merged_response_records,
+        extra_readiness_gaps,
+    )
 
 
 def get_acp_file_entry(preview: ACPPreview, file_path: str) -> ACPFileEntry:
@@ -3487,6 +3547,14 @@ def create_session(
     record = SessionRecord(user_id=current_user.id, workspace_id=workspace_context.workspace.id)
     db.add(record)
     db.flush()
+    initialize_journey_state(
+        db,
+        record=record,
+        actor_type="user",
+        actor_user_id=current_user.id,
+        reason="Proyecto creado.",
+        correlation_id=f"session-created:{record.id}",
+    )
     capture_operational_state(db, session_id=record.id, source_action="create_session")
     sync_short_term_memory_checkpoint(db, record=record, source_action="create_session")
     db.commit()
@@ -3774,6 +3842,12 @@ def approve_stage_artifact_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> JourneyStageArtifactEntry:
     record = get_or_404(db, session_id, current_user.id)
+    if str(stage_key or "").strip().lower() == "validate":
+        _ensure_validate_evidence_exists(
+            db,
+            record=record,
+            current_user=current_user,
+        )
     service = StageProposalService()
     try:
         artifact = service.approve(
@@ -3970,7 +4044,7 @@ def resolve_premium_enrichment_item_route(
     if record.commercial_tier == CommercialTier.blueprint:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Blueprint Premium debe estar habilitado antes de resolver y reprocesar oportunidades.",
+            detail="Blueprint Premium debe estar habilitado antes de resolver y reconciliar oportunidades.",
         )
     try:
         result = resolve_premium_uncertainty(
@@ -4396,14 +4470,87 @@ def analyze_discovery_route(
         effective_language=current_user.preferred_language,
         task_source_keys=["discovery_analysis_input"],
     )
-    analysis, traces = run_discovery_analysis_stage(
-        payload,
-        runtime_settings=runtime_settings,
-        stage_context=stage_context,
-    )
-    trace = traces[0] if traces else (all_traces[0] if all_traces else None)
+    react_run = None
+    react_runtime_warnings: list[str] = []
+
+    def run_discovery_analysis_capability() -> ReactCapabilityOutput:
+        analysis_value, trace_items = run_discovery_analysis_stage(
+            payload,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
+        token_usage = 0
+        for trace_item in trace_items:
+            llm_trace = trace_item.llm_trace
+            usage = getattr(llm_trace, "context_stats", {}) if llm_trace is not None else {}
+            token_usage += int(usage.get("total_tokens", 0) or 0) if isinstance(usage, dict) else 0
+        return ReactCapabilityOutput(
+            value=analysis_value,
+            traces=trace_items,
+            warnings=[warning for trace_item in trace_items for warning in trace_item.warnings if warning],
+            summary="Discovery analizo la iniciativa y separo inferencias, ambiguedades y preguntas delegables.",
+            token_usage=token_usage,
+        )
+
+    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+        try:
+            react_execution = run_callable_react(
+                stage="discover",
+                capability="analyze_discovery",
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                context_refs=["session.discovery_input", "knowledge.discovery_patterns"],
+                runner=run_discovery_analysis_capability,
+                validator=lambda value: (
+                    ["Discovery no produjo un analisis estructurado."],
+                    not isinstance(value, DiscoveryAnalysisOutput),
+                    "Discovery valido el analisis estructurado." if isinstance(value, DiscoveryAnalysisOutput) else "Discovery requiere revision.",
+                ),
+                effective_language=current_user.preferred_language,
+            )
+            analysis = react_execution.value
+            traces = react_execution.traces
+            react_run = react_execution.react_run
+        except Exception as exc:  # noqa: BLE001
+            react_runtime_warnings = [
+                "El controlador ReAct no pudo completar Discovery; se mantuvo el runtime existente.",
+                f"react_runtime_fallback:{type(exc).__name__}",
+            ]
+            fallback = run_discovery_analysis_capability()
+            analysis, traces = fallback.value, fallback.traces
+    else:
+        fallback = run_discovery_analysis_capability()
+        analysis, traces = fallback.value, fallback.traces
+    if analysis is None:
+        react_runtime_warnings = list(
+            dict.fromkeys(
+                [
+                    *react_runtime_warnings,
+                    "El controlador ReAct no produjo un analisis de Discovery; se mantuvo el runtime existente.",
+                    "react_runtime_fallback:missing_output",
+                ]
+            )
+        )
+        fallback = run_discovery_analysis_capability()
+        analysis, traces = fallback.value, fallback.traces
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Discovery analysis did not produce a structured artifact.",
+        )
+    trace = traces[0] if traces else None
     proposal_payload = analysis.model_dump(mode="json")
     proposal_payload["schema_version"] = "discovery-analysis.v1"
+    if react_run is not None and isinstance(react_run.output.get("quality_gate"), dict):
+        proposal_payload["quality_gate"] = react_run.output["quality_gate"]
+    warnings = list(
+        dict.fromkeys(
+            [
+                *react_runtime_warnings,
+                *[warning for trace_item in traces for warning in trace_item.warnings if warning],
+            ]
+        )
+    )
     service = StageProposalService()
     try:
         artifact = service.create(
@@ -4421,11 +4568,13 @@ def analyze_discovery_route(
                 schema_version="discovery-analysis.v1",
                 confidence=analysis.confidence,
                 missing_information=list(analysis.missing_information),
-                warnings=list(trace.warnings),
+                warnings=warnings,
                 evidence_manifest=build_journey_evidence_manifest_from_trace(
                     trace=trace,
                     source_action="analyze_discovery",
-                ),
+                )
+                if trace is not None
+                else [],
             ),
             actor_user=current_user,
         )
@@ -4444,13 +4593,21 @@ def analyze_discovery_route(
         traces=traces,
         source_action="analyze_discovery",
     )
+    write_react_run(
+        db,
+        session_id=session_id,
+        result=react_run,
+        stage="discover",
+        capability="analyze_discovery",
+        source_action="analyze_discovery",
+    )
     write_validation(
         db,
         session_id=session_id,
         artifact_name="discovery_analysis",
         status_value=ArtifactStatus.ready if not analysis.missing_information else ArtifactStatus.needs_review,
         missing_fields=list(analysis.missing_information),
-        warnings=list(trace.warnings),
+        warnings=warnings,
     )
     write_log(
         db,
@@ -4659,6 +4816,8 @@ def define_requirements_route(
         )
     proposal_payload = definition.model_dump(mode="json")
     proposal_payload["schema_version"] = "definition-artifact.v1"
+    if react_run is not None and isinstance(react_run.output.get("quality_gate"), dict):
+        proposal_payload["quality_gate"] = react_run.output["quality_gate"]
     trace = traces[0] if traces else None
     evidence_manifest = build_journey_evidence_manifest_from_traces(
         traces=all_traces,
@@ -4795,6 +4954,11 @@ def _execute_propose_design(
     )
     runtime_warnings: list[str] = []
     react_run = None
+    design_intelligence_enabled = is_feature_flag_enabled(
+        db,
+        FEATURE_FLAG_DESIGN_INTELLIGENCE,
+        workspace_id=record.workspace_id,
+    )
     react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
     if react_enabled:
         try:
@@ -4845,6 +5009,16 @@ def _execute_propose_design(
                 ).strip(),
             }
         )
+    if react_run is not None and isinstance(react_run.output.get("quality_gate"), dict):
+        artifact_payload = artifact_payload.model_copy(
+            update={"quality_gate": react_run.output["quality_gate"]}
+        )
+    design_intelligence_shadow_report: dict[str, object] | None = None
+    if design_intelligence_enabled:
+        design_intelligence_shadow_report = build_design_intelligence_shadow_report(artifact_payload)
+    if not design_intelligence_enabled:
+        artifact_payload = downgrade_design_recommendation_to_legacy(artifact_payload)
+        runtime_warnings.append("Design Intelligence v2 esta desactivado por feature flag del workspace.")
     stage_trace = next((trace.llm_trace for trace in traces if trace.llm_trace is not None), None)
     warnings = list(dict.fromkeys([*runtime_warnings, *[warning for trace in traces for warning in trace.warnings]]))
     if artifact_payload.review_state == ReviewState.blocked:
@@ -4913,11 +5087,21 @@ def _execute_propose_design(
         capability="propose_agent_design",
         source_action="propose_design",
     )
+    design_status = ArtifactStatus.ready if artifact_payload.review_state == ReviewState.complete else ArtifactStatus.needs_review
+    if design_intelligence_shadow_report is not None:
+        write_log(
+            db,
+            session_id=session_id,
+            stage=SessionStage.build_blueprint,
+            status_value=design_status,
+            message="Design Intelligence shadow diff registrado",
+            payload=design_intelligence_shadow_report,
+        )
     write_validation(
         db,
         session_id=session_id,
         artifact_name="design",
-        status_value=ArtifactStatus.ready if artifact_payload.review_state == ReviewState.complete else ArtifactStatus.needs_review,
+        status_value=design_status,
         missing_fields=list(artifact_payload.missing_information),
         warnings=warnings,
     )
@@ -4925,7 +5109,7 @@ def _execute_propose_design(
         db,
         session_id=session_id,
         stage=SessionStage.build_blueprint,
-        status_value=ArtifactStatus.ready if artifact_payload.review_state == ReviewState.complete else ArtifactStatus.needs_review,
+        status_value=design_status,
         message="Design comparado y criticado",
         payload=proposal_payload,
     )
@@ -5044,6 +5228,36 @@ def _recover_stale_stage_operation(db: Session, operation: StageOperationRecord)
     return True
 
 
+def _complete_paused_stage_operation_if_resolved(db: Session, operation: StageOperationRecord) -> bool:
+    """Close paused operations whose only remaining questions were deferred by policy."""
+
+    if not _is_operation_paused(operation) or operation.result_artifact_id is None:
+        return False
+    record = db.get(SessionRecord, operation.session_id)
+    if record is None:
+        return False
+    try:
+        artifact = StageProposalService().get(
+            db,
+            session_record=record,
+            stage_key=operation.stage_key,
+            artifact_id=operation.result_artifact_id,
+        )
+    except StageProposalNotFoundError:
+        return False
+    if _stage_operation_requires_user_input(db, operation, artifact=artifact):
+        return False
+    _update_stage_operation(
+        db,
+        operation,
+        status_value=StageOperationStatus.completed,
+        current_step="persist",
+        detail="Operacion completada; los pendientes restantes quedaron diferidos para enrichment o ACP.",
+        result_artifact_id=artifact.id,
+    )
+    return True
+
+
 def _stage_operation_steps(
     current_step: str,
     *,
@@ -5110,6 +5324,33 @@ def _update_stage_operation(
         operation.expires_at = None
     else:
         operation.expires_at = _operation_expires_at(now)
+    db.add(operation)
+    db.commit()
+    db.refresh(operation)
+
+
+def _requeue_stage_operation(
+    db: Session,
+    operation: StageOperationRecord,
+    *,
+    detail: str,
+    request_payload: dict[str, object],
+) -> None:
+    now = utc_now()
+    operation.status = StageOperationStatus.queued
+    operation.attempt_count = max(1, operation.attempt_count) + 1
+    operation.current_step = "queued"
+    operation.detail = detail
+    operation.request_payload = request_payload
+    operation.steps = _stage_operation_steps("queued", action=operation.action)
+    operation.error_message = ""
+    operation.technical_detail = ""
+    operation.cancel_requested_at = None
+    operation.result_artifact_id = None
+    operation.completed_at = None
+    operation.updated_at = now
+    operation.heartbeat_at = now
+    operation.expires_at = _operation_expires_at(now)
     db.add(operation)
     db.commit()
     db.refresh(operation)
@@ -5200,27 +5441,17 @@ def _get_or_create_stage_operation(
     ).first()
     if idempotent_operation is not None:
         _recover_stale_stage_operation(db, idempotent_operation)
+        if _complete_paused_stage_operation_if_resolved(db, idempotent_operation):
+            return idempotent_operation, False
         if _is_operation_active(idempotent_operation):
             return idempotent_operation, False
         if _is_operation_paused(idempotent_operation):
-            now = utc_now()
-            idempotent_operation.status = StageOperationStatus.queued
-            idempotent_operation.attempt_count = max(1, idempotent_operation.attempt_count) + 1
-            idempotent_operation.current_step = "queued"
-            idempotent_operation.detail = queued_detail
-            idempotent_operation.request_payload = request_payload
-            idempotent_operation.steps = _stage_operation_steps("queued", action=action)
-            idempotent_operation.error_message = ""
-            idempotent_operation.technical_detail = ""
-            idempotent_operation.cancel_requested_at = None
-            idempotent_operation.result_artifact_id = None
-            idempotent_operation.completed_at = None
-            idempotent_operation.updated_at = now
-            idempotent_operation.heartbeat_at = now
-            idempotent_operation.expires_at = _operation_expires_at(now)
-            db.add(idempotent_operation)
-            db.commit()
-            db.refresh(idempotent_operation)
+            _requeue_stage_operation(
+                db,
+                idempotent_operation,
+                detail=queued_detail,
+                request_payload=request_payload,
+            )
             return idempotent_operation, True
 
     active_operation = db.exec(
@@ -5237,6 +5468,28 @@ def _get_or_create_stage_operation(
         _recover_stale_stage_operation(db, active_operation)
         if _is_operation_active(active_operation):
             return active_operation, False
+
+    resume_checkpoint_id = str(request_payload.get("resume_checkpoint_id") or "").strip()
+    if resume_checkpoint_id:
+        paused_operation = db.exec(
+            select(StageOperationRecord)
+            .where(
+                StageOperationRecord.workspace_id == record.workspace_id,
+                StageOperationRecord.session_id == session_id,
+                StageOperationRecord.stage_key == stage_key,
+                StageOperationRecord.action == action,
+                StageOperationRecord.status.in_(list(STAGE_OPERATION_PAUSED_STATUSES)),
+            )
+            .order_by(StageOperationRecord.updated_at.desc(), StageOperationRecord.created_at.desc())
+        ).first()
+        if paused_operation is not None:
+            _requeue_stage_operation(
+                db,
+                paused_operation,
+                detail=queued_detail,
+                request_payload=request_payload,
+            )
+            return paused_operation, True
 
     now = utc_now()
     operation = StageOperationRecord(
@@ -5289,8 +5542,12 @@ def _resolve_react_initial_state(
             )
         return state
 
-    state = BuilderReActCheckpointStore.load(db, session_id=session_id)
-    if state is None or state.stage != stage_key or state.status != "running":
+    state = BuilderReActCheckpointStore.load(
+        db,
+        session_id=session_id,
+        stage=stage_key,
+    )
+    if state is None or state.status != "running":
         return None
     return state
 
@@ -5346,11 +5603,200 @@ def _missing_required_memory_tool_keys(artifact: JourneyStageArtifactEntry | Non
         memory_artifact = MemoryRecommendationArtifact.model_validate(artifact.proposal_payload)
     except Exception:  # noqa: BLE001
         return set()
-    return {
+    missing = {
         str(item.tool_key).strip().lower()
         for item in memory_artifact.tool_dependencies
         if item.required and str(item.status).strip().lower() == "missing" and str(item.tool_key).strip()
     }
+    missing.update(
+        str(item.capability_key).strip().lower()
+        for item in memory_artifact.dependency_gaps
+        if item.required
+        and str(item.status).strip().lower() == "open"
+        and str(item.target_stage).strip().lower() == "tools"
+        and str(item.capability_key).strip()
+    )
+    return missing
+
+
+def _memory_dependency_missing_tool_key(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    prefix = "resolver dependencia de herramientas:"
+    lowered = normalized.lower()
+    if not lowered.startswith(prefix):
+        return ""
+    return normalized[len(prefix):].strip().lower()
+
+
+AUTO_REMEDIABLE_MEMORY_TOOL_KEYS = {
+    "knowledge_retrieval",
+    "document_ingestion",
+    "scheduler",
+    "approval_gate",
+    "human_handoff",
+}
+
+
+def _preflight_memory_tool_remediation_keys(
+    *,
+    approved_tools_digest,
+    knowledge_profile: KnowledgeProfile,
+    memory_profile: MemoryProfile,
+) -> list[str]:
+    """Resolve deterministic Memory->Tools dependencies before a costly Memory run."""
+
+    dependencies = build_memory_tool_dependencies(
+        approved_tools_digest=approved_tools_digest,
+        knowledge_profile=knowledge_profile,
+        memory_profile=memory_profile,
+    )
+    required_keys: list[str] = []
+    for dependency in dependencies:
+        tool_key = str(dependency.tool_key or "").strip().lower()
+        if (
+            dependency.required
+            and str(dependency.status or "").strip().lower() == "missing"
+            and tool_key in AUTO_REMEDIABLE_MEMORY_TOOL_KEYS
+            and tool_key not in required_keys
+        ):
+            required_keys.append(tool_key)
+    return required_keys
+
+
+def _auto_remediable_memory_tool_keys(
+    artifact: MemoryRecommendationArtifact,
+    missing_tool_keys: list[str],
+) -> list[str]:
+    normalized_missing = {
+        str(item or "").strip().lower()
+        for item in missing_tool_keys
+        if str(item or "").strip()
+    }
+    if not normalized_missing:
+        return []
+    gap_policies = {
+        str(gap.capability_key or "").strip().lower(): str(gap.remediation_policy or "").strip().lower()
+        for gap in artifact.dependency_gaps
+        if str(gap.capability_key or "").strip()
+    }
+    if not gap_policies:
+        return sorted(tool_key for tool_key in normalized_missing if tool_key in AUTO_REMEDIABLE_MEMORY_TOOL_KEYS)
+    return sorted(
+        tool_key
+        for tool_key in normalized_missing
+        if gap_policies.get(tool_key) == "auto" and tool_key in AUTO_REMEDIABLE_MEMORY_TOOL_KEYS
+    )
+
+
+def _unresolved_remediated_memory_tool_keys(
+    artifact: MemoryRecommendationArtifact,
+    remediated_tool_keys: list[str],
+) -> list[str]:
+    remediated_keys = {
+        str(item or "").strip().lower()
+        for item in remediated_tool_keys
+        if str(item or "").strip()
+    }
+    if not remediated_keys:
+        return []
+    missing_keys = {
+        str(item.tool_key or "").strip().lower()
+        for item in artifact.tool_dependencies
+        if item.required
+        and str(item.status or "").strip().lower() == "missing"
+        and str(item.tool_key or "").strip()
+    }
+    missing_keys.update(
+        str(item.capability_key or "").strip().lower()
+        for item in artifact.dependency_gaps
+        if item.required
+        and str(item.status or "").strip().lower() == "open"
+        and str(item.target_stage or "").strip().lower() == "tools"
+        and str(item.capability_key or "").strip()
+    )
+    return sorted(missing_keys & remediated_keys)
+
+
+def _mark_resolved_memory_tool_dependencies(
+    db: Session,
+    *,
+    artifact: JourneyStageArtifactEntry | None,
+    approved_tool_keys: set[str],
+) -> None:
+    if artifact is None or not approved_tool_keys:
+        return
+    artifact_record = db.get(JourneyStageArtifactRecord, artifact.id)
+    if artifact_record is None or artifact_record.stage_key != "memory":
+        return
+    try:
+        payload = MemoryRecommendationArtifact.model_validate(artifact_record.proposal_payload)
+    except Exception:  # noqa: BLE001
+        return
+
+    dependency_changed = False
+    updated_dependencies = []
+    for dependency in payload.tool_dependencies:
+        tool_key = str(dependency.tool_key or "").strip().lower()
+        status_key = str(dependency.status or "").strip().lower()
+        if dependency.required and status_key == "missing" and tool_key in approved_tool_keys:
+            updated_dependencies.append(dependency.model_copy(update={"status": "approved"}))
+            dependency_changed = True
+            continue
+        updated_dependencies.append(dependency)
+    updated_dependency_gaps = []
+    dependency_gap_changed = False
+    for gap in payload.dependency_gaps:
+        capability_key = str(gap.capability_key or "").strip().lower()
+        if gap.required and gap.status == "open" and capability_key in approved_tool_keys:
+            updated_dependency_gaps.append(gap.model_copy(update={"status": "resolved"}))
+            dependency_gap_changed = True
+            continue
+        updated_dependency_gaps.append(gap)
+
+    updated_missing_information = [
+        item
+        for item in payload.missing_information
+        if _memory_dependency_missing_tool_key(item) not in approved_tool_keys
+    ]
+    record_missing_information = [
+        item
+        for item in artifact_record.missing_information
+        if _memory_dependency_missing_tool_key(item) not in approved_tool_keys
+    ]
+
+    if (
+        not dependency_changed
+        and not dependency_gap_changed
+        and len(updated_missing_information) == len(payload.missing_information)
+        and len(record_missing_information) == len(artifact_record.missing_information)
+    ):
+        return
+
+    warning = "Dependencia de Herramientas resuelta; Memoria retomara la recomendacion desde su checkpoint."
+    updated_payload = payload.model_copy(
+        update={
+            "tool_dependencies": updated_dependencies,
+            "dependency_gaps": updated_dependency_gaps,
+            "missing_information": updated_missing_information,
+            "architecture_resolution": payload.architecture_resolution.model_copy(
+                update={
+                    "dependency_gaps": [
+                        gap.gap_key
+                        for gap in updated_dependency_gaps
+                        if gap.status == "open"
+                    ]
+                }
+            ),
+        }
+    )
+    artifact_record.proposal_payload = updated_payload.model_dump(mode="json")
+    artifact_record.missing_information = record_missing_information
+    artifact_record.warnings = list(dict.fromkeys([*(artifact_record.warnings or []), warning]))
+    artifact_record.updated_at = utc_now()
+    db.add(artifact_record)
+    db.flush()
 
 
 def _resume_memory_after_tools_approval_if_needed(
@@ -5376,10 +5822,12 @@ def _resume_memory_after_tools_approval_if_needed(
         action="recommend_memory",
         scope="stage",
         expected_stage="memory",
+        source_action="dependency_resolved",
+        summary="Dependencia de Herramientas resuelta; checkpoint listo para reanudar Memoria.",
     )
     if resumed_state is None:
         return False
-    return resume_react_stage_from_checkpoint(
+    resumed = resume_react_stage_from_checkpoint(
         session_id=record.id,
         stage_key="memory",
         checkpoint_id=resumed_state.checkpoint_id,
@@ -5388,6 +5836,28 @@ def _resume_memory_after_tools_approval_if_needed(
         db=db,
         current_user=current_user,
     )
+    if not resumed:
+        return False
+    _mark_resolved_memory_tool_dependencies(
+        db,
+        artifact=latest_memory_artifact,
+        approved_tool_keys=normalized_approved,
+    )
+    write_log(
+        db,
+        session_id=record.id,
+        stage=record.current_stage,
+        status_value=record.status,
+        message="Dependencia de Herramientas resuelta; Memoria se reanudo automaticamente.",
+        payload={
+            "stage": "memory",
+            "resume_checkpoint_id": resumed_state.checkpoint_id,
+            "source_action": "dependency_resolved",
+            "resolved_tool_keys": sorted(missing_tool_keys),
+        },
+    )
+    db.commit()
+    return True
 
 
 def _raise_if_stage_operation_cancelled(
@@ -5418,7 +5888,11 @@ def _complete_stage_operation_with_artifact(
     waiting_detail: str,
 ) -> None:
     missing_information = list(artifact.missing_information or [])
-    if missing_information:
+    if missing_information and _stage_operation_requires_user_input(
+        db,
+        operation,
+        artifact=artifact,
+    ):
         _update_stage_operation(
             db,
             operation,
@@ -5435,6 +5909,56 @@ def _complete_stage_operation_with_artifact(
         current_step="persist",
         detail=completed_detail,
         result_artifact_id=artifact.id,
+    )
+
+
+def _stage_operation_requires_user_input(
+    db: Session,
+    operation: StageOperationRecord,
+    *,
+    artifact: JourneyStageArtifactEntry,
+) -> bool:
+    """Only pause operations when the product policy kept active user blockers."""
+
+    if not list(artifact.missing_information or []):
+        return False
+    record = db.get(SessionRecord, operation.session_id)
+    if record is None or record.workspace_id is None:
+        return True
+    if not is_feature_flag_enabled(
+        db,
+        FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
+        workspace_id=record.workspace_id,
+        default_if_missing=True,
+    ):
+        return True
+    tier = record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    mode = resolve_product_processing_mode(tier)
+    backlog = list_uncertainty_backlog(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        product_mode=mode,
+        include_closed=False,
+    )
+    stage_entries = [
+        entry
+        for entry in backlog
+        if entry.source_stage == operation.stage_key and entry.created_from == operation.action
+    ]
+    if not stage_entries:
+        return True
+    active_statuses = {
+        UncertaintyBacklogStatus.open,
+        UncertaintyBacklogStatus.in_progress,
+    }
+    blocking_dispositions = {
+        UncertaintyDisposition.block,
+        UncertaintyDisposition.resolve_now,
+    }
+    return any(
+        entry.status in active_statuses and entry.disposition in blocking_dispositions
+        for entry in stage_entries
     )
 
 
@@ -6350,6 +6874,7 @@ def get_current_stage_operation_route(
 
     for operation in operations:
         _recover_stale_stage_operation(db, operation)
+        _complete_paused_stage_operation_if_resolved(db, operation)
 
     active_operation = next((operation for operation in operations if _is_operation_active(operation)), None)
     return _build_stage_operation_response(db, session_record=record, operation=active_operation or operations[0])
@@ -6400,6 +6925,8 @@ def retry_stage_operation_route(
     record = get_or_404(db, session_id, current_user.id)
     operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
     _recover_stale_stage_operation(db, operation)
+    if _complete_paused_stage_operation_if_resolved(db, operation):
+        return _build_stage_operation_response(db, session_record=record, operation=operation)
 
     if _is_operation_active(operation):
         return _build_stage_operation_response(db, session_record=record, operation=operation)
@@ -6763,9 +7290,24 @@ def _execute_tools_runtime(
     runtime_settings,
     stage_context,
     initial_state=None,
+    react_enabled: bool = False,
 ) -> tuple[ToolRecommendationEnvelope, list, object | None, list[str]]:
     react_run = None
     react_runtime_warnings: list[str] = []
+    if not react_enabled:
+        envelope, traces = run_tool_recommendation_stage(
+            session_id,
+            discovery,
+            canvas,
+            blueprint,
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            instructions=instructions,
+            blueprint_version_number=blueprint_version_number,
+            runtime_settings=runtime_settings,
+            stage_context=stage_context,
+        )
+        return envelope, traces, react_run, react_runtime_warnings
     try:
         react_execution = run_tools_react(
             session_id=session_id,
@@ -6781,15 +7323,23 @@ def _execute_tools_runtime(
             stage_context=stage_context,
             initial_state=initial_state,
         )
+        recommendation = react_execution.value
+        if react_execution.react_run is not None and isinstance(
+            react_execution.react_run.output.get("quality_gate"),
+            dict,
+        ):
+            recommendation = recommendation.model_copy(
+                update={"quality_gate": react_execution.react_run.output["quality_gate"]}
+            )
         envelope = ToolRecommendationEnvelope(
-            status=ArtifactStatus.needs_review if react_execution.react_run and react_execution.react_run.status != "completed" else ArtifactStatus.ready,
+            status=ArtifactStatus.needs_review,
             stage=SessionStage.build_blueprint,
-            data=react_execution.value,
+            data=recommendation,
             missing_fields=[],
             assumptions=[],
             warnings=react_execution.warnings,
             evidence=[],
-            llm_trace=None,
+            llm_trace=_resolve_stage_llm_trace(react_execution.traces),
             next_action="resolve_tool_recommendation_findings" if react_execution.react_run and react_execution.react_run.status != "completed" else "review_tool_recommendation",
         )
         traces = react_execution.traces
@@ -6886,6 +7436,7 @@ def recommend_tools_route(
         allow_second_page=True,
     )
     request_payload = payload or ToolRecommendationRequest()
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
     initial_react_state = _resolve_react_initial_state(
         db,
         session_id=session_id,
@@ -6905,6 +7456,7 @@ def recommend_tools_route(
         runtime_settings=runtime_settings,
         stage_context=stage_context,
         initial_state=initial_react_state,
+        react_enabled=react_enabled,
     )
     envelope = envelope.model_copy(
         update={
@@ -6987,7 +7539,7 @@ def recommend_tools_route(
             for index, evidence in enumerate(build_react_evidence_manifest(react_run), start=1)
         )
     try:
-        proposal_service.create(
+        tools_stage_artifact = proposal_service.create(
             db,
             session_record=record,
             stage_key="tools",
@@ -7018,6 +7570,13 @@ def recommend_tools_route(
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
+    learning_persistence = persist_tool_pattern_learning_candidates(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=session_id,
+        recommendation=envelope.data,
+        source_artifact_id=tools_stage_artifact.id,
+    )
     _record_stage_uncertainties(
         db,
         record=record,
@@ -7033,6 +7592,14 @@ def recommend_tools_route(
         capability="recommend_minimal_tools",
         source_action="recommend_tools",
         blueprint_version_number=blueprint_version_number,
+    )
+    write_log(
+        db,
+        session_id=session_id,
+        stage=envelope.stage,
+        status_value=ArtifactStatus.ready,
+        message="Learning loop de patrones de tools persistido",
+        payload=learning_persistence.model_dump(mode="json"),
     )
     db.add(record)
     sync_short_term_memory_checkpoint(db, record=record, source_action="recommend_tools")
@@ -7270,9 +7837,29 @@ def _execute_memory_runtime(
     proposal_stage_context,
     critique_stage_context,
     initial_state=None,
+    react_enabled: bool = False,
 ) -> tuple[MemoryRecommendationArtifact, list, object | None, list[str]]:
     react_run = None
     react_runtime_warnings: list[str] = []
+    if not react_enabled:
+        artifact, traces = run_memory_recommendation_stage(
+            session_id=session_id,
+            discovery=discovery,
+            canvas=canvas,
+            blueprint=blueprint,
+            definition_artifact=definition_artifact,
+            design_artifact=design_artifact,
+            tools_artifact=tools_artifact,
+            approved_tools_digest=approved_tools_digest,
+            session_snapshot=session_snapshot,
+            instructions=instructions,
+            blueprint_version_number=blueprint_version_number,
+            source_stage_versions=source_stage_versions,
+            runtime_settings=runtime_settings,
+            proposal_stage_context=proposal_stage_context,
+            critique_stage_context=critique_stage_context,
+        )
+        return artifact, traces, react_run, react_runtime_warnings
     try:
         react_execution = run_memory_react(
             session_id=session_id,
@@ -7296,6 +7883,8 @@ def _execute_memory_runtime(
         artifact = react_execution.value
         traces = react_execution.traces
         react_run = react_execution.react_run
+        if react_run is not None and isinstance(react_run.output.get("quality_gate"), dict):
+            artifact = artifact.model_copy(update={"quality_gate": react_run.output["quality_gate"]})
     except Exception as exc:  # noqa: BLE001
         react_runtime_warnings = [
             "El controlador ReAct no pudo completar Memory; se mantuvo el runtime existente.",
@@ -7308,6 +7897,7 @@ def _execute_memory_runtime(
             blueprint=blueprint,
             definition_artifact=definition_artifact,
             design_artifact=design_artifact,
+            tools_artifact=tools_artifact,
             approved_tools_digest=approved_tools_digest,
             session_snapshot=session_snapshot,
             instructions=instructions,
@@ -7318,6 +7908,129 @@ def _execute_memory_runtime(
             critique_stage_context=critique_stage_context,
         )
     return artifact, traces, react_run, react_runtime_warnings
+
+
+def _promote_memory_tool_remediation(
+    db: Session,
+    *,
+    record: SessionRecord,
+    discovery: DiscoveryArtifact,
+    canvas: CanvasArtifact,
+    blueprint: BlueprintArtifact,
+    latest_recommendation: ToolRecommendationArtifact,
+    latest_tools_artifact: JourneyStageArtifactEntry | None,
+    added_tool_keys: list[str],
+    source_reason: str,
+) -> tuple[BlueprintArtifact, ToolRecommendationArtifact, JourneyStageArtifactEntry | None, int | None]:
+    keys_label = ", ".join(added_tool_keys)
+    try:
+        approved_tools, review_decisions, digest = promote_tool_recommendation_to_blueprint_tools(latest_recommendation)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Memory detected auto-remediable Tools dependencies, but HT4 still blocks promotion: "
+                f"{exc}"
+            ),
+        ) from exc
+
+    envelope = patch_blueprint(
+        blueprint,
+        BlueprintPatchRequest(
+            tools=approved_tools,
+            knowledge_profile=derive_knowledge_profile(
+                discovery,
+                approved_tools,
+                blueprint.memory_strategy,
+            ),
+        ),
+        discovery,
+        canvas,
+    )
+    pending_approvals = sync_approval_gates(db, record.id, envelope.data)
+    envelope = apply_pending_approvals_to_blueprint(envelope, pending_approvals)
+    upsert_blueprint(db, record.id, envelope)
+    blueprint_version_number = create_blueprint_version(
+        db,
+        session_id=record.id,
+        source_action="auto_memory_dependency_remediation",
+        status_value=envelope.status,
+        blueprint=envelope.data,
+    )
+    record_delivery_artifacts(
+        db,
+        session_id=record.id,
+        blueprint_version_number=blueprint_version_number,
+        source_action="auto_memory_dependency_remediation",
+        stage=envelope.stage,
+        blueprint=envelope.data,
+    )
+    sync_governance_handoff(
+        db,
+        session_record=record,
+        blueprint_version_number=blueprint_version_number,
+        blueprint=envelope.data,
+        source_action="auto_memory_dependency_remediation",
+        pending_approvals=pending_approvals,
+    )
+    promoted_digest = digest.model_copy(update={"promoted_blueprint_version": blueprint_version_number})
+    remediated_recommendation = latest_recommendation.model_copy(
+        update={
+            "review_decisions": review_decisions,
+            "approved_tools_digest": promoted_digest,
+            "review_state": ReviewState.complete,
+            "summary": (
+                f"Tools fue remediado automaticamente antes de Memoria: se agrego {keys_label} "
+                "para cerrar dependencias detectadas por el ciclo ReAct."
+            ),
+        }
+    )
+    if latest_tools_artifact is not None:
+        remediated_tools_payload = remediated_recommendation.model_dump(mode="json")
+        remediated_tools_warnings = list(
+            dict.fromkeys(
+                [
+                    *(latest_tools_artifact.warnings or []),
+                    f"Tools auto-remediado antes de Memoria: se agrego {keys_label}.",
+                ]
+            )
+        )
+        latest_tools_record = db.get(JourneyStageArtifactRecord, latest_tools_artifact.id)
+        if latest_tools_record is not None and latest_tools_record.session_id == record.id:
+            latest_tools_record.proposal_payload = remediated_tools_payload
+            latest_tools_record.warnings = remediated_tools_warnings
+            latest_tools_record.updated_at = utc_now()
+            db.add(latest_tools_record)
+        latest_tools_artifact = latest_tools_artifact.model_copy(
+            update={
+                "proposal_payload": remediated_tools_payload,
+                "warnings": remediated_tools_warnings,
+                "updated_at": utc_now(),
+            }
+        )
+    record_tool_recommendation_artifact(
+        db,
+        session_id=record.id,
+        blueprint_version_number=blueprint_version_number,
+        stage=envelope.stage,
+        source_action="auto_memory_dependency_remediation",
+        recommendation=remediated_recommendation,
+    )
+    write_log(
+        db,
+        session_id=record.id,
+        stage=envelope.stage,
+        status_value=envelope.status,
+        message="Tools auto-remediado antes de generar Memoria",
+        payload={
+            "added_tool_keys": added_tool_keys,
+            "reason": source_reason,
+            "approved_tool_keys": promoted_digest.approved_tool_keys,
+            "digest_sha256": promoted_digest.digest_sha256,
+            "promoted_blueprint_version": blueprint_version_number,
+        },
+    )
+    return envelope.data, remediated_recommendation, latest_tools_artifact, blueprint_version_number
 
 
 @router.post("/{session_id}/recommend-memory", response_model=JourneyStageArtifactEntry)
@@ -7380,121 +8093,62 @@ def recommend_memory_route(
             status_code=status.HTTP_409_CONFLICT,
             detail="Memory requires regenerating Tools after the design context changed",
         )
+    preflight_memory_tool_keys = _preflight_memory_tool_remediation_keys(
+        approved_tools_digest=latest_recommendation.approved_tools_digest,
+        knowledge_profile=blueprint.knowledge_profile,
+        memory_profile=blueprint.memory_profile,
+    )
+    if preflight_memory_tool_keys:
+        remediated_recommendation, added_tool_keys = ensure_memory_tool_dependencies(
+            artifact=latest_recommendation,
+            blueprint=blueprint,
+            required_tool_keys=preflight_memory_tool_keys,
+            source_reason=(
+                "Preflight de Memoria detecto dependencias deterministicas de Tools antes de invocar al LLM; "
+                "se remedia el set minimo en un unico lote."
+            ),
+        )
+        if added_tool_keys:
+            (
+                blueprint,
+                latest_recommendation,
+                latest_tools_artifact,
+                blueprint_version_number,
+            ) = _promote_memory_tool_remediation(
+                db,
+                record=record,
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=blueprint,
+                latest_recommendation=remediated_recommendation,
+                latest_tools_artifact=latest_tools_artifact,
+                added_tool_keys=added_tool_keys,
+                source_reason=(
+                    "Preflight de Memoria detecto dependencias deterministicas de Tools antes de invocar al LLM; "
+                    "se resolvieron en una unica remediacion controlada."
+                ),
+            )
     remediated_recommendation, tools_remediated = ensure_document_ingestion_for_knowledge_retrieval(
         artifact=latest_recommendation,
         blueprint=blueprint,
     )
     if tools_remediated:
-        try:
-            approved_tools, review_decisions, digest = promote_tool_recommendation_to_blueprint_tools(
-                remediated_recommendation
-            )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "Memory detected an auto-remediable Tools dependency, but HT4 still blocks promotion: "
-                    f"{exc}"
-                ),
-            ) from exc
-
-        envelope = patch_blueprint(
+        (
             blueprint,
-            BlueprintPatchRequest(
-                tools=approved_tools,
-                knowledge_profile=derive_knowledge_profile(
-                    discovery,
-                    approved_tools,
-                    blueprint.memory_strategy,
-                ),
-            ),
-            discovery,
-            canvas,
-        )
-        pending_approvals = sync_approval_gates(db, session_id, envelope.data)
-        envelope = apply_pending_approvals_to_blueprint(envelope, pending_approvals)
-        upsert_blueprint(db, session_id, envelope)
-        blueprint_version_number = create_blueprint_version(
+            latest_recommendation,
+            latest_tools_artifact,
+            blueprint_version_number,
+        ) = _promote_memory_tool_remediation(
             db,
-            session_id=session_id,
-            source_action="auto_memory_dependency_remediation",
-            status_value=envelope.status,
-            blueprint=envelope.data,
+            record=record,
+            discovery=discovery,
+            canvas=canvas,
+            blueprint=blueprint,
+            latest_recommendation=remediated_recommendation,
+            latest_tools_artifact=latest_tools_artifact,
+            added_tool_keys=["document_ingestion"],
+            source_reason="knowledge_retrieval requiere ingesta/refresh/lineage para RAG gobernado",
         )
-        record_delivery_artifacts(
-            db,
-            session_id=session_id,
-            blueprint_version_number=blueprint_version_number,
-            source_action="auto_memory_dependency_remediation",
-            stage=envelope.stage,
-            blueprint=envelope.data,
-        )
-        sync_governance_handoff(
-            db,
-            session_record=record,
-            blueprint_version_number=blueprint_version_number,
-            blueprint=envelope.data,
-            source_action="auto_memory_dependency_remediation",
-            pending_approvals=pending_approvals,
-        )
-        promoted_digest = digest.model_copy(update={"promoted_blueprint_version": blueprint_version_number})
-        latest_recommendation = remediated_recommendation.model_copy(
-            update={
-                "review_decisions": review_decisions,
-                "approved_tools_digest": promoted_digest,
-                "review_state": ReviewState.complete,
-                "summary": (
-                    "Tools fue remediado automaticamente antes de Memoria: se agrego document_ingestion "
-                    "para cerrar la dependencia RAG generada por knowledge_retrieval."
-                ),
-            }
-        )
-        if latest_tools_artifact is not None:
-            remediated_tools_payload = latest_recommendation.model_dump(mode="json")
-            remediated_tools_warnings = list(
-                dict.fromkeys(
-                    [
-                        *(latest_tools_artifact.warnings or []),
-                        "Tools auto-remediado antes de Memoria: document_ingestion fue agregado por dependencia RAG.",
-                    ]
-                )
-            )
-            latest_tools_record = db.get(JourneyStageArtifactRecord, latest_tools_artifact.id)
-            if latest_tools_record is not None and latest_tools_record.session_id == session_id:
-                latest_tools_record.proposal_payload = remediated_tools_payload
-                latest_tools_record.warnings = remediated_tools_warnings
-                latest_tools_record.updated_at = utc_now()
-                db.add(latest_tools_record)
-            latest_tools_artifact = latest_tools_artifact.model_copy(
-                update={
-                    "proposal_payload": remediated_tools_payload,
-                    "warnings": remediated_tools_warnings,
-                    "updated_at": utc_now(),
-                }
-            )
-        record_tool_recommendation_artifact(
-            db,
-            session_id=session_id,
-            blueprint_version_number=blueprint_version_number,
-            stage=envelope.stage,
-            source_action="auto_memory_dependency_remediation",
-            recommendation=latest_recommendation,
-        )
-        write_log(
-            db,
-            session_id=session_id,
-            stage=envelope.stage,
-            status_value=envelope.status,
-            message="Tools auto-remediado antes de generar Memoria",
-            payload={
-                "added_tool_key": "document_ingestion",
-                "reason": "knowledge_retrieval requiere ingesta/refresh/lineage para RAG gobernado",
-                "approved_tool_keys": promoted_digest.approved_tool_keys,
-                "digest_sha256": promoted_digest.digest_sha256,
-                "promoted_blueprint_version": blueprint_version_number,
-            },
-        )
-        blueprint = envelope.data
 
     definition_artifact = (
         resolve_definition_from_stage_artifact(latest_define_artifact) if latest_define_artifact is not None else None
@@ -7534,6 +8188,7 @@ def recommend_memory_route(
         allow_second_page=True,
     )
     request_payload = payload or MemoryRecommendationRequest()
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
     initial_react_state = _resolve_react_initial_state(
         db,
         session_id=session_id,
@@ -7559,7 +8214,123 @@ def recommend_memory_route(
         proposal_stage_context=proposal_stage_context,
         critique_stage_context=critique_stage_context,
         initial_state=initial_react_state,
+        react_enabled=react_enabled,
     )
+    missing_memory_tool_keys = [
+        str(dependency.tool_key or "").strip().lower()
+        for dependency in artifact.tool_dependencies
+        if dependency.required
+        and str(dependency.status or "").strip().lower() == "missing"
+        and str(dependency.tool_key or "").strip()
+    ]
+    auto_remediable_memory_tool_keys = _auto_remediable_memory_tool_keys(artifact, missing_memory_tool_keys)
+    if auto_remediable_memory_tool_keys:
+        remediated_recommendation, added_tool_keys = ensure_memory_tool_dependencies(
+            artifact=latest_recommendation,
+            blueprint=blueprint,
+            required_tool_keys=auto_remediable_memory_tool_keys,
+            source_reason=(
+                "Memoria detecto dependencias de Tools requeridas durante su ciclo ReAct; "
+                "se remedia el set minimo antes de persistir un bloqueo al usuario."
+            ),
+        )
+        if added_tool_keys:
+            (
+                blueprint,
+                latest_recommendation,
+                latest_tools_artifact,
+                blueprint_version_number,
+            ) = _promote_memory_tool_remediation(
+                db,
+                record=record,
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=blueprint,
+                latest_recommendation=remediated_recommendation,
+                latest_tools_artifact=latest_tools_artifact,
+                added_tool_keys=added_tool_keys,
+                source_reason=(
+                    "Memoria detecto dependencias de Tools requeridas durante su ciclo ReAct; "
+                    "se resolvieron en una unica remediacion controlada."
+                ),
+            )
+            source_stage_versions = source_stage_versions.model_copy(
+                update={
+                    "tools": (
+                        latest_tools_artifact.version_number
+                        if latest_tools_artifact is not None
+                        else source_stage_versions.tools
+                    )
+                }
+            )
+            session_snapshot = build_snapshot(db, record)
+            resume_state_after_tools_remediation = initial_react_state
+            if resume_state_after_tools_remediation is None and react_run is not None:
+                resume_state_after_tools_remediation = react_run.state
+            if resume_state_after_tools_remediation is not None:
+                resume_state_after_tools_remediation = resume_state_after_tools_remediation.model_copy(
+                    update={
+                        "status": "running",
+                        "iteration": 0,
+                        "llm_calls": 0,
+                        "token_usage": 0,
+                        "last_action": "",
+                        "last_observation": {},
+                        "last_evaluation": {},
+                        "resume_action": "recommend_memory_architecture",
+                        "resume_scope": "stage",
+                        "updated_at": utc_now(),
+                    }
+                )
+            (
+                remediated_artifact,
+                remediated_traces,
+                remediated_react_run,
+                remediated_react_runtime_warnings,
+            ) = _execute_memory_runtime(
+                session_id=session_id,
+                workspace_id=record.workspace_id,
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=blueprint,
+                definition_artifact=definition_artifact,
+                design_artifact=design_artifact,
+                approved_tools_digest=latest_recommendation.approved_tools_digest,
+                tools_artifact=latest_recommendation,
+                session_snapshot=session_snapshot,
+                instructions=request_payload.instructions,
+                blueprint_version_number=blueprint_version_number,
+                source_stage_versions=source_stage_versions,
+                runtime_settings=runtime_settings,
+                proposal_stage_context=proposal_stage_context,
+                critique_stage_context=critique_stage_context,
+                initial_state=resume_state_after_tools_remediation,
+                react_enabled=react_enabled,
+            )
+            artifact = remediated_artifact
+            traces = [*traces, *remediated_traces]
+            unresolved_after_remediation = _unresolved_remediated_memory_tool_keys(
+                artifact,
+                added_tool_keys,
+            )
+            react_run = remediated_react_run
+            react_runtime_warnings = list(
+                dict.fromkeys(
+                    [
+                        *react_runtime_warnings,
+                        f"memory_tool_dependency_remediated:{','.join(added_tool_keys)}",
+                        *(
+                            [
+                                "memory_tool_dependency_unresolved_after_single_batch:"
+                                + ",".join(unresolved_after_remediation)
+                            ]
+                            if unresolved_after_remediation
+                            else []
+                        ),
+                        *remediated_react_runtime_warnings,
+                    ]
+                )
+            )
     if react_run is not None and react_run.status == "waiting_human":
         checkpoint_id = BuilderReActCheckpointStore.save(
             db,
@@ -8089,6 +8860,11 @@ def approve_validation_scenarios_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> SessionSnapshot:
     record = get_or_404(db, session_id, current_user.id)
+    _ensure_validate_evidence_exists(
+        db,
+        record=record,
+        current_user=current_user,
+    )
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
     latest_validate_artifact = proposal_service.latest(db, session_record=record, stage_key="validate")
@@ -8217,6 +8993,7 @@ def run_validation_simulation_route(
                     not bool(getattr(value, "id", None)),
                     "Validate valido la ejecucion simulada." if getattr(value, "id", None) else "La simulacion requiere revision.",
                 ),
+                effective_language=current_user.preferred_language,
             )
             generated_run = react_execution.value
             traces = react_execution.traces
@@ -8365,7 +9142,7 @@ def inject_validation_event_route(
             value=generated,
             traces=trace_items,
             warnings=[warning for trace in trace_items for warning in trace.warnings if warning],
-            summary="Validate reproceso la simulacion con la condicion inyectada.",
+            summary="Validate recalculo la simulacion con la condicion inyectada.",
         )
 
     if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
@@ -8378,17 +9155,18 @@ def inject_validation_event_route(
                 context_refs=["session.validate", "session.blueprint", "session.validation_run"],
                 runner=run_injection_capability,
                 validator=lambda value: (
-                    ["El reproceso no produjo un identificador de ejecucion."],
+                    ["El recalculo no produjo un identificador de ejecucion."],
                     not bool(getattr(value, "id", None)),
-                    "Validate valido el reproceso de simulacion." if getattr(value, "id", None) else "El reproceso requiere revision.",
+                    "Validate valido el recalculo de simulacion." if getattr(value, "id", None) else "El recalculo requiere revision.",
                 ),
+                effective_language=current_user.preferred_language,
             )
             generated_run = react_execution.value
             traces = react_execution.traces
             react_run = react_execution.react_run
         except Exception as exc:  # noqa: BLE001
             react_runtime_warnings = [
-                "El controlador ReAct no pudo completar el reproceso; se mantuvo el runtime existente.",
+                "El controlador ReAct no pudo completar el recalculo; se mantuvo el runtime existente.",
                 f"react_runtime_fallback:{type(exc).__name__}",
             ]
             fallback = run_injection_capability()
@@ -8530,6 +9308,7 @@ def judge_validation_run_route(
                     not bool(getattr(value, "final_status", None)),
                     "Validate valido el juicio de la simulacion." if getattr(value, "final_status", None) else "El juicio requiere revision.",
                 ),
+                effective_language=current_user.preferred_language,
             )
             judgement = react_execution.value
             traces = react_execution.traces
@@ -8630,6 +9409,15 @@ def evaluate_blueprint_route(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Evaluation assets not available")
 
     runtime_settings = load_effective_runtime_settings(db, record.workspace_id)
+    stage_context = build_stage_context_bundle(
+        db,
+        record=record,
+        capability="generate_validation_scenarios",
+        stage="validate",
+        effective_language=current_user.preferred_language,
+        task_source_keys=["validation_scenario_generation_input"],
+        allow_second_page=True,
+    )
     react_run = None
     if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
         react_execution = run_evaluation_react(
@@ -8641,6 +9429,8 @@ def evaluate_blueprint_route(
             dataset=evaluation_dataset,
             rubric=evaluation_rubric,
             runtime_settings=runtime_settings,
+            stage_context=stage_context,
+            effective_language=current_user.preferred_language,
         )
         envelope = react_execution.value
         traces = react_execution.traces
@@ -8653,6 +9443,7 @@ def evaluate_blueprint_route(
             evaluation_dataset,
             evaluation_rubric,
             runtime_settings=runtime_settings,
+            stage_context=stage_context,
         )
     pending_approvals = count_pending_approvals(db, session_id)
     envelope = apply_pending_approvals_to_evaluation(envelope, pending_approvals)
@@ -8813,6 +9604,7 @@ def generate_estimation_report_route(
                 value is None,
                 "Estimate valido sus insumos deterministas." if value is not None else "Estimate requiere revision.",
             ),
+            effective_language=current_user.preferred_language,
         )
         analysis = react_execution.value
         trace = react_execution.traces[0]

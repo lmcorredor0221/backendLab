@@ -20,6 +20,10 @@ from app.services.llm_runtime.builder_contracts import (
     ValidationScenarioGenerationOutput,
     ValidationSimulationOutput,
 )
+from app.services.llm_runtime.prompt_templates import (
+    build_tool_recommendation_registry_task_instruction,
+    build_tool_recommendation_system_instruction,
+)
 
 
 class BuilderCapability(StrEnum):
@@ -335,11 +339,14 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
         source_summary="Discovery, canvas y blueprint base para proponer arquitectura y comportamiento del agente.",
         system_instruction=(
             "Propone hasta tres alternativas reales de diseno del agente usando solo contexto aprobado, "
-            "sin definir Tools ni Memory de forma canonica."
+            "sin definir Tools ni Memory de forma canonica, pero declarando sus implicaciones arquitectonicas."
         ),
         task_instruction=(
             "A partir de `agent_design_input`, compara alternativas realmente distintas, justifica la recomendada, "
-            "declara roles, handoffs, riesgos, approval points, tradeoffs y cobertura contra requisitos. "
+            "declara arquetipo de agente, familia de patron, ajuste con el negocio, hipotesis de valor, modelo "
+            "operativo, por que no basta una opcion mas simple, por que no conviene una mas compleja, roles, "
+            "handoffs, riesgos, approval points, tradeoffs, metricas de negocio, implicaciones para Tools, "
+            "implicaciones para Memory y cobertura contra requisitos. "
             f"{DESIGN_SCOPE_INSTRUCTION} {GUIDED_QUESTION_INSTRUCTION}"
         ),
         output_model=AgentDesignProposalOutput,
@@ -380,11 +387,13 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
         source_title="Tool recommendation case",
         source_summary="Digest aprobado desde discovery, define y design para seleccionar el set minimo de tools.",
         system_instruction=(
-            "Selecciona el conjunto minimo de herramientas usando solo el contexto aprobado y el catalogo permitido."
+            build_tool_recommendation_system_instruction()
         ),
         task_instruction=(
-            "Clasifica tools como mandatory, optional o unnecessary sin inventar tool keys fuera del catalogo. "
-            f"{TOOLS_SCOPE_INSTRUCTION} {GUIDED_QUESTION_INSTRUCTION}"
+            build_tool_recommendation_registry_task_instruction(
+                tools_scope_instruction=TOOLS_SCOPE_INSTRUCTION,
+                guided_question_instruction=GUIDED_QUESTION_INSTRUCTION,
+            )
         ),
         output_model=ToolRecommendationLLMOutput,
         preferred_model="reasoning",
@@ -406,7 +415,11 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
         ),
         task_instruction=(
             "A partir de `memory_architecture_input`, recomienda estrategias de memoria, storage layers, write policy, "
-            "retrieval strategy, pruning y preguntas abiertas. "
+            "retrieval strategy, pruning y preguntas abiertas. Si la arquitectura de memoria requiere una capacidad "
+            "de herramienta faltante, declarala en `tool_dependency_requests` usando solo keys canonicas del catalogo "
+            "cuando apliquen: knowledge_retrieval, document_ingestion, scheduler, approval_gate, human_handoff u "
+            "outbound_notification. No inventes tool keys ni nombres de integraciones; si requiere credenciales, "
+            "side effects sensibles o decision de negocio, expresa la necesidad como pregunta/gap y no como tool ejecutable. "
             f"{MEMORY_SCOPE_INSTRUCTION} {GUIDED_QUESTION_INSTRUCTION}"
         ),
         output_model=MemoryArchitectureRecommendationOutput,

@@ -9,6 +9,7 @@ from app.models import (
     CommercialTier,
     JourneyArtifactState,
     JourneyStageArtifactRecord,
+    RuntimeFeatureFlagRecord,
     SessionRecord,
     SessionStage,
     UserRecord,
@@ -29,6 +30,7 @@ from app.services.product_processing import (
     list_product_build_steps,
 )
 from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.stage5_service import FEATURE_FLAG_ESTIMATION
 
 
 def _engine():
@@ -74,7 +76,7 @@ def _approve_stage(db: Session, record: SessionRecord, stage_key: str) -> None:
     )
 
 
-def test_acp_direct_run_tracks_missing_pro_dependencies() -> None:
+def test_acp_direct_run_tracks_missing_pro_dependencies_and_justifies_disabled_estimate() -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
 
@@ -94,11 +96,52 @@ def test_acp_direct_run_tracks_missing_pro_dependencies() -> None:
         )[0]
         steps = list_product_build_steps(db, run_id=run.id)
         dependency_steps = [step for step in steps if step.step_key.startswith("acp_dependency:")]
+        estimate_step = next(step for step in dependency_steps if step.step_key == "acp_dependency:estimate")
 
     assert status.lifecycle == ProductBuildLifecycle.requires_attention
     assert len(dependency_steps) == len(ACP_REQUIRED_STAGE_KEYS)
     assert next(step for step in dependency_steps if step.step_key == "acp_dependency:discover").status == "completed"
     assert next(step for step in dependency_steps if step.step_key == "acp_dependency:design").status == "requires_attention"
+    assert estimate_step.status == "completed"
+    assert estimate_step.checkpoint_payload["justified"] is True
+    assert run.checkpoint_payload["acp_direct_resolution"]["missing_stage_keys"] == [
+        "design",
+        "tools",
+        "memory",
+        "validate",
+    ]
+    assert run.checkpoint_payload["acp_direct_resolution"]["justified_stage_keys"] == ["estimate"]
+
+
+def test_acp_direct_run_tracks_estimate_dependency_when_feature_is_enabled() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_acp_session(db)
+        _approve_stage(db, record, "discover")
+        _approve_stage(db, record, "define")
+        db.add(
+            RuntimeFeatureFlagRecord(
+                workspace_id=record.workspace_id,
+                flag_key=FEATURE_FLAG_ESTIMATION,
+                enabled=True,
+                description="Estimate habilitado para ACP.",
+                stage_hint="estimate",
+            )
+        )
+        db.commit()
+
+        status = ensure_acp_product_orchestration(db, record=record, current_user=user)
+        db.commit()
+        run = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.acp,
+        )[0]
+
+    assert status.lifecycle == ProductBuildLifecycle.requires_attention
     assert run.checkpoint_payload["acp_direct_resolution"]["missing_stage_keys"] == [
         "design",
         "tools",
@@ -106,6 +149,7 @@ def test_acp_direct_run_tracks_missing_pro_dependencies() -> None:
         "estimate",
         "validate",
     ]
+    assert run.checkpoint_payload["acp_direct_resolution"]["justified_stage_keys"] == []
 
 
 def test_acp_direct_run_blocks_on_acp_questions_even_with_approved_stages() -> None:

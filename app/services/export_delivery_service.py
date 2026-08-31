@@ -25,7 +25,9 @@ from app.models import (
     utc_now,
 )
 from app.services.acp_zip_export import build_acp_zip
+from app.services.blueprint_zip_export import build_blueprint_zip
 from app.services.commerce_service import record_commercial_event
+from app.services.product_processing.journey_state_machine_service import transition_for_export_ready
 
 
 @dataclass(frozen=True)
@@ -44,12 +46,12 @@ EXPORT_DEFINITIONS: tuple[ExportDefinition, ...] = (
     ExportDefinition(
         key="blueprint_professional",
         label="Blueprint Profesional",
-        description="Documento profesional con arquitectura, alcance, herramientas, memoria, estimacion y comparativas.",
+        description="Paquete ZIP profesional con documentos, artefactos, diagramas y contrato canonico del Blueprint.",
         product_key="blueprint_pro",
         required_capability="blueprint.download",
         profile="professional",
-        content_type="text/markdown; charset=utf-8",
-        file_extension="md",
+        content_type="application/zip",
+        file_extension="zip",
     ),
     ExportDefinition(
         key="estimation_pack",
@@ -155,10 +157,105 @@ def _storage_path(job: ExportJobRecord) -> Path:
     return _storage_root() / str(job.workspace_id) / str(job.session_id) / str(job.id) / job.file_name
 
 
+def _expected_file_name(*, record: SessionRecord, definition: ExportDefinition) -> str:
+    return f"{_safe_slug(record.title)}-{definition.key}.{definition.file_extension}"
+
+
+def _expected_storage_key(*, record: SessionRecord, idempotency_key: str, file_name: str) -> str:
+    return f"{record.workspace_id}/{record.id}/{idempotency_key}/{file_name}"
+
+
+def _apply_job_contract(
+    job: ExportJobRecord,
+    *,
+    record: SessionRecord,
+    definition: ExportDefinition,
+    profile: str,
+    preview: ACPPreview,
+) -> None:
+    previous_path = _storage_path(job)
+    file_name = _expected_file_name(record=record, definition=definition)
+
+    job.product_key = definition.product_key
+    job.profile = profile
+    job.artifact_kind = definition.key
+    job.content_type = definition.content_type
+    job.file_name = file_name
+    job.storage_key = _expected_storage_key(
+        record=record,
+        idempotency_key=job.idempotency_key,
+        file_name=file_name,
+    )
+    job.metadata_payload = {
+        **job.metadata_payload,
+        "contract_version": "export-job.v1",
+        "required_capability": definition.required_capability,
+        "blueprint_version_number": preview.blueprint_version_number,
+    }
+
+    next_path = _storage_path(job)
+    if previous_path != next_path and previous_path.exists():
+        previous_path.unlink()
+
+
 def _write_export_bytes(job: ExportJobRecord, payload: bytes) -> None:
     path = _storage_path(job)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
+
+
+def _mark_missing_export_payload(db: Session, job: ExportJobRecord) -> None:
+    job.status = ExportJobStatus.failed
+    job.error_message = "Export payload not found in storage."
+    job.updated_at = utc_now()
+    db.add(job)
+
+
+def _refresh_ready_export_job(db: Session, job: ExportJobRecord) -> None:
+    if job.status != ExportJobStatus.ready:
+        return
+    if job.expires_at is not None and job.expires_at < utc_now():
+        job.status = ExportJobStatus.expired
+        job.updated_at = utc_now()
+        db.add(job)
+        return
+    if not _storage_path(job).exists():
+        _mark_missing_export_payload(db, job)
+
+
+def _export_job_contract_drift_reasons(
+    job: ExportJobRecord,
+    *,
+    record: SessionRecord,
+    definition: ExportDefinition,
+    profile: str,
+    preview: ACPPreview,
+) -> list[str]:
+    expected_file_name = _expected_file_name(record=record, definition=definition)
+    expected_storage_key = _expected_storage_key(
+        record=record,
+        idempotency_key=job.idempotency_key,
+        file_name=expected_file_name,
+    )
+    reasons: list[str] = []
+
+    if job.product_key != definition.product_key:
+        reasons.append("product_key")
+    if job.profile != profile:
+        reasons.append("profile")
+    if job.artifact_kind != definition.key:
+        reasons.append("artifact_kind")
+    if job.content_type != definition.content_type:
+        reasons.append("content_type")
+    if job.file_name != expected_file_name:
+        reasons.append("file_name")
+    if job.storage_key != expected_storage_key:
+        reasons.append("storage_key")
+    if job.metadata_payload.get("required_capability") != definition.required_capability:
+        reasons.append("required_capability")
+    if job.metadata_payload.get("blueprint_version_number") != preview.blueprint_version_number:
+        reasons.append("blueprint_version_number")
+    return reasons
 
 
 def _file_refs(preview: ACPPreview, *, domain: str | None = None, prefix: str | None = None) -> list[dict[str, Any]]:
@@ -206,6 +303,11 @@ def _percentage_savings(traditional_cost: Any, agentic_cost: Any) -> str:
     return f"{savings_percent:.1f}%"
 
 
+def _stable_blueprint_timestamp(snapshot: SessionSnapshot) -> str:
+    generated_at = snapshot.session.updated_at or snapshot.session.created_at
+    return generated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 def _blueprint_markdown(snapshot: SessionSnapshot, preview: ACPPreview) -> bytes:
     discovery = snapshot.discovery
     canvas = snapshot.canvas
@@ -244,7 +346,7 @@ def _blueprint_markdown(snapshot: SessionSnapshot, preview: ACPPreview) -> bytes
         f"# Master Specification Document: {title}",
         "",
         "> **Documento Técnico-Comercial de Blueprint Profesional**  ",
-        f"> **Sesión ID:** `{snapshot.session.id}` | **Versión Blueprint:** `v{version_num}` | **Fecha:** `{utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}`  ",
+        f"> **Sesión ID:** `{snapshot.session.id}` | **Versión Blueprint:** `v{version_num}` | **Fecha:** `{_stable_blueprint_timestamp(snapshot)}`  ",
         f"> **Usuario Objetivo:** {current_user} | **Métrica North Star:** {north_star}",
         "",
         "---",
@@ -447,11 +549,22 @@ def _blueprint_markdown(snapshot: SessionSnapshot, preview: ACPPreview) -> bytes
     return "\n".join(lines).encode("utf-8")
 
 
-def _payload_for_definition(definition: ExportDefinition, *, snapshot: SessionSnapshot, preview: ACPPreview) -> bytes:
+def _payload_for_definition(
+    definition: ExportDefinition,
+    *,
+    db: Session,
+    snapshot: SessionSnapshot,
+    preview: ACPPreview,
+) -> bytes:
     if definition.key == "acp_portable_zip":
         return build_acp_zip(preview)
     if definition.key == "blueprint_professional":
-        return _blueprint_markdown(snapshot, preview)
+        return build_blueprint_zip(
+            db,
+            snapshot=snapshot,
+            preview=preview,
+            overview_markdown=_blueprint_markdown(snapshot, preview).decode("utf-8"),
+        )
     if definition.key == "estimation_pack":
         return _json_bytes(
             {
@@ -543,6 +656,7 @@ def _run_export_generation(
     db: Session,
     *,
     job: ExportJobRecord,
+    record: SessionRecord,
     definition: ExportDefinition,
     current_user: UserRecord,
     snapshot: SessionSnapshot,
@@ -552,7 +666,7 @@ def _run_export_generation(
     if conformance_errors:
         raise ValueError("; ".join(conformance_errors))
 
-    export_bytes = _payload_for_definition(definition, snapshot=snapshot, preview=preview)
+    export_bytes = _payload_for_definition(definition, db=db, snapshot=snapshot, preview=preview)
     job.checksum_sha256 = hashlib.sha256(export_bytes).hexdigest()
     job.size_bytes = len(export_bytes)
     job.status = ExportJobStatus.ready
@@ -576,19 +690,37 @@ def _run_export_generation(
             "retry_count": int(job.metadata_payload.get("retry_count", 0) or 0),
         },
     )
+    transition_for_export_ready(
+        db,
+        record=record,
+        export_job_id=job.id,
+        product_key=definition.product_key,
+        artifact_kind=definition.key,
+        actor_user_id=current_user.id,
+    )
 
 
 def _rerun_existing_export_job(
     db: Session,
     *,
     job: ExportJobRecord,
+    record: SessionRecord,
     definition: ExportDefinition,
+    profile: str,
     current_user: UserRecord,
     snapshot: SessionSnapshot,
     preview: ACPPreview,
+    regeneration_reasons: list[str] | None = None,
 ) -> None:
     now = utc_now()
     auto_regeneration_count = int(job.metadata_payload.get("auto_regeneration_count", 0) or 0) + 1
+    _apply_job_contract(
+        job,
+        record=record,
+        definition=definition,
+        profile=profile,
+        preview=preview,
+    )
     job.status = ExportJobStatus.running
     job.error_message = ""
     job.checksum_sha256 = ""
@@ -601,6 +733,7 @@ def _rerun_existing_export_job(
         "auto_regeneration_count": auto_regeneration_count,
         "auto_regenerated_at": now.isoformat(),
         "blueprint_version_number": preview.blueprint_version_number,
+        "last_regeneration_reasons": list(regeneration_reasons or []),
     }
     db.add(job)
     db.flush()
@@ -608,6 +741,7 @@ def _rerun_existing_export_job(
         _run_export_generation(
             db,
             job=job,
+            record=record,
             definition=definition,
             current_user=current_user,
             snapshot=snapshot,
@@ -644,15 +778,33 @@ def create_export_job(
         )
     ).first()
     if existing is not None:
-        if existing.status == ExportJobStatus.ready and existing.expires_at is not None and existing.expires_at < utc_now():
-            existing.status = ExportJobStatus.expired
-            existing.updated_at = utc_now()
-            db.add(existing)
-        if existing.status in {ExportJobStatus.failed, ExportJobStatus.expired, ExportJobStatus.canceled}:
+        _refresh_ready_export_job(db, existing)
+        regeneration_reasons = _export_job_contract_drift_reasons(
+            existing,
+            record=record,
+            definition=definition,
+            profile=profile,
+            preview=preview,
+        )
+        if regeneration_reasons:
             _rerun_existing_export_job(
                 db,
                 job=existing,
+                record=record,
                 definition=definition,
+                profile=profile,
+                current_user=current_user,
+                snapshot=snapshot,
+                preview=preview,
+                regeneration_reasons=regeneration_reasons,
+            )
+        elif existing.status in {ExportJobStatus.failed, ExportJobStatus.expired, ExportJobStatus.canceled}:
+            _rerun_existing_export_job(
+                db,
+                job=existing,
+                record=record,
+                definition=definition,
+                profile=profile,
                 current_user=current_user,
                 snapshot=snapshot,
                 preview=preview,
@@ -660,7 +812,7 @@ def create_export_job(
         return _serialize_job(existing)
 
     now = utc_now()
-    file_name = f"{_safe_slug(record.title)}-{definition.key}.{definition.file_extension}"
+    file_name = _expected_file_name(record=record, definition=definition)
     job = ExportJobRecord(
         workspace_id=record.workspace_id,
         session_id=record.id,
@@ -672,7 +824,11 @@ def create_export_job(
         idempotency_key=idempotency_key,
         content_type=definition.content_type,
         file_name=file_name,
-        storage_key=f"{record.workspace_id}/{record.id}/{idempotency_key}/{file_name}",
+        storage_key=_expected_storage_key(
+            record=record,
+            idempotency_key=idempotency_key,
+            file_name=file_name,
+        ),
         expires_at=now + timedelta(hours=24),
         metadata_payload={
             "contract_version": "export-job.v1",
@@ -687,6 +843,7 @@ def create_export_job(
         _run_export_generation(
             db,
             job=job,
+            record=record,
             definition=definition,
             current_user=current_user,
             snapshot=snapshot,
@@ -702,10 +859,7 @@ def create_export_job(
 
 def get_export_job_response(db: Session, *, record: SessionRecord, job_id) -> ExportJobResponse:
     job = _find_export_job(db, record=record, job_id=job_id)
-    if job.expires_at is not None and job.expires_at < utc_now() and job.status == ExportJobStatus.ready:
-        job.status = ExportJobStatus.expired
-        job.updated_at = utc_now()
-        db.add(job)
+    _refresh_ready_export_job(db, job)
     return _serialize_job(job)
 
 
@@ -755,6 +909,7 @@ def retry_export_job_response(
         raise PermissionError(f"Export requires capability {definition.required_capability}.")
     if job.status == ExportJobStatus.running:
         raise ValueError("Export job is already running.")
+    _refresh_ready_export_job(db, job)
     if job.status == ExportJobStatus.ready and job.expires_at is not None and job.expires_at >= utc_now():
         return _serialize_job(job)
 
@@ -779,6 +934,7 @@ def retry_export_job_response(
         _run_export_generation(
             db,
             job=job,
+            record=record,
             definition=definition,
             current_user=current_user,
             snapshot=snapshot,
@@ -803,9 +959,6 @@ def read_export_job_bytes(db: Session, *, record: SessionRecord, job_id) -> tupl
         raise ValueError("Export job download expired")
     path = _storage_path(job)
     if not path.exists():
-        job.status = ExportJobStatus.failed
-        job.error_message = "Export payload not found in storage."
-        job.updated_at = utc_now()
-        db.add(job)
+        _mark_missing_export_payload(db, job)
         raise FileNotFoundError("Export payload not found")
     return job, path.read_bytes()

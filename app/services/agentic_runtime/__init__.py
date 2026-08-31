@@ -9,6 +9,7 @@ from app.services.agentic_runtime.contracts import (
     BuilderEvaluation,
     BuilderIterationTrace,
     BuilderObservation,
+    BuilderQualityGateResult,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "BuilderEvaluation",
     "BuilderIterationTrace",
     "BuilderObservation",
+    "BuilderQualityGateResult",
 ]

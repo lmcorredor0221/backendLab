@@ -124,7 +124,13 @@ class ShortTermMemoryService:
         state_hash = _state_hash(payload)
         now = utc_now()
 
-        self._sync_branch_board(session, session_id=session_id, snapshot=snapshot, memory_state=memory_state)
+        self._sync_branch_board(
+            session,
+            session_id=session_id,
+            snapshot=snapshot,
+            memory_state=memory_state,
+            active_branch_key=branch_key,
+        )
         branch = self._ensure_branch(
             session,
             session_id=session_id,
@@ -428,8 +434,13 @@ class ShortTermMemoryService:
         session_id: UUID,
         snapshot: SessionSnapshot,
         memory_state: ShortTermMemoryState | None,
+        active_branch_key: str = MAIN_BRANCH_KEY,
     ) -> None:
-        main_namespace_keys = [item.namespace for item in memory_state.namespaces] if memory_state is not None else []
+        main_namespace_keys = (
+            [item.namespace for item in memory_state.namespaces]
+            if memory_state is not None and active_branch_key == MAIN_BRANCH_KEY
+            else []
+        )
         self._ensure_branch(
             session,
             session_id=session_id,

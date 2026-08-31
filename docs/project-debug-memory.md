@@ -35,12 +35,59 @@ cd C:\Users\Messi\OneDrive\Documentos\Agentes\Asistente\backend
 .venv\Scripts\python.exe -c "from app.core.config import settings; print(settings.database_url)"
 ```
 
+## Local backend against Supabase
+
+Use this mode when the current production state itself matters more than safe replay, for example when the project `84e2cdc7-5352-40d1-bd06-7795021d4b2d` shows blockers that are not reproduced from a stale local snapshot.
+
+Files:
+
+- Example env: `C:\Users\Messi\OneDrive\Documentos\Agentes\Asistente\backend\.env.supabase.local.example`
+- Starter script: `C:\Users\Messi\OneDrive\Documentos\Agentes\Asistente\backend\scripts\start-supabase-debug.ps1`
+
+Recommended sequence:
+
+```powershell
+cd C:\Users\Messi\OneDrive\Documentos\Agentes\Asistente\backend
+Copy-Item .env.supabase.local.example .env.supabase.local
+# Edit only the values that are secret or environment-specific.
+.\scripts\start-supabase-debug.ps1 -CheckOnly
+.\scripts\start-supabase-debug.ps1
+```
+
+Operational rules:
+
+- This mode points the local backend to the shared Supabase database through `DATABASE_URL`.
+- Keep `SCHEMA_MANAGEMENT_MODE=alembic`.
+- Keep `RUNTIME_BOOTSTRAP_ENABLED=false`.
+- Keep `KNOWLEDGE_REPO_AUTOSYNC_ENABLED=false`.
+- For browser-driven local debugging against Supabase, start with `DATABASE_POOL_SIZE=5` and `DATABASE_MAX_OVERFLOW=5` so auth, snapshot, attention and export requests do not starve each other.
+- If you only need isolated SQL inspection scripts, you can lower the pool again deliberately.
+- Do not use this mode for destructive cleanup or broad reprocesamientos unless you intentionally want to mutate shared production data.
+
+What this mode is good for:
+
+- inspect the exact live state of blockers, checkpoints, jobs, approvals and runtime operations
+- validate whether a production project is actually resuming `Memoria` after `Herramientas`
+- compare frontend representation against the real backend state without first copying rows into local
+
 ## Production project snapshot to local
 
-Use the skill-backed deterministic flow:
+Use this mode when you need safe local writes and repeatable reprocesamiento after capturing the current production state.
 
+Files:
+
+- Wrapper script: `C:\Users\Messi\OneDrive\Documentos\Agentes\Asistente\backend\scripts\copy-project-snapshot.ps1`
 - Skill: `C:\Users\Messi\.agents\skills\supabase-project-prod-to-local\SKILL.md`
 - Workflow: `C:\Users\Messi\.agents\skills\supabase-project-prod-to-local\references\workflow.md`
+
+Wrapper example:
+
+```powershell
+cd C:\Users\Messi\OneDrive\Documentos\Agentes\Asistente\backend
+.\scripts\copy-project-snapshot.ps1 `
+  -ProjectId "84e2cdc7-5352-40d1-bd06-7795021d4b2d" `
+  -SourceDatabaseUrl "<PROD_SUPABASE_DATABASE_URL>"
+```
 
 Standard command:
 
@@ -57,6 +104,22 @@ Notes:
 - This is a project-scoped snapshot, not a full environment clone.
 - By default it copies session-scoped rows such as session, logs, artifacts, stage operations, diagrams and LLM ledger.
 - It does not guarantee parity for encrypted secrets, platform seeds or `knowledge_documents`.
+- If the live issue depends on current blockers in Attention, workspace-wide runtime state or product build rows not present in the snapshot scope, diagnose first with the live Supabase mode and only then replay locally.
+
+## Suggested path for project `84e2cdc7-5352-40d1-bd06-7795021d4b2d`
+
+When the symptom is "the ReAct correction from `Memoria` is not being resumed correctly and four blockers remain visible", follow this order:
+
+1. Start the backend locally against Supabase with `.\scripts\start-supabase-debug.ps1`.
+2. Open the local frontend and inspect the same production project state through the local backend.
+3. Capture the exact blockers, stage operations, approvals and current snapshot payloads.
+4. Copy the project into the local database with `.\scripts\copy-project-snapshot.ps1`.
+5. Re-run the scenario locally only after the live state has been captured, so local reprocesamientos do not touch the shared production rows.
+
+This split avoids a common debugging trap:
+
+- live mode tells us whether production is currently wrong
+- snapshot mode lets us iterate fixes safely after we already know what production looked like
 
 ### SQL Editor fallback
 

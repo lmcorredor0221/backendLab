@@ -228,6 +228,7 @@ class MemoryArchitectureRecommendationOutput(BaseModel):
     write_policy: str = ""
     pruning_policy: str = ""
     security_notes: list[str] = []
+    tool_dependency_requests: list[str] = []
     open_questions: list[str] = []
     guided_questions: list[PrioritizedQuestion] = []
     rationale: str = ""
@@ -312,6 +313,8 @@ class MemoryArchitectureInput(BaseModel):
     discovery: DiscoveryArtifact | None = None
     canvas: CanvasArtifact | None = None
     approved_tool_names: list[str] = []
+    design_memory_implications: list[str] = []
+    tools_capability_resolutions: list[str] = []
     source_refs: list[str] = []
 
 
@@ -319,6 +322,8 @@ class MemoryArchitectureCritiqueInput(BaseModel):
     blueprint: BlueprintArtifact
     proposal: MemoryArchitectureRecommendationOutput
     approved_tool_names: list[str] = []
+    design_memory_implications: list[str] = []
+    tools_capability_resolutions: list[str] = []
     source_refs: list[str] = []
 
 

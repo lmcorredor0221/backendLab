@@ -18,11 +18,16 @@ from app.models import (
     CanvasArtifact,
     CodexLocalProviderConfig,
     DeepSeekProviderConfig,
+    DesignAlternative,
+    DesignBlueprintProjection,
+    DesignRecommendationArtifact,
     DiscoveryArtifact,
     DiscoveryInput,
     EmbeddingPolicy,
     GroundingPolicy,
     IngestionPolicy,
+    JourneyArtifactState,
+    JourneyStageArtifactEntry,
     KnowledgeAccessBackend,
     KnowledgeDocumentStatus,
     KnowledgeProfile,
@@ -484,9 +489,114 @@ def test_stage_context_bundle_is_deterministic_and_changes_when_evidence_changes
 
     assert bundle_one.context_fingerprint == bundle_two.context_fingerprint
     assert bundle_one.strict_budget is not None
-    assert bundle_one.strict_budget.max_tokens == 2200
+    assert bundle_one.strict_budget.max_tokens == 2600
     assert bundle_one.corpus_hash == "corp-001"
     assert bundle_three.context_fingerprint != bundle_one.context_fingerprint
+
+
+def test_approved_blueprint_reference_preserves_design_memory_signal_when_canonical_memory_is_pending() -> None:
+    snapshot = _manual_snapshot()
+    selected = DesignAlternative(
+        alternative_key="handoff_flow",
+        label="Handoff gobernado",
+        architecture="handoffs",
+        reasoning_pattern="Plan-and-Execute",
+        memory_implications=["handoff_state_tracking: preservar owner, payload y estado por handoff."],
+        tool_implications=["scheduler: controlar reanudaciones asincronas sin duplicar ejecuciones."],
+        blueprint_projection=DesignBlueprintProjection(
+            architecture="handoffs",
+            reasoning_pattern="Plan-and-Execute",
+            memory_strategy="workflow_memory_with_handoffs",
+            memory_implications=["checkpoint_resume: retomar desde el ultimo checkpoint estable."],
+            tool_implications=["approval_gate: pausar side effects sensibles antes de ejecutar."],
+        ),
+    )
+    now = utc_now()
+    design_payload = DesignRecommendationArtifact(
+        alternatives=[selected],
+        recommended_alternative_key=selected.alternative_key,
+        selected_design=selected,
+    ).model_dump(mode="json")
+    snapshot = snapshot.model_copy(
+        update={
+            "blueprint": snapshot.blueprint.model_copy(
+                update={
+                    "memory_strategy": "",
+                    "memory_profile": MemoryProfile(),
+                },
+                deep=True,
+            ),
+            "journey_latest_artifacts": {
+                "design": JourneyStageArtifactEntry(
+                    id=uuid4(),
+                    workspace_id=snapshot.session.workspace_id,
+                    session_id=snapshot.session.id,
+                    artifact_kind="design_recommendation",
+                    stage_key="design",
+                    version_number=2,
+                    state=JourneyArtifactState.approved,
+                    proposal_payload=design_payload,
+                    schema_version="design-recommendation.v1",
+                    created_at=now,
+                    updated_at=now,
+                )
+            },
+        },
+        deep=True,
+    )
+
+    refs = StageContextService().approved_artifact_resolver.resolve(snapshot, stage="memory")
+    blueprint_ref = next(item for item in refs if item.key == "approved_blueprint")
+
+    assert "Memoria canonica: pendiente de etapa Memory" in blueprint_ref.summary
+    assert "workflow_memory_with_handoffs" in blueprint_ref.summary
+    assert "checkpoint_resume" in blueprint_ref.summary
+    assert "scheduler" in blueprint_ref.summary
+
+
+def test_memory_and_validation_capabilities_use_explicit_quality_budgets() -> None:
+    service = StageContextService(
+        knowledge_planner=StageKnowledgePlanner(
+            knowledge_service=_FakeKnowledgeService([_search_response(items=[], corpus_hash="corp-empty")])
+        )
+    )
+    snapshot = _manual_snapshot()
+
+    memory_bundle = service.build(
+        cast(Session, object()),
+        workspace_id=snapshot.session.workspace_id,
+        session_id=snapshot.session.id,
+        session_snapshot=snapshot,
+        capability="recommend_memory_architecture",
+        role="builder",
+        stage="memory",
+        task_source_keys=["memory_architecture_input"],
+    )
+    validation_bundle = service.build(
+        cast(Session, object()),
+        workspace_id=snapshot.session.workspace_id,
+        session_id=snapshot.session.id,
+        session_snapshot=snapshot,
+        capability="generate_validation_scenarios",
+        role="builder",
+        stage="validate",
+        task_source_keys=["validation_scenario_generation_input"],
+    )
+    diagram_bundle = service.build(
+        cast(Session, object()),
+        workspace_id=snapshot.session.workspace_id,
+        session_id=snapshot.session.id,
+        session_snapshot=snapshot,
+        capability="generate_diagram_model",
+        role="builder",
+        stage="blueprint",
+        task_source_keys=["diagram_generation_input"],
+    )
+
+    assert memory_bundle.strict_budget.max_tokens == 5200
+    assert memory_bundle.strict_budget.max_chars == 22800
+    assert validation_bundle.strict_budget.max_tokens == 3000
+    assert diagram_bundle.strict_budget.max_tokens == 2600
 
 
 def test_api_and_codex_builders_share_same_bundle_semantics() -> None:

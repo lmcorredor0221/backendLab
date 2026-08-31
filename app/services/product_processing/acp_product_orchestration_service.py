@@ -4,7 +4,8 @@ from typing import Any
 
 from sqlmodel import Session
 
-from app.models import SessionRecord, SessionSnapshot, UserRecord
+from app.models import CommercialTier, SessionRecord, SessionSnapshot, UserRecord
+from app.services.commerce_service import tier_rank
 from app.services.product_processing.acp_direct_service import ACP_REQUIRED_STAGE_KEYS, build_acp_direct_resolution
 from app.services.product_processing.contracts import (
     ProductBuildLifecycle,
@@ -47,6 +48,15 @@ def ensure_acp_product_orchestration(
     must therefore show the remaining Pro/LEAN dependencies as first-class steps,
     instead of forcing the user to discover missing work manually in other views.
     """
+    current_tier = record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    if tier_rank(current_tier) < tier_rank(CommercialTier.acp):
+        return build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.acp,
+            current_user=current_user,
+            catalog_stage_override=catalog_stage_override,
+        )
 
     resolution = build_acp_direct_resolution(db, record=record, snapshot=snapshot)
     can_execute_package_jobs = execute_jobs and resolution.can_start_package and resolution.can_export_package

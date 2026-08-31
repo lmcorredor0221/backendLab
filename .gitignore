@@ -15,6 +15,7 @@ venv/
 .env.*
 !.env.example
 !.env.supabase.example
+!.env.supabase.local.example
 
 # Local databases
 *.db

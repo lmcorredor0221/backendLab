@@ -183,7 +183,7 @@ def resolve_deliverable_policy(
             can_download=False,
             can_compare=context.has_current_version,
             reason_code="stale_dependency",
-            reason="Hay cambios en dependencias que requieren reprocesar el entregable.",
+            reason="Hay cambios en dependencias que requieren reconciliar el entregable.",
             cta_label="Actualizar",
             required_tier=required_tier,
             effective_prompt_status=prompt_status,

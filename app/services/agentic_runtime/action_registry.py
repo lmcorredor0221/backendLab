@@ -22,6 +22,7 @@ class BuilderActionDefinition:
 
 CAPABILITY_STAGE_MAP = {
     "normalize_discovery": "discover",
+    "analyze_discovery": "discover",
     "discovery_analysis": "discover",
     "build_canvas": "define",
     "define_requirements": "define",

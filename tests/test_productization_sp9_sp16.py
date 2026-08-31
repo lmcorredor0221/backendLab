@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+from uuid import UUID
+
+from app.db import get_session
+from app.main import app
+from app.models import ACPBuildRunRecord, ExportJobRecord, JourneyStateRecord
+from app.services import export_delivery_service
 from fastapi.testclient import TestClient
 import pytest
+from sqlmodel import select
 
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
@@ -67,12 +74,41 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
 
     _buy_product(client, headers, session_id, "acp")
 
+    session_gen = app.dependency_overrides[get_session]()
+    db = next(session_gen)
+    try:
+        before_workspace_state = db.exec(
+            select(JourneyStateRecord).where(JourneyStateRecord.session_id == UUID(session_id))
+        ).one()
+        before_workspace_revision = before_workspace_state.revision
+        assert db.exec(
+            select(ACPBuildRunRecord).where(ACPBuildRunRecord.session_id == UUID(session_id))
+        ).all() == []
+    finally:
+        session_gen.close()
+
     workspace_response = client.get(f"/api/v1/sessions/{session_id}/acp/workspace", headers=headers)
     assert workspace_response.status_code == 200
     workspace = workspace_response.json()
     assert workspace["contract_version"] == "acp-workspace.v1"
     assert workspace["access"]["tier"] == "acp"
+    assert workspace["run"]["id"] is None
+    assert workspace["journey_state_machine"]["state_source"] == "canonical"
+    assert workspace["journey_state_machine"]["current"]["state_key"] == "acp_prep"
     assert len(workspace["phases"]) == 6
+
+    session_gen = app.dependency_overrides[get_session]()
+    db = next(session_gen)
+    try:
+        assert db.exec(
+            select(ACPBuildRunRecord).where(ACPBuildRunRecord.session_id == UUID(session_id))
+        ).all() == []
+        after_workspace_state = db.exec(
+            select(JourneyStateRecord).where(JourneyStateRecord.session_id == UUID(session_id))
+        ).one()
+        assert after_workspace_state.revision == before_workspace_revision
+    finally:
+        session_gen.close()
 
     phase_response = client.post(
         f"/api/v1/sessions/{session_id}/acp/workspace/phases/blueprint_validation/run",
@@ -85,6 +121,10 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
     assert first_phase["attempt_count"] == 1
     assert first_phase["input_refs"]
     assert first_phase["status"] in {"completed", "completed_with_observations", "blocked"}
+    assert phase_payload["run"]["id"] is not None
+    assert phase_payload["journey_state_machine"]["current"]["state_key"] == "validate"
+    expected_substate = "completed" if first_phase["status"] == "completed_with_observations" else first_phase["status"]
+    assert phase_payload["journey_state_machine"]["current"]["substate"] == expected_substate
 
     launcher_response = client.get(f"/api/v1/sessions/{session_id}/acp/launcher", headers=headers)
     assert launcher_response.status_code == 200
@@ -165,11 +205,20 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
 
     activity_response = client.get(f"/api/v1/sessions/{session_id}/activity", headers=headers)
     assert activity_response.status_code == 200
-    timeline_titles = [item["title"] for item in activity_response.json()["timeline"]]
+    activity_payload = activity_response.json()
+    timeline_titles = [item["title"] for item in activity_payload["timeline"]]
     assert "export_job_ready" in timeline_titles
     assert "export_job_retry_requested" in timeline_titles
     assert "export_job_canceled" in timeline_titles
     assert "acp_launcher_report_received" in timeline_titles
+    export_entry = next(
+        item
+        for item in activity_payload["timeline"]
+        if item["type"] == "export" and item["metadata"]["export_job_id"] == export_job["id"]
+    )
+    assert export_entry["metadata"]["export_job_id"] == export_job["id"]
+    assert export_entry["detail"]
+    assert export_entry["title"] in {"export_job_ready", "export_job_regenerated"}
 
     plan_response = client.get(f"/api/v1/sessions/{session_id}/plan-access", headers=headers)
     assert plan_response.status_code == 200
@@ -182,3 +231,50 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
     assert diagrams["contract_version"] == "diagram-catalog.v2"
     assert len(diagrams["entries"]) <= 5
     assert diagrams["total_count"] == 24
+
+
+def test_sp9_sp16_download_route_recovers_missing_ready_payload(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    _buy_product(client, headers, session_id, "blueprint_pro")
+
+    export_response = client.post(
+        f"/api/v1/sessions/{session_id}/exports/jobs",
+        headers=headers,
+        json={"artifact_kind": "blueprint_professional", "idempotency_key": f"{session_id}:blueprint-zip:missing-payload"},
+    )
+    assert export_response.status_code == 200
+    export_job = export_response.json()
+    assert export_job["status"] == "ready"
+
+    session_gen = app.dependency_overrides[get_session]()
+    db = next(session_gen)
+    try:
+        job_record = db.get(ExportJobRecord, UUID(export_job["id"]))
+        assert job_record is not None
+        export_delivery_service._storage_path(job_record).unlink()
+    finally:
+        session_gen.close()
+
+    download_response = client.get(
+        f"/api/v1/sessions/{session_id}/exports/jobs/{export_job['id']}/download",
+        headers=headers,
+    )
+    assert download_response.status_code == 200
+    assert download_response.headers["content-disposition"].endswith(".zip\"")
+    assert download_response.headers["cache-control"] == "private, no-store"
+    assert download_response.content[:2] == b"PK"
+
+    session_gen = app.dependency_overrides[get_session]()
+    db = next(session_gen)
+    try:
+        job_record = db.get(ExportJobRecord, UUID(export_job["id"]))
+        assert job_record is not None
+        assert job_record.status.value == "ready"
+        assert int(job_record.metadata_payload.get("retry_count", 0) or 0) == 1
+        assert export_delivery_service._storage_path(job_record).exists()
+    finally:
+        session_gen.close()

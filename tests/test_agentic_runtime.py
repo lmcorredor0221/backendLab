@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.agentic_runtime.action_registry import BuilderActionRejectedError, BuilderActionRegistry
+from app.services.agentic_runtime import controller as react_controller_module
 from app.services.agentic_runtime.contracts import BuilderActionRequest, BuilderActionResult, BuilderAgentRunRequest, BuilderAgentState
 from app.services.agentic_runtime.controller import BuilderReActController
 from app.services.agentic_runtime.guards import BuilderLoopGuardConfig, BuilderLoopGuardState, BuilderLoopGuards, BuilderLoopGuardViolation
+from app.services.agentic_runtime.stage_policy import get_stage_agent_policy
 from app.models import CanvasArtifact, DiscoveryArtifact, LLMRuntimeSettings
 from app.services.llm_runtime.builder_contracts import RequirementsDefinitionOutput
 from app.services.llm_runtime.stage_context_types import StageContextBundle
@@ -42,6 +44,28 @@ def test_react_controller_completes_a_safe_define_dry_run() -> None:
         "finish_stage",
     ]
     assert all("chain" not in item.reason_summary.lower() for item in result.traces)
+
+
+def test_react_controller_uses_stage_specific_total_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, int] = {}
+    original_guards = react_controller_module.BuilderLoopGuards
+
+    class CapturingGuards(original_guards):
+        def __init__(self, config: BuilderLoopGuardConfig | None = None) -> None:
+            assert config is not None
+            captured["max_total_ms"] = config.max_total_ms
+            super().__init__(config)
+
+    monkeypatch.setattr(react_controller_module, "BuilderLoopGuards", CapturingGuards)
+
+    result = react_controller_module.BuilderReActController().run(
+        BuilderAgentRunRequest(stage="memory", capability="recommend_memory_architecture", mode="dry_run"),
+        lambda action, _state: BuilderActionResult(key=action.key, output={"issues": [], "blocking": False}),
+    )
+
+    assert result.status == "completed"
+    assert captured["max_total_ms"] == get_stage_agent_policy("memory").max_total_ms
+    assert captured["max_total_ms"] > 120_000
 
 
 def test_react_controller_pauses_with_checkpoint_when_validation_blocks() -> None:
@@ -153,6 +177,13 @@ def test_react_controller_escalates_recoverable_capability_after_retry_budget() 
 
 def test_action_registry_rejects_cross_stage_capability_and_unkeyed_side_effect() -> None:
     registry = BuilderActionRegistry()
+    registry.assert_allowed(
+        BuilderActionRequest(
+            key="invoke_capability",
+            stage="discover",
+            capability="analyze_discovery",
+        )
+    )
     with pytest.raises(BuilderActionRejectedError, match="no pertenece"):
         registry.assert_allowed(
             BuilderActionRequest(
@@ -179,7 +210,7 @@ def test_loop_guards_stop_repeated_actions() -> None:
 
 
 def test_define_pilot_reuses_existing_skill_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    definition = RequirementsDefinitionOutput(summary="Propuesta Define de prueba")
+    definition = RequirementsDefinitionOutput(summary="Propuesta Define de prueba", confidence=0.9)
     trace = SimpleNamespace(warnings=[], llm_trace=None)
 
     monkeypatch.setattr(
@@ -239,6 +270,168 @@ def test_extended_pipeline_records_proposal_and_critique_before_persisting() -> 
         "finish_stage",
     ]
     assert result.value["critic"] == "accepted"
+
+
+def test_quality_gate_requests_bounded_repair_for_low_quality_output() -> None:
+    attempts = 0
+
+    def run_stage() -> ReactCapabilityOutput:
+        nonlocal attempts
+        attempts += 1
+        confidence = 0.52 if attempts == 1 else 0.91
+        return ReactCapabilityOutput(
+            value=SimpleNamespace(confidence=SimpleNamespace(overall=confidence)),
+            summary=f"attempt {attempts}",
+        )
+
+    result = run_react_stage(
+        stage="estimate",
+        capability="analyze_estimation_risks",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.memory", "knowledge.estimation"],
+        primary_runner=run_stage,
+        validator=lambda _value: ([], False, "valid"),
+    )
+
+    assert result.react_run is not None
+    assert result.react_run.status == "completed"
+    assert attempts == 3
+    assert result.react_run.state.quality_repair_cycles == 2
+    assert result.react_run.output["quality_gate"]["quality_confidence"] >= 0.85
+    assert "create_attention_decision" not in [item.action.key for item in result.react_run.traces]
+
+
+def test_quality_gate_delegates_free_questions_without_quality_penalty() -> None:
+    result = run_react_stage(
+        stage="design",
+        capability="propose_agent_design",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.define", "knowledge.design"],
+        primary_runner=lambda: ReactCapabilityOutput(
+            value=SimpleNamespace(
+                confidence=SimpleNamespace(overall=0.58),
+                open_questions=["Confirmar proveedor de autenticacion en Blueprint Pro."],
+            ),
+            summary="proposal with delegated question",
+        ),
+        validator=lambda _value: ([], False, "valid"),
+    )
+
+    assert result.react_run is not None
+    assert result.react_run.status == "completed"
+    gate = result.react_run.output["quality_gate"]
+    assert gate["repair_policy"] == "document_and_delegate"
+    assert gate["quality_confidence"] >= 0.85
+    assert gate["evidence_confidence"] < gate["quality_confidence"]
+    assert result.react_run.state.quality_repair_cycles == 0
+
+
+def test_quality_gate_repairs_language_mismatch_for_user_visible_output() -> None:
+    attempts = 0
+
+    def run_memory() -> ReactCapabilityOutput:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return ReactCapabilityOutput(
+                value={
+                    "summary": (
+                        "The memory strategy should keep short term context, long term facts, "
+                        "and pending user decisions before the system continues with estimation."
+                    ),
+                    "confidence": {"overall": 0.91},
+                },
+                summary="english memory",
+            )
+        return ReactCapabilityOutput(
+            value={
+                "summary": (
+                    "La estrategia de memoria debe conservar contexto corto, hechos de largo plazo "
+                    "y decisiones pendientes antes de continuar con estimacion."
+                ),
+                "confidence": {"overall": 0.91},
+            },
+            summary="spanish memory",
+        )
+
+    result = run_react_stage(
+        stage="memory",
+        capability="recommend_memory_architecture",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.tools", "knowledge.memory"],
+        primary_runner=run_memory,
+        validator=lambda _value: ([], False, "valid"),
+        effective_language="es",
+    )
+
+    assert result.react_run is not None
+    assert result.react_run.status == "completed"
+    assert attempts == 3
+    assert result.react_run.output["quality_gate"]["language_status"] == "ok"
+    assert result.react_run.state.quality_repair_cycles == 2
+
+
+def test_quality_gate_repairs_required_context_truncation_once() -> None:
+    attempts = 0
+
+    def run_design() -> ReactCapabilityOutput:
+        nonlocal attempts
+        attempts += 1
+        warnings = ["required_truncated:session.discovery"] if attempts == 1 else []
+        return ReactCapabilityOutput(
+            value={"summary": "Diseno con contexto suficiente.", "confidence": {"overall": 0.9}},
+            summary=f"context attempt {attempts}",
+            warnings=warnings,
+        )
+
+    result = run_react_stage(
+        stage="design",
+        capability="propose_agent_design",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.discovery", "knowledge.design"],
+        primary_runner=run_design,
+        validator=lambda _value: ([], False, "valid"),
+        effective_language="es",
+    )
+
+    assert result.react_run is not None
+    assert result.react_run.status == "completed"
+    assert attempts == 3
+    assert result.react_run.output["quality_gate"]["quality_confidence"] == 0.9
+    assert result.react_run.state.quality_repair_cycles == 2
+
+
+def test_quality_gate_pauses_after_repair_budget_when_quality_remains_low() -> None:
+    attempts = 0
+
+    def run_stage() -> ReactCapabilityOutput:
+        nonlocal attempts
+        attempts += 1
+        return ReactCapabilityOutput(
+            value=SimpleNamespace(confidence=SimpleNamespace(overall=0.52)),
+            summary=f"attempt {attempts}",
+        )
+
+    result = run_react_stage(
+        stage="estimate",
+        capability="analyze_estimation_risks",
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        context_refs=["session.memory", "knowledge.estimation"],
+        primary_runner=run_stage,
+        validator=lambda _value: ([], False, "valid"),
+    )
+
+    assert result.react_run is not None
+    assert result.react_run.status == "waiting_human"
+    assert attempts == 3
+    assert result.react_run.state.quality_repair_cycles == 2
+    assert "create_attention_decision" in [item.action.key for item in result.react_run.traces]
+    assert result.react_run.output["quality_gate"]["repair_policy"] == "attention_required"
 
 
 def test_tools_memory_evaluator_blocks_rag_without_ingestion_and_retrieval() -> None:

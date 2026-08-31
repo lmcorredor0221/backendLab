@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -75,14 +76,50 @@ class APIProviderContextAdapter:
             ),
         )
         effective_backend = self._effective_context_backend(knowledge_access_backend)
-        user_payload = self._build_user_payload(assembly=assembly, task_instruction=task_instruction)
+        user_payload = self._build_user_payload(
+            assembly=assembly,
+            task_instruction=task_instruction,
+            effective_context_backend=effective_backend,
+        )
         metadata = assembly.metadata_payload()
+        used_sources = list(metadata.get("used_sources", []))
+        context_stats = dict(metadata.get("context_stats", {}))
+        prompt_truncated_keys = [
+            str(item.get("key", ""))
+            for item in used_sources
+            if isinstance(item, dict) and item.get("prompt_truncated")
+        ]
+        required_prompt_truncated_keys = [
+            str(item.get("key", ""))
+            for item in used_sources
+            if isinstance(item, dict) and item.get("required") and item.get("prompt_truncated")
+        ]
+        required_truncated_keys = [
+            str(item.get("key", ""))
+            for item in used_sources
+            if isinstance(item, dict) and item.get("required") and (item.get("truncated") or item.get("prompt_truncated"))
+        ]
+        context_stats.update(
+            {
+                "effective_context_backend": effective_backend,
+                "context_user_payload_chars": len(user_payload),
+                "context_user_payload_tokens_est": max(1, (len(user_payload) + 3) // 4),
+                "context_user_payload_sha256": _hash_text(user_payload),
+                "context_source_count": len(used_sources),
+                "prompt_truncated_keys": [item for item in prompt_truncated_keys if item],
+                "required_prompt_truncated_keys": [item for item in required_prompt_truncated_keys if item],
+                "required_truncated_keys": [item for item in required_truncated_keys if item],
+                "required_prompt_truncated_count": len([item for item in required_prompt_truncated_keys if item]),
+                "required_truncated_count": len([item for item in required_truncated_keys if item]),
+                "api_context_contract": "provider_api_inline.v1",
+            }
+        )
         return APIProviderContextEnvelope(
             user_payload=user_payload,
             knowledge_access_backend=knowledge_access_backend,
             effective_context_backend=effective_backend,
-            used_sources=list(metadata.get("used_sources", [])),
-            context_stats=dict(metadata.get("context_stats", {})),
+            used_sources=used_sources,
+            context_stats=context_stats,
         )
 
     def _effective_context_backend(self, knowledge_access_backend: str) -> str:
@@ -97,17 +134,45 @@ class APIProviderContextAdapter:
         *,
         assembly: CodexContextAssembly,
         task_instruction: str,
+        effective_context_backend: str,
     ) -> str:
         blocks = [self._render_inline_source(item) for item in assembly.used_sources]
         return "\n\n".join(
             [
-                assembly.prompt_preamble,
+                self._build_api_preamble(assembly=assembly, effective_context_backend=effective_context_backend),
                 "Context sources:",
                 "\n\n".join(blocks) if blocks else "- Sin fuentes compactadas.",
                 "Task:",
                 task_instruction.strip(),
             ]
         ).strip()
+
+    def _build_api_preamble(
+        self,
+        *,
+        assembly: CodexContextAssembly,
+        effective_context_backend: str,
+    ) -> str:
+        stats = assembly.stats
+        lines = [
+            "Context delivery contract:",
+            f"- role: {assembly.role}",
+            f"- requested_knowledge_access_backend: {assembly.knowledge_access_backend}",
+            f"- effective_context_backend: {effective_context_backend}",
+            f"- stage_hint: {stats.stage_hint or 'runtime'}",
+            f"- context_fingerprint: {stats.context_fingerprint or 'pending'}",
+            f"- corpus_hash: {stats.corpus_hash or 'n/a'}",
+            f"- assembled_estimated_tokens: {stats.assembled_estimated_tokens}",
+            f"- prompt_truncated_sources: {stats.prompt_truncated_source_count}",
+            "- usa exclusivamente las fuentes inline incluidas abajo;",
+            "- no intentes leer archivos locales ni rutas staged; este proveedor API no tiene acceso al filesystem;",
+            "- si una fuente indica `truncated=true`, trata el excerpt como evidencia parcial y evita conclusiones no soportadas.",
+        ]
+        if stats.retrieval_page_count:
+            lines.append(f"- retrieval_pages: {stats.retrieval_page_count}")
+        if stats.absence_reason:
+            lines.append(f"- absence_reason: {stats.absence_reason}")
+        return "\n".join(lines)
 
     def _render_inline_source(self, source) -> str:
         excerpt = self._extract_excerpt(source.content)
@@ -136,3 +201,7 @@ class APIProviderContextAdapter:
         if not normalized:
             return ""
         return normalized
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()

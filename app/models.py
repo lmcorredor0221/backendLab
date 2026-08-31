@@ -742,6 +742,51 @@ class SessionRecord(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class JourneyStateRecord(SQLModel, table=True):
+    __tablename__ = "journey_state_current"
+    __table_args__ = (UniqueConstraint("session_id", name="uq_journey_state_current_session"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", index=True, nullable=True)
+    session_id: UUID = Field(foreign_key="sessions.id", index=True)
+    state_key: str = Field(default="discover", index=True, nullable=False)
+    substate: str = Field(default="idle", index=True, nullable=False)
+    product_key: str = Field(default="blueprint_basic", nullable=False)
+    stage_key: str = Field(default="discover", nullable=False)
+    progress_percent: int = Field(default=0, nullable=False)
+    blocking: bool = Field(default=False, nullable=False)
+    revision: int = Field(default=1, nullable=False)
+    source_contracts: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    state_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    last_transition_at: datetime = Field(default_factory=utc_now, nullable=False, index=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class JourneyStateTransitionRecord(SQLModel, table=True):
+    __tablename__ = "journey_state_transitions"
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_journey_state_transition_sequence"),
+        UniqueConstraint("session_id", "correlation_id", name="uq_journey_state_transition_correlation"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", index=True, nullable=True)
+    session_id: UUID = Field(foreign_key="sessions.id", index=True)
+    sequence: int = Field(default=1, nullable=False)
+    event_key: str = Field(default="", index=True, nullable=False)
+    from_state_key: str = Field(default="", nullable=False)
+    from_substate: str = Field(default="", nullable=False)
+    to_state_key: str = Field(default="discover", nullable=False)
+    to_substate: str = Field(default="idle", nullable=False)
+    actor_type: str = Field(default="system", nullable=False)
+    actor_user_id: UUID | None = Field(default=None, foreign_key="users.id", index=True, nullable=True)
+    reason: str = Field(default="", nullable=False)
+    correlation_id: str = Field(default="", nullable=False)
+    transition_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    occurred_at: datetime = Field(default_factory=utc_now, nullable=False, index=True)
+
+
 class ProductCatalogRecord(SQLModel, table=True):
     __tablename__ = "product_catalog"
     __table_args__ = (UniqueConstraint("product_key", "version", name="uq_product_catalog_key_version"),)
@@ -2160,6 +2205,49 @@ class ArtifactRegistryRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class ToolPatternLearningCandidateRecord(SQLModel, table=True):
+    __tablename__ = "tool_pattern_learning_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "session_id",
+            "dedupe_signature",
+            name="uq_tool_pattern_learning_candidate_session_signature",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    session_id: UUID = Field(foreign_key="sessions.id", index=True)
+    source_artifact_id: UUID | None = Field(
+        default=None,
+        foreign_key="journey_stage_artifacts.id",
+        nullable=True,
+        index=True,
+    )
+    source_blueprint_version: int | None = Field(default=None, nullable=True, index=True)
+    candidate_pattern_id: str = Field(default="", index=True)
+    capability_key: str = Field(default="", index=True)
+    family_key: str = Field(default="", index=True)
+    label: str = Field(default="")
+    source_level: str = Field(default="candidate_tool_pattern", index=True)
+    promotion_status: str = Field(default="needs_human_review", index=True)
+    global_promotion_allowed: bool = Field(default=False, nullable=False, index=True)
+    dedupe_signature: str = Field(default="", index=True)
+    replacement_global_pattern_id: str = Field(default="", index=True)
+    contract_quality: str = Field(default="partial", index=True)
+    risk_flags: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    source_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    contract_seed_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    observation_count: int = Field(default=1, nullable=False)
+    first_seen_at: datetime = Field(default_factory=utc_now, nullable=False)
+    last_seen_at: datetime = Field(default_factory=utc_now, nullable=False)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
 class JourneyStageArtifactRecord(SQLModel, table=True):
     __tablename__ = "journey_stage_artifacts"
     __table_args__ = (
@@ -3334,15 +3422,28 @@ class DesignBlueprintProjection(ContractModel):
     safety_checks: list[SafetyCheck] = PydanticField(default_factory=list)
     guardrails: list[str] = PydanticField(default_factory=list)
     narrative: str = ""
+    tool_implications: list[str] = PydanticField(default_factory=list)
+    memory_strategy: str = ""
+    memory_implications: list[str] = PydanticField(default_factory=list)
+    cost_complexity_implications: list[str] = PydanticField(default_factory=list)
 
 
 class DesignAlternative(ContractModel):
     alternative_key: str = ""
     label: str = ""
+    recommendation_role: str = ""
+    agent_archetype: str = ""
+    pattern_family: str = ""
     architecture: str = ""
     reasoning_pattern: str = ""
     coordination_model: str = ""
     summary: str = ""
+    business_fit: str = ""
+    value_hypothesis: str = ""
+    operational_model: str = ""
+    why_recommended: str = ""
+    why_not_simpler: str = ""
+    why_not_more_complex: str = ""
     topology: str = ""
     roles: list[DesignRole] = PydanticField(default_factory=list)
     handoffs: list[DesignHandoff] = PydanticField(default_factory=list)
@@ -3360,6 +3461,10 @@ class DesignAlternative(ContractModel):
     fit_score: float = 0.0
     fit_rationale: list[str] = PydanticField(default_factory=list)
     evidence_refs: list[str] = PydanticField(default_factory=list)
+    tool_implications: list[str] = PydanticField(default_factory=list)
+    memory_implications: list[str] = PydanticField(default_factory=list)
+    risk_tradeoffs: list[str] = PydanticField(default_factory=list)
+    business_metrics: list[str] = PydanticField(default_factory=list)
     blueprint_projection: DesignBlueprintProjection = PydanticField(default_factory=DesignBlueprintProjection)
 
 
@@ -3435,6 +3540,7 @@ class DesignRecommendationArtifact(ContractModel):
     open_questions: list[str] = PydanticField(default_factory=list)
     guided_questions: list[GuidedQuestionEntry] = PydanticField(default_factory=list)
     missing_information: list[str] = PydanticField(default_factory=list)
+    quality_gate: dict[str, Any] = PydanticField(default_factory=dict)
     review_state: ReviewState = ReviewState.partial
     summary: str = ""
 
@@ -3615,6 +3721,8 @@ class ToolRecommendationPromptInput(ContractModel):
     candidate_tools: list[ToolRecommendationPromptToolOption] = PydanticField(default_factory=list)
     requirements_coverage: list[ToolRequirementCoverageEntry] = PydanticField(default_factory=list)
     design_role_coverage: list[ToolDesignRoleCoverageEntry] = PydanticField(default_factory=list)
+    design_tool_implications: list[str] = PydanticField(default_factory=list)
+    design_memory_implications: list[str] = PydanticField(default_factory=list)
     existing_gaps: list[ToolRecommendationGap] = PydanticField(default_factory=list)
     compact_evidence: list[str] = PydanticField(default_factory=list)
 
@@ -3659,6 +3767,77 @@ class ToolFamilyCandidate(ContractModel):
     reason: str = ""
 
 
+class ToolCapabilityResolution(ContractModel):
+    capability_key: str = ""
+    required_for_pattern: bool = False
+    project_tool_key: str = ""
+    catalog_match: str = ""
+    candidate_pattern_id: str = ""
+    necessity: Literal["required", "optional", "deferred"] = "optional"
+    side_effect_level: Literal["none", "low", "medium", "high"] = "none"
+    promotion_policy: Literal["auto", "human_review", "implementation_pending"] = "auto"
+    available: bool = False
+    source_evidence: list[str] = PydanticField(default_factory=list)
+    reason: str = ""
+
+
+class CandidateToolPattern(ContractModel):
+    candidate_pattern_id: str = ""
+    capability_key: str = ""
+    family_key: str = ""
+    label: str = ""
+    status: Literal["candidate", "ready_for_project", "human_review", "implementation_pending", "rejected"] = "candidate"
+    promotion_policy: Literal["auto", "human_review", "implementation_pending"] = "auto"
+    side_effect_level: Literal["none", "low", "medium", "high"] = "none"
+    dedupe_signature: str = ""
+    source_refs: list[str] = PydanticField(default_factory=list)
+    reason: str = ""
+    contract_seed: BlueprintTool | None = None
+
+
+class ToolPatternLearningCandidate(ContractModel):
+    candidate_pattern_id: str = ""
+    capability_key: str = ""
+    family_key: str = ""
+    label: str = ""
+    source_level: Literal["project_tool", "candidate_tool_pattern"] = "candidate_tool_pattern"
+    promotion_status: Literal[
+        "ready_for_global_review",
+        "needs_human_review",
+        "implementation_pending",
+        "rejected_duplicate",
+        "insufficient_contract",
+    ] = "needs_human_review"
+    global_promotion_allowed: bool = False
+    dedupe_signature: str = ""
+    replacement_global_pattern_id: str = ""
+    contract_quality: Literal["complete", "partial", "missing"] = "partial"
+    risk_flags: list[str] = PydanticField(default_factory=list)
+    source_refs: list[str] = PydanticField(default_factory=list)
+    evidence_refs: list[str] = PydanticField(default_factory=list)
+    reason: str = ""
+
+
+class ToolPatternLearningReport(ContractModel):
+    schema_version: str = "tool-pattern-learning.v1"
+    source_session_id: UUID | None = None
+    source_blueprint_version: int | None = None
+    candidate_count: int = 0
+    ready_for_global_review_count: int = 0
+    global_write_allowed: bool = False
+    catalog_refs: list[str] = PydanticField(default_factory=list)
+    candidates: list[ToolPatternLearningCandidate] = PydanticField(default_factory=list)
+    summary: str = ""
+
+
+class ToolPatternLearningPersistenceSummary(ContractModel):
+    inserted_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    persisted_candidate_ids: list[UUID] = PydanticField(default_factory=list)
+    summary: str = ""
+
+
 class ToolRecommendationPreflight(ContractModel):
     case_classification: str = ""
     agent_goal: str = ""
@@ -3672,6 +3851,8 @@ class ToolRecommendationPreflight(ContractModel):
     mandatory_capabilities: list[ToolPreflightCapability] = PydanticField(default_factory=list)
     forbidden_capabilities: list[str] = PydanticField(default_factory=list)
     candidate_tool_families: list[ToolFamilyCandidate] = PydanticField(default_factory=list)
+    design_tool_implications: list[str] = PydanticField(default_factory=list)
+    design_memory_implications: list[str] = PydanticField(default_factory=list)
     missing_information: list[ToolRecommendationGap] = PydanticField(default_factory=list)
 
 
@@ -3680,6 +3861,7 @@ class ToolRecommendationArtifact(ContractModel):
     source_session_id: UUID | None = None
     source_blueprint_version: int | None = None
     current_blueprint_version: int | None = None
+    quality_gate: dict[str, Any] = PydanticField(default_factory=dict)
     generation_instructions: str = ""
     is_stale: bool = False
     stale_reasons: list[str] = PydanticField(default_factory=list)
@@ -3688,6 +3870,9 @@ class ToolRecommendationArtifact(ContractModel):
     )
     context_digest: ToolRecommendationContextDigest = PydanticField(default_factory=ToolRecommendationContextDigest)
     preflight: ToolRecommendationPreflight = PydanticField(default_factory=ToolRecommendationPreflight)
+    capability_resolutions: list[ToolCapabilityResolution] = PydanticField(default_factory=list)
+    candidate_tool_patterns: list[CandidateToolPattern] = PydanticField(default_factory=list)
+    learning_report: ToolPatternLearningReport = PydanticField(default_factory=ToolPatternLearningReport)
     recommended_tools: list[ToolRecommendationEntry] = PydanticField(default_factory=list)
     optional_tools: list[ToolRecommendationEntry] = PydanticField(default_factory=list)
     rejected_tools: list[ToolRecommendationEntry] = PydanticField(default_factory=list)
@@ -3811,6 +3996,31 @@ class MemoryDryCompileStatus(ContractModel):
     blocking_issues: list[str] = PydanticField(default_factory=list)
 
 
+class MemoryDependencyGap(ContractModel):
+    gap_key: str = ""
+    capability_key: str = ""
+    source_stage: str = "memory"
+    target_stage: str = "tools"
+    required: bool = False
+    status: Literal["open", "resolved", "deferred", "not_resolvable"] = "open"
+    remediation_policy: Literal["auto", "human_review", "implementation_pending"] = "auto"
+    batch_key: str = ""
+    candidate_pattern_id: str = ""
+    reason: str = ""
+    source_refs: list[str] = PydanticField(default_factory=list)
+
+
+class MemoryArchitectureResolution(ContractModel):
+    memory_mode: Literal["stateless", "short_term", "episodic", "semantic_rag", "operational", "implementation", "hybrid"] = "short_term"
+    required_for_pattern: bool = False
+    source_strategy: str = ""
+    retention_policy: str = ""
+    checkpoint_strategy: str = ""
+    context_budget: str = ""
+    dependency_gaps: list[str] = PydanticField(default_factory=list)
+    evidence_refs: list[str] = PydanticField(default_factory=list)
+
+
 class MemoryRecommendationArtifact(ContractModel):
     schema_version: str = "memory-recommendation.v1"
     source_session_id: UUID | None = None
@@ -3833,12 +4043,15 @@ class MemoryRecommendationArtifact(ContractModel):
     retention_and_deletion: list[MemoryRetentionDeletionRule] = PydanticField(default_factory=list)
     sensitivity_and_isolation: list[MemorySensitivityIsolationRule] = PydanticField(default_factory=list)
     tool_dependencies: list[MemoryToolDependency] = PydanticField(default_factory=list)
+    architecture_resolution: MemoryArchitectureResolution = PydanticField(default_factory=MemoryArchitectureResolution)
+    dependency_gaps: list[MemoryDependencyGap] = PydanticField(default_factory=list)
     critic_findings: list[MemoryRecommendationFinding] = PydanticField(default_factory=list)
     evidence_refs: list[str] = PydanticField(default_factory=list)
     open_questions: list[str] = PydanticField(default_factory=list)
     guided_questions: list[GuidedQuestionEntry] = PydanticField(default_factory=list)
     missing_information: list[str] = PydanticField(default_factory=list)
     confidence: MemoryRecommendationConfidence = PydanticField(default_factory=MemoryRecommendationConfidence)
+    quality_gate: dict[str, Any] = PydanticField(default_factory=dict)
     dry_compile_status: MemoryDryCompileStatus = PydanticField(default_factory=MemoryDryCompileStatus)
     proposed_memory_profile: MemoryProfile = PydanticField(default_factory=MemoryProfile)
     proposed_knowledge_profile: KnowledgeProfile = PydanticField(default_factory=KnowledgeProfile)
@@ -4437,6 +4650,20 @@ ACPValidationSeverity = Literal["info", "warning", "error"]
 ConstructionGapSeverity = Literal["info", "warning", "blocking"]
 ConstructionGapStatus = Literal["open", "answered", "waived", "resolved"]
 ConstructionQuestionStatus = Literal["open", "answered", "deferred", "resolved"]
+ConstructionQuestionImpactKind = Literal[
+    "no_material_impact",
+    "localized_impact",
+    "structural_impact",
+    "delegated_to_implementation",
+]
+ConstructionQuestionReprocessDecision = Literal[
+    "document_only",
+    "localized_reconciliation",
+    "structural_reconciliation",
+    "localized_reprocess",
+    "structural_reprocess",
+    "delegated_to_implementation",
+]
 ConstructionReadinessStatus = Literal["not_started", "needs_questions", "blocked", "ready_to_build"]
 
 
@@ -4520,6 +4747,37 @@ class ConstructionQuestionEntry(ContractModel):
     options: list[ConstructionQuestionOption] = PydanticField(default_factory=list)
 
 
+class ConstructionQuestionImpactAnalysis(ContractModel):
+    impact_kind: ConstructionQuestionImpactKind = "no_material_impact"
+    material_impact: bool = False
+    reprocess_decision: ConstructionQuestionReprocessDecision = "document_only"
+    reconciliation_decision: ConstructionQuestionReprocessDecision = "document_only"
+    impact_summary: str = ""
+    recommended_action: str = ""
+    affected_phase_keys: list[str] = PydanticField(default_factory=list)
+    affected_stage_keys: list[str] = PydanticField(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def align_reconciliation_decision(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        legacy_map = {
+            "localized_reprocess": "localized_reconciliation",
+            "structural_reprocess": "structural_reconciliation",
+        }
+        normalized = dict(data)
+        reprocess_decision = str(normalized.get("reprocess_decision") or "document_only")
+        reconciliation_decision = str(normalized.get("reconciliation_decision") or "document_only")
+        chosen = reconciliation_decision
+        if chosen == "document_only" and reprocess_decision != "document_only":
+            chosen = reprocess_decision
+        canonical = legacy_map.get(chosen, chosen)
+        normalized["reconciliation_decision"] = canonical
+        normalized["reprocess_decision"] = canonical
+        return normalized
+
+
 class ConstructionQuestionViewEntry(ContractModel):
     question_key: str = ""
     gap_key: str = ""
@@ -4539,6 +4797,7 @@ class ConstructionQuestionViewEntry(ContractModel):
     resolved_at: datetime | None = None
     impacted_artifacts: list[str] = PydanticField(default_factory=list)
     options: list[ConstructionQuestionOption] = PydanticField(default_factory=list)
+    impact_analysis: ConstructionQuestionImpactAnalysis | None = None
 
     @field_validator("status")
     @classmethod
@@ -6587,6 +6846,7 @@ class ProductOverviewResponse(ContractModel):
     attention: list[ProductAttentionItem] = PydanticField(default_factory=list)
     exports: list[ProductOverviewItem] = PydanticField(default_factory=list)
     navigation: list[ProductOverviewItem] = PydanticField(default_factory=list)
+    journey_state_machine: dict[str, Any] = PydanticField(default_factory=dict)
     canonical_overview_contract: str = ""
     recommended_next_action: dict[str, Any] = PydanticField(default_factory=dict)
     source_contracts: list[str] = PydanticField(default_factory=list)
@@ -6760,7 +7020,7 @@ class ACPPhaseRunResponse(ContractModel):
 
 
 class ACPBuildRunResponse(ContractModel):
-    id: UUID
+    id: UUID | None = None
     workspace_id: UUID
     session_id: UUID
     blueprint_version_number: int | None = None
@@ -6787,6 +7047,7 @@ class ACPWorkspaceResponse(ContractModel):
     phase_definitions: list[ACPPhaseDefinitionResponse] = PydanticField(default_factory=list)
     readiness: ConstructionReadinessReport = PydanticField(default_factory=ConstructionReadinessReport)
     validation: ACPValidationReport = PydanticField(default_factory=ACPValidationReport)
+    journey_state_machine: dict[str, Any] = PydanticField(default_factory=dict)
     next_action: str = ""
     generated_at: datetime = PydanticField(default_factory=utc_now)
 
@@ -7059,6 +7320,7 @@ class ActivityTimelineEntry(ContractModel):
     key: str = ""
     type: Literal["commercial", "execution", "export", "workflow"] = "commercial"
     title: str = ""
+    detail: str = ""
     product_key: str = ""
     source: str = ""
     status: str = ""

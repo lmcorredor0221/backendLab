@@ -5,11 +5,12 @@ from uuid import uuid4
 import pytest
 from fastapi import BackgroundTasks
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.api.routes.productization import post_product_build_action_route
 from app.models import (
     CommercialTier,
+    JourneyStateRecord,
     JourneyArtifactState,
     JourneyStageArtifactRecord,
     SessionRecord,
@@ -22,6 +23,7 @@ from app.models import (
 from app.services.auth_service import hash_password
 from app.services.deliverable_catalog.contracts import DeliverableGenerationResult, DeliverableGenerationTask
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
+from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing import (
     ACP_REQUIRED_STAGE_KEYS,
     ProductBuildCommandRequest,
@@ -29,6 +31,7 @@ from app.services.product_processing import (
     build_product_build_status,
     sync_product_builds_after_stage_approval,
 )
+from app.services.product_processing.contracts import JourneyStateKey
 
 
 def _engine():
@@ -97,6 +100,49 @@ def _fake_runner_factory(generated_tasks: list[tuple[str, str]]):
     return fake_runner
 
 
+def _fake_create_diagram_job(
+    db: Session,
+    *,
+    record: SessionRecord,
+    diagram_key: str,
+    user_id,
+    detail_level: str,
+    reason: str,
+    idempotency_key: str,
+):
+    job = DiagramGenerationJobRecord(
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        diagram_key=diagram_key,
+        requested_by_user_id=user_id,
+        detail_level=detail_level,
+        reason=reason,
+        idempotency_key=idempotency_key,
+        status="queued",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def _fake_run_diagram_job(job_id, database_engine=None, *, db_session=None):
+    if db_session is not None:
+        db = db_session
+    else:
+        db = Session(database_engine)
+    try:
+        job = db.get(DiagramGenerationJobRecord, job_id)
+        assert job is not None
+        job.status = "available"
+        job.completed_at = job.completed_at or job.updated_at
+        db.add(job)
+        db.commit()
+    finally:
+        if db_session is None:
+            db.close()
+
+
 def test_stage_approval_sync_auto_executes_blueprint_pro_build(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
@@ -105,6 +151,8 @@ def test_stage_approval_sync_auto_executes_blueprint_pro_build(monkeypatch: pyte
         "app.services.product_processing.product_build_orchestrator.run_deliverable_generation_task",
         _fake_runner_factory(generated_tasks),
     )
+    monkeypatch.setattr("app.services.product_processing.product_build_orchestrator.create_generation_job", _fake_create_diagram_job)
+    monkeypatch.setattr("app.services.product_processing.product_build_orchestrator.run_generation_job", _fake_run_diagram_job)
 
     with Session(engine) as db:
         user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
@@ -119,6 +167,27 @@ def test_stage_approval_sync_auto_executes_blueprint_pro_build(monkeypatch: pyte
     assert any(product_mode == "premium_enrichment" for product_mode, _ in generated_tasks)
 
 
+def test_stage_approval_persists_the_next_actionable_journey_state() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint)
+        sync_product_builds_after_stage_approval(
+            db,
+            record=record,
+            stage_key="tools",
+            current_user=user,
+        )
+        db.commit()
+        current = db.exec(
+            select(JourneyStateRecord).where(JourneyStateRecord.session_id == record.id)
+        ).one()
+
+    assert current.state_key == JourneyStateKey.memory.value
+    assert current.stage_key == "memory"
+
+
 def test_stage_approval_sync_auto_executes_acp_when_package_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
@@ -127,6 +196,8 @@ def test_stage_approval_sync_auto_executes_acp_when_package_is_ready(monkeypatch
         "app.services.product_processing.product_build_orchestrator.run_deliverable_generation_task",
         _fake_runner_factory(generated_tasks),
     )
+    monkeypatch.setattr("app.services.product_processing.product_build_orchestrator.create_generation_job", _fake_create_diagram_job)
+    monkeypatch.setattr("app.services.product_processing.product_build_orchestrator.run_generation_job", _fake_run_diagram_job)
 
     with Session(engine) as db:
         user, record = _seed_session(db, tier=CommercialTier.acp)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import field_validator
@@ -235,6 +235,78 @@ class ProductBuildStatus(ContractModel):
     source_contracts: list[str] = PydanticField(default_factory=list)
 
 
+class JourneyStateKey(StrEnum):
+    discover = "discover"
+    define = "define"
+    design = "design"
+    tools = "tools"
+    memory = "memory"
+    estimate = "estimate"
+    blueprint_free_ready = "blueprint_free_ready"
+    blueprint_pro_access_requested = "blueprint_pro_access_requested"
+    blueprint_pro_access_pending = "blueprint_pro_access_pending"
+    blueprint_pro_active = "blueprint_pro_active"
+    acp_access_requested = "acp_access_requested"
+    acp_access_pending = "acp_access_pending"
+    acp_prep = "acp_prep"
+    validate = "validate"
+    package = "package"
+    completed = "completed"
+
+
+class JourneyStateSubstate(StrEnum):
+    idle = "idle"
+    running = "running"
+    waiting_user = "waiting_user"
+    waiting_dependency = "waiting_dependency"
+    retrying = "retrying"
+    completed = "completed"
+    failed = "failed"
+    blocked = "blocked"
+
+
+class JourneyStateMachineStage(ContractModel):
+    state_key: JourneyStateKey = JourneyStateKey.discover
+    substate: JourneyStateSubstate = JourneyStateSubstate.idle
+    label: str = "Descubrir"
+    detail: str = ""
+    product_key: ProductBuildProductKey = ProductBuildProductKey.blueprint_basic
+    stage_key: str = "discover"
+    href: str = ""
+    progress_percent: int = 0
+    blocking: bool = False
+
+    @field_validator("progress_percent")
+    @classmethod
+    def validate_progress_percent(cls, value: int) -> int:
+        return min(max(int(value or 0), 0), 100)
+
+
+class JourneyStateTransition(ContractModel):
+    sequence: int = 0
+    event_key: str = ""
+    from_state_key: JourneyStateKey | None = None
+    from_substate: JourneyStateSubstate | None = None
+    to_state: JourneyStateMachineStage = PydanticField(default_factory=JourneyStateMachineStage)
+    actor_type: str = "system"
+    actor_user_id: UUID | None = None
+    reason: str = ""
+    correlation_id: str = ""
+    occurred_at: str = ""
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class JourneyStateMachine(ContractModel):
+    contract_version: Literal["journey-state-machine.v1"] = "journey-state-machine.v1"
+    workspace_id: UUID
+    session_id: UUID
+    current: JourneyStateMachineStage = PydanticField(default_factory=JourneyStateMachineStage)
+    revision: int = 0
+    state_source: Literal["canonical", "legacy_projection"] = "legacy_projection"
+    history: list[JourneyStateTransition] = PydanticField(default_factory=list)
+    source_contracts: list[str] = PydanticField(default_factory=list)
+
+
 class ProductJourneyCurrentStage(ContractModel):
     stage_key: str = "discover"
     label: str = "Descubrir"
@@ -314,18 +386,21 @@ class ProductJourneyOverview(ContractModel):
     recommended_next_action: ProductJourneyRecommendedAction | None = None
     products: list[ProductJourneyProductSummary] = PydanticField(default_factory=list)
     deliverable_summary: ProductJourneyDeliverableSummary = PydanticField(default_factory=ProductJourneyDeliverableSummary)
+    journey_state_machine: JourneyStateMachine | None = None
     generated_at: str = ""
     source_contracts: list[str] = PydanticField(default_factory=list)
 
 
 class ProductBuildTelemetryEvent(ContractModel):
     event_key: str
-    event_type: Literal["cta", "checkout", "activation", "run", "retry", "resume", "attention", "error", "other"] = "other"
+    event_type: Literal["cta", "checkout", "activation", "run", "retry", "resume", "attention", "error", "export", "other"] = "other"
     workspace_id: UUID
     session_id: UUID
     product_key: ProductBuildProductKey
     run_id: str = ""
     step_id: str = ""
+    export_job_id: str = ""
+    operation_id: str = ""
     stage_key: str = ""
     deliverable_key: str = ""
     source: str = ""
@@ -561,6 +636,25 @@ class PremiumEnrichmentItem(ContractModel):
     affected_deliverable_keys: list[str] = PydanticField(default_factory=list)
     ordered_regeneration_keys: list[str] = PydanticField(default_factory=list)
     unaffected_deliverable_count: int = 0
+    material_impact: bool = False
+    reconciliation_decision: Literal[
+        "document_only",
+        "localized_reconciliation",
+        "structural_reconciliation",
+    ] = "document_only"
+    reconciliation_status: Literal[
+        "not_required",
+        "pending_user_confirmation",
+        "queued",
+        "running",
+        "completed",
+        "completed_with_errors",
+        "failed",
+        "cancelled",
+    ] = "not_required"
+    reconciliation_queue_total: int = 0
+    reconciliation_queue_completed: int = 0
+    reconciliation_pending_keys: list[str] = PydanticField(default_factory=list)
 
 
 class PremiumEnrichmentWorkspace(ContractModel):
@@ -583,7 +677,7 @@ class PremiumUncertaintyResolutionRequest(ContractModel):
     answer: str = ""
     selected_option_key: str = ""
     regenerate: bool = False
-    execution_mode: Literal["analyze_only", "apply_reprocess"] = "analyze_only"
+    execution_mode: Literal["analyze_only", "apply_reconciliation", "apply_reprocess"] = "analyze_only"
     max_deliverables: int = 5
 
     @field_validator("max_deliverables")
@@ -596,14 +690,34 @@ class PremiumSelectiveReprocessResult(ContractModel):
     contract_version: Literal["premium-selective-reprocess-result.v1"] = "premium-selective-reprocess-result.v1"
     resolved_entry: UncertaintyBacklogEntry
     changed_dependency_keys: list[str] = PydanticField(default_factory=list)
+    affected_deliverable_keys: list[str] = PydanticField(default_factory=list)
     stale_deliverable_keys: list[str] = PydanticField(default_factory=list)
     ordered_regeneration_keys: list[str] = PydanticField(default_factory=list)
+    reconciled_deliverable_keys: list[str] = PydanticField(default_factory=list)
     regenerated_deliverable_keys: list[str] = PydanticField(default_factory=list)
     preserved_deliverable_keys: list[str] = PydanticField(default_factory=list)
     material_impact: bool = False
+    reconciliation_decision: Literal[
+        "document_only",
+        "localized_reconciliation",
+        "structural_reconciliation",
+    ] = "document_only"
+    reconciliation_status: Literal[
+        "not_required",
+        "pending_user_confirmation",
+        "queued",
+        "running",
+        "completed",
+        "completed_with_errors",
+        "failed",
+        "cancelled",
+    ] = "not_required"
+    execution_mode: Literal["analyze_only", "apply_reconciliation"] = "analyze_only"
+    legacy_execution_mode: str | None = None
     reprocess_decision: Literal["document_only", "localized_reprocess", "structural_reprocess"] = "document_only"
     recommended_action: str = ""
     impact_summary: str = ""
+    reconciliation_job_ids: list[str] = PydanticField(default_factory=list)
     generation_job_ids: list[str] = PydanticField(default_factory=list)
     generation_status_by_deliverable: dict[str, str] = PydanticField(default_factory=dict)
     superseded_uncertainty_count: int = 0

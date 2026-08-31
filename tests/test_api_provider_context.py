@@ -20,7 +20,13 @@ from app.models import (
 )
 from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramNotation, StructuredDiagramModel
 from app.services.llm_runtime.builder_contracts import BlueprintNarrativeOutput, RequirementsDefinitionInput
-from app.services.openai_builder import DeepSeekBuilderService, OpenAIBuilderService, _serialize_capability_payload_for_api
+from app.services.llm_runtime.capability_registry import BuilderCapability
+from app.services.openai_builder import (
+    DeepSeekBuilderService,
+    OpenAIBuilderService,
+    _serialize_capability_payload_for_api,
+    _structured_capability_max_tokens,
+)
 
 
 def build_runtime_settings(active_provider: LLMProviderKey, *, backend: KnowledgeAccessBackend) -> LLMRuntimeSettings:
@@ -198,6 +204,54 @@ def test_deepseek_builder_uses_compact_context_for_narrative_and_reduces_inline_
     assert "DISCOVERY=" not in user_payload
     assert "[source] narrative_discovery" in user_payload
     assert len(user_payload) < len(baseline_user_payload)
+
+
+def test_deepseek_api_context_does_not_instruct_filesystem_reads_when_workspace_staged() -> None:
+    runtime_settings = build_runtime_settings(
+        LLMProviderKey.deepseek,
+        backend=KnowledgeAccessBackend.workspace_staged,
+    )
+    service = DeepSeekBuilderService(runtime_settings)
+    service._client = object()
+    discovery = sample_discovery_artifact(suffix="Y" * 6000)
+    canvas = sample_canvas_artifact(suffix="Z" * 5000)
+    blueprint = sample_blueprint_artifact(suffix="W" * 4000)
+    captured: dict[str, object] = {}
+
+    def fake_create_structured_completion(**kwargs):
+        captured.update(kwargs)
+        return BlueprintNarrativeOutput(narrative="Narrativa compacta")
+
+    service._create_structured_completion = fake_create_structured_completion  # type: ignore[method-assign]
+
+    result = service.synthesize_blueprint_narrative(discovery, canvas, blueprint)
+
+    user_payload = str(captured["user_payload"])
+
+    assert result.effective_context_backend == "workspace_staged_unavailable_inline_compact"
+    assert result.context_stats["api_context_contract"] == "provider_api_inline.v1"
+    assert "knowledge/required" not in user_payload
+    assert "no intentes leer archivos locales" in user_payload
+    assert "usa exclusivamente las fuentes inline" in user_payload
+
+
+def test_complex_capabilities_get_larger_structured_output_budget_without_expanding_bpmn() -> None:
+    assert _structured_capability_max_tokens(BuilderCapability.propose_agent_design) == 6144
+    assert _structured_capability_max_tokens(BuilderCapability.critique_agent_design) == 6144
+    assert _structured_capability_max_tokens(BuilderCapability.recommend_memory_architecture) == 6144
+    assert _structured_capability_max_tokens(BuilderCapability.critique_memory_architecture) == 6144
+
+    bpmn_payload = DiagramGenerationInput(
+        diagram_key="current_process_map",
+        title="Proceso actual",
+        objective="Representar flujo actual",
+        notation=DiagramNotation.bpmn,
+    )
+
+    assert _structured_capability_max_tokens(
+        BuilderCapability.generate_diagram_model,
+        payload=bpmn_payload,
+    ) == 4096
 
 
 def test_capability_payload_serializer_compacts_requirements_definition_for_api() -> None:

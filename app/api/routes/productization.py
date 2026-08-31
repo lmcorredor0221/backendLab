@@ -33,7 +33,9 @@ from app.models import (
     DiagramCatalogV2Response,
     ExportCatalogResponse,
     ExportJobCreateRequest,
+    ExportJobRecord,
     ExportJobResponse,
+    ExportJobStatus,
     InitiativeEvaluationRequest,
     InitiativeEvaluationResponse,
     LauncherMetadataResponse,
@@ -45,7 +47,7 @@ from app.models import (
     UserRecord,
 )
 from app.services.initiative_evaluator import evaluate_initiative_service
-from app.services.acp_continuity import load_construction_question_response_records
+from app.services.acp_continuity import load_construction_question_response_records_for_preview
 from app.services.acp_launcher_service import build_launcher_metadata, submit_launcher_report
 from app.services.acp_workflow_service import build_acp_workspace_response, ensure_acp_run, run_acp_phase
 from app.services.attention_service import build_attention_response
@@ -56,6 +58,7 @@ from app.services.attention_service import (
 )
 from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
 from app.services.auth_service import get_current_user
+from app.services.product_processing.journey_state_machine_service import transition_for_acp_workspace_phase
 from app.services.commerce_service import list_active_products, serialize_access_request
 from app.services.commercial_access import build_commercial_access_snapshot_v2, resolve_session_entitlement_context
 from app.services.commercial_observability_service import build_commercial_audit_report
@@ -92,17 +95,44 @@ def _context(
     record: SessionRecord,
     current_user: UserRecord,
 ):
-    snapshot, _ = ensure_acp_evaluation_seed_snapshot(
-        db,
-        record,
-        current_user=current_user,
-        source_action="acp_workspace_context",
-    )
-    preview = resolve_acp_preview(db, record)
-    response_records = load_construction_question_response_records(db, record.id)
+    snapshot = build_snapshot(db, record, current_user=current_user)
+    preview = resolve_acp_preview(db, record, allow_auto_bootstrap=False)
+    response_records = load_construction_question_response_records_for_preview(db, record.id)
     readiness = build_construction_readiness_view(preview, response_records)
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     return snapshot, preview, readiness, access
+
+
+def _export_activity_title(job: ExportJobRecord) -> str:
+    if job.status == ExportJobStatus.ready and int(job.metadata_payload.get("auto_regeneration_count", 0) or 0) > 0:
+        return "export_job_regenerated"
+    return f"export_job_{job.status.value}"
+
+
+def _export_activity_detail(job: ExportJobRecord) -> str:
+    artifact_kind = job.artifact_kind or "export"
+    file_name = job.file_name or artifact_kind
+    retry_count = int(job.metadata_payload.get("retry_count", 0) or 0)
+    regeneration_count = int(job.metadata_payload.get("auto_regeneration_count", 0) or 0)
+    regeneration_reasons = [str(item).strip() for item in (job.metadata_payload.get("last_regeneration_reasons") or []) if str(item).strip()]
+    reasons_suffix = f" Motivos: {', '.join(regeneration_reasons)}." if regeneration_reasons else ""
+
+    if job.status == ExportJobStatus.ready:
+        if regeneration_count > 0:
+            return (
+                f"{artifact_kind} listo para descargar como {file_name}. "
+                f"Regenerado automaticamente {regeneration_count} vez/veces.{reasons_suffix}"
+            )
+        return f"{artifact_kind} listo para descargar como {file_name}."
+    if job.status == ExportJobStatus.running:
+        return f"Preparando {artifact_kind} para descarga."
+    if job.status == ExportJobStatus.queued:
+        return f"{artifact_kind} en cola para empaquetado."
+    if job.status == ExportJobStatus.expired:
+        return f"La descarga de {artifact_kind} expiro y puede regenerarse."
+    if job.status == ExportJobStatus.canceled:
+        return f"La exportacion de {artifact_kind} fue cancelada despues de {retry_count} reintento(s)."
+    return job.error_message or f"No se pudo preparar {artifact_kind}."
 
 
 @router.get("/{session_id}/acp/workspace", response_model=ACPWorkspaceResponse)
@@ -123,7 +153,6 @@ def get_acp_workspace_route(
         readiness=readiness,
         access=access,
     )
-    db.commit()
     return response
 
 
@@ -137,16 +166,29 @@ def run_acp_workspace_phase_route(
 ) -> ACPWorkspaceResponse:
     record = get_or_404(db, session_id, current_user.id)
     ensure_commercial_capability(record, "acp.build", db=db, current_user=current_user)
+    ensure_acp_evaluation_seed_snapshot(
+        db,
+        record,
+        current_user=current_user,
+        source_action=f"run_acp_workspace_phase:{phase_key}",
+    )
     snapshot, preview, readiness, access = _context(db, record, current_user)
     run = ensure_acp_run(db, record=record, current_user=current_user, snapshot=snapshot)
     try:
-        run_acp_phase(
+        phase = run_acp_phase(
             db,
             run=run,
             phase_key=phase_key,
             payload=payload or ACPPhaseCommandRequest(),
             preview=preview,
             readiness=readiness,
+        )
+        transition_for_acp_workspace_phase(
+            db,
+            record=record,
+            run=run,
+            phase=phase,
+            actor_user_id=current_user.id,
         )
     except Exception as exc:
         from app.services.acp_workflow_service import ACPPhaseSequenceError
@@ -196,7 +238,6 @@ def resume_acp_workspace_route(
         readiness=readiness,
         access=access,
     )
-    db.commit()
     return response
 
 
@@ -238,18 +279,8 @@ def get_product_build_status_route(
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> ProductBuildStatus:
-    from app.services.product_processing.product_build_orchestrator import reconcile_product_build_run
-    from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
-
     record = get_or_404(db, session_id, current_user.id)
-    if product_key == ProductBuildProductKey.acp:
-        return ensure_acp_product_orchestration(
-            db,
-            record=record,
-            current_user=current_user,
-            activation_payload={"source": "product_build_status"},
-        )
-    return reconcile_product_build_run(
+    return build_product_build_status(
         db,
         record=record,
         product_key=product_key,
@@ -618,9 +649,29 @@ def download_export_job_route(
     record = get_or_404(db, session_id, current_user.id)
     try:
         job, payload = read_export_job_bytes(db, record=record, job_id=job_id)
+    except FileNotFoundError:
+        snapshot, preview, _, access = _context(db, record, current_user)
+        retry_response = retry_export_job_response(
+            db,
+            record=record,
+            current_user=current_user,
+            access=access,
+            snapshot=snapshot,
+            preview=preview,
+            job_id=job_id,
+        )
+        if retry_response.status != ExportJobStatus.ready:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=retry_response.error_message or f"Export job is not ready: {retry_response.status.value}",
+            )
+        try:
+            job, payload = read_export_job_bytes(db, record=record, job_id=job_id)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except (ValueError, FileNotFoundError) as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     db.commit()
     return StreamingResponse(
@@ -677,6 +728,12 @@ def get_activity_route(
         .order_by(CommercialEventRecord.created_at.desc())
         .limit(limit)
     ).all()
+    export_jobs = db.exec(
+        select(ExportJobRecord)
+        .where(ExportJobRecord.workspace_id == record.workspace_id, ExportJobRecord.session_id == record.id)
+        .order_by(ExportJobRecord.updated_at.desc(), ExportJobRecord.created_at.desc())
+        .limit(limit)
+    ).all()
     operations = db.exec(
         select(StageOperationRecord)
         .where(StageOperationRecord.workspace_id == record.workspace_id, StageOperationRecord.session_id == record.id)
@@ -688,6 +745,7 @@ def get_activity_route(
             key=str(item.id),
             type="commercial",
             title=item.event_key,
+            detail=str(item.metadata_payload.get("detail") or item.metadata_payload.get("summary") or item.event_key),
             product_key=item.product_key,
             source=item.source,
             status="recorded",
@@ -701,8 +759,35 @@ def get_activity_route(
     timeline.extend(
         ActivityTimelineEntry(
             key=str(item.id),
+            type="export",
+            title=_export_activity_title(item),
+            detail=_export_activity_detail(item),
+            product_key=item.product_key,
+            source="export_delivery",
+            status=item.status.value,
+            created_at=item.updated_at,
+            metadata={
+                "export_job_id": str(item.id),
+                "artifact_kind": item.artifact_kind,
+                "file_name": item.file_name,
+                "content_type": item.content_type,
+                "retry_count": int(item.metadata_payload.get("retry_count", 0) or 0),
+                "auto_regeneration_count": int(item.metadata_payload.get("auto_regeneration_count", 0) or 0),
+                "last_regeneration_reasons": item.metadata_payload.get("last_regeneration_reasons", []),
+                "blueprint_version_number": item.metadata_payload.get("blueprint_version_number"),
+                "size_bytes": item.size_bytes,
+                "expires_at": item.expires_at.isoformat() if item.expires_at else "",
+                "error_message": item.error_message,
+            },
+        )
+        for item in export_jobs
+    )
+    timeline.extend(
+        ActivityTimelineEntry(
+            key=str(item.id),
             type="workflow",
             title=item.action.replace("_", " ").title(),
+            detail=item.detail or item.action.replace("_", " ").title(),
             product_key="blueprint",
             source="stage_operation",
             status=item.status.value,

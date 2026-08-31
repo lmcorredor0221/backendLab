@@ -28,14 +28,17 @@ from app.models import (
     EstimationScenarioAdjustment,
     EstimationSavingsOpportunity,
     EstimationUncertaintyFactor,
+    ExecutionLogRecord,
     PlatformRole,
     PlatformRoleAssignmentRecord,
+    ReviewState,
     RuntimeCatalogEntryRecord,
     OpportunityRecord,
     SessionRecord,
     JourneyArtifactState,
     JourneyStageArtifactRecord,
     MemoryToolDependency,
+    ShortTermCheckpointRecord,
     SkillRunArtifactRecord,
     SkillRunRecord,
     SessionStage,
@@ -56,6 +59,7 @@ from app.models import (
 from app.services.agentic_runtime.contracts import BuilderAgentRunResult, BuilderAgentState
 from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
 from app.services.auth_service import hash_password
+from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 from app.services.llm_runtime.builder_contracts import (
     AcceptanceCriterion,
     AgentDesignProposalOutput,
@@ -610,6 +614,15 @@ def build_session_flow(client: TestClient) -> tuple[dict[str, str], str]:
     return headers, build_session_flow_for_headers(client, headers)
 
 
+def enable_react_runtime_for_session(client: TestClient, headers: dict[str, str], session_id: str) -> None:
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feature-flags/react_runtime_v1",
+        headers=headers,
+        json={"enabled": True},
+    )
+    assert response.status_code == 200
+
+
 def approve_design_for_session(client: TestClient, headers: dict[str, str], session_id: str) -> None:
     propose_response = client.post(f"/api/v1/sessions/{session_id}/propose-design", headers=headers)
     assert propose_response.status_code == 200
@@ -645,6 +658,41 @@ def approve_tools_for_session(client: TestClient, headers: dict[str, str], sessi
     )
     assert approve_response.status_code == 200
     return recommendation_payload, approve_response.json()
+
+
+def legacy_recommendation_without_tool_keys(
+    recommendation: ToolRecommendationArtifact,
+    removed_tool_keys: set[str],
+) -> ToolRecommendationArtifact:
+    removed = {item.strip().lower() for item in removed_tool_keys if item.strip()}
+    digest = recommendation.approved_tools_digest
+    legacy_digest = None
+    if digest is not None:
+        legacy_digest = digest.model_copy(
+            update={
+                "approved_tool_keys": [item for item in digest.approved_tool_keys if item not in removed],
+                "mandatory_tool_keys": [item for item in digest.mandatory_tool_keys if item not in removed],
+                "optional_tool_keys": [item for item in digest.optional_tool_keys if item not in removed],
+                "side_effect_tool_keys": [item for item in digest.side_effect_tool_keys if item not in removed],
+                "approval_required_tool_keys": [
+                    item for item in digest.approval_required_tool_keys if item not in removed
+                ],
+                "knowledge_tool_keys": [item for item in digest.knowledge_tool_keys if item not in removed],
+                "selected_blueprint_tool_names": [
+                    item for item in digest.selected_blueprint_tool_names if item not in removed
+                ],
+            }
+        )
+        legacy_digest = legacy_digest.model_copy(update={"tool_count": len(legacy_digest.approved_tool_keys)})
+    return recommendation.model_copy(
+        update={
+            "recommended_tools": [item for item in recommendation.recommended_tools if item.tool_key not in removed],
+            "optional_tools": [item for item in recommendation.optional_tools if item.tool_key not in removed],
+            "rejected_tools": [item for item in recommendation.rejected_tools if item.tool_key not in removed],
+            "approved_tools_digest": legacy_digest,
+        },
+        deep=True,
+    )
 
 
 def seed_memory_dependency_pause(
@@ -758,6 +806,73 @@ def delete_canonical_session_rows(client: TestClient, *, session_id: str) -> Non
         session_generator.close()
 
 
+def test_react_checkpoint_store_keeps_active_checkpoints_per_stage(client: TestClient) -> None:
+    headers, session_id = build_session_flow(client)
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        record = session.get(SessionRecord, UUID(session_id))
+        assert record is not None
+
+        memory_checkpoint_id = BuilderReActCheckpointStore.save(
+            session,
+            BuilderAgentState(
+                run_id=uuid4(),
+                session_id=record.id,
+                workspace_id=record.workspace_id,
+                stage="memory",
+                capability="recommend_memory_architecture",
+                status="waiting_human",
+                iteration=2,
+                checkpoint_id="react:memory:stage-aware",
+                resume_action="recommend_memory",
+                resume_scope="stage",
+            ),
+            summary="Memoria pausada esperando resolver una dependencia.",
+            source_action="recommend_memory_waiting_human",
+        )
+        tools_checkpoint_id = BuilderReActCheckpointStore.save(
+            session,
+            BuilderAgentState(
+                run_id=uuid4(),
+                session_id=record.id,
+                workspace_id=record.workspace_id,
+                stage="tools",
+                capability="recommend_minimal_tools",
+                status="waiting_human",
+                iteration=3,
+                checkpoint_id="react:tools:stage-aware",
+                resume_action="recommend_tools",
+                resume_scope="stage",
+            ),
+            summary="Tools pausado esperando decision humana.",
+            source_action="recommend_tools_waiting_human",
+        )
+        session.commit()
+
+        memory_state = BuilderReActCheckpointStore.load(session, session_id=record.id, stage="memory")
+        tools_state = BuilderReActCheckpointStore.load(session, session_id=record.id, stage="tools")
+        assert memory_state is not None
+        assert tools_state is not None
+        assert memory_state.checkpoint_id == memory_checkpoint_id
+        assert tools_state.checkpoint_id == tools_checkpoint_id
+
+        active_records = list(
+            session.exec(
+                select(ShortTermCheckpointRecord).where(
+                    ShortTermCheckpointRecord.session_id == record.id,
+                    ShortTermCheckpointRecord.is_active == True,  # noqa: E712
+                    ShortTermCheckpointRecord.checkpoint_key.startswith("react:"),
+                )
+            ).all()
+        )
+        assert {item.branch_key for item in active_records} == {"react:memory", "react:tools"}
+    finally:
+        session_generator.close()
+
+
 def approve_memory_for_session(client: TestClient, headers: dict[str, str], session_id: str) -> dict:
     recommendation = client.post(f"/api/v1/sessions/{session_id}/recommend-memory", headers=headers)
     assert recommendation.status_code == 200
@@ -791,6 +906,8 @@ def approve_validate_for_session(client: TestClient, headers: dict[str, str], se
     )
     assert generate_response.status_code == 200
     validate_artifact = generate_response.json()
+    evaluation_response = client.post(f"/api/v1/sessions/{session_id}/evaluate", headers=headers)
+    assert evaluation_response.status_code == 200
     approve_response = client.post(
         f"/api/v1/sessions/{session_id}/journey/validate/artifacts/{validate_artifact['id']}/approve",
         headers=headers,
@@ -1472,7 +1589,7 @@ class FakeLLMTraceBuilderService:
                 EstimationSavingsOpportunity(
                     opportunity_key="close-validate-fast",
                     title="Cerrar Validate antes de comprometer Package",
-                    summary="Reduce la banda comercial y evita reprocesar supuestos.",
+                    summary="Reduce la banda comercial y evita reconciliar supuestos sin impacto material.",
                     expected_impact="Menor incertidumbre y menos retrabajo.",
                     prerequisites=["Simulation aprobada", "Pricing vigente"],
                     evidence_refs=["session.simulation_runs"],
@@ -2076,10 +2193,10 @@ def test_auth_login_succeeds_when_default_workspace_id_is_stored_as_text(client:
         user = session.exec(select(UserRecord).where(UserRecord.email == TEST_EMAIL)).first()
         assert user is not None
         session.execute(
-            text("UPDATE users SET default_workspace_id = :workspace_id WHERE id = :user_id"),
+            text("UPDATE users SET default_workspace_id = :workspace_id WHERE email = :email"),
             {
                 "workspace_id": workspace_id,
-                "user_id": str(user.id),
+                "email": TEST_EMAIL,
             },
         )
         session.commit()
@@ -2750,7 +2867,7 @@ def resolve_first_approval(client: TestClient, headers: dict[str, str], session_
     assert resolve_response.json()["status"] == "approved"
 
 
-def test_session_flow_exposes_enriched_artifacts_and_pending_approvals(client: TestClient) -> None:
+def test_session_flow_exposes_enriched_artifacts_and_basic_auto_approvals(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
 
     snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
@@ -2792,16 +2909,17 @@ def test_session_flow_exposes_enriched_artifacts_and_pending_approvals(client: T
     assert any(item["skill_key"] == "blueprint_generation_skill" for item in snapshot["skill_runs"])
     assert all(item["artifacts"] for item in snapshot["skill_runs"])
     assert snapshot["approvals"]
-    assert snapshot["approvals"][0]["status"] == "pending"
-    assert snapshot["session"]["status"] == "needs_review"
+    assert snapshot["approvals"][0]["status"] == "approved"
+    assert "Blueprint" in snapshot["approvals"][0]["resolution_note"]
+    assert snapshot["session"]["status"] == "ready"
 
     evaluation_response = client.post(f"/api/v1/sessions/{session_id}/evaluate", headers=headers)
     assert evaluation_response.status_code == 200
     evaluation = evaluation_response.json()
 
-    assert evaluation["status"] == "needs_review"
-    assert evaluation["next_action"] == "resolve_approvals"
-    assert any("approval gates pendientes" in item.lower() for item in evaluation["data"]["gaps"])
+    assert evaluation["status"] == "ready"
+    assert evaluation["next_action"] == "ready_for_export"
+    assert all("approval gates pendientes" not in item.lower() for item in evaluation["data"]["gaps"])
 
 
 def test_recommend_tools_route_persists_placeholder_contract_and_snapshot_view(client: TestClient) -> None:
@@ -2958,6 +3076,7 @@ def test_recommend_tools_route_resumes_react_checkpoint_and_marks_it_completed(
 
     headers, session_id = build_session_flow(client)
     approve_design_for_session(client, headers, session_id)
+    enable_react_runtime_for_session(client, headers, session_id)
 
     session_override = client.app.dependency_overrides[get_session]
     session_generator = session_override()
@@ -3039,7 +3158,7 @@ def test_recommend_tools_route_resumes_react_checkpoint_and_marks_it_completed(
     assert response.json()["data"]["source_session_id"] == session_id
 
 
-def test_recommend_tools_route_attempts_react_even_when_workspace_flag_is_disabled(
+def test_recommend_tools_runtime_skips_react_when_workspace_flag_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.api.routes.sessions as sessions_routes
@@ -3083,10 +3202,11 @@ def test_recommend_tools_route_attempts_react_even_when_workspace_flag_is_disabl
         blueprint_version_number=1,
         runtime_settings=None,
         stage_context=None,
+        react_enabled=False,
     )
 
-    assert react_attempted["value"] is True
-    assert "react_runtime_fallback:RuntimeError" in warnings
+    assert react_attempted["value"] is False
+    assert warnings == []
     assert payload.next_action == "review_tool_recommendation"
 
 
@@ -3181,13 +3301,136 @@ def test_approve_tools_selection_auto_resumes_memory_when_required_dependencies_
                 .order_by(StageOperationRecord.created_at.desc())
             ).all()
         )
-        resumed_operation = next(operation for operation in operations if operation.idempotency_key != "memory-react-pause")
+        assert len(operations) == 1
+        resumed_operation = operations[0]
+        assert resumed_operation.idempotency_key == "memory-react-pause"
         assert resumed_operation.status == StageOperationStatus.queued
         assert resumed_operation.request_payload["resume_checkpoint_id"] == checkpoint_id
+
+        memory_artifact = session.exec(
+            select(JourneyStageArtifactRecord)
+            .where(
+                JourneyStageArtifactRecord.session_id == UUID(session_id),
+                JourneyStageArtifactRecord.stage_key == "memory",
+            )
+            .order_by(JourneyStageArtifactRecord.version_number.desc(), JourneyStageArtifactRecord.created_at.desc())
+        ).first()
+        assert memory_artifact is not None
+        assert memory_artifact.missing_information == []
+        memory_payload = MemoryRecommendationArtifact.model_validate(memory_artifact.proposal_payload)
+        assert memory_payload.tool_dependencies[0].status == "approved"
+        assert any("Dependencia de Herramientas resuelta" in warning for warning in memory_artifact.warnings)
     finally:
         session_generator.close()
 
     assert resumed_operations == [str(resumed_operation.id)]
+
+
+def test_approve_tools_selection_auto_resumes_memory_from_legacy_inactive_checkpoint(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+
+    resumed_operations: list[str] = []
+
+    def fake_run_recommend_memory_operation(operation_id, bind) -> None:  # noqa: ANN001
+        del bind
+        resumed_operations.append(str(operation_id))
+
+    monkeypatch.setattr(sessions_routes, "_run_recommend_memory_operation", fake_run_recommend_memory_operation)
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+
+    first_recommendation = client.post(f"/api/v1/sessions/{session_id}/recommend-tools", headers=headers)
+    assert first_recommendation.status_code == 200
+    first_payload = first_recommendation.json()
+    recommended_tool_keys = [item["tool_key"] for item in first_payload["data"]["recommended_tools"]]
+    assert recommended_tool_keys
+
+    checkpoint_id = seed_memory_dependency_pause(
+        client,
+        session_id=session_id,
+        missing_tool_keys=[recommended_tool_keys[0]],
+    )
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        memory_checkpoint = session.exec(
+            select(ShortTermCheckpointRecord).where(
+                ShortTermCheckpointRecord.session_id == UUID(session_id),
+                ShortTermCheckpointRecord.checkpoint_key == checkpoint_id,
+            )
+        ).first()
+        assert memory_checkpoint is not None
+        memory_checkpoint.is_active = False
+        memory_checkpoint.updated_at = utc_now()
+        session.add(memory_checkpoint)
+
+        record = session.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        BuilderReActCheckpointStore.save(
+            session,
+            BuilderAgentState(
+                run_id=uuid4(),
+                session_id=record.id,
+                workspace_id=record.workspace_id,
+                stage="tools",
+                capability="recommend_minimal_tools",
+                status="waiting_human",
+                iteration=5,
+                checkpoint_id="react:tools:legacy-active",
+                resume_action="recommend_tools",
+                resume_scope="stage",
+            ),
+            summary="Tools quedo activo por la logica legacy mientras Memoria seguia pausada.",
+            source_action="recommend_tools_waiting_human",
+        )
+        session.commit()
+    finally:
+        session_generator.close()
+
+    approval = client.post(
+        f"/api/v1/sessions/{session_id}/approve-tools-selection",
+        headers=headers,
+        json={"include_optional_tool_keys": []},
+    )
+    assert approval.status_code == 200
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        operation = session.exec(
+            select(StageOperationRecord)
+            .where(
+                StageOperationRecord.session_id == UUID(session_id),
+                StageOperationRecord.stage_key == "memory",
+                StageOperationRecord.action == "recommend_memory",
+            )
+            .order_by(StageOperationRecord.created_at.desc())
+        ).first()
+        assert operation is not None
+        assert operation.idempotency_key == "memory-react-pause"
+        assert operation.status == StageOperationStatus.queued
+        assert operation.request_payload["resume_checkpoint_id"] == checkpoint_id
+
+        resumed_state = BuilderReActCheckpointStore.load(session, session_id=UUID(session_id), stage="memory")
+        assert resumed_state is not None
+        assert resumed_state.checkpoint_id == checkpoint_id
+        assert resumed_state.status == "running"
+    finally:
+        session_generator.close()
+
+    assert resumed_operations == [str(operation.id)]
 
 
 def test_approve_tools_selection_uses_stage_artifact_when_schema_version_only_exists_in_payload(
@@ -3290,6 +3533,279 @@ def test_recommend_memory_route_persists_artifact_and_skill_runs(
     assert "memory_critique_skill" in skill_runs_by_key
 
 
+def test_recommend_memory_route_remediates_missing_scheduler_dependency_once(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    approve_tools_for_session(client, headers, session_id)
+    enable_react_runtime_for_session(client, headers, session_id)
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        latest_recommendation = sessions_routes.load_latest_tool_recommendation(session, UUID(session_id))
+        assert latest_recommendation is not None
+        assert latest_recommendation.approved_tools_digest is not None
+        legacy_digest = latest_recommendation.approved_tools_digest.model_copy(
+            update={
+                "approved_tool_keys": [
+                    item for item in latest_recommendation.approved_tools_digest.approved_tool_keys if item != "scheduler"
+                ],
+                "mandatory_tool_keys": [
+                    item for item in latest_recommendation.approved_tools_digest.mandatory_tool_keys if item != "scheduler"
+                ],
+                "optional_tool_keys": [
+                    item for item in latest_recommendation.approved_tools_digest.optional_tool_keys if item != "scheduler"
+                ],
+                "side_effect_tool_keys": [
+                    item for item in latest_recommendation.approved_tools_digest.side_effect_tool_keys if item != "scheduler"
+                ],
+                "approval_required_tool_keys": [
+                    item
+                    for item in latest_recommendation.approved_tools_digest.approval_required_tool_keys
+                    if item != "scheduler"
+                ],
+                "knowledge_tool_keys": [
+                    item for item in latest_recommendation.approved_tools_digest.knowledge_tool_keys if item != "scheduler"
+                ],
+                "selected_blueprint_tool_names": [
+                    item
+                    for item in latest_recommendation.approved_tools_digest.selected_blueprint_tool_names
+                    if item != "scheduler"
+                ],
+            }
+        )
+        legacy_digest = legacy_digest.model_copy(update={"tool_count": len(legacy_digest.approved_tool_keys)})
+        legacy_recommendation = latest_recommendation.model_copy(
+            update={
+                "recommended_tools": [
+                    item for item in latest_recommendation.recommended_tools if item.tool_key != "scheduler"
+                ],
+                "optional_tools": [
+                    item for item in latest_recommendation.optional_tools if item.tool_key != "scheduler"
+                ],
+                "rejected_tools": [
+                    item for item in latest_recommendation.rejected_tools if item.tool_key != "scheduler"
+                ],
+                "approved_tools_digest": legacy_digest,
+            },
+            deep=True,
+        )
+    finally:
+        session_generator.close()
+    monkeypatch.setattr(sessions_routes, "load_latest_tool_recommendation", lambda *_args, **_kwargs: legacy_recommendation)
+    calls: list[list[str]] = []
+
+    def fake_run_memory_react(**kwargs):
+        approved_digest = kwargs.get("approved_tools_digest")
+        approved_tool_keys = (
+            list(approved_digest.approved_tool_keys)
+            if approved_digest is not None
+            else []
+        )
+        calls.append(approved_tool_keys)
+        if "scheduler" not in approved_tool_keys:
+            return SimpleNamespace(
+                value=MemoryRecommendationArtifact(
+                    source_session_id=UUID(session_id),
+                    review_state=ReviewState.blocked,
+                    tool_dependencies=[
+                        MemoryToolDependency(
+                            tool_key="scheduler",
+                            required=True,
+                            status="missing",
+                            reason="El refresh de conocimiento requiere triggers programados.",
+                        )
+                    ],
+                    missing_information=["Resolver dependencia de herramientas: scheduler"],
+                ),
+                traces=[],
+                react_run=None,
+                warnings=[],
+            )
+        return SimpleNamespace(
+            value=MemoryRecommendationArtifact(
+                source_session_id=UUID(session_id),
+                review_state=ReviewState.complete,
+                tool_dependencies=[
+                    MemoryToolDependency(
+                        tool_key="scheduler",
+                        required=True,
+                        status="approved",
+                        reason="Scheduler aprobado despues de remediacion ReAct.",
+                    )
+                ],
+            ),
+            traces=[],
+            react_run=None,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(sessions_routes, "run_memory_react", fake_run_memory_react)
+
+    response = client.post(f"/api/v1/sessions/{session_id}/recommend-memory", headers=headers)
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert "scheduler" in calls[0]
+    proposal = response.json()["proposal_payload"]
+    assert proposal["review_state"] == "complete"
+    dependency_map = {item["tool_key"]: item for item in proposal["tool_dependencies"]}
+    assert dependency_map["scheduler"]["status"] == "approved"
+
+
+def test_recommend_memory_route_preflights_batched_tool_dependencies_before_llm(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    approve_tools_for_session(client, headers, session_id)
+    enable_react_runtime_for_session(client, headers, session_id)
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        latest_recommendation = sessions_routes.load_latest_tool_recommendation(session, UUID(session_id))
+        assert latest_recommendation is not None
+        assert latest_recommendation.approved_tools_digest is not None
+        legacy_recommendation = legacy_recommendation_without_tool_keys(
+            latest_recommendation,
+            {"knowledge_retrieval", "document_ingestion"},
+        )
+    finally:
+        session_generator.close()
+
+    monkeypatch.setattr(sessions_routes, "load_latest_tool_recommendation", lambda *_args, **_kwargs: legacy_recommendation)
+    calls: list[list[str]] = []
+
+    def fake_run_memory_react(**kwargs):
+        approved_digest = kwargs.get("approved_tools_digest")
+        approved_tool_keys = list(approved_digest.approved_tool_keys) if approved_digest is not None else []
+        calls.append(approved_tool_keys)
+        if not {"knowledge_retrieval", "document_ingestion"}.issubset(set(approved_tool_keys)):
+            return SimpleNamespace(
+                value=MemoryRecommendationArtifact(
+                    source_session_id=UUID(session_id),
+                    review_state=ReviewState.blocked,
+                    tool_dependencies=[
+                        MemoryToolDependency(
+                            tool_key="knowledge_retrieval",
+                            required=True,
+                            status="missing",
+                            reason="Memoria requiere retrieval para grounding documental.",
+                        ),
+                        MemoryToolDependency(
+                            tool_key="document_ingestion",
+                            required=True,
+                            status="missing",
+                            reason="Memoria requiere ingestion para mantener lineage del corpus.",
+                        ),
+                    ],
+                    missing_information=[
+                        "Resolver dependencia de herramientas: knowledge_retrieval",
+                        "Resolver dependencia de herramientas: document_ingestion",
+                    ],
+                ),
+                traces=[],
+                react_run=None,
+                warnings=[],
+            )
+        return SimpleNamespace(
+            value=MemoryRecommendationArtifact(
+                source_session_id=UUID(session_id),
+                review_state=ReviewState.complete,
+                tool_dependencies=[
+                    MemoryToolDependency(
+                        tool_key="knowledge_retrieval",
+                        required=True,
+                        status="approved",
+                        reason="Retrieval aprobado por remediacion ReAct.",
+                    ),
+                    MemoryToolDependency(
+                        tool_key="document_ingestion",
+                        required=True,
+                        status="approved",
+                        reason="Ingestion aprobada por remediacion ReAct.",
+                    ),
+                ],
+            ),
+            traces=[],
+            react_run=None,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(sessions_routes, "run_memory_react", fake_run_memory_react)
+
+    response = client.post(f"/api/v1/sessions/{session_id}/recommend-memory", headers=headers)
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert {"knowledge_retrieval", "document_ingestion"}.issubset(set(calls[0]))
+    proposal = response.json()["proposal_payload"]
+    assert proposal["review_state"] == "complete"
+    dependency_map = {item["tool_key"]: item for item in proposal["tool_dependencies"]}
+    assert dependency_map["knowledge_retrieval"]["status"] == "approved"
+    assert dependency_map["document_ingestion"]["status"] == "approved"
+
+
+def test_memory_react_unresolved_remediation_warning_is_bounded(
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    unresolved_artifact = MemoryRecommendationArtifact(
+        review_state=ReviewState.blocked,
+        tool_dependencies=[
+            MemoryToolDependency(
+                tool_key="human_handoff",
+                required=True,
+                status="missing",
+                reason="El runtime mantiene la dependencia abierta despues de la remediacion.",
+            ),
+            MemoryToolDependency(
+                tool_key="scheduler",
+                required=True,
+                status="approved",
+                reason="Scheduler ya fue resuelto.",
+            ),
+        ],
+        missing_information=["Resolver dependencia de herramientas: human_handoff"],
+    )
+
+    assert sessions_routes._unresolved_remediated_memory_tool_keys(
+        unresolved_artifact,
+        ["human_handoff", "scheduler"],
+    ) == ["human_handoff"]
+    assert sessions_routes._unresolved_remediated_memory_tool_keys(
+        unresolved_artifact,
+        ["approval_gate"],
+    ) == []
+
+
+def test_memory_react_does_not_autopromote_human_review_dependency_without_gap_policy() -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    artifact = MemoryRecommendationArtifact(
+        tool_dependencies=[
+            MemoryToolDependency(
+                tool_key="outbound_notification",
+                required=True,
+                status="missing",
+                reason="Enviar avisos fuera del sistema requiere autorizacion humana.",
+            )
+        ],
+        dependency_gaps=[],
+    )
+
+    assert sessions_routes._auto_remediable_memory_tool_keys(artifact, ["outbound_notification"]) == []
+
+
 def test_recommend_memory_route_resumes_react_checkpoint_and_marks_it_completed(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -3306,6 +3822,7 @@ def test_recommend_memory_route_resumes_react_checkpoint_and_marks_it_completed(
     headers, session_id = build_session_flow(client)
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_session(client, headers, session_id)
+    enable_react_runtime_for_session(client, headers, session_id)
 
     checkpoint_id = seed_memory_dependency_pause(
         client,
@@ -3365,7 +3882,7 @@ def test_recommend_memory_route_resumes_react_checkpoint_and_marks_it_completed(
         session_generator.close()
 
 
-def test_recommend_memory_route_attempts_react_even_when_workspace_flag_is_disabled(
+def test_recommend_memory_runtime_skips_react_when_workspace_flag_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.api.routes.sessions as sessions_routes
@@ -3404,10 +3921,11 @@ def test_recommend_memory_route_attempts_react_even_when_workspace_flag_is_disab
         runtime_settings=None,
         proposal_stage_context=None,
         critique_stage_context=None,
+        react_enabled=False,
     )
 
-    assert react_attempted["value"] is True
-    assert "react_runtime_fallback:RuntimeError" in warnings
+    assert react_attempted["value"] is False
+    assert warnings == []
     assert payload.schema_version == "memory-recommendation.v1"
 
 
@@ -4053,6 +4571,8 @@ def test_resolving_approval_unlocks_export_markdown(client: TestClient) -> None:
     evaluation_response = client.post(f"/api/v1/sessions/{session_id}/evaluate", headers=headers)
     assert evaluation_response.status_code == 200
 
+    upgrade_session_tier(client, headers, session_id, tier="blueprint_pro")
+
     export_response = client.get(f"/api/v1/sessions/{session_id}/export/markdown", headers=headers)
     assert export_response.status_code == 200
     markdown = export_response.text
@@ -4100,17 +4620,17 @@ def test_operational_snapshot_and_monitoring_workspace_expose_stage4_state(clien
     assert snapshot["artifact_records"]
     assert snapshot["metric_snapshots"]
     assert snapshot["integration_statuses"]
-    assert any(item["alert_key"] == "approvals_unresolved" for item in snapshot["alert_events"])
+    assert all(item["alert_key"] != "approvals_unresolved" for item in snapshot["alert_events"])
 
     monitoring_response = client.get(f"/api/v1/sessions/{session_id}/monitoring", headers=headers)
     assert monitoring_response.status_code == 200
     monitoring = monitoring_response.json()
 
     assert monitoring["current_metrics"]["artifact_count"] >= 1
-    assert monitoring["current_metrics"]["approvals_pending"] >= 1
+    assert monitoring["current_metrics"]["approvals_pending"] == 0
     assert monitoring["history"]
-    assert monitoring["recent_errors"]
-    assert any(item["alert_key"] == "approvals_unresolved" for item in monitoring["alerts"])
+    assert monitoring["recent_errors"] == []
+    assert all(item["alert_key"] != "approvals_unresolved" for item in monitoring["alerts"])
     assert {"openai", "postgresql", "local_auth"}.issubset(
         {item["integration_key"] for item in monitoring["integrations"]}
     )
@@ -4167,6 +4687,7 @@ def test_monitoring_workspace_exposes_memory_observability_from_llm_traces(
 
 def test_artifact_browser_library_filters_and_exports_persist_records(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
+    upgrade_session_tier(client, headers, session_id, tier="acp")
 
     artifacts_response = client.get(f"/api/v1/sessions/{session_id}/artifacts", headers=headers)
     assert artifacts_response.status_code == 200
@@ -4939,6 +5460,8 @@ def test_stage5_workflow_templates_and_governance_are_exposed_and_exported(clien
     assert any(item["handoff_key"] == "governance_review" for item in updated_snapshot["handoff_records"])
     assert any(item["policy_key"] == "promotion_blockers" for item in updated_snapshot["governance_policies"])
 
+    upgrade_session_tier(client, headers, session_id, tier="blueprint_pro")
+
     markdown_export_response = client.get(f"/api/v1/sessions/{session_id}/export/markdown", headers=headers)
     assert markdown_export_response.status_code == 200
     markdown = markdown_export_response.text
@@ -5246,6 +5769,10 @@ def test_stage5_tool_and_llm_policy_round_trip_updates_canonical_exports(client:
     assert patched_blueprint["tools"][0]["endpoint_reference"] == "internal://skill_runtime/normalize_discovery:v2"
     assert patched_blueprint["tools"][0]["contract_review_state"] == "ready"
 
+    estimate_response = client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers)
+    assert estimate_response.status_code == 200
+    upgrade_session_tier(client, headers, session_id, tier="acp")
+
     construction_pack_response = client.get(
         f"/api/v1/sessions/{session_id}/export/construction-pack",
         headers=headers,
@@ -5401,21 +5928,24 @@ def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -
     assert any(item["artifact_metadata"].get("lineage_scope") == "estimation" for item in artifacts if item["artifact_kind"] == "acp_file")
 
 
-def test_acp_workspace_autobootstraps_missing_evaluation_assets(client: TestClient) -> None:
+def test_acp_workspace_surfaces_missing_evaluation_assets_without_autobootstrap(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
     upgrade_session_tier(client, headers, session_id)
 
     workspace_response = client.get(f"/api/v1/sessions/{session_id}/acp/workspace", headers=headers)
     assert workspace_response.status_code == 200
     workspace = workspace_response.json()
-    assert workspace["validation"]["can_export_zip"] is True
+    assert workspace["validation"]["can_export_zip"] is False
+    assert workspace["validation"]["overall_status"] == "incomplete"
+    assert any(issue["code"] == "acp_file_incomplete" for issue in workspace["validation"]["issues"])
+    assert workspace["readiness"]["overall_status"] == "blocked"
     assert workspace["readiness"]["open_questions"] >= 1
 
     snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
     assert snapshot_response.status_code == 200
     snapshot = snapshot_response.json()
-    assert snapshot["evaluation_dataset"] is not None
-    assert snapshot["evaluation_rubric"] is not None
+    assert snapshot["evaluation_dataset"] is None
+    assert snapshot["evaluation_rubric"] is None
 
 
 def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: TestClient) -> None:
@@ -5444,6 +5974,29 @@ def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: 
     answered_question = answer_response.json()
     assert answered_question["status"] == "answered"
     assert answered_question["owner_role"] == "platform_owner"
+    assert answered_question["impact_analysis"]["impact_kind"] == "localized_impact"
+    assert answered_question["impact_analysis"]["reprocess_decision"] == "localized_reconciliation"
+    assert answered_question["impact_analysis"]["reconciliation_decision"] == "localized_reconciliation"
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        acp_logs = session.exec(
+            select(ExecutionLogRecord)
+            .where(
+                ExecutionLogRecord.session_id == UUID(session_id),
+                ExecutionLogRecord.message == "Respuesta ACP registrada",
+            )
+            .order_by(ExecutionLogRecord.created_at.desc())
+        ).all()
+    finally:
+        session_generator.close()
+    assert acp_logs
+    acp_log_payload = acp_logs[0].payload
+    assert acp_log_payload["event_key"] == "acp_question_answered"
+    assert acp_log_payload["product"] == "acp"
+    assert acp_log_payload["metadata"]["decision_contract_version"] == "decision-observability.v1"
+    assert acp_log_payload["metadata"]["impact_analysis"]["reconciliation_decision"] == "localized_reconciliation"
 
     refreshed_questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
     assert refreshed_questions_response.status_code == 200
@@ -5533,6 +6086,28 @@ def test_acp_questions_can_be_delegated_without_manual_answer_text(client: TestC
     assert delegated_question["owner_role"] == "platform_owner"
     assert delegated_question["resolved_at"] is not None
     assert delegated_question["answer_text"].startswith("Delegado a implementacion")
+    assert delegated_question["impact_analysis"]["impact_kind"] == "delegated_to_implementation"
+    assert delegated_question["impact_analysis"]["reprocess_decision"] == "delegated_to_implementation"
+    assert delegated_question["impact_analysis"]["reconciliation_decision"] == "delegated_to_implementation"
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        acp_logs = session.exec(
+            select(ExecutionLogRecord)
+            .where(
+                ExecutionLogRecord.session_id == UUID(session_id),
+                ExecutionLogRecord.message == "Respuesta ACP registrada",
+            )
+            .order_by(ExecutionLogRecord.created_at.desc())
+        ).all()
+    finally:
+        session_generator.close()
+    assert acp_logs
+    acp_log_payload = acp_logs[0].payload
+    assert acp_log_payload["event_key"] == "acp_question_delegated"
+    assert acp_log_payload["metadata"]["answer_decision"] == "delegate"
+    assert acp_log_payload["metadata"]["impact_analysis"]["reconciliation_decision"] == "delegated_to_implementation"
 
     refreshed_questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
     assert refreshed_questions_response.status_code == 200
@@ -5540,6 +6115,7 @@ def test_acp_questions_can_be_delegated_without_manual_answer_text(client: TestC
     deployment_question = next(item for item in refreshed_questions if item["question_key"] == "deployment_target")
     assert deployment_question["status"] == "deferred"
     assert deployment_question["answer_text"].startswith("Delegado a implementacion")
+    assert deployment_question["impact_analysis"]["impact_kind"] == "delegated_to_implementation"
 
 
 def test_canonical_export_routes_publish_metadata_and_enforce_preview_mode(client: TestClient) -> None:
@@ -5953,3 +6529,101 @@ def test_saas_tiers_gate_exports_and_library_access(client: TestClient) -> None:
 
     library_allowed = client.get(f"/api/v1/sessions/{session_id}/library", headers=headers)
     assert library_allowed.status_code == 200
+
+
+def test_validate_approval_requires_persisted_validation_runs(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    approve_tools_for_session(client, headers, session_id)
+    approve_memory_for_session(client, headers, session_id)
+
+    generate_response = client.post(
+        f"/api/v1/sessions/{session_id}/generate-validation-scenarios",
+        headers=headers,
+        json={"instructions": "Genera los escenarios sin ejecutar la validacion todavia."},
+    )
+    assert generate_response.status_code == 200
+    validate_artifact = generate_response.json()
+
+    generic_approve = client.post(
+        f"/api/v1/sessions/{session_id}/journey/validate/artifacts/{validate_artifact['id']}/approve",
+        headers=headers,
+        json={
+            "note": "Intento de cierre sin corridas.",
+            "decision_payload": {"approval_reason": "No deberia permitir cerrar Validate sin evidencia."},
+        },
+    )
+    assert generic_approve.status_code == 409
+    assert "persisted evaluation or simulation run" in generic_approve.json()["detail"]
+
+    dedicated_approve = client.post(
+        f"/api/v1/sessions/{session_id}/approve-validation-scenarios",
+        headers=headers,
+        json={
+            "note": "Intento dedicado sin corridas.",
+            "decision_payload": {"approval_reason": "No deberia permitir cierre falso."},
+        },
+    )
+    assert dedicated_approve.status_code == 409
+    assert "persisted evaluation or simulation run" in dedicated_approve.json()["detail"]
+
+
+def test_acp_product_build_status_route_is_read_only_without_entitlement(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+    headers, session_id = build_session_flow(client)
+    upgrade_session_tier(client, headers, session_id, tier="blueprint_pro")
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        record = session.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        seeded_run = ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key="acp",
+            product_mode="acp_implementation",
+            entitlement_tier="blueprint_pro",
+            access_state="locked",
+            lifecycle="ready_to_start",
+            idempotency_key="seeded-acp-readonly",
+            checkpoint_payload={"source": "test_seed"},
+            created_by_user_id=record.user_id,
+        )
+        session.add(seeded_run)
+        session.commit()
+        session.refresh(seeded_run)
+        seeded_run_id = seeded_run.id
+    finally:
+        session_generator.close()
+
+    response = client.get(f"/api/v1/sessions/{session_id}/product-builds/acp", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["entitlement"]["access_state"] == "locked"
+    assert payload["entitlement"]["purchase_required"] is True
+
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        steps = session.exec(
+            select(ProductBuildStepRecord).where(ProductBuildStepRecord.run_id == seeded_run_id)
+        ).all()
+    finally:
+        session_generator.close()
+
+    assert steps == []

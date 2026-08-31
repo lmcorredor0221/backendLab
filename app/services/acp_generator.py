@@ -2,9 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models import ACPFileEntry, ACPPreview, ConstructionGapEntry, EstimationReportArtifact, SessionSnapshot
+from app.models import (
+    ACPFileEntry,
+    ACPPreview,
+    ConstructionGapEntry,
+    ConstructionQuestionResponseRecord,
+    EstimationReportArtifact,
+    SessionSnapshot,
+)
 from app.services.acp_conformance import build_acp_conformance_files
 from app.services.acp_continuity import (
+    append_construction_readiness_gaps,
+    build_construction_decision_log,
+    build_deferred_construction_decision_backlog,
     is_no_applicable_answer,
     parse_answer_list,
     parse_answer_pairs,
@@ -2208,13 +2218,37 @@ def _build_construction_readiness_files(
     snapshot: SessionSnapshot,
     preview: ACPPreview,
     continuity_answers: dict[str, str] | None = None,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
 ) -> list[ACPFileEntry]:
     readiness = preview.construction_readiness
     validation = preview.validation
+    response_records = response_records or []
     blocking_gaps = [gap for gap in readiness.gaps if gap.severity == "blocking"]
     open_questions = _flatten_open_questions(preview)
     assumptions = _flatten_assumption_entries(preview)
     external_dependencies = _external_dependency_entries(preview)
+    decision_log = build_construction_decision_log(preview, response_records)
+    deferred_decisions = build_deferred_construction_decision_backlog(preview, response_records)
+    impact_outcomes = {
+        "answered_count": sum(1 for item in decision_log if item["status"] == "answered"),
+        "resolved_count": sum(1 for item in decision_log if item["status"] == "resolved"),
+        "deferred_count": len(deferred_decisions),
+        "no_material_impact_count": sum(
+            1
+            for item in decision_log
+            if (item.get("impact_analysis") or {}).get("impact_kind") == "no_material_impact"
+        ),
+        "localized_impact_count": sum(
+            1
+            for item in decision_log
+            if (item.get("impact_analysis") or {}).get("impact_kind") == "localized_impact"
+        ),
+        "structural_impact_count": sum(
+            1
+            for item in decision_log
+            if (item.get("impact_analysis") or {}).get("impact_kind") == "structural_impact"
+        ),
+    }
     deployment_questions = [
         question
         for question in open_questions
@@ -2299,7 +2333,10 @@ def _build_construction_readiness_files(
             "canonical_env_template": ACP_CANONICAL_ENV_TEMPLATE_PATH,
             "builder_handoff_prompt": "ACP/prompts/builder-handoff.md",
             "gap_closure_prompt": "ACP/prompts/gap-closure.md",
+            "question_impact_log": "ACP/construction-readiness/question-impact-log.yaml",
+            "deferred_decisions": "ACP/construction-readiness/deferred-decisions.yaml",
         },
+        "question_outcomes": impact_outcomes,
     }
     blocking_gaps_payload = {
         "blocking_gaps": [
@@ -2319,6 +2356,8 @@ def _build_construction_readiness_files(
         ]
     }
     open_questions_payload = {"open_questions": open_questions}
+    impact_log_payload = {"question_decisions": decision_log}
+    deferred_decisions_payload = {"deferred_decisions": deferred_decisions}
     assumptions_payload = {"assumptions": assumptions}
     external_dependencies_payload = {"external_dependencies": external_dependencies}
     required_api_contracts_payload = {"required_api_contracts": required_api_contracts}
@@ -2343,9 +2382,11 @@ def _build_construction_readiness_files(
             {"order": 1, "action": "read_overview", "path": "ACP/construction-readiness/overview.yaml"},
             {"order": 2, "action": "review_blocking_gaps", "path": "ACP/construction-readiness/blocking-gaps.yaml"},
             {"order": 3, "action": "ask_open_questions", "path": "ACP/construction-readiness/open-questions.yaml"},
-            {"order": 4, "action": "register_answers", "path": ACP_CANONICAL_ENV_TEMPLATE_PATH},
-            {"order": 5, "action": "recalculate_readiness", "path": "ACP/construction-readiness/overview.yaml"},
-            {"order": 6, "action": "continue_to_implementation", "condition": "only_if_can_start_build_true"},
+            {"order": 4, "action": "review_answer_impact", "path": "ACP/construction-readiness/question-impact-log.yaml"},
+            {"order": 5, "action": "register_answers", "path": ACP_CANONICAL_ENV_TEMPLATE_PATH},
+            {"order": 6, "action": "review_deferred_decisions", "path": "ACP/construction-readiness/deferred-decisions.yaml"},
+            {"order": 7, "action": "recalculate_readiness", "path": "ACP/construction-readiness/overview.yaml"},
+            {"order": 8, "action": "continue_to_implementation", "condition": "only_if_can_start_build_true"},
         ]
     }
 
@@ -2373,6 +2414,22 @@ def _build_construction_readiness_files(
             format="yaml",
             source_sections=["construction_readiness.gaps.questions"],
             content_text=serialize_yaml_document(open_questions_payload),
+        ),
+        build_acp_file_entry(
+            path="ACP/construction-readiness/question-impact-log.yaml",
+            domain="construction-readiness",
+            title="Question impact log",
+            format="yaml",
+            source_sections=["construction_readiness.gaps.questions"],
+            content_text=serialize_yaml_document(impact_log_payload),
+        ),
+        build_acp_file_entry(
+            path="ACP/construction-readiness/deferred-decisions.yaml",
+            domain="construction-readiness",
+            title="Deferred decisions",
+            format="yaml",
+            source_sections=["construction_readiness.gaps.questions"],
+            content_text=serialize_yaml_document(deferred_decisions_payload),
         ),
         build_acp_file_entry(
             path="ACP/construction-readiness/assumptions.yaml",
@@ -2945,6 +3002,8 @@ def _build_governance_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
 def generate_acp_files(
     snapshot: SessionSnapshot,
     continuity_answers: dict[str, str] | None = None,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+    extra_readiness_gaps: list[ConstructionGapEntry] | None = None,
 ) -> list[ACPFileEntry]:
     files: list[ACPFileEntry] = []
     files.append(_build_manifest_file(snapshot))
@@ -2968,12 +3027,19 @@ def generate_acp_files(
     files.extend(_build_estimation_files(snapshot))
     base_files = sorted(files, key=lambda item: item.path)
     base_preview = build_acp_preview(snapshot, base_files)
-    continuity_files = _build_construction_readiness_files(snapshot, base_preview, continuity_answers)
+    base_preview = append_construction_readiness_gaps(base_preview, extra_readiness_gaps)
+    continuity_files = _build_construction_readiness_files(
+        snapshot,
+        base_preview,
+        continuity_answers,
+        response_records,
+    )
     continuity_files.extend(_build_continuity_prompt_files(base_preview))
     acp_without_diagrams = sorted(base_files + continuity_files, key=lambda item: item.path)
     visualization_files = build_acp_visualization_files(snapshot, acp_without_diagrams)
     acp_without_conformance = sorted(acp_without_diagrams + visualization_files, key=lambda item: item.path)
     conformance_preview = build_acp_preview(snapshot, acp_without_conformance)
+    conformance_preview = append_construction_readiness_gaps(conformance_preview, extra_readiness_gaps)
     conformance_files = build_acp_conformance_files(
         conformance_preview,
         acp_without_conformance,
@@ -2985,5 +3051,11 @@ def generate_acp_files(
 def generate_acp_preview(
     snapshot: SessionSnapshot,
     continuity_answers: dict[str, str] | None = None,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+    extra_readiness_gaps: list[ConstructionGapEntry] | None = None,
 ) -> ACPPreview:
-    return build_acp_preview(snapshot, generate_acp_files(snapshot, continuity_answers))
+    preview = build_acp_preview(
+        snapshot,
+        generate_acp_files(snapshot, continuity_answers, response_records, extra_readiness_gaps),
+    )
+    return append_construction_readiness_gaps(preview, extra_readiness_gaps)

@@ -13,7 +13,9 @@ from app.models import (
     GuidedQuestionEntry,
     KnowledgeProfile,
     KnowledgeSource,
+    MemoryArchitectureResolution,
     MemoryContextBudgetEntry,
+    MemoryDependencyGap,
     MemoryDryCompileStatus,
     MemoryKnowledgeDesign,
     MemoryLayerDesign,
@@ -97,9 +99,47 @@ def _dedupe(items: list[str]) -> list[str]:
     return values
 
 
+def _selected_design(design_artifact: DesignRecommendationArtifact | None):
+    if design_artifact is None:
+        return None
+    if design_artifact.selected_design is not None:
+        return design_artifact.selected_design
+    for item in design_artifact.alternatives:
+        if item.alternative_key == design_artifact.recommended_alternative_key:
+            return item
+    return design_artifact.alternatives[0] if design_artifact.alternatives else None
+
+
 def _contains_keywords(*parts: str | None, keywords: tuple[str, ...]) -> bool:
     haystack = " ".join(str(part or "") for part in parts).lower()
     return any(keyword in haystack for keyword in keywords)
+
+
+MEMORY_TOOL_DEPENDENCY_ALIASES = {
+    "knowledge_retrieval": "knowledge_retrieval",
+    "retrieval": "knowledge_retrieval",
+    "rag": "knowledge_retrieval",
+    "document_ingestion": "document_ingestion",
+    "document_ingestor": "document_ingestion",
+    "ingestion": "document_ingestion",
+    "scheduler": "scheduler",
+    "scheduled_trigger": "scheduler",
+    "approval_gate": "approval_gate",
+    "human_approval": "approval_gate",
+    "human_handoff": "human_handoff",
+    "handoff": "human_handoff",
+    "outbound_notification": "outbound_notification",
+    "notification_sender": "outbound_notification",
+    "notifier": "outbound_notification",
+}
+
+
+def _canonical_memory_tool_dependency(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    normalized = normalized.replace("-", "_").replace(" ", "_")
+    if ":" in normalized:
+        normalized = normalized.split(":", 1)[0].strip()
+    return MEMORY_TOOL_DEPENDENCY_ALIASES.get(normalized, "")
 
 
 def _default_ttl(strategy: str, *, sensitive: bool) -> str:
@@ -275,8 +315,17 @@ def _build_context_budget_plan(
     design_artifact: DesignRecommendationArtifact | None,
 ) -> list[MemoryContextBudgetEntry]:
     role_count = 0
-    if design_artifact is not None and design_artifact.selected_design is not None:
-        role_count = len(design_artifact.selected_design.roles)
+    design_memory_implications: list[str] = []
+    selected_design = _selected_design(design_artifact)
+    if selected_design is not None:
+        role_count = len(selected_design.roles)
+        projection = selected_design.blueprint_projection
+        design_memory_implications = _dedupe(
+            [
+                *selected_design.memory_implications,
+                *projection.memory_implications,
+            ]
+        )
     has_open_questions = bool(definition_artifact and definition_artifact.open_questions)
     budget_entries = [
         MemoryContextBudgetEntry(
@@ -320,6 +369,21 @@ def _build_context_budget_plan(
                 max_retrieved_sources=2,
                 strategy="Pasar handoffs por digest, artefactos versionados y referencias, nunca por transcripcion completa.",
                 source_refs=["session.journey_latest_artifacts.design"],
+            )
+        )
+    if design_memory_implications:
+        budget_entries.append(
+            MemoryContextBudgetEntry(
+                role="architecture",
+                task_kind="design_memory_implications",
+                max_context_tokens=1400,
+                max_short_term_items=4,
+                max_retrieved_sources=2 if knowledge_mode == "rag" else 1,
+                strategy=(
+                    "Aplicar implicaciones declaradas por Design sin reenviar todo el artefacto: "
+                    + "; ".join(design_memory_implications[:4])
+                ),
+                source_refs=["session.journey_latest_artifacts.design.selected_design.memory_implications"],
             )
         )
     return budget_entries
@@ -452,11 +516,210 @@ def _build_tool_dependencies(
     approved_tools_digest: ApprovedToolsDigest | None,
     knowledge_profile: KnowledgeProfile,
     memory_profile: MemoryProfile,
+    design_artifact: DesignRecommendationArtifact | None = None,
+    proposal: MemoryArchitectureRecommendationOutput | None = None,
 ) -> list[MemoryToolDependency]:
-    return build_memory_tool_dependencies(
+    dependencies = build_memory_tool_dependencies(
         approved_tools_digest=approved_tools_digest,
         knowledge_profile=knowledge_profile,
         memory_profile=memory_profile,
+    )
+    approved_keys = (
+        {item.strip().lower() for item in approved_tools_digest.approved_tool_keys}
+        if approved_tools_digest is not None
+        else set()
+    )
+    dependency_by_key = {dependency.tool_key: dependency for dependency in dependencies}
+    selected_design = _selected_design(design_artifact)
+    if selected_design is not None:
+        projection = selected_design.blueprint_projection
+        implication_text = " ".join(
+            [
+                *selected_design.tool_implications,
+                *projection.tool_implications,
+                *selected_design.memory_implications,
+                *projection.memory_implications,
+            ]
+        ).lower()
+        design_dependency_keys = (
+            "knowledge_retrieval",
+            "document_ingestion",
+            "scheduler",
+            "approval_gate",
+            "human_handoff",
+            "outbound_notification",
+        )
+        for tool_key in design_dependency_keys:
+            if tool_key not in implication_text or tool_key in dependency_by_key:
+                continue
+            dependencies.append(
+                MemoryToolDependency(
+                    tool_key=tool_key,
+                    required=False,
+                    status="approved" if tool_key in approved_keys else "design_signal",
+                    reason="Design anticipo esta capacidad como implicacion de la arquitectura seleccionada.",
+                    capabilities=["design_intent", "architecture_continuity"],
+                )
+            )
+            dependency_by_key[tool_key] = dependencies[-1]
+    for raw_request in proposal.tool_dependency_requests if proposal is not None else []:
+        tool_key = _canonical_memory_tool_dependency(raw_request)
+        if not tool_key:
+            continue
+        status = "approved" if tool_key in approved_keys else "missing"
+        existing_dependency = dependency_by_key.get(tool_key)
+        if existing_dependency is not None:
+            updated = existing_dependency.model_copy(
+                update={
+                    "required": True,
+                    "status": "approved" if existing_dependency.status == "approved" else status,
+                    "reason": (
+                        existing_dependency.reason
+                        or f"Memory declaro {tool_key} como dependencia requerida durante su ejecucion."
+                    ),
+                    "capabilities": _dedupe(
+                        [
+                            *existing_dependency.capabilities,
+                            "memory_llm_dependency_request",
+                            "react_dependency_repair",
+                        ]
+                    ),
+                }
+            )
+            dependencies = [
+                updated if item.tool_key == tool_key else item
+                for item in dependencies
+            ]
+            dependency_by_key[tool_key] = updated
+            continue
+        dependency = MemoryToolDependency(
+            tool_key=tool_key,
+            required=True,
+            status=status,
+            reason=f"Memory declaro {tool_key} como dependencia requerida durante su ejecucion.",
+            capabilities=["memory_llm_dependency_request", "react_dependency_repair"],
+        )
+        dependencies.append(dependency)
+        dependency_by_key[tool_key] = dependency
+    return dependencies
+
+
+def _memory_dependency_remediation_policy(tool_key: str) -> str:
+    if tool_key in {"outbound_notification", "transactional_write"}:
+        return "human_review"
+    if tool_key in {
+        "knowledge_retrieval",
+        "document_ingestion",
+        "scheduler",
+        "approval_gate",
+        "human_handoff",
+    }:
+        return "auto"
+    return "implementation_pending"
+
+
+def _build_dependency_gaps(
+    dependencies: list[MemoryToolDependency],
+) -> list[MemoryDependencyGap]:
+    gaps: list[MemoryDependencyGap] = []
+    for dependency in dependencies:
+        tool_key = str(dependency.tool_key or "").strip().lower()
+        if not tool_key or not dependency.required or str(dependency.status or "").strip().lower() != "missing":
+            continue
+        policy = _memory_dependency_remediation_policy(tool_key)
+        gaps.append(
+            MemoryDependencyGap(
+                gap_key=f"memory_dependency:{tool_key}",
+                capability_key=tool_key,
+                required=True,
+                status="open",
+                remediation_policy=policy,  # type: ignore[arg-type]
+                batch_key="memory_tools_dependency_batch",
+                candidate_pattern_id=f"candidate_tool_pattern:{tool_key}",
+                reason=dependency.reason,
+                source_refs=[
+                    "memory.tool_dependencies",
+                    f"memory.tool_dependencies.{tool_key}",
+                    "approved_tools_digest",
+                ],
+            )
+        )
+    return gaps
+
+
+def _memory_mode_for_artifact(artifact: MemoryRecommendationArtifact) -> str:
+    knowledge_mode = artifact.proposed_knowledge_profile.mode.strip().lower()
+    strategy = artifact.proposed_memory_profile.strategy.strip().lower()
+    layers = " ".join(artifact.proposed_memory_profile.storage_layers).lower()
+    if knowledge_mode in {"rag", "hybrid"}:
+        return "semantic_rag"
+    if artifact.memory_need_decision.mode == "stateless" or strategy in {"no_memory", "stateless"}:
+        return "stateless"
+    if "persistent" in strategy or "durable" in layers or "database" in layers:
+        return "operational"
+    if "long" in layers or "vector" in layers:
+        return "hybrid"
+    return "short_term"
+
+
+def _context_budget_summary(plan: list[MemoryContextBudgetEntry]) -> str:
+    chunks = [
+        f"{item.role}:{item.max_context_tokens}"
+        for item in plan
+        if item.role and item.max_context_tokens
+    ]
+    return ", ".join(chunks[:4]) if chunks else "Usar presupuesto compacto por rol y recuperar fuentes bajo demanda."
+
+
+def _design_memory_evidence_refs(design_artifact: DesignRecommendationArtifact | None) -> list[str]:
+    selected_design = _selected_design(design_artifact)
+    if selected_design is None:
+        return []
+    refs = ["design.selected_alternative", "design.selected_alternative.memory_implications"]
+    if selected_design.agent_archetype:
+        refs.append(f"design.agent_archetype:{selected_design.agent_archetype}")
+    if selected_design.pattern_family:
+        refs.append(f"design.pattern_family:{selected_design.pattern_family}")
+    return refs
+
+
+def _build_architecture_resolution(
+    artifact: MemoryRecommendationArtifact,
+    *,
+    design_artifact: DesignRecommendationArtifact | None,
+    dependency_gaps: list[MemoryDependencyGap],
+) -> MemoryArchitectureResolution:
+    selected_design = _selected_design(design_artifact)
+    implication_text = ""
+    if selected_design is not None:
+        implication_text = " ".join(
+            [
+                *selected_design.memory_implications,
+                *selected_design.blueprint_projection.memory_implications,
+            ]
+        ).lower()
+    checkpoint_strategy = (
+        "Retomar desde checkpoint estable cuando se resuelvan dependencias de Tools o decisiones HITL."
+        if "checkpoint" in implication_text or dependency_gaps
+        else "Crear checkpoint al cerrar etapa y antes de operaciones con side effects."
+    )
+    return MemoryArchitectureResolution(
+        memory_mode=_memory_mode_for_artifact(artifact),  # type: ignore[arg-type]
+        required_for_pattern=bool(implication_text or dependency_gaps),
+        source_strategy=artifact.knowledge_design.source_scope or artifact.proposed_memory_profile.retrieval_policy,
+        retention_policy=artifact.proposed_memory_profile.retention_policy,
+        checkpoint_strategy=checkpoint_strategy,
+        context_budget=_context_budget_summary(artifact.context_budget_plan),
+        dependency_gaps=[gap.gap_key for gap in dependency_gaps],
+        evidence_refs=_dedupe(
+            [
+                "memory_need_decision",
+                "proposed_memory_profile",
+                "proposed_knowledge_profile",
+                "approved_tools_digest",
+                *_design_memory_evidence_refs(design_artifact),
+            ]
+        ),
     )
 
 
@@ -934,6 +1197,8 @@ def build_memory_recommendation_artifact(
             approved_tools_digest=approved_tools_digest,
             knowledge_profile=knowledge_profile,
             memory_profile=memory_profile,
+            design_artifact=design_artifact,
+            proposal=proposal,
         ),
         evidence_refs=_dedupe(
             [
@@ -953,6 +1218,17 @@ def build_memory_recommendation_artifact(
         missing_information=list(critique.missing_evidence) if critique is not None else [],
         proposed_memory_profile=memory_profile,
         proposed_knowledge_profile=knowledge_profile,
+    )
+    dependency_gaps = _build_dependency_gaps(artifact.tool_dependencies)
+    artifact = artifact.model_copy(
+        update={
+            "dependency_gaps": dependency_gaps,
+            "architecture_resolution": _build_architecture_resolution(
+                artifact,
+                design_artifact=design_artifact,
+                dependency_gaps=dependency_gaps,
+            ),
+        }
     )
     dry_compile_status = _build_dry_compile_status(session_snapshot, artifact)
     findings = _evaluate_memory_findings(artifact=artifact, critique=critique)
@@ -1007,6 +1283,7 @@ def auto_reconcile_memory_artifact(
     approved_tools_digest: ApprovedToolsDigest | None = None,
 ) -> MemoryRecommendationArtifact:
     findings = list(artifact.critic_findings)
+    strategy_present = bool(str(artifact.proposed_memory_profile.strategy or "").strip())
     approved_tool_keys = set()
     if approved_tools_digest is not None:
         approved_tool_keys.update(approved_tools_digest.approved_tool_keys)
@@ -1087,9 +1364,29 @@ def auto_reconcile_memory_artifact(
             )
         )
 
+    def _is_stale_strategy_gap(text: str) -> bool:
+        if not strategy_present:
+            return False
+        lower = str(text or "").lower()
+        strategy_signal = "memory_strategy" in lower or "estrategia de memoria" in lower
+        stale_signal = any(
+            kw in lower
+            for kw in (
+                "vacío",
+                "vacio",
+                "empty",
+                "blank",
+                "readiness_state bloqueado",
+                "readiness_state blocked",
+                "strategy vacío",
+                "strategy vacio",
+            )
+        )
+        return strategy_signal and stale_signal
+
     cleaned_missing_info = [
         info for info in (artifact.missing_information or [])
-        if not _is_infrastructure_noise(info)
+        if not _is_infrastructure_noise(info) and not _is_stale_strategy_gap(info)
     ]
     artifact = artifact.model_copy(update={"missing_information": cleaned_missing_info})
 
@@ -1104,6 +1401,16 @@ def auto_reconcile_memory_artifact(
         # Contradiction on memory strategy (persistent_memory vs empty override)
         if "override manual" in combined or "cadena vacía" in combined or "cadena vacia" in combined or "valor vacío" in combined or "valor vacio" in combined:
             # Self-healed
+            continue
+
+        if strategy_present and (
+            "memory_strategy_empty" in combined
+            or _is_stale_strategy_gap(combined)
+            or (
+                ("memory_strategy" in combined or "estrategia de memoria" in combined)
+                and ("readiness_state" in combined or "bloqueado" in combined or "blocked" in combined)
+            )
+        ):
             continue
 
         # Missing human_handoff tool or automated side effects
@@ -1138,6 +1445,18 @@ def auto_reconcile_memory_artifact(
         findings=reconciled_findings,
         dry_compile_status=dry_compile_status,
     )
+    if strategy_present:
+        floor = 0.74 if dry_compile_status.status == "ready" and blocking_count == 0 else 0.62
+        current_confidence = float(getattr(artifact.confidence, "overall", 0) or 0)
+        score = max(confidence.overall, current_confidence, floor)
+        confidence = MemoryRecommendationConfidence(
+            overall=max(0.0, min(0.96, round(score, 2))),
+            band=_band_for_score(score),
+            rationale=(
+                f"{confidence.rationale} La reconciliacion confirmo que la estrategia de memoria "
+                "propuesta esta presente y evita conservar findings obsoletos de estrategia vacia."
+            ),
+        )
 
     # 4. Harmonize summary and critic_summary if they contain stale contradictory / blocked alarmist text
     summary = artifact.summary or ""
@@ -1147,6 +1466,11 @@ def auto_reconcile_memory_artifact(
         or "contradicciones severas" in summary_lower
         or "bloqueos y contradicciones" in summary_lower
         or "estado bloqueado" in summary_lower
+        or "memory_strategy vacío" in summary_lower
+        or "memory_strategy vacio" in summary_lower
+        or "memory_strategy empty" in summary_lower
+        or "readiness_state bloqueado" in summary_lower
+        or "readiness_state blocked" in summary_lower
         or "evaluación crítica de la arquitectura de memoria" in summary_lower
         or "evaluacion critica de la arquitectura de memoria" in summary_lower
     ):

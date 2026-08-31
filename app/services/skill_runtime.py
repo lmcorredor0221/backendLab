@@ -709,6 +709,8 @@ class MemoryRecommendationSkillInput(ContractModel):
     canvas: CanvasArtifact
     blueprint: BlueprintArtifact
     approved_tools_digest: ApprovedToolsDigest | None = None
+    design_artifact: DesignRecommendationArtifact | None = None
+    tools_artifact: ToolRecommendationArtifact | None = None
     instructions: str = ""
     source_stage_versions: MemoryRecommendationSourceStageVersions = PydanticField(
         default_factory=MemoryRecommendationSourceStageVersions
@@ -887,6 +889,7 @@ class SkillRunContext:
     definition_artifact: RequirementsDefinitionOutput | None = None
     design_instructions: str = ""
     design_artifact: DesignRecommendationArtifact | None = None
+    tools_artifact: ToolRecommendationArtifact | None = None
     tool_instructions: str = ""
     blueprint: BlueprintArtifact | None = None
     evaluation_dataset: EvaluationDatasetArtifact | None = None
@@ -1716,6 +1719,54 @@ def _proposal_output_from_design_artifact(artifact: DesignRecommendationArtifact
     )
 
 
+def _selected_design_for_memory(artifact: DesignRecommendationArtifact | None):
+    if artifact is None:
+        return None
+    if artifact.selected_design is not None:
+        return artifact.selected_design
+    for alternative in artifact.alternatives:
+        if alternative.alternative_key == artifact.recommended_alternative_key:
+            return alternative
+    return artifact.alternatives[0] if artifact.alternatives else None
+
+
+def _design_memory_implication_lines(artifact: DesignRecommendationArtifact | None) -> list[str]:
+    selected_design = _selected_design_for_memory(artifact)
+    if selected_design is None:
+        return []
+    lines: list[str] = []
+    for value in [
+        *selected_design.memory_implications,
+        *selected_design.blueprint_projection.memory_implications,
+    ]:
+        token = str(value or "").strip()
+        if token and token not in lines:
+            lines.append(token)
+    return lines[:8]
+
+
+def _tools_capability_resolution_lines(artifact: ToolRecommendationArtifact | None) -> list[str]:
+    if artifact is None:
+        return []
+    lines: list[str] = []
+    for resolution in artifact.capability_resolutions:
+        capability_key = str(resolution.capability_key or "").strip()
+        if not capability_key:
+            continue
+        lines.append(
+            "|".join(
+                [
+                    f"capability={capability_key}",
+                    f"necessity={resolution.necessity}",
+                    f"available={str(resolution.available).lower()}",
+                    f"policy={resolution.promotion_policy}",
+                    f"pattern={resolution.candidate_pattern_id}",
+                ]
+            )
+        )
+    return lines[:12]
+
+
 def _run_design_proposal_skill(input_model: BaseModel, context: SkillRunContext) -> SkillExecutionResult:
     skill_input = AgentDesignInput.model_validate(input_model.model_dump(mode="json"))
     if context.definition_artifact is None:
@@ -1995,6 +2046,8 @@ def _prepare_memory_recommendation_input(context: SkillRunContext) -> MemoryReco
         canvas=context.canvas,
         blueprint=context.blueprint,
         approved_tools_digest=approved_tools_digest,
+        design_artifact=context.design_artifact,
+        tools_artifact=context.tools_artifact,
         instructions=context.tool_instructions,
         source_stage_versions=MemoryRecommendationSourceStageVersions(),
     )
@@ -2013,6 +2066,8 @@ def _run_memory_recommendation_skill(input_model: BaseModel, context: SkillRunCo
                 if skill_input.approved_tools_digest is not None
                 else [item.name for item in skill_input.blueprint.tools if item.name]
             ),
+            design_memory_implications=_design_memory_implication_lines(skill_input.design_artifact),
+            tools_capability_resolutions=_tools_capability_resolution_lines(skill_input.tools_artifact),
             source_refs=[
                 "session.discovery",
                 "session.canvas",
@@ -3048,6 +3103,7 @@ def run_memory_recommendation_stage(
     blueprint: BlueprintArtifact,
     definition_artifact: RequirementsDefinitionOutput | None,
     design_artifact: DesignRecommendationArtifact | None,
+    tools_artifact: ToolRecommendationArtifact | None,
     approved_tools_digest: ApprovedToolsDigest | None,
     session_snapshot: SessionSnapshot | None,
     instructions: str = "",
@@ -3071,6 +3127,8 @@ def run_memory_recommendation_stage(
                 canvas=canvas,
                 blueprint=blueprint,
                 approved_tools_digest=approved_tools_digest,
+                design_artifact=design_artifact,
+                tools_artifact=tools_artifact,
                 instructions=instructions,
                 source_stage_versions=source_stage_versions or MemoryRecommendationSourceStageVersions(),
             ),
@@ -3084,6 +3142,7 @@ def run_memory_recommendation_stage(
             blueprint=blueprint,
             definition_artifact=definition_artifact,
             design_artifact=design_artifact,
+            tools_artifact=tools_artifact,
             tool_instructions=instructions,
             runtime_settings=runtime_settings,
             stage_context=proposal_stage_context,
@@ -3107,6 +3166,8 @@ def run_memory_recommendation_stage(
                     if approved_tools_digest is not None
                     else [item.name for item in blueprint.tools if item.name]
                 ),
+                design_memory_implications=_design_memory_implication_lines(design_artifact),
+                tools_capability_resolutions=_tools_capability_resolution_lines(tools_artifact),
                 source_refs=[
                     "session.discovery",
                     "session.canvas",
@@ -3126,6 +3187,7 @@ def run_memory_recommendation_stage(
             blueprint=blueprint,
             definition_artifact=definition_artifact,
             design_artifact=design_artifact,
+            tools_artifact=tools_artifact,
             tool_instructions=instructions,
             runtime_settings=runtime_settings,
             stage_context=critique_stage_context,

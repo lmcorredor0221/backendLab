@@ -8,6 +8,7 @@ from app.models import (
     BlueprintArtifact,
     CanvasArtifact,
     DiscoveryArtifact,
+    DesignAlternative,
     DesignRecommendationArtifact,
     EvaluationDatasetArtifact,
     EvaluationRubricArtifact,
@@ -35,12 +36,57 @@ from app.services.skill_runtime import (
 from app.services.validation_simulation_service import build_validation_simulation_specification
 
 
+def _has_text(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_text(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_text(item) for item in value.values())
+    return bool(value)
+
+
+def _selected_design(value: DesignRecommendationArtifact) -> DesignAlternative | None:
+    if value.selected_design is not None:
+        return value.selected_design
+    if value.recommended_alternative_key:
+        return next(
+            (
+                item
+                for item in value.alternatives
+                if item.alternative_key == value.recommended_alternative_key
+            ),
+            None,
+        )
+    return value.alternatives[0] if value.alternatives else None
+
+
 def _validate_design(value: Any) -> tuple[list[str], bool, str]:
     if not isinstance(value, DesignRecommendationArtifact):
         return ["Design no produjo un artefacto estructurado."], True, "La propuesta de Design no es valida."
     issues = [item.title for item in value.critic_findings if str(item.severity).lower() == "blocking" and item.title]
     if not value.alternatives or not value.recommended_alternative_key:
         issues.append("Design debe producir alternativas y una recomendacion explicita.")
+    selected = _selected_design(value)
+    if selected is None:
+        issues.append("Design debe seleccionar una alternativa para alimentar Tools y Memory.")
+    else:
+        if not _has_text(selected.architecture) or not _has_text(selected.roles):
+            issues.append("Design debe detallar arquitectura, componentes o roles principales.")
+        if not _has_text(selected.handoffs) and not _has_text(selected.coordination_model) and not _has_text(selected.topology):
+            issues.append("Design debe explicar interacciones, handoffs o coordinacion entre componentes.")
+        if not _has_text(selected.tool_implications) and not _has_text(selected.blueprint_projection.tool_implications):
+            issues.append("Design debe declarar implicaciones concretas para Tools.")
+        if not _has_text(selected.memory_implications) and not _has_text(selected.blueprint_projection.memory_implications):
+            issues.append("Design debe declarar implicaciones concretas para Memory.")
+        if not _has_text(selected.security_notes) and not _has_text(selected.blueprint_projection.safety_checks) and not _has_text(selected.blueprint_projection.guardrails):
+            issues.append("Design debe cubrir seguridad, integraciones o guardrails relevantes.")
+        if not _has_text(selected.business_fit) and not _has_text(selected.why_recommended) and not _has_text(value.decision_rationale):
+            issues.append("Design debe justificar por que el patron recomendado encaja con el negocio.")
+        if not _has_text(selected.failure_modes) and not _has_text(selected.tradeoffs) and not _has_text(selected.risk_tradeoffs):
+            issues.append("Design debe registrar tradeoffs, riesgos o modos de fallo del patron.")
     return list(dict.fromkeys(issues)), bool(issues), "Design tiene alternativas, critica y recomendacion trazable." if not issues else "Design requiere revision antes de promoverse."
 
 
@@ -86,6 +132,7 @@ def run_design_react(
         ),
         validator=_validate_design,
         initial_state=initial_state,
+        effective_language=getattr(proposal_stage_context, "effective_language", "es"),
     )
 
 
@@ -129,6 +176,7 @@ def run_tools_react(*, session_id: UUID, workspace_id: UUID, discovery: Discover
         validator=_validate_tools,
         remediation_action="raise_cross_stage_remediation",
         initial_state=initial_state,
+        effective_language=getattr(stage_context, "effective_language", "es"),
     )
 
 
@@ -155,34 +203,36 @@ def run_memory_react(*, session_id: UUID, workspace_id: UUID, discovery: Discove
         session_id=session_id,
         workspace_id=workspace_id,
         context_refs=["session.discovery", "session.canvas", "session.journey_latest_artifacts.define", "session.journey_latest_artifacts.design", "session.journey_latest_artifacts.tools", "knowledge.memory_strategy"],
-        primary_runner=lambda: _memory_run(session_id, discovery, canvas, blueprint, definition_artifact, design_artifact, approved_tools_digest, session_snapshot, instructions, blueprint_version_number, source_stage_versions, runtime_settings, proposal_stage_context, critique_stage_context),
+        primary_runner=lambda: _memory_run(session_id, discovery, canvas, blueprint, definition_artifact, design_artifact, tools_artifact, approved_tools_digest, session_snapshot, instructions, blueprint_version_number, source_stage_versions, runtime_settings, proposal_stage_context, critique_stage_context),
         secondary_runner=lambda value: ReactCapabilityOutput(value=value, summary="La critica de Memory fue ejecutada por el skill especializado y queda gobernada por la evaluacion cruzada Tools/Memory."),
         validator=lambda value: _validate_memory(value, tools_artifact),
         remediation_action="raise_cross_stage_remediation",
         initial_state=initial_state,
+        effective_language=getattr(proposal_stage_context, "effective_language", "es"),
     )
 
 
-def _memory_run(session_id: UUID, discovery: DiscoveryArtifact, canvas: CanvasArtifact, blueprint: BlueprintArtifact, definition: RequirementsDefinitionOutput | None, design: DesignRecommendationArtifact | None, digest: ApprovedToolsDigest, snapshot: SessionSnapshot, instructions: str, version: int | None, versions: Any, settings: LLMRuntimeSettings, proposal_context: Any, critique_context: Any) -> ReactCapabilityOutput:
-    artifact, traces = run_memory_recommendation_stage(session_id=session_id, discovery=discovery, canvas=canvas, blueprint=blueprint, definition_artifact=definition, design_artifact=design, approved_tools_digest=digest, session_snapshot=snapshot, instructions=instructions, blueprint_version_number=version, source_stage_versions=versions, runtime_settings=settings, proposal_stage_context=proposal_context, critique_stage_context=critique_context)
+def _memory_run(session_id: UUID, discovery: DiscoveryArtifact, canvas: CanvasArtifact, blueprint: BlueprintArtifact, definition: RequirementsDefinitionOutput | None, design: DesignRecommendationArtifact | None, tools: ToolRecommendationArtifact | None, digest: ApprovedToolsDigest, snapshot: SessionSnapshot, instructions: str, version: int | None, versions: Any, settings: LLMRuntimeSettings, proposal_context: Any, critique_context: Any) -> ReactCapabilityOutput:
+    artifact, traces = run_memory_recommendation_stage(session_id=session_id, discovery=discovery, canvas=canvas, blueprint=blueprint, definition_artifact=definition, design_artifact=design, tools_artifact=tools, approved_tools_digest=digest, session_snapshot=snapshot, instructions=instructions, blueprint_version_number=version, source_stage_versions=versions, runtime_settings=settings, proposal_stage_context=proposal_context, critique_stage_context=critique_context)
     return ReactCapabilityOutput(value=artifact, traces=traces, warnings=[warning for trace in traces for warning in trace.warnings], summary="Memory genero propuesta de corto, largo plazo y conocimiento con dependencia Tools visible.")
 
 
-def run_evaluation_react(*, session_id: UUID, workspace_id: UUID, discovery: DiscoveryArtifact | None, canvas: CanvasArtifact | None, blueprint: BlueprintArtifact | None, dataset: EvaluationDatasetArtifact | None, rubric: EvaluationRubricArtifact | None, runtime_settings: LLMRuntimeSettings, initial_state: Any = None) -> ReactStageExecution:
+def run_evaluation_react(*, session_id: UUID, workspace_id: UUID, discovery: DiscoveryArtifact | None, canvas: CanvasArtifact | None, blueprint: BlueprintArtifact | None, dataset: EvaluationDatasetArtifact | None, rubric: EvaluationRubricArtifact | None, runtime_settings: LLMRuntimeSettings, stage_context: Any = None, initial_state: Any = None, effective_language: str = "es") -> ReactStageExecution:
     return run_react_stage(
         stage="validate",
         capability="generate_validation_scenarios",
         session_id=session_id,
         workspace_id=workspace_id,
         context_refs=["session.journey_latest_artifacts.memory", "session.blueprint", "knowledge.evaluation_rubric"],
-        primary_runner=lambda: _evaluation_run(discovery, canvas, blueprint, dataset, rubric, runtime_settings),
+        primary_runner=lambda: _evaluation_run(discovery, canvas, blueprint, dataset, rubric, runtime_settings, stage_context),
         validator=lambda value: _validate_evaluation(value),
         initial_state=initial_state,
+        effective_language=effective_language,
     )
 
 
-def _evaluation_run(discovery: Any, canvas: Any, blueprint: Any, dataset: Any, rubric: Any, settings: Any) -> ReactCapabilityOutput:
-    envelope, traces = run_evaluation_stage(discovery, canvas, blueprint, dataset, rubric, runtime_settings=settings)
+def _evaluation_run(discovery: Any, canvas: Any, blueprint: Any, dataset: Any, rubric: Any, settings: Any, stage_context: Any = None) -> ReactCapabilityOutput:
+    envelope, traces = run_evaluation_stage(discovery, canvas, blueprint, dataset, rubric, runtime_settings=settings, stage_context=stage_context)
     return ReactCapabilityOutput(value=envelope, traces=traces, warnings=list(envelope.warnings), summary="Validate genero casos y evaluo cobertura del blueprint.")
 
 
@@ -225,10 +275,11 @@ def run_validation_spec_react(*, session_id: UUID, workspace_id: UUID, discovery
         primary_runner=run,
         validator=validate,
         initial_state=initial_state,
+        effective_language=getattr(stage_context, "effective_language", "es"),
     )
 
 
-def run_callable_react(*, stage: str, capability: str, session_id: UUID, workspace_id: UUID, context_refs: list[str], runner: CapabilityRunner, validator: Validator, initial_state: Any = None) -> ReactStageExecution:
+def run_callable_react(*, stage: str, capability: str, session_id: UUID, workspace_id: UUID, context_refs: list[str], runner: CapabilityRunner, validator: Validator, initial_state: Any = None, effective_language: str = "es") -> ReactStageExecution:
     return run_react_stage(
         stage=stage,
         capability=capability,
@@ -238,4 +289,5 @@ def run_callable_react(*, stage: str, capability: str, session_id: UUID, workspa
         primary_runner=runner,
         validator=validator,
         initial_state=initial_state,
+        effective_language=effective_language,
     )

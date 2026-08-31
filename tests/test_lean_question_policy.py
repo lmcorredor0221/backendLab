@@ -136,3 +136,40 @@ def test_deferred_questions_are_exportable_for_acp_follow_up() -> None:
     assert deferred[0]["source_stage"] == "design"
     assert deferred[0]["target_stage"] == "acp"
     assert deferred[0]["status"] == "defer_to_acp"
+
+
+def test_question_policy_rejects_unmanaged_deferral_targets() -> None:
+    decision = classify_stage_question(
+        "design",
+        {
+            "key": "phantom_stage",
+            "question": "Resolver esta duda en la fase nebulosa externa.",
+            "deferral_target_stage": "nebulosa_externa",
+        },
+    )
+
+    assert decision.status == "reject_as_noise"
+    assert decision.deferral_target_stage == ""
+    assert "no gobernado" in decision.reason
+
+
+def test_deferred_questions_do_not_export_unmanaged_targets() -> None:
+    deferred = deferred_stage_questions(
+        "design",
+        [
+            {
+                "key": "valid_acp_question",
+                "question": "Que credenciales se usaran durante la implementacion?",
+                "deferral_target_stage": "ACP",
+            },
+            {
+                "key": "invalid_stage_question",
+                "question": "Enviar decision a una fase externa no definida.",
+                "deferral_target_stage": "fase_magica",
+            },
+        ],
+    )
+
+    assert len(deferred) == 1
+    assert deferred[0]["target_stage"] == "acp"
+    assert "valid_acp_question" in deferred[0]["question"]

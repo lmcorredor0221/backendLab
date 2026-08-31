@@ -23,6 +23,7 @@ from app.models import (
     UserRecord,
     utc_now,
 )
+from app.services.product_processing.journey_state_machine_service import load_persisted_journey_state_machine
 
 
 @dataclass(frozen=True)
@@ -492,25 +493,53 @@ def build_acp_workspace_response(
     readiness: ConstructionReadinessReport,
     access: CommercialAccessSnapshotV2,
 ) -> ACPWorkspaceResponse:
-    run = ensure_acp_run(db, record=record, current_user=current_user, snapshot=snapshot)
-    update_run_from_phases(db, run)
-    phases = _phase_rows(db, run)
-    phase_map = {item.phase_key: item for item in phases}
-    next_action = "Ejecutar la siguiente subfase ACP."
-    if run.status == ACPWorkflowRunStatus.waiting_user:
-        next_action = "Responder preguntas de implementacion antes de continuar."
-    if run.status == ACPWorkflowRunStatus.blocked:
-        next_action = "Resolver GAPs bloqueantes antes de exportar el paquete."
-    if run.status in {ACPWorkflowRunStatus.completed, ACPWorkflowRunStatus.completed_with_observations}:
-        next_action = "Generar export durable o revisar launcher."
+    run = _load_current_acp_run(db, record=record, snapshot=snapshot)
+    phase_map = {item.phase_key: item for item in _phase_rows(db, run)} if run is not None else {}
+    if run is None:
+        run_response = ACPBuildRunResponse(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            blueprint_version_number=_blueprint_version_number(snapshot),
+            current_phase_key=ACP_PHASES[0].key,
+            phase_order=_phase_order_keys(),
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+        next_action = "Iniciar la validacion del Blueprint para crear la ejecucion ACP."
+    else:
+        run_response = serialize_run(run)
+        next_action = "Ejecutar la siguiente subfase ACP."
+        if run.status == ACPWorkflowRunStatus.waiting_user:
+            next_action = "Responder preguntas de implementacion antes de continuar."
+        if run.status == ACPWorkflowRunStatus.blocked:
+            next_action = "Resolver GAPs bloqueantes antes de exportar el paquete."
+        if run.status in {ACPWorkflowRunStatus.completed, ACPWorkflowRunStatus.completed_with_observations}:
+            next_action = "Generar export durable o revisar launcher."
+    journey_state = load_persisted_journey_state_machine(db, record=record)
     return ACPWorkspaceResponse(
         session_id=record.id,
         workspace_id=record.workspace_id,
         access=access,
-        run=serialize_run(run),
+        run=run_response,
         phases=[serialize_phase_run(phase_map.get(definition.key), definition) for definition in ACP_PHASES],
         phase_definitions=phase_definition_responses(),
         readiness=readiness,
         validation=preview.validation,
+        journey_state_machine=journey_state.model_dump(mode="json") if journey_state is not None else {},
         next_action=next_action,
     )
+
+
+def _load_current_acp_run(
+    db: Session,
+    *,
+    record: SessionRecord,
+    snapshot: SessionSnapshot,
+) -> ACPBuildRunRecord | None:
+    return db.exec(
+        select(ACPBuildRunRecord).where(
+            ACPBuildRunRecord.workspace_id == record.workspace_id,
+            ACPBuildRunRecord.session_id == record.id,
+            ACPBuildRunRecord.idempotency_key == _run_idempotency_key(record, _blueprint_version_number(snapshot)),
+        )
+    ).first()

@@ -150,27 +150,29 @@ def build_product_build_status(
         diagram_jobs_by_key=diagram_jobs_by_deliverable_key,
         run=run,
     )
-    progress = _build_progress(run, deliverables)
-    lifecycle = _derive_lifecycle(run, entitlement, deliverables, attention_items)
+    visible_run = None if entitlement.purchase_required else run
+    visible_attention_items = [] if entitlement.purchase_required else attention_items
+    progress = _build_progress(visible_run, deliverables)
+    lifecycle = _derive_lifecycle(visible_run, entitlement, deliverables, visible_attention_items)
     current_activity = _build_current_activity(
         db,
-        run,
+        visible_run,
         [*product_jobs_by_key.values(), *diagram_jobs_by_deliverable_key.values()],
         lifecycle,
     )
-    steps_by_key = _steps_by_key(db, run)
+    steps_by_key = _steps_by_key(db, visible_run)
     processing_queue = _build_processing_queue(
-        run,
+        visible_run,
         deliverables=deliverables,
         jobs_by_key=steps_by_key,
     )
     actions = _build_actions(meta, lifecycle, entitlement, record_id=str(record.id))
-    last_error = _build_last_error(run, deliverables)
+    last_error = _build_last_error(visible_run, deliverables)
     stages = _build_stage_statuses(
         deliverables,
-        attention_items,
+        visible_attention_items,
         record=record,
-        run=run,
+        run=visible_run,
         overall_progress=progress,
     )
 
@@ -186,7 +188,7 @@ def build_product_build_status(
         current_activity=current_activity,
         stages=stages,
         deliverables=deliverables,
-        attention=_summarize_attention(attention_items),
+        attention=_summarize_attention(visible_attention_items),
         actions=actions,
         last_error=last_error,
         processing_queue=processing_queue,

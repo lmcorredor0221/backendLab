@@ -70,6 +70,7 @@ class CodexContextInlineSource:
     summary: str = ""
     stage_affinity: list[str] = field(default_factory=list)
     agent_affinity: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ class CodexContextSource:
     agent_affinity: list[str] = field(default_factory=list)
     staged_file_content: str = ""
     prompt_truncated: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def workspace_content(self) -> str:
@@ -149,6 +151,7 @@ class CodexContextSource:
             "source_version": self.source_version,
             "stage_affinity": list(self.stage_affinity),
             "agent_affinity": list(self.agent_affinity),
+            "metadata": dict(self.metadata),
         }
 
 
@@ -247,6 +250,7 @@ class _RawContextCandidate:
     stage_affinity: list[str]
     agent_affinity: list[str]
     score: tuple[int, int, int, int, str]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class CodexContextAssembler:
@@ -330,14 +334,23 @@ class CodexContextAssembler:
                     )
                 )
 
+        candidate_reserve_chars = self._candidate_reserve_chars(
+            request=request,
+            candidate_count=len(candidate_candidates),
+            budget_chars=budget_chars,
+        )
+        required_budget_chars = max(1_200, budget_chars - candidate_reserve_chars) if candidate_reserve_chars else budget_chars
         required_sources, remaining_chars = self._materialize_sources(
             required_candidates,
             bucket="required",
-            budget_chars=budget_chars,
+            budget_chars=required_budget_chars,
             preserve_all=True,
         )
         candidate_budget = max(0, budget_chars - sum(item.assembled_chars for item in required_sources))
         remaining_slots = max(0, max_items - len(required_sources))
+        if candidate_reserve_chars and candidate_candidates:
+            candidate_budget = max(candidate_budget, candidate_reserve_chars, remaining_chars)
+            remaining_slots = max(remaining_slots, 1)
         selected_candidates = (
             sorted(candidate_candidates, key=lambda item: item.score)[:remaining_slots]
             if remaining_slots > 0
@@ -399,6 +412,17 @@ class CodexContextAssembler:
             candidate_sources=candidate_sources,
             stats=stats,
         )
+
+    def _candidate_reserve_chars(
+        self,
+        *,
+        request: CodexContextRequest,
+        candidate_count: int,
+        budget_chars: int,
+    ) -> int:
+        if request.strict_budget is not None or candidate_count <= 0:
+            return 0
+        return min(1_600, max(600, budget_chars // 5))
 
     def _load_taxonomy_payload(self) -> dict[str, Any]:
         if not self.taxonomy_manifest_path.exists():
@@ -476,6 +500,7 @@ class CodexContextAssembler:
             stage_affinity=list(source.stage_affinity),
             agent_affinity=list(source.agent_affinity) or [role],
             score=(0 if source.required else 1, 0, 0, index, source.key),
+            metadata=dict(source.metadata),
         )
 
     def _approved_ref_candidate(self, source: ApprovedArtifactReference, *, index: int) -> _RawContextCandidate:
@@ -882,6 +907,7 @@ class CodexContextAssembler:
                     agent_affinity=list(candidate.agent_affinity),
                     staged_file_content=staged_file_content,
                     prompt_truncated=prompt_truncated,
+                    metadata=dict(candidate.metadata),
                 )
             )
         return sources, remaining_chars

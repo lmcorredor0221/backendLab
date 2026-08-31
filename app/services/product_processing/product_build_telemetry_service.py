@@ -5,7 +5,7 @@ from uuid import UUID
 
 from sqlmodel import Session, select
 
-from app.models import CommercialEventRecord, SessionRecord, StageOperationRecord, UserRecord, utc_now
+from app.models import CommercialEventRecord, ExportJobRecord, SessionRecord, StageOperationRecord, UserRecord, utc_now
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
 from app.services.product_processing.contracts import (
     ProductBuildProductKey,
@@ -72,6 +72,7 @@ def build_product_build_telemetry_report(
     runs = _load_runs(db, record)
     steps = _load_steps(db, record)
     jobs = _load_jobs(db, record)
+    export_jobs = _load_export_jobs(db, record)
     commercial_events = _load_commercial_events(db, record, limit=limit)
     operations = _load_operations(db, record, limit=limit)
 
@@ -80,6 +81,7 @@ def build_product_build_telemetry_report(
         runs=runs,
         steps=steps,
         jobs=jobs,
+        export_jobs=export_jobs,
         commercial_events=commercial_events,
         operations=operations,
         limit=limit,
@@ -90,6 +92,7 @@ def build_product_build_telemetry_report(
             runs=runs,
             steps=steps,
             jobs=jobs,
+            export_jobs=export_jobs,
             events=events,
         )
         for product_key in (
@@ -110,7 +113,7 @@ def build_product_build_telemetry_report(
         tokens_total=sum(item.tokens_total for item in products),
         estimated_cost_usd=round(sum(item.estimated_cost_usd for item in products), 6),
     )
-    warnings = _build_warnings(products=products, jobs=jobs)
+    warnings = _build_warnings(products=products, jobs=jobs, export_jobs=export_jobs)
 
     return ProductBuildTelemetryReport(
         workspace_id=record.workspace_id,
@@ -127,6 +130,7 @@ def build_product_build_telemetry_report(
             "commercial-events.v1",
             "stage-operations.v1",
             "deliverable-generation-jobs.v1",
+            "export-jobs.v1",
         ],
     )
 
@@ -164,6 +168,16 @@ def _load_jobs(db: Session, record: SessionRecord) -> list[DeliverableGeneration
     )
 
 
+def _load_export_jobs(db: Session, record: SessionRecord) -> list[ExportJobRecord]:
+    return list(
+        db.exec(
+            select(ExportJobRecord)
+            .where(ExportJobRecord.workspace_id == record.workspace_id, ExportJobRecord.session_id == record.id)
+            .order_by(ExportJobRecord.updated_at.desc())
+        ).all()
+    )
+
+
 def _load_commercial_events(db: Session, record: SessionRecord, *, limit: int) -> list[CommercialEventRecord]:
     return list(
         db.exec(
@@ -192,6 +206,7 @@ def _build_events(
     runs: list[ProductBuildRunRecord],
     steps: list[ProductBuildStepRecord],
     jobs: list[DeliverableGenerationJobRecord],
+    export_jobs: list[ExportJobRecord],
     commercial_events: list[CommercialEventRecord],
     operations: list[StageOperationRecord],
     limit: int,
@@ -312,6 +327,26 @@ def _build_events(
             )
         )
 
+    for export_job in export_jobs:
+        product_key = _normalize_product_key(export_job.product_key)
+        run = latest_run_by_product.get(product_key)
+        event_type = "error" if export_job.status.value == "failed" else "export"
+        events.append(
+            ProductBuildTelemetryEvent(
+                event_key=_export_event_key(export_job),
+                event_type=event_type,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                product_key=product_key,
+                run_id=str(run.id) if run is not None else "",
+                export_job_id=str(export_job.id),
+                source="export_job",
+                status=export_job.status.value,
+                created_at=export_job.updated_at.isoformat(),
+                metadata_keys=_safe_metadata_keys(export_job.metadata_payload),
+            )
+        )
+
     for operation in operations:
         event_type = _operation_event_type(operation.action)
         if event_type == "other" and operation.status.value not in ERROR_STATES:
@@ -326,6 +361,7 @@ def _build_events(
                 session_id=record.id,
                 product_key=product_key,
                 run_id=str(run.id) if run is not None else "",
+                operation_id=str(operation.id),
                 stage_key=operation.stage_key,
                 source="stage_operation",
                 status=operation.status.value,
@@ -344,6 +380,7 @@ def _build_product_summary(
     runs: list[ProductBuildRunRecord],
     steps: list[ProductBuildStepRecord],
     jobs: list[DeliverableGenerationJobRecord],
+    export_jobs: list[ExportJobRecord],
     events: list[ProductBuildTelemetryEvent],
 ) -> ProductBuildTelemetryProductSummary:
     product_runs = [run for run in runs if _normalize_product_key(run.product_key or run.product_mode) == product_key]
@@ -351,6 +388,7 @@ def _build_product_summary(
     run_ids = {run.id for run in product_runs}
     product_steps = [step for step in steps if step.run_id in run_ids]
     product_jobs = [job for job in jobs if _normalize_product_key(job.product_mode or (job.request_metadata or {}).get("product_key", "")) == product_key]
+    product_export_jobs = [job for job in export_jobs if _normalize_product_key(job.product_key) == product_key]
     product_events = [event for event in events if event.product_key == product_key]
     deliverable_keys = {
         item
@@ -365,6 +403,7 @@ def _build_product_summary(
             *(run.updated_at for run in product_runs),
             *(step.updated_at for step in product_steps),
             *(job.updated_at for job in product_jobs),
+            *(job.updated_at for job in product_export_jobs),
         ],
         default=None,
     )
@@ -436,6 +475,12 @@ def _classify_event(event_key: str, source: str) -> str:
     return "other"
 
 
+def _export_event_key(job: ExportJobRecord) -> str:
+    if job.status.value == "ready" and int(job.metadata_payload.get("auto_regeneration_count", 0) or 0) > 0:
+        return "export_job_regenerated"
+    return f"export_job_{job.status.value}"
+
+
 def _operation_event_type(action: str) -> str:
     normalized = str(action or "").strip().lower()
     if "retry" in normalized or "reintentar" in normalized or "regenerar" in normalized:
@@ -470,6 +515,7 @@ def _build_warnings(
     *,
     products: list[ProductBuildTelemetryProductSummary],
     jobs: list[DeliverableGenerationJobRecord],
+    export_jobs: list[ExportJobRecord],
 ) -> list[str]:
     warnings: list[str] = []
     if any(job for job in jobs if (job.tokens_input + job.tokens_output) > 0 and job.estimated_cost_usd <= 0):
@@ -478,4 +524,8 @@ def _build_warnings(
         warnings.append("Existen errores de ejecucion en product builds; revisar eventos de tipo error antes de analizar conversion.")
     if any(product.requires_attention_count for product in products):
         warnings.append("Hay eventos requires_attention que pueden afectar conversion y finalizacion del funnel.")
+    if any(job for job in export_jobs if int(job.metadata_payload.get("auto_regeneration_count", 0) or 0) > 0):
+        warnings.append("Hay export jobs regenerados automaticamente; revisa drift de contrato, version o persistencia del payload.")
+    if any(job for job in export_jobs if job.status.value == "failed"):
+        warnings.append("Existen export jobs fallidos; revisar empaquetado y disponibilidad real del payload antes de habilitar descarga.")
     return warnings

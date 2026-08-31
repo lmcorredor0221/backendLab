@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from contextlib import contextmanager
 from dataclasses import replace
 from time import perf_counter
@@ -111,6 +113,18 @@ def record_provider_result(
 ) -> Any:
     normalized_usage = _normalized_usage_from_result(result)
     result_context = getattr(result, "finops_context", None) or call_context
+    context_used_sources = _safe_context_sources(getattr(result, "context_used_sources", []) or [])
+    context_stats = dict(getattr(result, "context_stats", {}) or {})
+    context_prompt_truncated_keys = [
+        str(item.get("key", ""))
+        for item in context_used_sources
+        if isinstance(item, dict) and item.get("prompt_truncated")
+    ]
+    context_required_truncated_keys = [
+        str(item.get("key", ""))
+        for item in context_used_sources
+        if isinstance(item, dict) and item.get("required") and (item.get("truncated") or item.get("prompt_truncated"))
+    ]
     record_input = LLMUsageRecordInput(
         context=result_context,
         provider_key=str(getattr(result, "provider_key", "") or _provider_value(provider_key)),
@@ -130,12 +144,21 @@ def record_provider_result(
         duration_ms=duration_ms,
         queue_wait_ms=int(getattr(result, "queue_wait_ms", 0) or 0),
         usage=normalized_usage,
+        prompt_hash=_prompt_hash_from_context(context_stats, context_used_sources),
+        response_hash=_response_hash_from_result(result),
         schema_validation_status=str(getattr(result, "schema_validation_status", "") or ""),
         finish_reason=str(getattr(result, "finish_reason", "") or ""),
         metadata={
             **(metadata or {}),
             "route_reason": str(getattr(result, "route_reason", "") or ""),
             "capability_policy": dict(getattr(result, "capability_policy", {}) or {}),
+            "knowledge_access_backend": str(getattr(result, "knowledge_access_backend", "") or ""),
+            "effective_context_backend": str(getattr(result, "effective_context_backend", "") or ""),
+            "context_stats": context_stats,
+            "context_used_sources": context_used_sources,
+            "context_prompt_truncated_keys": [item for item in context_prompt_truncated_keys if item],
+            "context_required_truncated_keys": [item for item in context_required_truncated_keys if item],
+            "context_required_truncated_count": len([item for item in context_required_truncated_keys if item]),
         },
     )
     record_result = _record_usage_safely(
@@ -157,6 +180,97 @@ def record_provider_result(
             }
         )
     return replace(result, **update_payload)
+
+
+def _safe_context_sources(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    safe_sources: list[dict[str, Any]] = []
+    allowed_fields = {
+        "key",
+        "title",
+        "source_type",
+        "uri",
+        "authority_level",
+        "required",
+        "summary",
+        "relative_path",
+        "baseline_chars",
+        "assembled_chars",
+        "prompt_chars",
+        "staged_file_chars",
+        "token_estimate",
+        "truncated",
+        "prompt_truncated",
+        "staged_file_truncated",
+        "delivery_mode",
+        "source_refs",
+        "source_lineage",
+        "source_version",
+        "stage_affinity",
+        "agent_affinity",
+        "metadata",
+    }
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        safe_item = {key: item.get(key) for key in allowed_fields if key in item}
+        metadata = safe_item.get("metadata")
+        if isinstance(metadata, dict):
+            safe_item["metadata"] = {
+                key: metadata.get(key)
+                for key in (
+                    "context_quality_version",
+                    "input_payload_chars",
+                    "compact_payload_chars",
+                    "compact_payload_tokens_est",
+                    "compact_retention_pct",
+                    "payload_model",
+                    "source_key",
+                    "api_compaction_applied",
+                )
+                if key in metadata
+            }
+        safe_sources.append(safe_item)
+    return safe_sources
+
+
+def _prompt_hash_from_context(context_stats: dict[str, Any], context_used_sources: list[dict[str, Any]]) -> str:
+    explicit_hash = str(context_stats.get("context_user_payload_sha256") or "").strip()
+    if explicit_hash:
+        return explicit_hash
+    return _stable_payload_hash(
+        {
+            "context_fingerprint": context_stats.get("context_fingerprint", ""),
+            "corpus_hash": context_stats.get("corpus_hash", ""),
+            "used_sources": context_used_sources,
+        }
+    )
+
+
+def _response_hash_from_result(result: Any) -> str:
+    artifact = getattr(result, "artifact", None)
+    if artifact is not None and hasattr(artifact, "model_dump"):
+        return _stable_payload_hash(artifact.model_dump(mode="json"))
+    if artifact is not None:
+        return _stable_payload_hash(artifact)
+    return _stable_payload_hash(
+        {
+            "warning": str(getattr(result, "warning", "") or ""),
+            "failure_kind": str(getattr(result, "failure_kind", "") or ""),
+            "failure_detail": str(getattr(result, "failure_detail", "") or ""),
+            "finish_reason": str(getattr(result, "finish_reason", "") or ""),
+            "schema_validation_status": str(getattr(result, "schema_validation_status", "") or ""),
+        }
+    )
+
+
+def _stable_payload_hash(value: Any) -> str:
+    try:
+        payload = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
+    except TypeError:
+        payload = str(value)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _record_usage_safely(

@@ -1,4 +1,5 @@
-from app.models import CommercialTier, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord
+from app.models import CommercialEventRecord, CommercialTier, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord, StageOperationRecord
+from app.services.diagram_center.persistence import DiagramGenerationJobRecord  # noqa: F401
 from app.services.product_processing import (
     ProductProcessingMode,
     ProductBuildLifecycle,
@@ -10,6 +11,7 @@ from app.services.product_processing import (
     build_acp_direct_resolution,
     build_premium_enrichment_workspace,
     classify_uncertainty_for_profile,
+    defer_premium_uncertainty_to_acp,
     get_product_processing_profile,
     list_product_build_runs,
     list_product_build_steps,
@@ -25,10 +27,18 @@ from app.services.deliverable_catalog.persistence import (  # noqa: F401
     DeliverablePromptVersionRecord,
     DeliverableQualitySnapshotRecord,
 )
-from app.services.product_processing.persistence import UncertaintyBacklogRecord  # noqa: F401
-from sqlmodel import SQLModel, Session, create_engine
+from app.services.product_processing.persistence import (  # noqa: F401
+    ProductBuildRunRecord,
+    ProductBuildStepRecord,
+    UncertaintyBacklogRecord,
+)
+from sqlmodel import SQLModel, Session, create_engine, select
 from sqlalchemy.pool import StaticPool
 from uuid import UUID, uuid4
+
+
+def _count_records(db: Session, model: type) -> int:
+    return len(db.exec(select(model)).all())
 
 
 def test_resolve_product_processing_mode_by_tier_and_direct_acp() -> None:
@@ -64,6 +74,69 @@ def test_basic_free_infers_or_defers_without_user_attention() -> None:
     assert classification.should_create_attention is False
 
 
+def test_basic_free_delegation_does_not_touch_build_state_or_stale_artifacts() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+    actor_id = uuid4()
+
+    with Session(engine) as db:
+        db.add(
+            SessionRecord(
+                id=session_id,
+                user_id=actor_id,
+                workspace_id=workspace_id,
+                title="Delegacion gobernada en Free",
+                commercial_tier=CommercialTier.blueprint,
+            )
+        )
+        artifact = JourneyStageArtifactRecord(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            artifact_kind="design_recommendation",
+            stage_key="design",
+            version_number=1,
+            state=JourneyArtifactState.approved,
+            stale_reasons=[],
+        )
+        db.add(artifact)
+        classification = classify_uncertainty_for_profile(
+            "design",
+            {
+                "key": "implementation_database",
+                "question": "Que base de datos y credenciales se usaran durante la implementacion?",
+                "confidence": 0.34,
+                "priority": "high",
+                "blocking": True,
+            },
+            ProductProcessingMode.basic_free,
+        )
+
+        entry = upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=classification,
+            dependency_keys=["design.selected_alternative"],
+            created_from="test",
+        )
+        db.refresh(artifact)
+
+        assert entry.status == UncertaintyBacklogStatus.deferred
+        assert entry.target_stage == "acp"
+        assert classification.should_continue_processing is True
+        assert classification.should_create_attention is False
+        assert _count_records(db, ProductBuildRunRecord) == 0
+        assert _count_records(db, ProductBuildStepRecord) == 0
+        assert _count_records(db, DeliverableGenerationJobRecord) == 0
+        assert _count_records(db, DiagramGenerationJobRecord) == 0
+        assert _count_records(db, DeliverableQualitySnapshotRecord) == 0
+        assert _count_records(db, StageOperationRecord) == 0
+        assert artifact.state == JourneyArtifactState.approved
+        assert artifact.stale_reasons == []
+
+
 def test_premium_prioritizes_high_value_business_questions() -> None:
     profile = get_product_processing_profile(ProductProcessingMode.premium_enrichment)
     classification = classify_uncertainty_for_profile(
@@ -84,6 +157,76 @@ def test_premium_prioritizes_high_value_business_questions() -> None:
     assert classification.should_create_attention is True
 
 
+def test_opening_premium_workspace_does_not_create_hidden_generation_jobs() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+    actor_id = uuid4()
+
+    with Session(engine) as db:
+        db.add(
+            SessionRecord(
+                id=session_id,
+                user_id=actor_id,
+                workspace_id=workspace_id,
+                title="Premium no ejecuta sin accion explicita",
+                commercial_tier=CommercialTier.blueprint_pro,
+            )
+        )
+        artifact = JourneyStageArtifactRecord(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            artifact_kind="design_recommendation",
+            stage_key="design",
+            version_number=1,
+            state=JourneyArtifactState.approved,
+            stale_reasons=[],
+        )
+        db.add(artifact)
+        deferred = classify_uncertainty_for_profile(
+            "design",
+            {
+                "key": "implementation_runtime",
+                "question": "Que runtime, secrets y estrategia de despliegue se usaran?",
+                "confidence": 0.38,
+                "priority": "high",
+            },
+            ProductProcessingMode.basic_free,
+        )
+        upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=deferred,
+            dependency_keys=["design.selected_alternative"],
+            created_from="test",
+        )
+
+        workspace = build_premium_enrichment_workspace(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            current_tier=CommercialTier.blueprint_pro,
+        )
+        db.refresh(artifact)
+        active_steps = db.exec(
+            select(ProductBuildStepRecord).where(
+                ProductBuildStepRecord.status.in_(["queued", "running", "generating"])
+            )
+        ).all()
+
+        assert workspace.deferred_count == 1
+        assert _count_records(db, ProductBuildRunRecord) == 1
+        assert _count_records(db, DeliverableGenerationJobRecord) == 0
+        assert _count_records(db, DiagramGenerationJobRecord) == 0
+        assert _count_records(db, DeliverableQualitySnapshotRecord) == 0
+        assert _count_records(db, StageOperationRecord) == 0
+        assert active_steps == []
+        assert artifact.state == JourneyArtifactState.approved
+        assert artifact.stale_reasons == []
+
+
 def test_acp_implementation_does_not_silence_required_questions() -> None:
     profile = get_product_processing_profile(ProductProcessingMode.acp_implementation)
     classification = classify_uncertainty_for_profile(
@@ -101,6 +244,99 @@ def test_acp_implementation_does_not_silence_required_questions() -> None:
     assert classification.should_surface_to_user is True
     assert classification.should_create_attention is True
     assert classification.should_continue_processing is False
+
+
+def test_delegating_premium_uncertainty_to_acp_does_not_start_jobs_or_stale_artifacts() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+    actor_id = uuid4()
+
+    with Session(engine) as db:
+        db.add(
+            SessionRecord(
+                id=session_id,
+                user_id=actor_id,
+                workspace_id=workspace_id,
+                title="Premium delega al ACP sin reconciliar",
+                commercial_tier=CommercialTier.blueprint_pro,
+            )
+        )
+        artifact = JourneyStageArtifactRecord(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            artifact_kind="design_recommendation",
+            stage_key="design",
+            version_number=1,
+            state=JourneyArtifactState.approved,
+            stale_reasons=[],
+        )
+        db.add(artifact)
+        classification = classify_uncertainty_for_profile(
+            "design",
+            {
+                "key": "approval_exception_policy",
+                "question": "Que excepciones criticas requieren aprobacion humana?",
+                "confidence": 0.83,
+                "priority": "high",
+                "blocking": True,
+                "answer_options": [{"key": "always_escalate", "label": "Escalar excepciones ambiguas"}],
+            },
+            ProductProcessingMode.premium_enrichment,
+        )
+        entry = upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=classification,
+            dependency_keys=["design.approval_points"],
+            created_from="test",
+        )
+
+        build_premium_enrichment_workspace(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            current_tier=CommercialTier.blueprint_pro,
+        )
+        deferred = defer_premium_uncertainty_to_acp(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            backlog_id=UUID(entry.id),
+            actor_user_id=actor_id,
+        )
+        db.refresh(artifact)
+        active_steps = db.exec(
+            select(ProductBuildStepRecord).where(
+                ProductBuildStepRecord.status.in_(["queued", "running", "generating"])
+            )
+        ).all()
+        decision_events = db.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == session_id,
+                CommercialEventRecord.event_key == "attention_action_v2",
+            )
+        ).all()
+
+        assert deferred.status == UncertaintyBacklogStatus.deferred.value
+        assert deferred.disposition == UncertaintyDisposition.defer.value
+        assert deferred.target_stage == "acp"
+        assert len(decision_events) == 1
+        event_metadata = decision_events[0].metadata_payload
+        assert event_metadata["decision_contract_version"] == "decision-observability.v1"
+        assert event_metadata["action_kind"] == "defer"
+        assert event_metadata["target_stage"] == "acp"
+        assert event_metadata["automatic_job_creation"] is False
+        assert event_metadata["reconciliation_policy"].endswith("delegation_never_generates_jobs")
+        assert _count_records(db, DeliverableGenerationJobRecord) == 0
+        assert _count_records(db, DiagramGenerationJobRecord) == 0
+        assert _count_records(db, DeliverableQualitySnapshotRecord) == 0
+        assert _count_records(db, StageOperationRecord) == 0
+        assert active_steps == []
+        assert artifact.state == JourneyArtifactState.approved
+        assert artifact.stale_reasons == []
 
 
 def test_uncertainty_backlog_persists_and_prioritizes_items() -> None:
@@ -154,7 +390,7 @@ def test_uncertainty_backlog_persists_and_prioritizes_items() -> None:
         assert resolved.status == UncertaintyBacklogStatus.resolved
 
 
-def test_premium_enrichment_resolves_with_impact_analysis_before_reprocessing() -> None:
+def test_premium_enrichment_resolves_with_impact_analysis_before_reconciliation() -> None:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
     workspace_id = uuid4()
@@ -224,26 +460,45 @@ def test_premium_enrichment_resolves_with_impact_analysis_before_reprocessing() 
             product_key=ProductBuildProductKey.blueprint_pro,
         )
         steps_after = list_product_build_steps(db, run_id=runs_after[0].id)
+        decision_events = db.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == session_id,
+                CommercialEventRecord.event_key == "attention_action_v2",
+            )
+        ).all()
 
     assert workspace.items
     assert workspace.items[0].ordered_regeneration_keys
     assert lifecycle_before == ProductBuildLifecycle.requires_attention.value
     assert any(key.startswith("premium_backlog:") and status == "requires_attention" for key, status in step_statuses_before)
-    assert "diagram.c4_context" in result.stale_deliverable_keys
+    assert "diagram.c4_context" in result.affected_deliverable_keys
+    assert result.stale_deliverable_keys == []
     assert result.material_impact is True
+    assert result.reconciliation_decision == "structural_reconciliation"
+    assert result.reconciliation_status == "pending_user_confirmation"
     assert result.reprocess_decision == "structural_reprocess"
     assert result.regenerated_deliverable_keys == []
+    assert result.reconciled_deliverable_keys == []
     assert result.resolved_entry.status == UncertaintyBacklogStatus.resolved
     assert result.preserved_deliverable_keys
     assert result.generation_job_ids == []
-    assert result.queue_total == 0
+    assert result.superseded_uncertainty_count == 0
+    assert result.queue_total == min(2, len(result.ordered_regeneration_keys))
     assert result.queue_completed == 0
-    assert result.queue_status == "not_requested"
+    assert result.queue_status == "pending_user_confirmation"
+    assert len(decision_events) == 1
+    event_metadata = decision_events[0].metadata_payload
+    assert event_metadata["decision_contract_version"] == "decision-observability.v1"
+    assert event_metadata["action_kind"] == "answer"
+    assert event_metadata["material_impact"] is True
+    assert event_metadata["reconciliation_status"] == "pending_user_confirmation"
+    assert event_metadata["execution_mode"] == "analyze_only"
+    assert event_metadata["automatic_job_creation"] is False
     assert any(step.step_key.startswith("premium_backlog:") and step.status == "completed" for step in steps_after)
     assert runs_after[0].lifecycle != ProductBuildLifecycle.requires_attention.value
 
 
-def test_premium_enrichment_reprocesses_only_when_explicitly_requested() -> None:
+def test_premium_enrichment_reconciles_only_when_explicitly_requested() -> None:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
     workspace_id = uuid4()
@@ -256,7 +511,7 @@ def test_premium_enrichment_reprocesses_only_when_explicitly_requested() -> None
                 id=session_id,
                 user_id=actor_id,
                 workspace_id=workspace_id,
-                title="Blueprint Pro reprocessamiento explicito",
+                title="Blueprint Pro reconciliacion explicita",
                 commercial_tier=CommercialTier.blueprint_pro,
             )
         )
@@ -294,14 +549,90 @@ def test_premium_enrichment_reprocesses_only_when_explicitly_requested() -> None
                 selected_option_key="human_escalation",
             ),
         )
+        decision_events = db.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == session_id,
+                CommercialEventRecord.event_key == "attention_action_v2",
+            )
+        ).all()
 
     assert result.material_impact is True
+    assert result.execution_mode == "apply_reconciliation"
+    assert result.legacy_execution_mode == "apply_reprocess"
+    assert result.reconciliation_decision == "structural_reconciliation"
+    assert result.reconciliation_status == "completed"
     assert result.reprocess_decision == "structural_reprocess"
+    assert len(result.reconciled_deliverable_keys) <= 2
     assert len(result.regenerated_deliverable_keys) <= 2
     assert result.generation_job_ids
     assert result.queue_total == min(2, len(result.ordered_regeneration_keys))
     assert result.queue_completed == len(result.regenerated_deliverable_keys)
     assert result.queue_status == "completed"
+    assert len(decision_events) == 1
+    event_metadata = decision_events[0].metadata_payload
+    assert event_metadata["decision_contract_version"] == "decision-observability.v1"
+    assert event_metadata["execution_mode"] == "apply_reconciliation"
+    assert event_metadata["legacy_execution_mode"] == "apply_reprocess"
+    assert event_metadata["automatic_job_creation"] is True
+    assert event_metadata["generation_job_ids"]
+
+
+def test_premium_enrichment_accepts_canonical_reconciliation_execution_mode() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+    actor_id = uuid4()
+
+    with Session(engine) as db:
+        db.add(
+            SessionRecord(
+                id=session_id,
+                user_id=actor_id,
+                workspace_id=workspace_id,
+                title="Blueprint Pro canonical reconciliation",
+                commercial_tier=CommercialTier.blueprint_pro,
+            )
+        )
+        classification = classify_uncertainty_for_profile(
+            "tools",
+            {
+                "key": "integration_contracts",
+                "question": "Que contratos de integracion deben quedar versionados?",
+                "confidence": 0.84,
+                "priority": "high",
+                "suggested_answer": "Versionar contratos externos y esquemas de errores.",
+                "answer_options": [{"key": "versioned_contracts", "label": "Versionar contratos", "recommended": True}],
+            },
+            ProductProcessingMode.premium_enrichment,
+        )
+        entry = upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=classification,
+            dependency_keys=["tools.minimum_set"],
+            created_from="test",
+        )
+
+        result = resolve_premium_uncertainty(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            backlog_id=UUID(entry.id),
+            actor_user_id=actor_id,
+            payload=PremiumUncertaintyResolutionRequest(
+                execution_mode="apply_reconciliation",
+                max_deliverables=1,
+                selected_option_key="versioned_contracts",
+            ),
+        )
+
+    assert result.execution_mode == "apply_reconciliation"
+    assert result.legacy_execution_mode is None
+    assert result.reconciliation_status == "completed"
+    assert len(result.reconciled_deliverable_keys) == 1
+    assert result.generation_job_ids
 
 
 def test_premium_workspace_does_not_duplicate_resolved_deferred_items() -> None:

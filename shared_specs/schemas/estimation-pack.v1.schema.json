@@ -1146,7 +1146,8 @@
       "enum": [
         "openai",
         "deepseek",
-        "codex_local"
+        "codex_local",
+        "antigravity_cli"
       ],
       "title": "LLMProviderKey",
       "type": "string"

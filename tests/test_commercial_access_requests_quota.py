@@ -10,6 +10,8 @@ from app.models import (
     CommercialEntitlementRecord,
     CommercialQuotaSourceKind,
     CommercialTier,
+    JourneyStateRecord,
+    JourneyStateTransitionRecord,
     SessionRecord,
     UserRecord,
 )
@@ -72,12 +74,24 @@ def test_request_access_auto_approves_when_workspace_has_available_balance() -> 
         access_request = session.exec(select(CommercialAccessRequestRecord)).one()
         entitlements = session.exec(select(CommercialEntitlementRecord)).all()
         snapshot = get_balance_snapshot(session, workspace_id=record.workspace_id, product_key="acp")
+        journey_state = session.exec(select(JourneyStateRecord).where(JourneyStateRecord.session_id == record.id)).one()
+        journey_events = session.exec(
+            select(JourneyStateTransitionRecord)
+            .where(JourneyStateTransitionRecord.session_id == record.id)
+            .order_by(JourneyStateTransitionRecord.sequence)
+        ).all()
 
         assert response.status == CommercialAccessRequestStatus.approved
         assert access_request.status == CommercialAccessRequestStatus.approved
         assert access_request.resolution_note == "Autoaprobada por saldo disponible del workspace."
         assert len(entitlements) == 1
         assert snapshot.total_available_units == 0
+        assert journey_state.state_key == "acp_prep"
+        assert [item.event_key for item in journey_events] == [
+            "journey_initialized",
+            "request_acp_access",
+            "approve_acp_access",
+        ]
 
 
 def test_request_access_stays_pending_when_workspace_has_no_available_balance() -> None:
@@ -102,11 +116,13 @@ def test_request_access_stays_pending_when_workspace_has_no_available_balance() 
         access_request = session.exec(select(CommercialAccessRequestRecord)).one()
         entitlements = session.exec(select(CommercialEntitlementRecord)).all()
         snapshot = get_balance_snapshot(session, workspace_id=record.workspace_id, product_key="blueprint_pro")
+        journey_state = session.exec(select(JourneyStateRecord).where(JourneyStateRecord.session_id == record.id)).one()
 
         assert response.status == CommercialAccessRequestStatus.pending
         assert access_request.status == CommercialAccessRequestStatus.pending
         assert entitlements == []
         assert snapshot.total_available_units == 0
+        assert journey_state.state_key == "blueprint_pro_access_requested"
 
 
 def test_grant_balance_auto_approves_oldest_pending_requests_in_fifo_order() -> None:

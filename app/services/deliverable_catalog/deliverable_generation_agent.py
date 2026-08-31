@@ -89,7 +89,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Impacto y Fricciones Operativas",
-                "content": "\n".join([f"- **Fricción / Error Frecuente:** {err}" for err in frequent_errors]) if frequent_errors else "- Fricciones operativas por reprocesos manuales y tiempos de espera prolongados.",
+                "content": "\n".join([f"- **Fricción / Error Frecuente:** {err}" for err in frequent_errors]) if frequent_errors else "- Fricciones operativas por reconciliaciones manuales y tiempos de espera prolongados.",
             },
             {
                 "title": "Usuario Objetivo y Resultado Deseado",

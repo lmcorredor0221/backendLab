@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
 from sqlmodel import Session, select
 
 from app.api.routes.sessions import build_snapshot, sync_short_term_memory_checkpoint
@@ -76,6 +76,7 @@ from app.services.product_processing import (
     ProductJourneyProductSummary,
     build_product_journey_overview,
 )
+from app.services.product_processing.journey_state_machine_service import initialize_journey_state
 from app.services.runtime_access_control import is_platform_admin
 from app.services.workspace_membership_service import get_effective_workspace_membership
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
@@ -89,14 +90,14 @@ router = APIRouter(tags=["commerce"])
 def _get_record_or_404(db: Session, session_id: UUID, user_id: UUID) -> SessionRecord:
     record = db.get(SessionRecord, session_id)
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Session not found")
     membership = get_effective_workspace_membership(
         db,
         workspace_id=record.workspace_id,
         user_id=user_id,
     )
     if membership is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Session not found")
     return record
 
 
@@ -126,6 +127,14 @@ def _create_hotmart_activation_session(
     record = SessionRecord(user_id=current_user.id, workspace_id=workspace_context.workspace.id)
     db.add(record)
     db.flush()
+    initialize_journey_state(
+        db,
+        record=record,
+        actor_type="user",
+        actor_user_id=current_user.id,
+        reason="Proyecto creado durante la activacion comercial.",
+        correlation_id=f"hotmart-session-created:{record.id}",
+    )
     capture_operational_state(db, session_id=record.id, source_action="create_session")
     sync_short_term_memory_checkpoint(db, record=record, source_action="create_session")
     return record
@@ -283,6 +292,9 @@ def _product_overview(db: Session, record: SessionRecord, current_user: UserReco
             _route_item("attention", "Atencion", f"{base}/attention"),
             _route_item("activity", "Actividad", f"{base}/activity"),
         ],
+        journey_state_machine=overview.journey_state_machine.model_dump(mode="json")
+        if overview.journey_state_machine is not None
+        else {},
         canonical_overview_contract=overview.contract_version,
         recommended_next_action=overview.recommended_next_action.model_dump(mode="json")
         if overview.recommended_next_action is not None
@@ -313,9 +325,9 @@ def create_checkout_session_route(
             base_url=get_settings().commerce_public_base_url,
         )
     except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     db.commit()
     return response
 
@@ -330,9 +342,9 @@ def complete_sandbox_checkout_route(
     try:
         response = complete_sandbox_checkout(db, checkout_ref=checkout_ref, payload=payload, current_user=current_user)
     except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     db.commit()
     return response
 
@@ -345,10 +357,10 @@ def get_order_route(
 ) -> CommercialOrderResponse:
     order = db.get(CommercialOrderRecord, order_id)
     if order is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Order not found")
     role = role_for_user(db, workspace_id=order.workspace_id, user_id=current_user.id)
     if role is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Order not found")
     return build_order_response(db, order)
 
 
@@ -371,7 +383,7 @@ def get_hotmart_pending_activation_public_route(
     try:
         return get_hotmart_pending_activation_public(db, activation_token=activation_token)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post(
@@ -392,9 +404,9 @@ def claim_hotmart_pending_activation_route(
             current_user=current_user,
         )
     except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     db.commit()
     return response
 
@@ -413,13 +425,13 @@ def bootstrap_hotmart_pending_activation_route(
     try:
         pending_record = get_hotmart_pending_activation_record(db, activation_token=activation_token)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     platform_admin = is_platform_admin(db, current_user)
     buyer_email = pending_record.buyer_email.strip().lower()
     if buyer_email and buyer_email != current_user.email.strip().lower() and not platform_admin:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status_code=http_status.HTTP_403_FORBIDDEN,
             detail="This Hotmart purchase belongs to another buyer email.",
         )
 
@@ -427,7 +439,7 @@ def bootstrap_hotmart_pending_activation_route(
     if pending_record.claimed_session_id is not None:
         if pending_record.claimed_by_user_id not in {None, current_user.id} and not platform_admin:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
+                status_code=http_status.HTTP_409_CONFLICT,
                 detail="This Hotmart purchase was already activated by another user.",
             )
         target_session = _get_record_or_404(db, pending_record.claimed_session_id, current_user.id)
@@ -450,10 +462,10 @@ def bootstrap_hotmart_pending_activation_route(
         )
     except PermissionError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     db.commit()
     db.refresh(target_session)
@@ -592,7 +604,7 @@ def get_acp_invitation_route(
         },
         comparison={
             "blueprint_basic": "Producto de entrada: inferir, registrar supuestos y mostrar valor con bajo costo.",
-            "blueprint_premium": "Blueprint enriquecido con preguntas resueltas y reprocesamiento selectivo.",
+            "blueprint_premium": "Blueprint enriquecido con preguntas resueltas y reconciliacion selectiva de entregables.",
             "acp": "Paquete tecnico portable para iniciar construccion con menos friccion.",
             "acp_agentic": "Prompts, contratos y pruebas preparados para herramientas agenticas.",
         },
@@ -659,25 +671,25 @@ def resolve_access_request_route(
 ) -> AccessRequestResponse:
     access_request = db.get(CommercialAccessRequestRecord, request_id)
     if access_request is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Access request not found")
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Access request not found")
     try:
         response = resolve_access_request(db, access_request=access_request, payload=payload, current_user=current_user)
     except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     db.commit()
     return response
 
 
 @router.get("/commerce/access-requests", response_model=list[AccessRequestResponse])
 def list_access_requests_route(
-    status: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> list[AccessRequestResponse]:
     try:
-        return list_all_access_requests(db, status_filter=status, current_user=current_user)
+        return list_all_access_requests(db, status_filter=status_filter, current_user=current_user)
     except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 @router.get("/commerce/access-requests/count")

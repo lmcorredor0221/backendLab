@@ -9,6 +9,33 @@ from app.models import ContractModel, PydanticField, utc_now
 
 REACT_TRACE_CONTRACT_VERSION = "builder.react.trace.v1"
 REACT_RUN_CONTRACT_VERSION = "builder.react.run.v1"
+QUALITY_GATE_CONTRACT_VERSION = "builder.quality_gate.v1"
+
+
+class BuilderQualityGateResult(ContractModel):
+    contract_version: str = QUALITY_GATE_CONTRACT_VERSION
+    quality_gate_version: str = "quality-gate.v1"
+    stage: str = ""
+    capability: str = ""
+    quality_confidence: float = 0.0
+    evidence_confidence: float = 0.0
+    pending_resolution: int = 0
+    flow_readiness: bool = False
+    issues: list[str] = PydanticField(default_factory=list)
+    warnings: list[str] = PydanticField(default_factory=list)
+    repair_policy: Literal[
+        "none",
+        "react_repair",
+        "document_and_delegate",
+        "attention_required",
+        "schema_retry",
+        "language_repair",
+    ] = "none"
+    language_status: Literal["not_checked", "ok", "mismatch"] = "not_checked"
+    schema_status: Literal["not_checked", "valid", "invalid"] = "not_checked"
+    reason_summary: str = ""
+    should_repair: bool = False
+    blocking: bool = False
 
 
 class BuilderAgentRunRequest(ContractModel):
@@ -35,6 +62,8 @@ class BuilderAgentState(ContractModel):
     iteration: int = 0
     llm_calls: int = 0
     token_usage: int = 0
+    quality_repair_cycles: int = 0
+    quality_gate: dict[str, Any] = PydanticField(default_factory=dict)
     last_action: str = ""
     last_observation: dict[str, Any] = PydanticField(default_factory=dict)
     last_evaluation: dict[str, Any] = PydanticField(default_factory=dict)
@@ -84,6 +113,7 @@ class BuilderEvaluation(ContractModel):
     confidence: float = 0.0
     issues: list[str] = PydanticField(default_factory=list)
     next_action: str = ""
+    quality_gate: BuilderQualityGateResult | None = None
 
 
 class BuilderIterationTrace(ContractModel):

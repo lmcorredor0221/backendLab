@@ -336,6 +336,33 @@ MEMORY_LABELS = {
     "persistent_memory": "Memoria persistente",
 }
 
+AGENT_ARCHETYPE_LABELS = {
+    "copilot_assistant": "Copiloto asistido",
+    "workflow_operator": "Operador de workflow",
+    "research_synthesizer": "Sintetizador de investigacion",
+    "rag_knowledge_assistant": "Asistente RAG de conocimiento",
+    "triage_router": "Router de triage",
+    "transactional_agent": "Agente transaccional",
+    "supervisor_multiagent": "Supervisor multiagente",
+    "human_approval_agent": "Agente con aprobacion humana",
+    "monitoring_reactive_agent": "Agente reactivo de monitoreo",
+    "planning_scheduler_agent": "Agente planificador",
+    "knowledge_steward": "Gobernador de conocimiento",
+}
+
+PATTERN_FAMILY_LABELS = {
+    "react_loop": "ReAct gobernado",
+    "plan_execute": "Plan-and-Execute",
+    "router_worker": "Router-worker",
+    "supervisor_subagents": "Supervisor con subagentes",
+    "parallel_fanout_fanin": "Fan-out/Fan-in paralelo",
+    "event_driven_reactor": "Reactor event-driven",
+    "rag_grounded": "RAG con grounding",
+    "critic_evaluator_loop": "Critic/evaluator loop",
+    "human_in_the_loop": "Human-in-the-loop",
+    "checkpoint_resume": "Checkpoint/resume",
+}
+
 
 def _label_for(value: str, mapping: dict[str, str]) -> str:
     return mapping.get(value, value)
@@ -348,6 +375,38 @@ def _clamp_score(value: int) -> int:
 def _contains_any(text: str, keywords: list[str]) -> bool:
     normalized = normalize_text(text).lower()
     return any(keyword in normalized for keyword in keywords)
+
+
+def _case_signal_text(discovery: DiscoveryArtifact, canvas: CanvasArtifact | None) -> str:
+    canvas_parts: list[str] = []
+    if canvas is not None:
+        canvas_parts = [
+            canvas.user_goal,
+            canvas.primary_risk,
+            canvas.success_metric,
+            " ".join(canvas.mvp_scope),
+            " ".join(canvas.out_of_scope),
+            canvas.agent_profile.mission,
+            canvas.agent_profile.agent_task,
+            " ".join(canvas.agent_profile.expected_outputs),
+            " ".join(canvas.agent_profile.human_approvals),
+        ]
+    return normalize_text(
+        " ".join(
+            [
+                discovery.problem_statement,
+                discovery.current_process,
+                discovery.desired_outcome,
+                " ".join(discovery.constraints),
+                " ".join(discovery.operational_baseline.frequent_errors),
+                " ".join(discovery.operational_baseline.automation_opportunities),
+                " ".join(discovery.mvp_definition.v1_scope),
+                " ".join(discovery.mvp_definition.out_of_scope),
+                " ".join(discovery.mvp_definition.non_delegable_decisions),
+                *canvas_parts,
+            ]
+        )
+    ).lower()
 
 
 def _context_metrics(discovery: DiscoveryArtifact, canvas: CanvasArtifact) -> dict[str, int | bool]:
@@ -376,6 +435,289 @@ def _context_metrics(discovery: DiscoveryArtifact, canvas: CanvasArtifact) -> di
         "sequential_flow": sequential_flow,
         "parallel_need": parallel_need,
     }
+
+
+def build_agent_archetype_catalog(
+    discovery: DiscoveryArtifact,
+    canvas: CanvasArtifact | None,
+) -> list[PatternCatalogEntry]:
+    canvas = canvas or _fallback_canvas_for_rules(discovery)
+    metrics = _context_metrics(discovery, canvas)
+    text = _case_signal_text(discovery, canvas)
+    scope_count = int(metrics["scope_count"])
+    automation_count = int(metrics["automation_count"])
+    approval_count = int(metrics["approval_count"])
+    non_delegable_count = int(metrics["non_delegable_count"])
+    sequential_flow = bool(metrics["sequential_flow"])
+    parallel_need = bool(metrics["parallel_need"])
+    autonomy = normalize_autonomy_level(discovery.autonomy_level)
+    case_type = normalize_case_type(discovery.case_type)
+    workflow_case = is_workflow_case(discovery.case_type)
+    multiagent_case = is_multiagent_case(discovery.case_type)
+    information_case = case_type == CASE_TYPE_INFORMATION
+    document_need = _contains_any(
+        text,
+        ["document", "manual", "politica", "política", "faq", "knowledge", "conocimiento", "rag"],
+    )
+    external_system_need = _contains_any(
+        text,
+        ["crm", "erp", "ticket", "jira", "zendesk", "api", "postgres", "base de datos", "sistema externo"],
+    )
+    write_need = _contains_any(
+        text,
+        ["actualizar", "registrar", "crear caso", "create ticket", "write", "guardar", "modificar"],
+    )
+    research_need = _contains_any(
+        text,
+        ["investigar", "analizar", "comparar", "sintetizar", "diagnosticar", "evaluar alternativas"],
+    )
+    monitoring_need = _contains_any(
+        text,
+        ["monitorear", "monitor", "alerta", "evento", "webhook", "cambio", "seguimiento"],
+    )
+    scheduling_need = _contains_any(
+        text,
+        ["programar", "agenda", "agendar", "cron", "diario", "semanal", "calendario", "capacidad"],
+    )
+    approval_need = approval_count > 0 or non_delegable_count > 0 or _contains_any(
+        text,
+        ["aprob", "autorizar", "auditoria", "cumplimiento", "riesgo", "humano"],
+    )
+
+    return [
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="copilot_assistant",
+            label=_label_for("copilot_assistant", AGENT_ARCHETYPE_LABELS),
+            summary="Acompana al usuario con analisis, redaccion y decisiones bajo alto control humano.",
+            use_when=["Decision asistida", "Baja autonomia", "Valor en claridad y velocidad de pensamiento"],
+            tradeoffs=["No reduce por completo la carga operativa", "Depende de buen input del usuario"],
+            fit_score=_clamp_score(
+                58
+                + (16 if case_type == CASE_TYPE_COPILOT else 0)
+                + (10 if information_case else 0)
+                + (8 if research_need else 0)
+                - (18 if autonomy == AUTONOMY_HIGH else 0)
+                - (12 if automation_count >= 3 else 0)
+            ),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="workflow_operator",
+            label=_label_for("workflow_operator", AGENT_ARCHETYPE_LABELS),
+            summary="Opera un proceso repetible con pasos, evidencia, checkpoints y entregables claros.",
+            use_when=["Workflow de negocio", "Etapas visibles", "Automatizacion con control"],
+            tradeoffs=["Requiere modelar estados", "No conviene para preguntas aisladas"],
+            fit_score=_clamp_score(
+                36
+                + (24 if workflow_case else 0)
+                + (16 if sequential_flow else 0)
+                + min(automation_count, 4) * 7
+                + (8 if scope_count >= 3 else 0)
+            ),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="research_synthesizer",
+            label=_label_for("research_synthesizer", AGENT_ARCHETYPE_LABELS),
+            summary="Consulta fuentes, contrasta evidencia y entrega sintesis trazable.",
+            use_when=["Investigacion", "Comparacion de opciones", "Analisis con evidencia"],
+            tradeoffs=["Puede aumentar tokens por retrieval", "No ejecuta procesos transaccionales por si solo"],
+            fit_score=_clamp_score(24 + (34 if research_need else 0) + (12 if document_need else 0) + (8 if parallel_need else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="rag_knowledge_assistant",
+            label=_label_for("rag_knowledge_assistant", AGENT_ARCHETYPE_LABELS),
+            summary="Responde y decide usando conocimiento documental versionado, citas y filtros.",
+            use_when=["Base documental", "Politicas internas", "Respuestas que requieren grounding"],
+            tradeoffs=["Depende de corpus curado", "Necesita politicas de refresh y lineage"],
+            fit_score=_clamp_score(18 + (44 if document_need else 0) + (12 if information_case else 0) + (6 if research_need else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="triage_router",
+            label=_label_for("triage_router", AGENT_ARCHETYPE_LABELS),
+            summary="Clasifica solicitudes, prioriza casos y enruta hacia la capacidad correcta.",
+            use_when=["Clasificacion", "Priorizacion", "Multiples rutas de atencion"],
+            tradeoffs=["No debe reemplazar especialistas", "Necesita taxonomia clara de casos"],
+            fit_score=_clamp_score(18 + (38 if parallel_need else 0) + (14 if _contains_any(text, ["clasificar", "enrutar", "priorizar"]) else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="transactional_agent",
+            label=_label_for("transactional_agent", AGENT_ARCHETYPE_LABELS),
+            summary="Opera sobre sistemas externos con idempotencia, permisos, auditoria y rollback.",
+            use_when=["Acciones externas", "Escrituras", "Integraciones con sistemas de registro"],
+            tradeoffs=["Requiere aprobaciones y sandbox", "Mayor riesgo por side effects"],
+            fit_score=_clamp_score(14 + (28 if external_system_need else 0) + (30 if write_need else 0) + (10 if autonomy == AUTONOMY_HIGH else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="supervisor_multiagent",
+            label=_label_for("supervisor_multiagent", AGENT_ARCHETYPE_LABELS),
+            summary="Coordina especialistas con contratos, agregacion de evidencia y control central.",
+            use_when=["Dominios independientes", "Especialistas", "Alta complejidad con consolidacion"],
+            tradeoffs=["Mas costo y latencia", "Riesgo de inconsistencia entre especialistas"],
+            fit_score=_clamp_score(10 + (42 if multiagent_case else 0) + (16 if scope_count >= 4 else 0) + (12 if parallel_need else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="human_approval_agent",
+            label=_label_for("human_approval_agent", AGENT_ARCHETYPE_LABELS),
+            summary="Gestiona decisiones HITL, autorizaciones y controles de riesgo.",
+            use_when=["Aprobaciones", "Auditoria", "Decisiones no delegables"],
+            tradeoffs=["Introduce pausas", "Debe explicar impacto antes de pedir aprobacion"],
+            fit_score=_clamp_score(12 + approval_count * 14 + non_delegable_count * 16 + (16 if approval_need else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="monitoring_reactive_agent",
+            label=_label_for("monitoring_reactive_agent", AGENT_ARCHETYPE_LABELS),
+            summary="Observa eventos, detecta cambios y dispara acciones o alertas gobernadas.",
+            use_when=["Eventos", "Alertas", "Seguimiento continuo"],
+            tradeoffs=["Necesita limites de polling", "Debe evitar loops y duplicados"],
+            fit_score=_clamp_score(12 + (44 if monitoring_need else 0) + (8 if external_system_need else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="planning_scheduler_agent",
+            label=_label_for("planning_scheduler_agent", AGENT_ARCHETYPE_LABELS),
+            summary="Planifica, agenda, optimiza capacidad y coordina dependencias temporales.",
+            use_when=["Agenda", "Capacidad", "Dependencias temporales"],
+            tradeoffs=["Requiere calendarios o colas confiables", "Puede sobrar en un MVP sin esperas"],
+            fit_score=_clamp_score(12 + (40 if scheduling_need else 0) + (12 if sequential_flow else 0)),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="knowledge_steward",
+            label=_label_for("knowledge_steward", AGENT_ARCHETYPE_LABELS),
+            summary="Mantiene memoria, taxonomias, documentos y calidad del conocimiento.",
+            use_when=["Base de conocimiento viva", "Curaduria", "Calidad documental"],
+            tradeoffs=["No resuelve el flujo operativo completo", "Requiere gobierno editorial"],
+            fit_score=_clamp_score(12 + (34 if document_need else 0) + (12 if _contains_any(text, ["taxonomia", "memoria", "catalogo"]) else 0)),
+        ),
+    ]
+
+
+def build_pattern_family_catalog(
+    discovery: DiscoveryArtifact,
+    canvas: CanvasArtifact | None,
+) -> list[PatternCatalogEntry]:
+    canvas = canvas or _fallback_canvas_for_rules(discovery)
+    metrics = _context_metrics(discovery, canvas)
+    text = _case_signal_text(discovery, canvas)
+    scope_count = int(metrics["scope_count"])
+    error_count = int(metrics["error_count"])
+    approval_count = int(metrics["approval_count"])
+    non_delegable_count = int(metrics["non_delegable_count"])
+    sequential_flow = bool(metrics["sequential_flow"])
+    parallel_need = bool(metrics["parallel_need"])
+    workflow_case = is_workflow_case(discovery.case_type)
+    multiagent_case = is_multiagent_case(discovery.case_type)
+    autonomy = normalize_autonomy_level(discovery.autonomy_level)
+    document_need = _contains_any(
+        text,
+        ["document", "manual", "politica", "política", "faq", "knowledge", "conocimiento", "rag"],
+    )
+    event_need = _contains_any(text, ["evento", "webhook", "alerta", "monitorear", "monitor", "cambio"])
+    approval_need = approval_count > 0 or non_delegable_count > 0 or _contains_any(
+        text,
+        ["aprob", "autorizar", "auditoria", "cumplimiento", "riesgo", "humano"],
+    )
+
+    return [
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="react_loop",
+            label=_label_for("react_loop", PATTERN_FAMILY_LABELS),
+            summary="Razonar, actuar, observar y corregir con tools gobernadas y limites de iteracion.",
+            use_when=["Tool-use dinamico", "Correccion por observacion", "Dependencias resolubles"],
+            tradeoffs=["Riesgo de loop si no hay guardrails", "Debe tener presupuesto de intentos"],
+            fit_score=_clamp_score(72 + min(error_count, 3) * 8 - (10 if sequential_flow and scope_count >= 4 else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="plan_execute",
+            label=_label_for("plan_execute", PATTERN_FAMILY_LABELS),
+            summary="Separar plan y ejecucion para flujos largos, con checkpoints y estado visible.",
+            use_when=["Proceso por etapas", "Dependencias", "Reconciliacion controlada"],
+            tradeoffs=["Mas estructura inicial", "Puede ser pesado en tareas simples"],
+            fit_score=_clamp_score(34 + (26 if workflow_case else 0) + (18 if sequential_flow else 0) + (10 if scope_count >= 3 else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="router_worker",
+            label=_label_for("router_worker", PATTERN_FAMILY_LABELS),
+            summary="Clasificar intencion y enviar a workers acotados con contrato de retorno.",
+            use_when=["Tipos de caso distinguibles", "Rutas especializadas", "Priorizacion"],
+            tradeoffs=["Necesita taxonomia estable", "El router no debe volverse un supervisor oculto"],
+            fit_score=_clamp_score(18 + (36 if parallel_need else 0) + (12 if _contains_any(text, ["clasificar", "enrutar"]) else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="supervisor_subagents",
+            label=_label_for("supervisor_subagents", PATTERN_FAMILY_LABELS),
+            summary="Un supervisor coordina especialistas y consolida evidencia.",
+            use_when=["Especialistas", "Dominios independientes", "Problemas amplios"],
+            tradeoffs=["Mayor costo", "Mayor superficie de orquestacion"],
+            fit_score=_clamp_score(10 + (42 if multiagent_case else 0) + (16 if scope_count >= 4 else 0) + (8 if autonomy == AUTONOMY_HIGH else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="parallel_fanout_fanin",
+            label=_label_for("parallel_fanout_fanin", PATTERN_FAMILY_LABELS),
+            summary="Ejecutar ramas independientes y agregar resultados con verificaciones.",
+            use_when=["Fuentes paralelas", "Comparacion independiente", "Reducir tiempo de ciclo"],
+            tradeoffs=["Requiere fan-in robusto", "Un worker lento no debe bloquear todo"],
+            fit_score=_clamp_score(10 + (46 if parallel_need else 0) + (10 if scope_count >= 3 else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="event_driven_reactor",
+            label=_label_for("event_driven_reactor", PATTERN_FAMILY_LABELS),
+            summary="Responder a eventos con idempotencia, deduplicacion y politicas de reintento.",
+            use_when=["Webhooks", "Alertas", "Cambios externos"],
+            tradeoffs=["Debe controlar eventos duplicados", "Necesita observabilidad de jobs"],
+            fit_score=_clamp_score(10 + (46 if event_need else 0) + (8 if workflow_case else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="rag_grounded",
+            label=_label_for("rag_grounded", PATTERN_FAMILY_LABELS),
+            summary="Grounding documental con citas, versiones y filtros de fuente.",
+            use_when=["Politicas", "Manuales", "Conocimiento institucional"],
+            tradeoffs=["Depende de calidad del corpus", "Puede aumentar costo de retrieval"],
+            fit_score=_clamp_score(14 + (48 if document_need else 0) + (8 if normalize_case_type(discovery.case_type) == CASE_TYPE_INFORMATION else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="critic_evaluator_loop",
+            label=_label_for("critic_evaluator_loop", PATTERN_FAMILY_LABELS),
+            summary="Revisar calidad antes de promover entregables o decisiones.",
+            use_when=["Riesgo de errores", "Validacion", "Entregables de alta confianza"],
+            tradeoffs=["Agrega una llamada o paso extra", "Debe evitar pedir informacion innecesaria"],
+            fit_score=_clamp_score(26 + min(error_count, 3) * 10 + (12 if approval_need else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="human_in_the_loop",
+            label=_label_for("human_in_the_loop", PATTERN_FAMILY_LABELS),
+            summary="Insertar aprobacion humana donde hay riesgo, cumplimiento o decisiones sensibles.",
+            use_when=["Aprobaciones", "Side effects", "Riesgo operativo"],
+            tradeoffs=["Reduce autonomia percibida", "Debe explicar impacto y siguiente paso"],
+            fit_score=_clamp_score(10 + approval_count * 14 + non_delegable_count * 16 + (20 if approval_need else 0)),
+        ),
+        PatternCatalogEntry(
+            family="pattern_family",
+            key="checkpoint_resume",
+            label=_label_for("checkpoint_resume", PATTERN_FAMILY_LABELS),
+            summary="Persistir estado suficiente para pausar, remediar dependencias y reanudar sin repetir todo.",
+            use_when=["Reprocesos", "Reanudacion", "Dependencias entre etapas"],
+            tradeoffs=["Exige contratos de estado claros", "Mal usado puede conservar basura legacy"],
+            fit_score=_clamp_score(28 + (22 if sequential_flow else 0) + (16 if workflow_case else 0) + (10 if approval_need else 0)),
+        ),
+    ]
 
 
 def _fallback_canvas_for_rules(discovery: DiscoveryArtifact) -> CanvasArtifact:
@@ -641,6 +983,14 @@ def select_reasoning_pattern(discovery: DiscoveryArtifact, canvas: CanvasArtifac
 
 def select_memory_strategy(discovery: DiscoveryArtifact, canvas: CanvasArtifact | None = None) -> str:
     return _select_best_pattern(build_memory_catalog(discovery, canvas))
+
+
+def select_agent_archetype(discovery: DiscoveryArtifact, canvas: CanvasArtifact | None = None) -> str:
+    return _select_best_pattern(build_agent_archetype_catalog(discovery, canvas))
+
+
+def select_pattern_family(discovery: DiscoveryArtifact, canvas: CanvasArtifact | None = None) -> str:
+    return _select_best_pattern(build_pattern_family_catalog(discovery, canvas))
 
 
 def _decision_evidence(

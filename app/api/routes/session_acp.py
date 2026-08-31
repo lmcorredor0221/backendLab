@@ -46,10 +46,16 @@ from app.services.blueprint_commercial_result_service import (
     record_blueprint_commercial_result_artifacts,
 )
 from app.services.acp_continuity import (
+    apply_uncertainty_backlog_acp_answer,
+    build_construction_gaps_from_uncertainty_backlog,
     build_construction_gap_entries,
     build_continuity_answer_map,
     load_construction_question_response_records,
+    load_construction_question_response_records_for_preview,
+    load_uncertainty_backlog_records,
+    merge_construction_question_records_with_uncertainty_backlog,
     sync_construction_question_response_records,
+    uncertainty_backlog_id_from_question_key,
 )
 from app.services.acp_export_profiles import (
     apply_acp_export_profile,
@@ -194,6 +200,18 @@ def resolve_acp_profile(profile: str | None) -> str:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
+def _construction_question_context(db: Session, session_id: UUID):
+    response_records = load_construction_question_response_records(db, session_id)
+    backlog_records = load_uncertainty_backlog_records(db, session_id)
+    preview_records = merge_construction_question_records_with_uncertainty_backlog(
+        response_records,
+        backlog_records,
+    )
+    extra_readiness_gaps = build_construction_gaps_from_uncertainty_backlog(backlog_records)
+    continuity_answers = build_continuity_answer_map(preview_records)
+    return response_records, preview_records, extra_readiness_gaps, continuity_answers
+
+
 def resolve_profiled_preview(
     db: Session,
     record,
@@ -201,7 +219,7 @@ def resolve_profiled_preview(
     profile: str,
 ) -> ACPPreview:
     preview = apply_acp_export_profile(resolve_acp_preview(db, record), profile)
-    response_records = load_construction_question_response_records(db, record.id)
+    response_records = load_construction_question_response_records_for_preview(db, record.id)
     readiness = build_construction_readiness_view(preview, response_records)
     return rebuild_profile_conformance_with_readiness(
         preview,
@@ -363,6 +381,7 @@ def get_acp_direct_resolution_route(
         record,
         current_user=current_user,
         source_action="acp_direct_resolution",
+        allow_write=False,
     )
     try:
         return build_acp_direct_resolution(db, record=record, snapshot=snapshot)
@@ -387,8 +406,7 @@ def generate_acp_route(
         source_action="generate_acp_preview",
     )
     ensure_acp_route_ready_for_package(db, record=record, current_user=current_user, snapshot=snapshot)
-    response_records = load_construction_question_response_records(db, session_id)
-    continuity_answers = build_continuity_answer_map(response_records)
+    response_records, preview_records, extra_readiness_gaps, continuity_answers = _construction_question_context(db, session_id)
     react_run = None
     if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
         react_execution = run_callable_react(
@@ -398,7 +416,7 @@ def generate_acp_route(
             workspace_id=record.workspace_id,
             context_refs=["session.blueprint", "session.validate", "session.estimate", "knowledge.acp_portability"],
             runner=lambda: ReactCapabilityOutput(
-                value=generate_acp_preview(snapshot, continuity_answers or None),
+                value=generate_acp_preview(snapshot, continuity_answers or None, preview_records, extra_readiness_gaps),
                 summary="Package valido readiness, preguntas de implementacion y portabilidad del ACP.",
             ),
             validator=lambda value: (
@@ -406,11 +424,12 @@ def generate_acp_route(
                 not bool(getattr(value, "files", [])),
                 "Package valido que el ACP tenga artefactos portables." if getattr(value, "files", []) else "Package requiere revision.",
             ),
+            effective_language=current_user.preferred_language,
         )
         preview = react_execution.value
         react_run = react_execution.react_run
     else:
-        preview = generate_acp_preview(snapshot, continuity_answers or None)
+        preview = generate_acp_preview(snapshot, continuity_answers or None, preview_records, extra_readiness_gaps)
     if snapshot.canvas is not None:
         apply_workspace_bootstrap(db, record.workspace_id)
         if is_feature_flag_enabled(db, FEATURE_FLAG_ESTIMATION, workspace_id=record.workspace_id):
@@ -422,7 +441,7 @@ def generate_acp_route(
                     acp_preview=preview,
                 )
                 snapshot.estimation_report = estimation_report
-                preview = generate_acp_preview(snapshot, continuity_answers or None)
+                preview = generate_acp_preview(snapshot, continuity_answers or None, preview_records, extra_readiness_gaps)
                 record_estimation_artifact(
                     db,
                     session_id=session_id,
@@ -512,7 +531,7 @@ def get_acp_construction_readiness_route(
         and preview.construction_readiness.blocking_gaps == 0
     ):
         return preview.construction_readiness
-    response_records = load_construction_question_response_records(db, session_id)
+    response_records = load_construction_question_response_records_for_preview(db, session_id)
     return build_construction_readiness_view(preview, response_records)
 
 
@@ -526,7 +545,7 @@ def get_acp_questions_route(
     record = get_or_404(db, session_id, current_user.id)
     ensure_acp_build_access(record, db=db, current_user=current_user)
     preview = resolve_profiled_preview(db, record, profile=resolve_acp_profile(profile))
-    response_records = load_construction_question_response_records(db, session_id)
+    response_records = load_construction_question_response_records_for_preview(db, session_id)
     return build_construction_question_views(preview, response_records)
 
 
@@ -540,17 +559,44 @@ def answer_acp_question_route(
 ) -> ConstructionQuestionViewEntry:
     record = get_or_404(db, session_id, current_user.id)
     ensure_acp_build_access(record, db=db, current_user=current_user)
-    preview = resolve_acp_preview(db, record)
-    response_records = load_construction_question_response_records(db, session_id)
-    question = get_construction_question_view(preview, question_key, response_records)
-    upsert_construction_question_response(
+    ensure_acp_evaluation_seed_snapshot(
         db,
-        session_id=session_id,
-        question=question,
-        payload=payload,
+        record,
         current_user=current_user,
+        source_action=f"answer_acp_question:{question_key}",
     )
+    preview = resolve_acp_preview(db, record)
+    response_records = load_construction_question_response_records_for_preview(db, session_id)
+    question = get_construction_question_view(preview, question_key, response_records)
+    backlog_id = uncertainty_backlog_id_from_question_key(question_key)
+    if backlog_id is not None:
+        try:
+            apply_uncertainty_backlog_acp_answer(
+                db,
+                session_id=session_id,
+                backlog_id=backlog_id,
+                payload=payload,
+                current_user=current_user,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    else:
+        upsert_construction_question_response(
+            db,
+            session_id=session_id,
+            question=question,
+            payload=payload,
+            current_user=current_user,
+        )
     touch_session(record, record.current_stage, record.status)
+    refreshed_records = load_construction_question_response_records_for_preview(db, session_id)
+    refreshed_question = get_construction_question_view(preview, question_key, refreshed_records)
+    impact_analysis = (
+        refreshed_question.impact_analysis.model_dump(mode="json")
+        if refreshed_question.impact_analysis is not None
+        else None
+    )
+    event_key = "acp_question_delegated" if payload.decision == "delegate" else "acp_question_answered"
     write_log(
         db,
         session_id=session_id,
@@ -558,14 +604,30 @@ def answer_acp_question_route(
         status_value=record.status,
         message="Respuesta ACP registrada",
         payload={
+            "event_key": event_key,
+            "product": "acp",
+            "source": "acp_question_resolution",
             "question_key": question_key,
             "gap_key": question.gap_key,
             "owner_role": payload.owner_role.strip() or question.target_owner,
+            "metadata": {
+                "decision_contract_version": "decision-observability.v1",
+                "answer_decision": payload.decision,
+                "question_origin": "uncertainty_backlog" if backlog_id is not None else "acp_preview",
+                "backlog_id": str(backlog_id) if backlog_id is not None else "",
+                "status": refreshed_question.status,
+                "blocking": refreshed_question.blocking,
+                "domain": refreshed_question.domain,
+                "impacted_artifacts": list(refreshed_question.impacted_artifacts),
+                "impact_analysis": impact_analysis,
+                "reconciliation_policy": (
+                    "answers_are_accumulated;reconciliation_requires_explicit_queue_action"
+                ),
+            },
         },
     )
     db.commit()
-    refreshed_records = load_construction_question_response_records(db, session_id)
-    return get_construction_question_view(preview, question_key, refreshed_records)
+    return refreshed_question
 
 
 @router.get("/{session_id}/acp/knowledge-graph", response_model=BlueprintKnowledgeGraph)
@@ -592,7 +654,7 @@ def get_acp_gap_route(
     record = get_or_404(db, session_id, current_user.id)
     ensure_acp_build_access(record, db=db, current_user=current_user)
     preview = resolve_profiled_preview(db, record, profile=resolve_acp_profile(profile))
-    response_records = load_construction_question_response_records(db, session_id)
+    response_records = load_construction_question_response_records_for_preview(db, session_id)
     for item in build_construction_gap_entries(preview, response_records):
         if item.gap_key == gap_key:
             return item
@@ -637,7 +699,7 @@ def export_acp_zip_route(
         snapshot=export_snapshot,
     )
     preview = resolve_profiled_preview(db, record, profile=normalized_profile)
-    response_records = load_construction_question_response_records(db, session_id)
+    response_records = load_construction_question_response_records_for_preview(db, session_id)
     readiness = build_construction_readiness_view(preview, response_records)
     if should_block_acp_export(preview.validation) or (not legacy_compat_mode and not readiness.can_start_build):
         raise HTTPException(

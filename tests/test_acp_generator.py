@@ -13,6 +13,9 @@ from app.models import (
     BlueprintTool,
     BlueprintVersionEntry,
     CanvasArtifact,
+    ConstructionGapEntry,
+    ConstructionQuestionEntry,
+    ConstructionQuestionResponseRecord,
     DiscoveryArtifact,
     EvaluationDatasetArtifact,
     EvaluationRubricArtifact,
@@ -218,6 +221,8 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "ACP/construction-readiness/overview.yaml" in paths
     assert "ACP/construction-readiness/blocking-gaps.yaml" in paths
     assert "ACP/construction-readiness/open-questions.yaml" in paths
+    assert "ACP/construction-readiness/question-impact-log.yaml" in paths
+    assert "ACP/construction-readiness/deferred-decisions.yaml" in paths
     assert "ACP/construction-readiness/assumptions.yaml" in paths
     assert "ACP/construction-readiness/external-dependencies.yaml" in paths
     assert "ACP/construction-readiness/required-api-contracts.yaml" in paths
@@ -249,6 +254,7 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     )
     assert "construction_readiness:" in readiness_overview.content_text
     assert "next_recommended_action: answer_open_questions" in readiness_overview.content_text
+    assert "question_outcomes:" in readiness_overview.content_text
     architecture_diagram = next(item for item in preview.files if item.path == "ACP/diagrams/Architecture.md")
     assert "## Mermaid" in architecture_diagram.content_text
     architecture_svg = next(item for item in preview.files if item.path == "ACP/svg/Architecture.svg")
@@ -285,6 +291,86 @@ def test_generate_acp_preview_produces_deterministic_construction_readiness() ->
         item.gap_key for item in second_preview.construction_readiness.gaps
     ]
     assert any(item.gap_key == "deployment_target_unknown" for item in first_preview.construction_readiness.gaps)
+
+
+def test_generate_acp_preview_publishes_deferred_decisions_without_using_them_as_answers() -> None:
+    session_id = uuid4()
+    snapshot = build_ready_snapshot(session_id=session_id)
+    records = [
+        ConstructionQuestionResponseRecord(
+            session_id=session_id,
+            question_key="deployment_target",
+            gap_key="deployment_target_unknown",
+            gap_title="Falta decidir despliegue",
+            domain="deployment",
+            question_text="Define la infraestructura objetivo.",
+            rationale="Necesario para empaquetar.",
+            target_owner="platform_owner",
+            blocking=True,
+            status="deferred",
+            answer_text="Delegado a implementacion. Resolver durante la construccion con trazabilidad ACP.",
+            impacted_artifacts=["ACP/deployment/env.template", "ACP/runtime/config.yaml"],
+        )
+    ]
+
+    preview = generate_acp_preview(snapshot, None, records)
+
+    deferred_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/deferred-decisions.yaml"
+    )
+    impact_log_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/question-impact-log.yaml"
+    )
+    open_questions_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/open-questions.yaml"
+    )
+
+    assert "deployment_target" in deferred_file.content_text
+    assert "delegated_to_implementation" in deferred_file.content_text
+    assert "reconciliation_decision: delegated_to_implementation" in impact_log_file.content_text
+    assert "reprocess_decision: delegated_to_implementation" in impact_log_file.content_text
+    assert "deployment_target" in open_questions_file.content_text
+
+
+def test_generate_acp_preview_accepts_extra_backlog_readiness_gaps() -> None:
+    session_id = uuid4()
+    snapshot = build_ready_snapshot(session_id=session_id)
+    inherited_gap = ConstructionGapEntry(
+        gap_key="uncertainty_backlog:acp_implementation:side_effect_approval_gate",
+        title="Definir aprobacion para side effects",
+        domain="security",
+        severity="blocking",
+        status="open",
+        blocking_stage="acp",
+        summary="Toda tool con side effects debe pausar y justificar aprobacion.",
+        remediation="Definir gate HITL antes de empaquetar.",
+        evidence_paths=["ACP/tools/external/tool-create-ticket.yaml"],
+        source_sections=["uncertainty_backlog.acp_implementation", "journey.tools"],
+        closure_criteria=["Registrar respuesta, owner o delegacion explicita."],
+        questions=[
+            ConstructionQuestionEntry(
+                question_key="uncertainty_backlog:11111111-1111-4111-8111-111111111111",
+                question_text="Como se aprueban acciones con side effects?",
+                rationale="Afecta seguridad y auditoria.",
+                target_owner="security_owner",
+                blocking=True,
+            )
+        ],
+    )
+
+    preview = generate_acp_preview(snapshot, None, [], [inherited_gap])
+    open_questions_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/open-questions.yaml"
+    )
+    blocking_gaps_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/blocking-gaps.yaml"
+    )
+
+    assert preview.construction_readiness.can_start_build is False
+    assert preview.construction_readiness.blocking_gaps >= 1
+    assert preview.construction_readiness.open_questions >= 1
+    assert "uncertainty_backlog:11111111-1111-4111-8111-111111111111" in open_questions_file.content_text
+    assert "side_effect_approval_gate" in blocking_gaps_file.content_text
 
 
 def test_build_acp_zip_contains_construction_readiness_block() -> None:

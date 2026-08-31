@@ -255,7 +255,7 @@ def prepare_blueprint_basic_commercial_result(
             if background_tasks is not None:
                 background_tasks.add_task(run_generation_job, job.id, db.get_bind())
             else:
-                run_generation_job(job.id, db.get_bind())
+                run_generation_job(job.id, db_session=db)
     db.commit()
     write_log(
         db,

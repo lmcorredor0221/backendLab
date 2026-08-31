@@ -49,9 +49,10 @@ ERROR_JOB_STATES = {"error", "failed", "requires_attention"}
 COMPLETED_STEP_STATES = {"available", "completed", "skipped"}
 QUEUE_ACTIVE_STEP_STATES = {"queued", "running", "generating"}
 QUEUE_FAILURE_STEP_STATES = {"error", "failed", "requires_attention", "locked"}
-QUEUE_ELIGIBLE_STATES = {"pending", "stale", "error"}
+QUEUE_ELIGIBLE_STATES = {"pending", "stale"}
 QUEUE_RETRY_ONLY_STATES = {"error"}
 QUEUE_ACTIVE_STATUSES = {"queued", "running"}
+MAX_PROCESSING_ATTEMPTS = 2
 
 JobRunner = Callable[[Session, DeliverableGenerationTask], tuple[DeliverableGenerationJobRecord, DeliverableGenerationResult | None]]
 
@@ -145,18 +146,28 @@ def ensure_product_build_orchestration(
     )
 
     if resolved_options.execute_jobs:
-        _execute_expected_jobs(
-            db,
-            run=run,
-            expected_items=expected_items,
-            existing_jobs_by_key=jobs_by_key,
-            record=record,
-            product_mode=meta.product_mode.value,
-            tier=access.tier,
-            current_stage=current_stage,
-            current_user=current_user,
-            options=resolved_options,
-        )
+        if resolved_options.job_runner is not None:
+            _execute_expected_jobs(
+                db,
+                run=run,
+                expected_items=expected_items,
+                existing_jobs_by_key=jobs_by_key,
+                record=record,
+                product_mode=meta.product_mode.value,
+                tier=access.tier,
+                current_stage=current_stage,
+                current_user=current_user,
+                options=resolved_options,
+            )
+        else:
+            _execute_processing_queue_inline(
+                db,
+                record=record,
+                product_key=normalized_product_key,
+                current_user=current_user,
+                allow_llm=resolved_options.allow_llm,
+                catalog_stage_override=current_stage,
+            )
 
     refreshed_jobs = _latest_jobs_by_key(db, session_id=record.id)
     refreshed_diagram_jobs = _latest_diagram_jobs_by_key(db, session_id=record.id)
@@ -297,6 +308,9 @@ def enqueue_product_build_processing(
             ),
             catalog_stage_override=catalog_stage_override,
         )
+
+    if status.entitlement.access_state != "allowed":
+        return None, status, False
 
     if record.workspace_id is None:
         return None, status, False
@@ -910,6 +924,30 @@ def _refresh_status_for_product(
     )
 
 
+def _execute_processing_queue_inline(
+    db: Session,
+    *,
+    record: SessionRecord,
+    product_key: ProductBuildProductKey,
+    current_user: UserRecord | None,
+    allow_llm: bool,
+    catalog_stage_override: str,
+) -> None:
+    queued_run, _, queued_now = enqueue_product_build_processing(
+        db,
+        record=record,
+        product_key=product_key,
+        current_user=current_user,
+        mode=ProductBuildProcessingQueueMode.process_pending,
+        allow_llm=allow_llm,
+        catalog_stage_override=catalog_stage_override,
+    )
+    db.commit()
+    if queued_now and queued_run is not None:
+        run_product_build_processing(queued_run.id, db.get_bind())
+        db.expire_all()
+
+
 def _processing_queue_checkpoint(run: ProductBuildRunRecord) -> dict[str, Any]:
     value = (run.checkpoint_payload or {}).get("processing_queue")
     return dict(value) if isinstance(value, dict) else {}
@@ -964,10 +1002,23 @@ def _select_processing_items(
         state = _step_state_for_item(item, job, diagram_job=diagram_job, existing_step=existing_step)
         if state not in eligible_states:
             continue
+        if mode == ProductBuildProcessingQueueMode.retry_failed and _retry_budget_exhausted(existing_step):
+            continue
         if not (item.access.can_generate or item.access.can_regenerate):
             continue
         selected.append(item)
     return _topologically_sort_items(selected)
+
+
+def _retry_budget_exhausted(step: ProductBuildStepRecord | None) -> bool:
+    if step is None:
+        return False
+    checkpoint = step.checkpoint_payload or {}
+    try:
+        attempt_count = int(checkpoint.get("attempt_count") or 0)
+    except (TypeError, ValueError):
+        attempt_count = 0
+    return attempt_count >= MAX_PROCESSING_ATTEMPTS
 
 
 def _topologically_sort_items(items: list[DeliverableCatalogItem]) -> list[DeliverableCatalogItem]:
@@ -1088,7 +1139,7 @@ def _process_single_queue_item(
                 error_payload={},
             )
             db.commit()
-            run_generation_job(job.id, db.get_bind())
+            run_generation_job(job.id, db_session=db)
             db.expire_all()
             refreshed_job = db.get(DiagramGenerationJobRecord, job.id)
             if refreshed_job is None or str(refreshed_job.status or "") != "available":
@@ -1318,6 +1369,8 @@ def _finalize_processing_queue(
     summary: str,
     failed_keys: list[str],
 ) -> None:
+    if failed_keys:
+        _mark_failed_queue_jobs_as_error(db, session_id=run.session_id, failed_keys=failed_keys)
     queue_checkpoint = _update_processing_queue_checkpoint(
         db,
         run=run,
@@ -1350,3 +1403,60 @@ def _finalize_processing_queue(
         error_payload=error_payload,
     )
     db.commit()
+
+
+def _mark_failed_queue_jobs_as_error(
+    db: Session,
+    *,
+    session_id: UUID,
+    failed_keys: list[str],
+) -> None:
+    failure_code = "processing_queue_orphaned"
+    for deliverable_key in failed_keys:
+        latest_deliverable_job = db.exec(
+            select(DeliverableGenerationJobRecord)
+            .where(
+                DeliverableGenerationJobRecord.session_id == session_id,
+                DeliverableGenerationJobRecord.deliverable_key == deliverable_key,
+            )
+            .order_by(DeliverableGenerationJobRecord.updated_at.desc())
+        ).first()
+        if (
+            latest_deliverable_job is not None
+            and str(latest_deliverable_job.status or "") in ACTIVE_JOB_STATES
+            and latest_deliverable_job.started_at is None
+            and latest_deliverable_job.completed_at is None
+        ):
+            latest_deliverable_job.status = "error"
+            latest_deliverable_job.error_code = failure_code
+            latest_deliverable_job.error_message = (
+                "La cola del product build finalizo con error antes de que este job arrancara."
+            )
+            latest_deliverable_job.completed_at = utc_now()
+            latest_deliverable_job.updated_at = utc_now()
+            db.add(latest_deliverable_job)
+
+        if not deliverable_key.startswith("diagram."):
+            continue
+        diagram_key = deliverable_key.removeprefix("diagram.")
+        active_diagram_jobs = db.exec(
+            select(DiagramGenerationJobRecord)
+            .where(
+                DiagramGenerationJobRecord.session_id == session_id,
+                DiagramGenerationJobRecord.diagram_key == diagram_key,
+                DiagramGenerationJobRecord.status.in_(tuple(ACTIVE_JOB_STATES)),
+            )
+            .order_by(DiagramGenerationJobRecord.updated_at.desc())
+        ).all()
+        for diagram_job in active_diagram_jobs:
+            if diagram_job.started_at is not None or diagram_job.completed_at is not None:
+                continue
+            diagram_job.status = "error"
+            diagram_job.error_code = failure_code
+            diagram_job.error_message = (
+                "La cola del product build finalizo con error antes de que este job arrancara."
+            )
+            diagram_job.completed_at = utc_now()
+            diagram_job.updated_at = utc_now()
+            db.add(diagram_job)
+    db.flush()

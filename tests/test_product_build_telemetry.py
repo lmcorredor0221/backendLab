@@ -9,6 +9,8 @@ from sqlmodel import SQLModel, Session, create_engine
 from app.models import (
     CommercialEventRecord,
     CommercialTier,
+    ExportJobRecord,
+    ExportJobStatus,
     SessionRecord,
     SessionStage,
     StageOperationRecord,
@@ -167,3 +169,75 @@ def test_product_build_telemetry_groups_costs_duration_and_redacts_sensitive_met
     assert "api_key" not in serialized
     assert "raw_prompt" not in serialized
     assert "hidden" not in serialized
+
+
+def test_product_build_telemetry_includes_export_jobs_and_operation_ids() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db)
+        now = utc_now()
+        run = ensure_product_build_run(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            product_mode=ProductProcessingMode.premium_enrichment,
+            entitlement_tier=CommercialTier.blueprint_pro,
+            access_state="allowed",
+            lifecycle=ProductBuildLifecycle.completed,
+            idempotency_key=f"blueprint-pro:{record.id}",
+            created_by_user_id=user.id,
+        )
+        run.started_at = now - timedelta(seconds=40)
+        run.completed_at = now - timedelta(seconds=5)
+        operation = StageOperationRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=user.id,
+            stage_key="package",
+            action="resume_product_build",
+            status=StageOperationStatus.completed,
+            request_payload={"product_key": "blueprint_pro", "resume": True},
+        )
+        export_job = ExportJobRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=user.id,
+            product_key="blueprint_pro",
+            profile="professional",
+            artifact_kind="blueprint_professional",
+            status=ExportJobStatus.ready,
+            idempotency_key=f"export:{record.id}:blueprint-pro",
+            content_type="application/zip",
+            file_name="eov15-project-blueprint_professional.zip",
+            storage_key=f"{record.workspace_id}/{record.id}/export/eov15-project-blueprint_professional.zip",
+            checksum_sha256="sha-telemetry",
+            size_bytes=4096,
+            expires_at=now + timedelta(hours=24),
+            metadata_payload={
+                "retry_count": 1,
+                "auto_regeneration_count": 1,
+                "last_regeneration_reasons": ["blueprint_version_number"],
+                "blueprint_version_number": 4,
+            },
+            completed_at=now - timedelta(seconds=2),
+        )
+        db.add(operation)
+        db.add(export_job)
+        db.commit()
+
+        report = build_product_build_telemetry_report(db, record=record, current_user=user)
+
+    export_event = next(item for item in report.events if item.export_job_id == str(export_job.id))
+    assert export_event.event_key == "export_job_regenerated"
+    assert export_event.event_type == "export"
+    assert export_event.product_key == ProductBuildProductKey.blueprint_pro
+
+    operation_event = next(item for item in report.events if item.operation_id == str(operation.id))
+    assert operation_event.event_key == "resume_product_build"
+    assert operation_event.source == "stage_operation"
+    assert operation_event.product_key == ProductBuildProductKey.blueprint_pro
+
+    assert any("export jobs regenerados automaticamente" in warning.lower() for warning in report.warnings)

@@ -14,7 +14,11 @@ from app.models import (
     DiscoveryArtifact,
     DesignRecommendationArtifact,
     ReviewState,
+    CandidateToolPattern,
+    ToolPatternLearningCandidate,
+    ToolPatternLearningReport,
     ToolDesignRoleCoverageEntry,
+    ToolCapabilityResolution,
     ToolFamilyCandidate,
     ToolPreflightCapability,
     ToolRecommendationAllowedToolKey,
@@ -480,6 +484,31 @@ def _selected_design(design_artifact: DesignRecommendationArtifact | None):
     return design_artifact.alternatives[0] if design_artifact.alternatives else None
 
 
+def _design_implication_lines(selected_design) -> tuple[list[str], list[str]]:
+    if selected_design is None:
+        return [], []
+    projection = getattr(selected_design, "blueprint_projection", None)
+    tool_implications = _merge_unique(
+        list(getattr(selected_design, "tool_implications", []) or []),
+        list(getattr(projection, "tool_implications", []) or []),
+    )
+    memory_implications = _merge_unique(
+        list(getattr(selected_design, "memory_implications", []) or []),
+        list(getattr(projection, "memory_implications", []) or []),
+    )
+    return tool_implications, memory_implications
+
+
+def _capability_keys_from_design_implications(implications: list[str]) -> list[str]:
+    matches: list[str] = []
+    for implication in implications:
+        text = _normalize_text(implication).lower()
+        for capability_key, catalog in CAPABILITY_CATALOG.items():
+            if capability_key in text or str(catalog["label"]).lower() in text:
+                _append_unique(matches, capability_key)
+    return matches
+
+
 def _build_requirement_coverage(
     definition_artifact: RequirementsDefinitionOutput | None,
     *,
@@ -850,6 +879,7 @@ def build_placeholder_tool_recommendation(
     ]
 
     selected_design = _selected_design(design_artifact)
+    design_tool_implications, design_memory_implications = _design_implication_lines(selected_design)
     definition_text = ""
     if definition_artifact is not None:
         definition_text = _combined_text(
@@ -871,6 +901,25 @@ def build_placeholder_tool_recommendation(
             " ".join(role.responsibility for role in selected_design.roles),
             " ".join(item.trigger for item in selected_design.handoffs),
             " ".join(selected_design.approval_points),
+            selected_design.agent_archetype,
+            selected_design.pattern_family,
+            selected_design.business_fit,
+            selected_design.value_hypothesis,
+            selected_design.operational_model,
+            selected_design.why_recommended,
+            selected_design.why_not_simpler,
+            selected_design.why_not_more_complex,
+            " ".join(design_tool_implications),
+            " ".join(design_memory_implications),
+            " ".join(selected_design.risk_tradeoffs),
+            " ".join(selected_design.business_metrics),
+        )
+        normalized_sources.extend(
+            [
+                "design.selected_alternative.tool_implications",
+                "design.selected_alternative.memory_implications",
+                "design.selected_alternative.business_fit",
+            ]
         )
     instructions_text = _normalize_text(instructions)
     if instructions_text:
@@ -888,7 +937,6 @@ def build_placeholder_tool_recommendation(
         " ".join(canvas.agent_profile.human_approvals),
         blueprint.architecture,
         blueprint.reasoning_pattern,
-        blueprint.memory_strategy,
         " ".join(blueprint.guardrails),
         blueprint.narrative,
         blueprint.knowledge_profile.mode,
@@ -927,12 +975,10 @@ def build_placeholder_tool_recommendation(
     )
     knowledge_tool_policy = build_knowledge_tool_policy(
         knowledge_profile=blueprint.knowledge_profile,
-        memory_profile=blueprint.memory_profile,
     )
     needs_human_gate = bool(
         discovery.mvp_definition.non_delegable_decisions
         or canvas.agent_profile.human_approvals
-        or any(tool.requires_approval or tool.has_side_effects for tool in blueprint.tools)
         or discovery.autonomy_level.strip().lower() == "high"
         or has_write_actions
     )
@@ -1014,7 +1060,6 @@ def build_placeholder_tool_recommendation(
                 "discovery.mvp_definition.non_delegable_decisions",
                 "canvas.agent_profile.human_approvals",
                 "blueprint.guardrails",
-                "blueprint.memory_profile",
             ],
             confidence=0.88,
         )
@@ -1059,6 +1104,17 @@ def build_placeholder_tool_recommendation(
             reason="La escritura transaccional queda bloqueada hasta identificar el sistema objetivo y su boundary operativo.",
             matched_signals=transactional_write_actions,
             rejected_by_constraints=["system_of_record_unspecified"],
+        )
+        _append_gap(
+            needs_information,
+            ToolRecommendationGap(
+                gap_key="system_of_record_unspecified",
+                title="Sistema fuente no identificado",
+                question="En que sistema objetivo debe actualizar, crear o registrar informacion el agente?",
+                reason="El caso pide una accion operativa de escritura, pero no identifica el sistema donde ocurriria.",
+                impact="La seleccion minima no puede promover escritura sin saber que sistema sera la fuente de verdad.",
+                severity="high",
+            ),
         )
     elif "no_irreversible_side_effects" in hard_constraints:
         _append_unique(forbidden_capabilities, "transactional_write")
@@ -1205,6 +1261,34 @@ def build_placeholder_tool_recommendation(
             status="candidate",
             reason="El workflow incluye disparos por agenda o eventos y conviene reservar el slot de trigger.",
             matched_signals=["schedule_signal"],
+        )
+
+    for capability_key in _capability_keys_from_design_implications(design_tool_implications):
+        if capability_key in forbidden_capabilities:
+            continue
+        required = capability_key in {
+            "read_system_of_record",
+            "knowledge_retrieval",
+            "document_ingestion",
+            "approval_gate",
+            "transactional_write",
+        }
+        if required:
+            _register_capability(
+                mandatory_capabilities,
+                capability_key=capability_key,
+                required=True,
+                reason="Design declaro esta capacidad como implicacion directa de la arquitectura seleccionada.",
+                source_evidence=["design.selected_alternative.tool_implications"],
+                confidence=0.72,
+            )
+        family_key = str(CAPABILITY_CATALOG[capability_key]["family"])
+        _register_family(
+            candidate_families,
+            family_key=family_key,
+            status="required" if required else "candidate",
+            reason="La arquitectura seleccionada anticipa esta familia de tool como soporte del flujo.",
+            matched_signals=[capability_key],
         )
 
     if has_write_actions and not approval_boundaries:
@@ -1370,6 +1454,8 @@ def build_placeholder_tool_recommendation(
         mandatory_capabilities=mandatory_capability_list,
         forbidden_capabilities=forbidden_capabilities,
         candidate_tool_families=candidate_family_list,
+        design_tool_implications=design_tool_implications,
+        design_memory_implications=design_memory_implications,
         missing_information=needs_information,
     )
 
@@ -1433,7 +1519,7 @@ def build_placeholder_tool_recommendation(
             )
         }
     )
-    return _attach_recommendation_contract_seeds(artifact)
+    return _hydrate_tool_recommendation_artifact(artifact)
 
 
 def build_tool_recommendation_preflight(
@@ -1457,6 +1543,119 @@ def build_tool_recommendation_preflight(
         instructions=instructions,
         blueprint_version_number=blueprint_version_number,
     )
+
+
+def ensure_memory_tool_dependencies(
+    *,
+    artifact: ToolRecommendationArtifact,
+    blueprint: BlueprintArtifact,
+    required_tool_keys: list[str],
+    source_reason: str = "",
+) -> tuple[ToolRecommendationArtifact, list[str]]:
+    """Promote known Tools dependencies discovered by Memory in one controlled batch."""
+
+    approved_keys = (
+        {item.strip().lower() for item in artifact.approved_tools_digest.approved_tool_keys}
+        if artifact.approved_tools_digest is not None
+        else set()
+    )
+    pending_tool_keys: list[str] = []
+    for raw_key in required_tool_keys:
+        tool_key = _normalize_text(raw_key)
+        if tool_key not in CAPABILITY_CATALOG or tool_key in approved_keys:
+            continue
+        if tool_key not in pending_tool_keys:
+            pending_tool_keys.append(tool_key)
+
+    if not pending_tool_keys:
+        return artifact, []
+
+    patched = artifact.model_copy(deep=True)
+    added_tool_keys: list[str] = []
+    for tool_key in pending_tool_keys:
+        catalog = CAPABILITY_CATALOG[tool_key]
+        family_key = str(catalog["family"])
+        remediation_reason = (
+            source_reason.strip()
+            or f"Remediacion automatica: Memoria declaro {tool_key} como dependencia requerida."
+        )
+        source_evidence = [
+            "memory.tool_dependencies",
+            f"memory.tool_dependencies.{tool_key}",
+            "tools.memory_dependency_remediation",
+        ]
+
+        if not any(item.capability_key == tool_key for item in patched.preflight.mandatory_capabilities):
+            patched.preflight.mandatory_capabilities.append(
+                ToolPreflightCapability(
+                    capability_key=tool_key,
+                    label=str(catalog["label"]),
+                    required=True,
+                    reason=remediation_reason,
+                    source_evidence=source_evidence,
+                    confidence=0.76,
+                )
+            )
+
+        for family in patched.preflight.candidate_tool_families:
+            if family.family_key != family_key:
+                continue
+            family.status = "required"
+            family.reason = remediation_reason
+            family.matched_signals = _merge_unique(family.matched_signals, ["memory_dependency"])
+            break
+        else:
+            family_catalog = TOOL_FAMILY_CATALOG[family_key]
+            patched.preflight.candidate_tool_families.append(
+                ToolFamilyCandidate(
+                    family_key=family_key,
+                    label=str(family_catalog["label"]),
+                    status="required",
+                    supported_capabilities=list(family_catalog["supported_capabilities"]),
+                    matched_signals=["memory_dependency"],
+                    suggested_tool_keys=list(family_catalog["suggested_tool_keys"]),
+                    estimated_complexity=str(family_catalog["estimated_complexity"]),
+                    reason=remediation_reason,
+                )
+            )
+
+        existing_entry = next(
+            (
+                item
+                for item in [*patched.optional_tools, *patched.rejected_tools]
+                if item.tool_key == tool_key
+            ),
+            None,
+        )
+        if existing_entry is None:
+            existing_entry = _build_entry(
+                blueprint=blueprint,
+                capability_key=tool_key,
+                classification="mandatory",
+                decision_reason=remediation_reason,
+                source_evidence=source_evidence,
+                confidence=0.76,
+            )
+        else:
+            existing_entry = existing_entry.model_copy(
+                update={
+                    "classification": "mandatory",
+                    "decision_reason": remediation_reason,
+                    "source_evidence": _merge_unique(existing_entry.source_evidence, source_evidence),
+                    "confidence": max(existing_entry.confidence, 0.76),
+                }
+            )
+
+        patched.optional_tools = [item for item in patched.optional_tools if item.tool_key != tool_key]
+        patched.rejected_tools = [item for item in patched.rejected_tools if item.tool_key != tool_key]
+        _append_entry(patched.recommended_tools, existing_entry)
+        added_tool_keys.append(tool_key)
+
+    patched.summary = (
+        f"{patched.summary} Se agrego/promovio {', '.join(added_tool_keys)} automaticamente para cerrar "
+        "dependencias de Memoria antes de continuar."
+    ).strip()
+    return evaluate_tool_recommendation_artifact(patched), added_tool_keys
 
 
 def ensure_document_ingestion_for_knowledge_retrieval(
@@ -1495,88 +1694,18 @@ def ensure_document_ingestion_for_knowledge_retrieval(
             else []
         )
     )
-    if not knowledge_signalled or "document_ingestion" in selected_keys or "document_ingestion" in approved_keys:
+    if not knowledge_signalled or "document_ingestion" in approved_keys:
         return artifact, False
-
-    remediation_reason = (
-        "Remediacion automatica: knowledge_retrieval implica una capacidad minima de ingesta, refresh y lineage "
-        "para que Memoria pueda declarar RAG sin depender de una herramienta inexistente."
-    )
-    source_evidence = [
-        "tools.approved_tools_digest.knowledge_tool_keys",
-        "tools.preflight.interaction_modes",
-        "memory.rag_dependency_preflight",
-    ]
-
-    patched = artifact.model_copy(deep=True)
-    if not any(item.capability_key == "document_ingestion" for item in patched.preflight.mandatory_capabilities):
-        patched.preflight.mandatory_capabilities.append(
-            ToolPreflightCapability(
-                capability_key="document_ingestion",
-                label=str(CAPABILITY_CATALOG["document_ingestion"]["label"]),
-                required=True,
-                reason=remediation_reason,
-                source_evidence=source_evidence,
-                confidence=0.74,
-            )
-        )
-    for family in patched.preflight.candidate_tool_families:
-        if family.family_key != "document_ingestion":
-            continue
-        family.status = "required"
-        family.reason = remediation_reason
-        family.matched_signals = _merge_unique(family.matched_signals, ["knowledge_retrieval_dependency"])
-        break
-    else:
-        catalog = TOOL_FAMILY_CATALOG["document_ingestion"]
-        patched.preflight.candidate_tool_families.append(
-            ToolFamilyCandidate(
-                family_key="document_ingestion",
-                label=str(catalog["label"]),
-                status="required",
-                supported_capabilities=list(catalog["supported_capabilities"]),
-                matched_signals=["knowledge_retrieval_dependency"],
-                suggested_tool_keys=list(catalog["suggested_tool_keys"]),
-                estimated_complexity=str(catalog["estimated_complexity"]),
-                reason=remediation_reason,
-            )
-        )
-
-    existing_entry = next(
-        (
-            item
-            for item in [*patched.optional_tools, *patched.rejected_tools]
-            if item.tool_key == "document_ingestion"
+    remediated, added_tool_keys = ensure_memory_tool_dependencies(
+        artifact=artifact,
+        blueprint=blueprint,
+        required_tool_keys=["document_ingestion"],
+        source_reason=(
+            "Remediacion automatica: knowledge_retrieval implica una capacidad minima de ingesta, refresh y lineage "
+            "para que Memoria pueda declarar RAG sin depender de una herramienta inexistente."
         ),
-        None,
     )
-    if existing_entry is None:
-        existing_entry = _build_entry(
-            blueprint=blueprint,
-            capability_key="document_ingestion",
-            classification="mandatory",
-            decision_reason=remediation_reason,
-            source_evidence=source_evidence,
-            confidence=0.74,
-        )
-    else:
-        existing_entry = existing_entry.model_copy(
-            update={
-                "classification": "mandatory",
-                "decision_reason": remediation_reason,
-                "source_evidence": _merge_unique(existing_entry.source_evidence, source_evidence),
-                "confidence": max(existing_entry.confidence, 0.74),
-            }
-        )
-
-    patched.optional_tools = [item for item in patched.optional_tools if item.tool_key != "document_ingestion"]
-    patched.rejected_tools = [item for item in patched.rejected_tools if item.tool_key != "document_ingestion"]
-    _append_entry(patched.recommended_tools, existing_entry)
-    patched.summary = (
-        f"{patched.summary} Se agrego document_ingestion automaticamente para cerrar la dependencia RAG "
-        "antes de generar Memoria."
-    ).strip()
-    return evaluate_tool_recommendation_artifact(patched), True
+    return remediated, bool(added_tool_keys)
 
 
 def _tool_key_to_enum(tool_key: str) -> ToolRecommendationAllowedToolKey | None:
@@ -1672,6 +1801,406 @@ def _memory_implications_for_tool(tool: BlueprintTool) -> list[str]:
     if tool.name == "human_handoff":
         implications.append("handoff_state_tracking")
     return implications
+
+
+def _approved_capability_keys(artifact: ToolRecommendationArtifact) -> set[str]:
+    if artifact.approved_tools_digest is None:
+        return set()
+    return {
+        _normalize_text(item).lower()
+        for item in artifact.approved_tools_digest.approved_tool_keys
+        if _normalize_text(item)
+    }
+
+
+def _entry_map_by_tool_key(artifact: ToolRecommendationArtifact) -> dict[str, ToolRecommendationEntry]:
+    entries: dict[str, ToolRecommendationEntry] = {}
+    for entry in [*artifact.recommended_tools, *artifact.optional_tools, *artifact.rejected_tools]:
+        tool_key = _normalize_text(entry.tool_key)
+        if tool_key and tool_key not in entries:
+            entries[tool_key] = entry
+    return entries
+
+
+def _family_for_capability(artifact: ToolRecommendationArtifact, capability_key: str) -> ToolFamilyCandidate | None:
+    for family in artifact.preflight.candidate_tool_families:
+        if capability_key in family.supported_capabilities or capability_key in family.suggested_tool_keys:
+            return family
+    catalog = CAPABILITY_CATALOG.get(capability_key)
+    if not catalog:
+        return None
+    family_key = str(catalog["family"])
+    family_catalog = TOOL_FAMILY_CATALOG.get(family_key)
+    if family_catalog is None:
+        return None
+    return ToolFamilyCandidate(
+        family_key=family_key,
+        label=str(family_catalog["label"]),
+        status="candidate",
+        supported_capabilities=list(family_catalog["supported_capabilities"]),
+        suggested_tool_keys=list(family_catalog["suggested_tool_keys"]),
+        estimated_complexity=str(family_catalog["estimated_complexity"]),
+        reason=str(catalog["capability_covered"]),
+    )
+
+
+def _capability_side_effect_level(capability_key: str) -> str:
+    if capability_key == "transactional_write":
+        return "high"
+    if capability_key in {"outbound_notification", "scheduler"}:
+        return "medium"
+    if capability_key in {"approval_gate", "human_handoff", "document_ingestion"}:
+        return "low"
+    return "none"
+
+
+def _capability_promotion_policy(
+    *,
+    capability_key: str,
+    necessity: str,
+    has_blocking_gap: bool,
+) -> str:
+    if necessity == "deferred" or has_blocking_gap:
+        return "implementation_pending"
+    if _capability_side_effect_level(capability_key) in {"medium", "high"}:
+        return "human_review"
+    return "auto"
+
+
+def _capability_has_blocking_gap(artifact: ToolRecommendationArtifact, capability_key: str) -> bool:
+    for gap in [*artifact.needs_information, *artifact.coverage_gaps]:
+        if gap.severity != "high":
+            continue
+        combined = _combined_text(gap.gap_key, gap.title, gap.question, gap.reason, gap.impact)
+        if capability_key in combined:
+            return True
+    return False
+
+
+def _capability_source_evidence(
+    *,
+    artifact: ToolRecommendationArtifact,
+    capability_key: str,
+    entry: ToolRecommendationEntry | None,
+    family: ToolFamilyCandidate | None,
+) -> list[str]:
+    evidence: list[str] = []
+    capability = _mandatory_capability_map(artifact).get(capability_key)
+    if capability is not None:
+        evidence = _merge_unique(evidence, capability.source_evidence)
+    if entry is not None:
+        evidence = _merge_unique(evidence, entry.source_evidence)
+    if family is not None:
+        evidence = _merge_unique(evidence, [f"tool_family:{family.family_key}", *family.matched_signals])
+    if not evidence:
+        evidence = ["tools.capability_catalog"]
+    return evidence
+
+
+def _capability_reason(
+    *,
+    artifact: ToolRecommendationArtifact,
+    capability_key: str,
+    entry: ToolRecommendationEntry | None,
+    family: ToolFamilyCandidate | None,
+) -> str:
+    capability = _mandatory_capability_map(artifact).get(capability_key)
+    if entry is not None and entry.decision_reason:
+        return entry.decision_reason
+    if capability is not None and capability.reason:
+        return capability.reason
+    if family is not None and family.reason:
+        return family.reason
+    return str(CAPABILITY_CATALOG[capability_key]["capability_covered"])
+
+
+def _capability_resolution_keys(artifact: ToolRecommendationArtifact) -> list[str]:
+    capability_keys: list[str] = []
+    for capability in artifact.preflight.mandatory_capabilities:
+        if capability.capability_key in CAPABILITY_CATALOG:
+            _append_unique(capability_keys, capability.capability_key)
+    for family in artifact.preflight.candidate_tool_families:
+        if family.status == "excluded":
+            continue
+        for capability_key in [*family.supported_capabilities, *family.suggested_tool_keys]:
+            if capability_key in CAPABILITY_CATALOG:
+                _append_unique(capability_keys, capability_key)
+    for entry in [*artifact.recommended_tools, *artifact.optional_tools, *artifact.rejected_tools]:
+        if entry.tool_key in CAPABILITY_CATALOG:
+            _append_unique(capability_keys, entry.tool_key)
+    for tool_key in _approved_capability_keys(artifact):
+        if tool_key in CAPABILITY_CATALOG:
+            _append_unique(capability_keys, tool_key)
+    return [key for key in CAPABILITY_CATALOG if key in set(capability_keys)]
+
+
+def _build_capability_resolutions(
+    artifact: ToolRecommendationArtifact,
+) -> list[ToolCapabilityResolution]:
+    approved_keys = _approved_capability_keys(artifact)
+    entries_by_key = _entry_map_by_tool_key(artifact)
+    mandatory_keys = set(_mandatory_capability_map(artifact))
+    recommended_keys = {item.tool_key for item in artifact.recommended_tools}
+    optional_keys = {item.tool_key for item in artifact.optional_tools}
+    rejected_keys = {item.tool_key for item in artifact.rejected_tools}
+    forbidden_keys = {item for item in artifact.preflight.forbidden_capabilities if item in CAPABILITY_CATALOG}
+    resolutions: list[ToolCapabilityResolution] = []
+
+    for capability_key in _capability_resolution_keys(artifact):
+        entry = entries_by_key.get(capability_key)
+        family = _family_for_capability(artifact, capability_key)
+        required_for_pattern = (
+            capability_key in mandatory_keys
+            or capability_key in recommended_keys
+            or (family is not None and family.status == "required")
+        )
+        if capability_key in rejected_keys or capability_key in forbidden_keys:
+            necessity = "deferred"
+        elif required_for_pattern:
+            necessity = "required"
+        elif capability_key in optional_keys or (family is not None and family.status == "candidate"):
+            necessity = "optional"
+        else:
+            necessity = "deferred"
+
+        has_blocking_gap = _capability_has_blocking_gap(artifact, capability_key)
+        promotion_policy = _capability_promotion_policy(
+            capability_key=capability_key,
+            necessity=necessity,
+            has_blocking_gap=has_blocking_gap,
+        )
+        candidate_pattern_id = f"candidate_tool_pattern:{capability_key}"
+        available = capability_key in approved_keys
+        project_tool_key = entry.tool_key if entry is not None and entry.tool_key != "broad_write_backoffice" else ""
+        if available and not project_tool_key:
+            project_tool_key = capability_key
+        catalog = CAPABILITY_CATALOG[capability_key]
+        resolutions.append(
+            ToolCapabilityResolution(
+                capability_key=capability_key,
+                required_for_pattern=required_for_pattern,
+                project_tool_key=project_tool_key,
+                catalog_match=str(catalog["family"]),
+                candidate_pattern_id=candidate_pattern_id,
+                necessity=necessity,  # type: ignore[arg-type]
+                side_effect_level=_capability_side_effect_level(capability_key),  # type: ignore[arg-type]
+                promotion_policy=promotion_policy,  # type: ignore[arg-type]
+                available=available,
+                source_evidence=_capability_source_evidence(
+                    artifact=artifact,
+                    capability_key=capability_key,
+                    entry=entry,
+                    family=family,
+                ),
+                reason=_capability_reason(
+                    artifact=artifact,
+                    capability_key=capability_key,
+                    entry=entry,
+                    family=family,
+                ),
+            )
+        )
+    return resolutions
+
+
+def _candidate_status_from_resolution(resolution: ToolCapabilityResolution) -> str:
+    if resolution.available:
+        return "ready_for_project"
+    if resolution.necessity == "deferred":
+        return "implementation_pending"
+    if resolution.promotion_policy == "human_review":
+        return "human_review"
+    if resolution.promotion_policy == "implementation_pending":
+        return "implementation_pending"
+    return "ready_for_project"
+
+
+def _build_candidate_tool_patterns(
+    artifact: ToolRecommendationArtifact,
+    resolutions: list[ToolCapabilityResolution],
+) -> list[CandidateToolPattern]:
+    entries_by_key = _entry_map_by_tool_key(artifact)
+    patterns: list[CandidateToolPattern] = []
+    for resolution in resolutions:
+        capability_key = resolution.capability_key
+        if capability_key not in CAPABILITY_CATALOG:
+            continue
+        catalog = CAPABILITY_CATALOG[capability_key]
+        family_key = str(catalog["family"])
+        family = _family_for_capability(artifact, capability_key)
+        entry = entries_by_key.get(capability_key)
+        if entry is None and resolution.necessity == "deferred":
+            continue
+        patterns.append(
+            CandidateToolPattern(
+                candidate_pattern_id=resolution.candidate_pattern_id,
+                capability_key=capability_key,
+                family_key=family_key,
+                label=str(catalog["tool_label"]),
+                status=_candidate_status_from_resolution(resolution),  # type: ignore[arg-type]
+                promotion_policy=resolution.promotion_policy,
+                side_effect_level=resolution.side_effect_level,
+                dedupe_signature=_stable_payload_hash(
+                    {
+                        "capability_key": capability_key,
+                        "family_key": family_key,
+                        "necessity": resolution.necessity,
+                        "promotion_policy": resolution.promotion_policy,
+                    }
+                )[:16],
+                source_refs=resolution.source_evidence,
+                reason=resolution.reason or (family.reason if family is not None else ""),
+                contract_seed=entry.contract_seed if entry is not None else None,
+            )
+        )
+    return patterns
+
+
+def _tool_pattern_contract_quality(pattern: CandidateToolPattern) -> str:
+    contract = pattern.contract_seed
+    if contract is None:
+        return "missing"
+    has_input_contract = bool(contract.request_schema) or bool(contract.inputs)
+    has_output_contract = bool(contract.response_schema) or bool(contract.outputs)
+    has_operational_controls = bool(contract.validations) or bool(contract.audit_rules) or bool(contract.idempotency_strategy)
+    if has_input_contract and has_output_contract and has_operational_controls:
+        return "complete"
+    if has_input_contract or has_output_contract or has_operational_controls:
+        return "partial"
+    return "missing"
+
+
+def _tool_pattern_learning_risk_flags(pattern: CandidateToolPattern, contract_quality: str) -> list[str]:
+    risk_flags: list[str] = []
+    if pattern.side_effect_level != "none":
+        risk_flags.append(f"side_effect_level:{pattern.side_effect_level}")
+    if pattern.promotion_policy == "human_review":
+        risk_flags.append("requires_human_review")
+    if pattern.promotion_policy == "implementation_pending":
+        risk_flags.append("implementation_pending")
+    if contract_quality != "complete":
+        risk_flags.append(f"contract_quality:{contract_quality}")
+    contract = pattern.contract_seed
+    if contract is not None and contract.requires_approval:
+        risk_flags.append("requires_approval_gate")
+    if contract is not None and contract.sensitive_data:
+        risk_flags.append("sensitive_data")
+    return risk_flags
+
+
+def _tool_pattern_learning_status(
+    pattern: CandidateToolPattern,
+    *,
+    contract_quality: str,
+    duplicate_of: str,
+) -> str:
+    if duplicate_of:
+        return "rejected_duplicate"
+    if pattern.promotion_policy == "implementation_pending" or pattern.status == "implementation_pending":
+        return "implementation_pending"
+    if contract_quality != "complete":
+        return "insufficient_contract"
+    if pattern.promotion_policy == "human_review" or pattern.side_effect_level in {"medium", "high"}:
+        return "needs_human_review"
+    return "ready_for_global_review"
+
+
+def _build_tool_pattern_learning_report(
+    artifact: ToolRecommendationArtifact,
+    patterns: list[CandidateToolPattern],
+) -> ToolPatternLearningReport:
+    seen_by_signature: dict[str, str] = {}
+    learning_candidates: list[ToolPatternLearningCandidate] = []
+    for pattern in patterns:
+        signature = pattern.dedupe_signature or _stable_payload_hash(
+            {
+                "capability_key": pattern.capability_key,
+                "family_key": pattern.family_key,
+                "label": pattern.label,
+            }
+        )[:16]
+        duplicate_of = seen_by_signature.get(signature, "")
+        if not duplicate_of:
+            seen_by_signature[signature] = pattern.candidate_pattern_id
+
+        contract_quality = _tool_pattern_contract_quality(pattern)
+        promotion_status = _tool_pattern_learning_status(
+            pattern,
+            contract_quality=contract_quality,
+            duplicate_of=duplicate_of,
+        )
+        risk_flags = _tool_pattern_learning_risk_flags(pattern, contract_quality)
+        learning_candidates.append(
+            ToolPatternLearningCandidate(
+                candidate_pattern_id=pattern.candidate_pattern_id,
+                capability_key=pattern.capability_key,
+                family_key=pattern.family_key,
+                label=pattern.label,
+                source_level="project_tool" if pattern.contract_seed is not None else "candidate_tool_pattern",
+                promotion_status=promotion_status,  # type: ignore[arg-type]
+                global_promotion_allowed=promotion_status == "ready_for_global_review",
+                dedupe_signature=signature,
+                replacement_global_pattern_id=duplicate_of,
+                contract_quality=contract_quality,  # type: ignore[arg-type]
+                risk_flags=risk_flags,
+                source_refs=pattern.source_refs,
+                evidence_refs=_merge_unique(
+                    [
+                        f"tool_pattern:{pattern.candidate_pattern_id}",
+                        f"capability:{pattern.capability_key}",
+                        f"family:{pattern.family_key}",
+                    ],
+                    pattern.source_refs,
+                ),
+                reason=(
+                    "Patron listo para revision global; la escritura a knowledge_documents requiere promocion explicita."
+                    if promotion_status == "ready_for_global_review"
+                    else "Patron conservado como aprendizaje gobernado sin escritura global automatica."
+                ),
+            )
+        )
+
+    ready_count = sum(1 for item in learning_candidates if item.promotion_status == "ready_for_global_review")
+    summary = (
+        f"Learning loop preparo {len(learning_candidates)} candidatos de patron de herramienta; "
+        f"{ready_count} quedan listos para revision global y 0 se escriben automaticamente en knowledge_documents."
+    )
+    if not learning_candidates:
+        summary = "Learning loop sin candidatos: Tools no detecto capacidades reutilizables en esta corrida."
+    return ToolPatternLearningReport(
+        source_session_id=artifact.source_session_id,
+        source_blueprint_version=artifact.source_blueprint_version,
+        candidate_count=len(learning_candidates),
+        ready_for_global_review_count=ready_count,
+        global_write_allowed=False,
+        catalog_refs=[
+            "knowledge_documents:tooling_pattern_catalog",
+            "knowledge_documents:agentic_knowledge_base_canonical",
+            "tools.capability_catalog",
+        ],
+        candidates=learning_candidates,
+        summary=summary,
+    )
+
+
+def _attach_tool_capability_intelligence(
+    artifact: ToolRecommendationArtifact,
+) -> ToolRecommendationArtifact:
+    resolutions = _build_capability_resolutions(artifact)
+    patterns = _build_candidate_tool_patterns(artifact, resolutions)
+    return artifact.model_copy(
+        update={
+            "capability_resolutions": resolutions,
+            "candidate_tool_patterns": patterns,
+            "learning_report": _build_tool_pattern_learning_report(artifact, patterns),
+        }
+    )
+
+
+def _hydrate_tool_recommendation_artifact(
+    artifact: ToolRecommendationArtifact,
+) -> ToolRecommendationArtifact:
+    return _attach_tool_capability_intelligence(_attach_recommendation_contract_seeds(artifact))
 
 
 def build_approved_tools_digest_from_blueprint_tools(
@@ -2758,7 +3287,7 @@ def evaluate_tool_recommendation_artifact(
             "review_state": evaluation.overall_status,
         }
     )
-    return _attach_recommendation_contract_seeds(evaluated)
+    return _hydrate_tool_recommendation_artifact(evaluated)
 
 
 def build_tool_recommendation_prompt_input(artifact: ToolRecommendationArtifact) -> ToolRecommendationPromptInput:
@@ -2832,6 +3361,8 @@ def build_tool_recommendation_prompt_input(artifact: ToolRecommendationArtifact)
         f"writes={', '.join(artifact.preflight.required_write_actions) or 'none'}",
         f"sources={', '.join(artifact.preflight.required_information_sources) or 'inline_only'}",
         f"approvals={', '.join(artifact.preflight.approval_boundaries) or 'none'}",
+        f"design_tools={'; '.join(artifact.preflight.design_tool_implications[:4]) or 'none'}",
+        f"design_memory={'; '.join(artifact.preflight.design_memory_implications[:4]) or 'none'}",
     ]
 
     return ToolRecommendationPromptInput(
@@ -2854,6 +3385,8 @@ def build_tool_recommendation_prompt_input(artifact: ToolRecommendationArtifact)
         candidate_tools=candidate_tools,
         requirements_coverage=list(artifact.requirements_coverage),
         design_role_coverage=list(artifact.design_role_coverage),
+        design_tool_implications=list(artifact.preflight.design_tool_implications),
+        design_memory_implications=list(artifact.preflight.design_memory_implications),
         existing_gaps=list(artifact.needs_information),
         compact_evidence=compact_evidence,
     )
@@ -2908,7 +3441,7 @@ def annotate_tool_recommendation_status(
             "stale_reasons": stale_reasons,
         }
     )
-    return auto_reconcile_tool_recommendation_artifact(_attach_recommendation_contract_seeds(annotated))
+    return auto_reconcile_tool_recommendation_artifact(annotated)
 
 
 def _entry_from_llm_decision(
@@ -3085,7 +3618,7 @@ def merge_llm_tool_recommendation(
             "summary": summary,
         }
     )
-    return auto_reconcile_tool_recommendation_artifact(_attach_recommendation_contract_seeds(merged))
+    return auto_reconcile_tool_recommendation_artifact(merged)
 
 
 def auto_reconcile_tool_recommendation_artifact(
@@ -3107,7 +3640,6 @@ def auto_reconcile_tool_recommendation_artifact(
                 "credenciales de api",
                 "url de endpoint",
                 "sistema fuente no identificado",
-                "system_of_record_unspecified",
             )
         )
 
@@ -3138,4 +3670,4 @@ def auto_reconcile_tool_recommendation_artifact(
             "critic_findings": clean_findings,
         }
     )
-    return _attach_recommendation_contract_seeds(updated)
+    return _hydrate_tool_recommendation_artifact(updated)

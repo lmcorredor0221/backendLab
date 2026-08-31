@@ -11,6 +11,7 @@ from app.models import (
     AgenticEstimate,
     AutomationMatrixProfile,
     BlueprintTool,
+    DesignRecommendationArtifact,
     EstimationComplexityLevel,
     EstimationConstructionScenario,
     EstimationMaturityStage,
@@ -149,6 +150,7 @@ class EstimationSignals:
     project_archetype: str
     active_provider: LLMProviderKey
     source_artifacts: list[str]
+    design_cost_complexity_implications: list[str]
     scope_points: int
     blocking_gaps: int
     open_questions: int
@@ -236,6 +238,11 @@ def build_estimation_report(
         notes.append(f"Tarifas del proveedor snapshot tomadas con vigencia {agentic.pricing_snapshot.effective_from}.")
     if agentic.provider_runtime_cost_total_usd == 0:
         notes.append("El costo variable del proveedor es cero en este corte porque el perfil vigente no trae cargos variables o falta pricing.")
+    if signals.design_cost_complexity_implications:
+        notes.append(
+            "Design aporto implicaciones de costo/complejidad consideradas por Estimate: "
+            + "; ".join(signals.design_cost_complexity_implications[:3])
+        )
 
     package_policy = _build_package_policy_state(signals)
 
@@ -270,6 +277,59 @@ def _build_package_policy_state(signals: EstimationSignals) -> EstimationPackage
     )
 
 
+def _design_cost_complexity_implications(snapshot: SessionSnapshot) -> list[str]:
+    design_record = snapshot.journey_latest_artifacts.get("design") if snapshot.journey_latest_artifacts else None
+    if design_record is None or not design_record.proposal_payload:
+        return []
+    try:
+        design_artifact = DesignRecommendationArtifact.model_validate(design_record.proposal_payload)
+    except Exception:
+        return []
+    selected = design_artifact.selected_design
+    if selected is None and design_artifact.recommended_alternative_key:
+        selected = next(
+            (
+                item
+                for item in design_artifact.alternatives
+                if item.alternative_key == design_artifact.recommended_alternative_key
+            ),
+            None,
+        )
+    if selected is None and design_artifact.alternatives:
+        selected = design_artifact.alternatives[0]
+    if selected is None:
+        return []
+    return _dedupe(
+        [
+            *selected.blueprint_projection.cost_complexity_implications,
+            f"Arquitectura seleccionada: {selected.architecture}",
+            f"Patron seleccionado: {selected.pattern_family or selected.reasoning_pattern}",
+        ]
+    )
+
+
+def _design_complexity_points(implications: list[str]) -> int:
+    text = " ".join(item.lower() for item in implications)
+    points = 0
+    if "complejidad operacional: high" in text or "supervisor" in text or "multiagente" in text:
+        points += 18
+    elif "complejidad operacional: medium" in text or "handoff" in text:
+        points += 9
+    elif "complejidad operacional: low" in text or "single_agent" in text:
+        points -= 3
+    if "costo relativo: high" in text:
+        points += 10
+    elif "costo relativo: medium" in text:
+        points += 4
+    elif "costo relativo: low" in text:
+        points -= 2
+    if "mantenibilidad: low" in text:
+        points += 8
+    elif "mantenibilidad: high" in text:
+        points -= 2
+    return points
+
+
 def _build_signals(
     *,
     snapshot: SessionSnapshot,
@@ -278,6 +338,7 @@ def _build_signals(
 ) -> EstimationSignals:
     maturity_stage = _infer_maturity_stage(snapshot, acp_preview)
     active_provider = runtime_settings.active_provider
+    design_cost_complexity_implications = _design_cost_complexity_implications(snapshot)
 
     discovery = snapshot.discovery
     canvas = snapshot.canvas
@@ -373,6 +434,7 @@ def _build_signals(
         p_memory = 0
     if grounding and getattr(grounding, "citations_policy", ""):
         p_memory += 4
+    p_design_complexity = _design_complexity_points(design_cost_complexity_implications)
 
     # 4. Puntos de Guardrails, Safety y Aprobaciones Humanas
     human_approval_count = approval_count
@@ -402,7 +464,7 @@ def _build_signals(
     elif "reflection" in pattern or "tree" in pattern:
         m_arch *= 1.15
 
-    raw_points = p_business + p_tools + p_memory + p_guardrails + p_execution
+    raw_points = p_business + p_tools + p_memory + p_guardrails + p_execution + p_design_complexity
     scope_points = int(round(raw_points * m_arch))
 
     complexity = _infer_complexity(scope_points)
@@ -440,6 +502,11 @@ def _build_signals(
         assumptions.append("El costo LLM del proveedor activo se calcula con el pricing profile vigente del workspace y volumen estimado por etapa.")
     else:
         assumptions.append("Codex local se calcula con politica de costo configurable y snapshot de compute local, no por tokenizacion directa.")
+    if design_cost_complexity_implications:
+        assumptions.append(
+            "Estimate incorpora implicaciones de costo/complejidad declaradas por Design: "
+            + "; ".join(design_cost_complexity_implications[:3])
+        )
 
     risk_drivers: list[str] = []
     negative_signals: list[str] = []
@@ -491,6 +558,11 @@ def _build_signals(
     if latest_run is not None and latest_run.blocking_issues:
         risk_drivers.append("La evaluacion ya detecto issues bloqueantes que pueden ensanchar el retrabajo.")
         negative_signals.append("La capa de evaluacion reporta issues bloqueantes.")
+    if p_design_complexity > 0:
+        risk_drivers.append("Design declara complejidad arquitectonica que incrementa el esfuerzo estimado.")
+        negative_signals.append("La arquitectura seleccionada agrega costo/complejidad frente a una opcion simple.")
+    elif p_design_complexity < 0:
+        positive_signals.append("Design declara una arquitectura contenida que reduce complejidad estimada.")
 
     source_artifacts = ["discovery", "canvas"]
     if snapshot.blueprint is not None:
@@ -516,6 +588,7 @@ def _build_signals(
         project_archetype=project_archetype,
         active_provider=active_provider,
         source_artifacts=source_artifacts,
+        design_cost_complexity_implications=design_cost_complexity_implications,
         scope_points=scope_points,
         blocking_gaps=blocking_gaps,
         open_questions=open_questions,
@@ -799,7 +872,7 @@ def _build_construction_scenarios(
         _construction_scenario(
             scenario_key="blueprint_premium",
             label="Blueprint Premium",
-            description="Blueprint enriquecido: preguntas relevantes se resuelven y solo se reprocesan los entregables afectados.",
+            description="Blueprint enriquecido: preguntas relevantes se resuelven y solo se reconcilian los entregables afectados.",
             hours=round(blueprint_premium_hours, 2),
             duration=round(_scale_duration(baseline_duration, blueprint_premium_hours, baseline_hours, 0.92), 1),
             cost=blueprint_premium_cost,
@@ -809,7 +882,7 @@ def _build_construction_scenarios(
             automation_leverage_percent=int(_clamp(round(signals.blueprint_design_coverage_percent * 0.55), 32, 68)),
             notes=[
                 "Pregunta + resolver + enriquecer: reduce incertidumbre de diseno antes de construir.",
-                "El reprocesamiento selectivo se basa en dependencias de entregables y respuestas.",
+                "La reconciliacion selectiva se basa en dependencias de entregables y respuestas.",
                 residual_uncertainty_note,
             ],
         ),

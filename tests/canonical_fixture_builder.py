@@ -62,6 +62,13 @@ def sanitize_dynamic_contract_value(value: Any, registry: dict[str, str], parent
         return [sanitize_dynamic_contract_value(item, registry, parent_key) for item in value]
 
     if isinstance(value, str):
+        if parent_key and (
+            parent_key.endswith("_hash")
+            or parent_key.endswith("_fingerprint")
+            or parent_key.endswith("_signature")
+            or parent_key.endswith("_checksum")
+        ):
+            return "<hash>"
         if parent_key == "id" or (parent_key and parent_key.endswith("_id")):
             return alias_uuid(value, registry) if UUID_RE.fullmatch(value) else value
         if parent_key and parent_key.endswith("_at"):

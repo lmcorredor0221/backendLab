@@ -1336,6 +1336,28 @@ def build_order_response(db: Session, order: CommercialOrderRecord) -> Commercia
     return serialize_order(db, order)
 
 
+def _record_access_request_journey_transition(
+    db: Session,
+    *,
+    session_record: SessionRecord,
+    access_request: CommercialAccessRequestRecord,
+    event_key: str,
+    actor_user_id: UUID | None,
+    reason: str,
+) -> None:
+    # Keep commerce as the access authority while making its outcome auditable in the journey timeline.
+    from app.services.product_processing.journey_state_machine_service import transition_for_commercial_access_request
+
+    transition_for_commercial_access_request(
+        db,
+        record=session_record,
+        request=access_request,
+        event_key=event_key,
+        actor_user_id=actor_user_id,
+        reason=reason,
+    )
+
+
 def create_access_request(
     db: Session,
     *,
@@ -1385,6 +1407,14 @@ def create_access_request(
         product_key=policy.product,
         source="access_request",
         metadata={"capability": request.capability},
+    )
+    _record_access_request_journey_transition(
+        db,
+        session_record=session_record,
+        access_request=record,
+        event_key=f"request_{record.product_key}_access",
+        actor_user_id=current_user.id,
+        reason=record.reason or f"Solicitud de acceso a {record.product_key} creada.",
     )
     _auto_approve_access_request_from_workspace_balance(
         db,
@@ -1450,6 +1480,14 @@ def request_access(
         product_key=product_key,
         source="access_request",
         metadata={"capability": payload.capability},
+    )
+    _record_access_request_journey_transition(
+        db,
+        session_record=record,
+        access_request=access_request,
+        event_key=f"request_{access_request.product_key}_access",
+        actor_user_id=current_user.id,
+        reason=access_request.reason or f"Solicitud de acceso a {access_request.product_key} creada.",
     )
     _auto_approve_access_request_from_workspace_balance(
         db,
@@ -1561,6 +1599,14 @@ def _auto_approve_access_request_from_workspace_balance(
             "approval_mode": approval_mode,
         },
     )
+    _record_access_request_journey_transition(
+        db,
+        session_record=session_record,
+        access_request=access_request,
+        event_key=f"approve_{access_request.product_key}_access",
+        actor_user_id=actor_user.id if actor_user is not None else None,
+        reason=access_request.resolution_note,
+    )
     return True
 
 
@@ -1660,6 +1706,14 @@ def _apply_access_request_manual_approval(
         session_record.commercial_tier = target_tier
         session_record.updated_at = utc_now()
         db.add(session_record)
+    _record_access_request_journey_transition(
+        db,
+        session_record=session_record,
+        access_request=access_request,
+        event_key=f"approve_{access_request.product_key}_access",
+        actor_user_id=current_user.id,
+        reason=access_request.resolution_note,
+    )
 
 
 def process_pending_access_requests_fifo(
@@ -1749,6 +1803,14 @@ def resolve_access_request_by_id(
         record.resolved_at = utc_now()
         record.updated_at = utc_now()
         db.add(record)
+        _record_access_request_journey_transition(
+            db,
+            session_record=session_record,
+            access_request=record,
+            event_key=f"deny_{record.product_key}_access",
+            actor_user_id=current_user.id,
+            reason=record.resolution_note or "Solicitud de acceso no aprobada.",
+        )
 
     record_commercial_event(
         db,
@@ -1808,6 +1870,14 @@ def resolve_access_request(
         access_request.resolved_at = utc_now()
         access_request.updated_at = utc_now()
         db.add(access_request)
+        _record_access_request_journey_transition(
+            db,
+            session_record=session_record,
+            access_request=access_request,
+            event_key=f"deny_{access_request.product_key}_access",
+            actor_user_id=current_user.id,
+            reason=access_request.resolution_note or "Solicitud de acceso no aprobada.",
+        )
 
     record_commercial_event(
         db,

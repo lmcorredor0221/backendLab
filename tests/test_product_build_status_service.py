@@ -20,6 +20,7 @@ from app.services.deliverable_catalog import build_deliverable_catalog_response
 from app.services.deliverable_catalog.registry_service import get_registry_entry
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord
+from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 from app.services.product_processing import ProductBuildLifecycle, ProductBuildProductKey, build_product_build_status
 
 
@@ -75,6 +76,74 @@ def test_product_build_status_locks_unpurchased_product() -> None:
     assert status.entitlement.purchase_required is True
     assert status.actions[0].action_key == "buy_product"
     assert status.actions[0].primary is True
+
+
+def test_product_build_status_hides_legacy_run_activity_when_product_is_locked() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        run = ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key="acp",
+            product_mode="acp_implementation",
+            entitlement_tier="blueprint_pro",
+            access_state="locked",
+            lifecycle="requires_attention",
+            progress_percent=55,
+            completed_units=12,
+            total_units=16,
+            blocked_units=2,
+            idempotency_key=f"eov3-acp-legacy-{uuid4()}",
+            checkpoint_payload={
+                "processing_queue": {
+                    "queue_id": "queue-acp-legacy",
+                    "mode": "process_pending",
+                    "status": "completed_with_errors",
+                    "selected_deliverable_keys": ["diagram.human_intervention_flow"],
+                    "summary": "Cola legacy ACP generada antes del gate comercial.",
+                }
+            },
+            error_payload={
+                "code": "legacy_locked_acp",
+                "message": "No deberia mostrarse mientras ACP siga bloqueado.",
+            },
+            created_by_user_id=user.id,
+        )
+        db.add(run)
+        db.flush()
+        db.add(
+            ProductBuildStepRecord(
+                run_id=run.id,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                step_key="deliverable:diagram.human_intervention_flow",
+                stage_key="validate",
+                deliverable_key="diagram.human_intervention_flow",
+                status="requires_attention",
+                progress_percent=0,
+                checkpoint_payload={"attempt_count": 1, "title": "Intervencion humana y aprobaciones"},
+                error_payload={"message": "Legacy ACP queue noise."},
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.acp,
+            current_user=user,
+        )
+
+    assert status.lifecycle == ProductBuildLifecycle.not_purchased
+    assert status.entitlement.purchase_required is True
+    assert status.current_activity is None
+    assert status.processing_queue is None
+    assert status.last_error is None
+    assert status.attention.total == 0
+    assert status.progress.percent == 0
 
 
 def test_product_build_status_uses_governed_catalog_count() -> None:

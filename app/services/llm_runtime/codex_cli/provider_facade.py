@@ -44,6 +44,10 @@ from app.services.llm_runtime.codex_cli.context_assembler import (
     CodexContextRequest,
 )
 from app.services.llm_runtime.codex_cli.execution_service import CodexExecutionService
+from app.services.llm_runtime.prompt_templates import (
+    build_tool_recommendation_inline_prompt,
+    build_tool_recommendation_staged_prompt,
+)
 from app.services.llm_runtime.stage_context_types import StageContextBundle, build_llm_call_context
 from app.services.rules import normalize_text
 
@@ -301,12 +305,23 @@ class CodexLocalBuilderService:
         )
 
     def _capability_source(self, spec: BuilderCapabilitySpec, payload) -> CodexContextInlineSource:
+        raw_json = json.dumps(payload.model_dump(mode="json"), ensure_ascii=True, default=str)
         return CodexContextInlineSource(
             key=spec.source_key,
             title=spec.source_title,
-            content=json.dumps(payload.model_dump(mode="json"), ensure_ascii=True, indent=2),
+            content=json.dumps(payload.model_dump(mode="json"), ensure_ascii=True, indent=2, default=str),
             required=True,
             summary=spec.source_summary,
+            metadata={
+                "context_quality_version": "context-quality.v1",
+                "input_payload_chars": len(raw_json),
+                "compact_payload_chars": len(raw_json),
+                "compact_payload_tokens_est": max(1, (len(raw_json) + 3) // 4),
+                "compact_retention_pct": 100.0,
+                "payload_model": payload.__class__.__name__,
+                "source_key": spec.source_key,
+                "api_compaction_applied": False,
+            },
         )
 
     def _execute_structured_capability(
@@ -678,25 +693,15 @@ class CodexLocalBuilderService:
         )
         if self._uses_staged_context():
             prompt = _localized_prompt(
-                "Devuelve exclusivamente JSON valido segun el schema provisto. "
-                "Selecciona el conjunto minimo de herramientas usando solo las fuentes staged "
-                "`tool_recommendation_case` y `tool_recommendation_catalog`. "
-                "Usa exclusivamente tools del catalogo permitido. "
-                "Manten toda tool mandatory si la evidencia la sostiene. "
-                "Marca como unnecessary cualquier tool candidata que no aporte capacidad unica. "
-                "Si falta informacion, devuelve gaps estructurados en lugar de inventar tools.",
+                build_tool_recommendation_staged_prompt(),
                 context_bundle,
             )
         else:
             prompt = _localized_prompt(
-                "Devuelve exclusivamente JSON valido segun el schema provisto. "
-                "Selecciona el conjunto minimo de herramientas para un agente Lean usando solo el contexto aprobado "
-                "y el catalogo permitido. Nunca inventes tool keys fuera del catalogo. "
-                "Manten toda tool mandatory si la evidencia la sostiene. "
-                "Marca como unnecessary cualquier tool candidata que no aporte capacidad unica. "
-                "Si falta informacion, devuelve gaps estructurados en lugar de inventar tools.\n\n"
-                f"CASE:\n{json.dumps(case_payload, ensure_ascii=True)}\n\n"
-                f"CATALOG:\n{json.dumps(catalog_payload, ensure_ascii=True)}",
+                build_tool_recommendation_inline_prompt(
+                    case_json=json.dumps(case_payload, ensure_ascii=True),
+                    catalog_json=json.dumps(catalog_payload, ensure_ascii=True),
+                ),
                 context_bundle,
             )
         try:

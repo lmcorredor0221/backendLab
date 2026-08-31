@@ -1,15 +1,23 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
+
+from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
     BlueprintArtifact,
     CanvasArtifact,
     DesignAlternative,
+    DesignBlueprintProjection,
     DesignRecommendationArtifact,
     DesignRole,
     DiscoveryArtifact,
     JourneyStageArtifactRecord,
     ReviewState,
     SessionRecord,
+    ToolPatternLearningCandidateRecord,
+    ToolRecommendationArtifact,
+    WorkspaceRecord,
 )
 from app.services.llm_runtime.builder_contracts import NonFunctionalRequirement, RequirementsDefinitionOutput
 from app.services.knowledge_tool_policy import build_memory_tool_dependencies
@@ -19,10 +27,13 @@ from app.services.tool_recommendation_service import (
     annotate_tool_recommendation_status,
     build_approved_tools_digest_from_blueprint_tools,
     build_placeholder_tool_recommendation,
+    build_tool_recommendation_prompt_input,
     ensure_document_ingestion_for_knowledge_retrieval,
+    ensure_memory_tool_dependencies,
     evaluate_tool_recommendation_artifact,
     promote_tool_recommendation_to_blueprint_tools,
 )
+from app.services.tool_pattern_learning_service import persist_tool_pattern_learning_candidates
 
 
 def build_discovery(
@@ -144,6 +155,176 @@ def test_enterprise_copilot_shortlists_lookup_without_extra_tools() -> None:
     assert artifact.needs_information == []
     assert candidate_map["read_only_lookup"].status == "required"
     assert candidate_map["transactional_write"].status == "excluded"
+    assert artifact.learning_report.global_write_allowed is False
+    assert artifact.learning_report.candidate_count == len(artifact.candidate_tool_patterns)
+
+
+def test_tool_learning_report_prepares_safe_patterns_without_writing_global_knowledge() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Ayudar a soporte a responder usando datos operativos reales.",
+            current_process="Consultar CRM y tickets abiertos del cliente antes de responder.",
+            desired_outcome="Responder estado del caso sin actualizar registros.",
+        ),
+        canvas=build_canvas(user_goal="Consultar CRM y tickets para responder con grounding."),
+        blueprint=build_blueprint(guardrails=["Solo lectura sobre sistemas operativos", "Mantener trazabilidad"]),
+        blueprint_version_number=31,
+    )
+
+    report = artifact.learning_report
+    candidates = {item.capability_key: item for item in report.candidates}
+
+    assert report.schema_version == "tool-pattern-learning.v1"
+    assert report.global_write_allowed is False
+    assert report.ready_for_global_review_count == 1
+    assert "knowledge_documents:tooling_pattern_catalog" in report.catalog_refs
+    assert candidates["read_system_of_record"].promotion_status == "ready_for_global_review"
+    assert candidates["read_system_of_record"].global_promotion_allowed is True
+    assert candidates["read_system_of_record"].contract_quality == "complete"
+    assert candidates["read_system_of_record"].source_level == "project_tool"
+    assert candidates["read_system_of_record"].dedupe_signature
+
+
+def test_tool_learning_candidates_persist_and_dedupe_by_session_signature() -> None:
+    with TemporaryDirectory(prefix="lean-builder-tool-learning-") as tmp_dir:
+        engine = create_engine(
+            f"sqlite:///{(Path(tmp_dir) / 'tool-learning.db').as_posix()}",
+            connect_args={"check_same_thread": False},
+        )
+        try:
+            SQLModel.metadata.create_all(engine)
+            workspace_id = uuid4()
+            session_id = uuid4()
+            with Session(engine) as session:
+                session.add(WorkspaceRecord(id=workspace_id, name="Learning Workspace", slug="learning-workspace"))
+                session.add(SessionRecord(id=session_id, user_id=uuid4(), workspace_id=workspace_id))
+                session.commit()
+
+                artifact = build_placeholder_tool_recommendation(
+                    session_id=session_id,
+                    discovery=build_discovery(
+                        problem_statement="Ayudar a soporte a responder usando datos operativos reales.",
+                        current_process="Consultar CRM y tickets abiertos del cliente antes de responder.",
+                        desired_outcome="Responder estado del caso sin actualizar registros.",
+                    ),
+                    canvas=build_canvas(user_goal="Consultar CRM y tickets para responder con grounding."),
+                    blueprint=build_blueprint(
+                        guardrails=["Solo lectura sobre sistemas operativos", "Mantener trazabilidad"]
+                    ),
+                    blueprint_version_number=32,
+                )
+
+                first = persist_tool_pattern_learning_candidates(
+                    session,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    recommendation=artifact,
+                )
+                second = persist_tool_pattern_learning_candidates(
+                    session,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    recommendation=artifact,
+                )
+                rows = session.exec(
+                    select(ToolPatternLearningCandidateRecord).where(
+                        ToolPatternLearningCandidateRecord.workspace_id == workspace_id,
+                        ToolPatternLearningCandidateRecord.session_id == session_id,
+                    )
+                ).all()
+        finally:
+            engine.dispose()
+
+    assert first.inserted_count == 1
+    assert first.updated_count == 0
+    assert second.inserted_count == 0
+    assert second.updated_count == 1
+    assert len(rows) == 1
+    assert rows[0].observation_count == 2
+    assert rows[0].promotion_status == "ready_for_global_review"
+    assert rows[0].global_promotion_allowed is True
+    assert rows[0].contract_seed_payload
+
+
+def test_tool_recommendation_legacy_payload_defaults_learning_report_safely() -> None:
+    artifact = ToolRecommendationArtifact.model_validate(
+        {
+            "source_session_id": str(uuid4()),
+            "schema_version": "tool-recommendation.v1",
+            "recommended_tools": [],
+            "optional_tools": [],
+            "rejected_tools": [],
+        }
+    )
+
+    assert artifact.learning_report.schema_version == "tool-pattern-learning.v1"
+    assert artifact.learning_report.global_write_allowed is False
+    assert artifact.learning_report.candidates == []
+
+
+def test_tools_preflight_consumes_design_implications_as_architecture_evidence() -> None:
+    design = DesignRecommendationArtifact(
+        alternatives=[
+            DesignAlternative(
+                alternative_key="skill_orchestrator",
+                label="Orquestador con retrieval gobernado",
+                architecture="single_agent_with_skills",
+                reasoning_pattern="ReAct",
+                tool_implications=[
+                    "knowledge_retrieval: recuperar politicas aprobadas antes de responder.",
+                ],
+                memory_implications=[
+                    "source_ref_grounding: conservar referencias y versiones de fuente.",
+                ],
+                blueprint_projection=DesignBlueprintProjection(
+                    architecture="single_agent_with_skills",
+                    reasoning_pattern="ReAct",
+                    tool_implications=[
+                        "approval_gate: revisar decisiones sensibles antes de promover.",
+                    ],
+                    memory_implications=[
+                        "decision_traceability: conservar decision, evidencia y owner.",
+                    ],
+                ),
+            )
+        ],
+        recommended_alternative_key="skill_orchestrator",
+    )
+
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder preguntas usando lineamientos internos.",
+            current_process="El equipo interpreta reglas manualmente.",
+            desired_outcome="Responder con evidencia y control de aprobacion.",
+        ),
+        canvas=build_canvas(user_goal="Resolver solicitudes con evidencia."),
+        blueprint=build_blueprint(),
+        design_artifact=design,
+        blueprint_version_number=1,
+    )
+    mandatory = {item.capability_key for item in artifact.preflight.mandatory_capabilities}
+    families = {item.family_key: item for item in artifact.preflight.candidate_tool_families}
+
+    assert "knowledge_retrieval" in mandatory
+    assert "approval_gate" in mandatory
+    assert artifact.preflight.design_tool_implications
+    assert artifact.preflight.design_memory_implications
+    assert families["retrieval"].status == "required"
+    assert families["approval_control"].status == "required"
+    resolutions = {item.capability_key: item for item in artifact.capability_resolutions}
+    patterns = {item.capability_key: item for item in artifact.candidate_tool_patterns}
+    assert resolutions["knowledge_retrieval"].necessity == "required"
+    assert resolutions["knowledge_retrieval"].promotion_policy == "auto"
+    assert resolutions["knowledge_retrieval"].available is False
+    assert resolutions["approval_gate"].necessity == "required"
+    assert patterns["knowledge_retrieval"].status == "ready_for_project"
+    assert patterns["approval_gate"].status == "ready_for_project"
+
+    prompt_input = build_tool_recommendation_prompt_input(artifact)
+    assert prompt_input.design_tool_implications == artifact.preflight.design_tool_implications
+    assert prompt_input.design_memory_implications == artifact.preflight.design_memory_implications
 
 
 def test_knowledge_assistant_requires_retrieval_and_ingestion_for_rag_sources() -> None:
@@ -309,6 +490,86 @@ def test_scheduled_rag_refresh_requires_scheduler() -> None:
     assert candidate_map["scheduler"].status == "required"
 
 
+def test_memory_dependency_remediation_promotes_missing_scheduler() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder preguntas sobre procedimientos vigentes.",
+            current_process="Busca procedimientos y refresca el corpus cada dia antes de responder.",
+            desired_outcome="Responder con citas frescas y consistentes.",
+        ),
+        canvas=build_canvas(
+            user_goal="Responder con grounding documental y corpus actualizado.",
+            expected_outputs=["Respuesta con citas"],
+        ),
+        blueprint=build_blueprint(
+            knowledge_mode="rag",
+            knowledge_sources=[
+                {
+                    "key": "ops-playbook",
+                    "title": "Ops Playbook",
+                    "description": "Playbook operativo",
+                    "source_type": "document",
+                    "uri": "kb://ops-playbook",
+                    "owner": "Ops",
+                    "license": "internal",
+                    "sensitivity": "internal",
+                    "source_version": "2026-07",
+                }
+            ],
+            knowledge_refresh_frequency="daily",
+        ),
+        blueprint_version_number=2,
+    )
+    legacy_tools = [item for item in artifact.recommended_tools if item.tool_key != "scheduler"]
+    approved_tools = [
+        item.contract_seed
+        for item in legacy_tools
+        if item.contract_seed is not None
+    ]
+    legacy_digest = build_approved_tools_digest_from_blueprint_tools(
+        approved_tools,
+        source_session_id=artifact.source_session_id,
+        source_blueprint_version=artifact.source_blueprint_version,
+        mandatory_tool_keys=[item.tool_key for item in legacy_tools],
+    )
+    legacy_artifact = artifact.model_copy(
+        update={
+            "recommended_tools": legacy_tools,
+            "approved_tools_digest": legacy_digest,
+        },
+        deep=True,
+    )
+
+    remediated, added_tool_keys = ensure_memory_tool_dependencies(
+        artifact=legacy_artifact,
+        blueprint=build_blueprint(knowledge_mode="rag", knowledge_refresh_frequency="daily"),
+        required_tool_keys=["scheduler"],
+        source_reason="Memoria requiere refresh programado.",
+    )
+
+    assert added_tool_keys == ["scheduler"]
+    assert [item.tool_key for item in remediated.recommended_tools] == [
+        "knowledge_retrieval",
+        "document_ingestion",
+        "scheduler",
+    ]
+    assert any(item.capability_key == "scheduler" for item in remediated.preflight.mandatory_capabilities)
+    scheduler_resolution = {
+        item.capability_key: item for item in remediated.capability_resolutions
+    }["scheduler"]
+    assert scheduler_resolution.necessity == "required"
+    assert scheduler_resolution.promotion_policy == "human_review"
+    assert "tools.memory_dependency_remediation" in scheduler_resolution.source_evidence
+    approved_after_remediation, _, digest = promote_tool_recommendation_to_blueprint_tools(remediated)
+    assert [item.name for item in approved_after_remediation] == [
+        "knowledge_retrieval",
+        "document_ingestion",
+        "scheduler",
+    ]
+    assert "scheduler" in digest.approved_tool_keys
+
+
 def test_approval_gated_operator_requires_lookup_write_and_gate() -> None:
     artifact = build_placeholder_tool_recommendation(
         session_id=uuid4(),
@@ -382,6 +643,14 @@ def test_notification_coordinator_keeps_short_shortlist() -> None:
     assert len(artifact.preflight.candidate_tool_families) == 1
     assert artifact.preflight.candidate_tool_families[0].family_key == "notification"
     assert artifact.needs_information == []
+    assert artifact.capability_resolutions[0].capability_key == "outbound_notification"
+    assert artifact.capability_resolutions[0].side_effect_level == "medium"
+    assert artifact.capability_resolutions[0].promotion_policy == "human_review"
+    assert artifact.candidate_tool_patterns[0].status == "human_review"
+    learning_candidate = artifact.learning_report.candidates[0]
+    assert learning_candidate.promotion_status == "needs_human_review"
+    assert learning_candidate.global_promotion_allowed is False
+    assert "side_effect_level:medium" in learning_candidate.risk_flags
 
 
 def test_handoff_signal_does_not_force_notification_gap() -> None:
@@ -1034,3 +1303,68 @@ def test_tool_recommendation_is_marked_stale_when_context_changes() -> None:
     assert annotated.is_stale is True
     assert "tool_recommendation_context_changed" in annotated.stale_reasons
     assert "approved_tools_digest_outdated" in annotated.stale_reasons
+
+
+def test_tool_recommendation_ignores_downstream_memory_changes_after_promotion() -> None:
+    discovery = build_discovery(
+        problem_statement="Coordinar solicitudes con aprobacion controlada.",
+        current_process="Revisa solicitudes y actualiza su estado.",
+        desired_outcome="Actualizar solo decisiones aprobadas.",
+        autonomy_level="high",
+        constraints=["No ejecutar side effects irreversibles sin aprobacion humana"],
+        non_delegable_decisions=["Aprobar la solicitud final"],
+    )
+    canvas = build_canvas(
+        user_goal="Consultar el portal HR y ejecutar la actualizacion aprobada.",
+        human_approvals=["Lider RRHH aprueba antes de escribir."],
+    )
+    blueprint = build_blueprint(
+        guardrails=["Toda escritura requiere aprobacion humana y audit trail"],
+        workflow_steps=[
+            {
+                "name": "Consultar solicitud",
+                "objective": "Leer estado actual desde portal HR",
+                "actor": "agent",
+                "outputs": ["estado actual"],
+                "fallback": "escalar",
+                "requires_approval": False,
+            },
+            {
+                "name": "Actualizar estado",
+                "objective": "Escribir el resultado aprobado",
+                "actor": "agent",
+                "outputs": ["estado actualizado"],
+                "fallback": "detener",
+                "requires_approval": True,
+            },
+        ],
+    )
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=discovery,
+        canvas=canvas,
+        blueprint=blueprint,
+        blueprint_version_number=13,
+    )
+    evaluated = evaluate_tool_recommendation_artifact(artifact)
+    approved_tools, _, digest = promote_tool_recommendation_to_blueprint_tools(evaluated)
+    promoted_artifact = evaluated.model_copy(update={"approved_tools_digest": digest, "review_state": ReviewState.complete})
+    downstream_blueprint = blueprint.model_copy(
+        update={
+            "tools": approved_tools,
+            "memory_strategy": "semantic_rag_with_short_term_checkpoints",
+            "narrative": "Memoria aprobo una estrategia downstream sin cambiar Discover, Define ni Design.",
+        }
+    )
+
+    annotated = annotate_tool_recommendation_status(
+        promoted_artifact,
+        discovery=discovery,
+        canvas=canvas,
+        blueprint=downstream_blueprint,
+        current_blueprint_version=14,
+    )
+
+    assert annotated.current_blueprint_version == 14
+    assert annotated.is_stale is False
+    assert annotated.stale_reasons == []

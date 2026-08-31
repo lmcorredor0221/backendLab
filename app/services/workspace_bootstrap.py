@@ -20,6 +20,7 @@ from app.services.stage5_service import (
     FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
     FEATURE_FLAG_DELIVERABLE_CATALOG,
     FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN,
+    FEATURE_FLAG_DESIGN_INTELLIGENCE,
     seed_governance_policies,
     seed_workflow_templates,
 )
@@ -150,6 +151,15 @@ DEFAULT_FEATURE_FLAGS = [
         "enabled": True,
         "description": "Extiende la memoria hibrida gobernada a Tools, Memory, Evaluate y Build.",
         "stage_hint": "stage_m8",
+    },
+    {
+        "key": FEATURE_FLAG_DESIGN_INTELLIGENCE,
+        "enabled": True,
+        "description": (
+            "Activa Design Intelligence v2: arquetipos, patrones, implicaciones hacia Tools/Memory "
+            "y learning loop gobernado sin escritura global automatica."
+        ),
+        "stage_hint": "di141",
     },
     {
         "key": "tool_recommendation_llm_v1",

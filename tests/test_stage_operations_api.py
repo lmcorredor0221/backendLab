@@ -9,7 +9,15 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import sessions as sessions_routes
 from app.db import get_session
-from app.models import JourneyStageArtifactEntry, SessionRecord, StageOperationRecord, StageOperationStatus, utc_now
+from app.models import (
+    JourneyStageArtifactEntry,
+    JourneyStageArtifactRecord,
+    SessionRecord,
+    StageOperationRecord,
+    StageOperationStatus,
+    utc_now,
+)
+from app.services.product_processing.persistence import UncertaintyBacklogRecord
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
@@ -491,3 +499,150 @@ def test_waiting_memory_stage_operation_does_not_block_a_new_start_request(clien
     assert payload["status"] == "queued"
     assert payload["action"] == "recommend_memory"
     assert payload["attempt_count"] == 2
+
+
+def test_complete_stage_operation_does_not_pause_for_deferred_policy_backlog(client: TestClient) -> None:
+    headers = auth_headers(client)
+    session_id = create_session(client, headers)
+    db, session_generator = db_session_from_client(client)
+    try:
+        record = db.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        now = utc_now()
+        operation = StageOperationRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            stage_key="memory",
+            action="recommend_memory",
+            idempotency_key="memory-deferred-backlog",
+            attempt_count=1,
+            status=StageOperationStatus.running,
+            current_step="profile",
+            detail="Generando Memoria.",
+            request_payload={},
+            steps=[],
+            heartbeat_at=now,
+            expires_at=now + timedelta(minutes=30),
+        )
+        db.add(operation)
+        db.add(
+            UncertaintyBacklogRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                uncertainty_key="memory:missing_information:1",
+                product_mode="basic_free",
+                source_stage="memory",
+                target_stage="acp",
+                kind="gap",
+                disposition="defer",
+                status="deferred",
+                title="Confirmar fuentes historicas de memoria.",
+                created_from="recommend_memory",
+            )
+        )
+        db.commit()
+        db.refresh(operation)
+
+        artifact = JourneyStageArtifactEntry(
+            id=operation.id,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            artifact_kind="memory_recommendation_artifact",
+            stage_key="memory",
+            source_action="recommend_memory",
+            missing_information=["Confirmar fuentes historicas de memoria."],
+            created_at=now,
+            updated_at=now,
+        )
+        sessions_routes._complete_stage_operation_with_artifact(
+            db,
+            operation,
+            artifact=artifact,
+            completed_detail="Memoria generada con pendientes diferidos.",
+            waiting_detail="Memoria genero preguntas accionables.",
+        )
+
+        db.refresh(operation)
+        assert operation.status == StageOperationStatus.completed
+        assert operation.current_step == "persist"
+        assert "pendientes diferidos" in operation.detail
+    finally:
+        session_generator.close()
+
+
+def test_current_stage_operation_completes_paused_operation_when_only_deferred_backlog_remains(
+    client: TestClient,
+) -> None:
+    headers = auth_headers(client)
+    session_id = create_session(client, headers)
+    db, session_generator = db_session_from_client(client)
+    try:
+        record = db.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        now = utc_now()
+        artifact = JourneyStageArtifactRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            artifact_kind="memory_recommendation_artifact",
+            stage_key="memory",
+            source_action="recommend_memory",
+            proposal_payload={"schema_version": "memory-recommendation.v1"},
+            schema_version="memory-recommendation.v1",
+            missing_information=["Confirmar fuentes historicas de memoria."],
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(artifact)
+        db.commit()
+        db.refresh(artifact)
+        operation = StageOperationRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            stage_key="memory",
+            action="recommend_memory",
+            idempotency_key="memory-paused-deferred",
+            attempt_count=1,
+            status=StageOperationStatus.waiting_for_user,
+            current_step="questions",
+            detail="Memoria genero preguntas accionables.",
+            request_payload={},
+            steps=[],
+            result_artifact_id=artifact.id,
+            heartbeat_at=now,
+            expires_at=None,
+        )
+        db.add(operation)
+        db.add(
+            UncertaintyBacklogRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                uncertainty_key="memory:missing_information:1",
+                product_mode="basic_free",
+                source_stage="memory",
+                target_stage="acp",
+                kind="gap",
+                disposition="defer",
+                status="deferred",
+                title="Confirmar fuentes historicas de memoria.",
+                created_from="recommend_memory",
+            )
+        )
+        db.commit()
+        operation_id = str(operation.id)
+    finally:
+        session_generator.close()
+
+    current = client.get(
+        f"/api/v1/sessions/{session_id}/stage-operations/current?stage_key=memory&action=recommend_memory",
+        headers=headers,
+    )
+
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["id"] == operation_id
+    assert payload["status"] == "completed"
+    assert payload["current_step"] == "persist"
+    assert payload["can_retry"] is False
+    assert payload["can_cancel"] is False

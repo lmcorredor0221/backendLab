@@ -12,6 +12,9 @@ from app.models import (
     CanvasArtifact,
     ConstructionReadinessReport,
     DeliveryPackage,
+    DesignAlternative,
+    DesignBlueprintProjection,
+    DesignRecommendationArtifact,
     DiscoveryArtifact,
     EstimationMaturityStage,
     EvaluationDatasetArtifact,
@@ -20,6 +23,8 @@ from app.models import (
     MvpDefinition,
     ObservabilityPlan,
     OperationalBaseline,
+    JourneyArtifactState,
+    JourneyStageArtifactEntry,
     SessionCreateResponse,
     SessionSnapshot,
     SessionStage,
@@ -168,6 +173,57 @@ def test_build_estimation_report_returns_deterministic_comparative_projection() 
                     summary="Corrida base estable",
                 )
             ],
+            journey_latest_artifacts={
+                "design": JourneyStageArtifactEntry(
+                    id=uuid4(),
+                    workspace_id=uuid4(),
+                    session_id=uuid4(),
+                    artifact_kind="stage_proposal",
+                    stage_key="design",
+                    version_number=1,
+                    state=JourneyArtifactState.approved,
+                    source_action="propose_design",
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
+                    proposal_payload=DesignRecommendationArtifact(
+                        alternatives=[
+                            DesignAlternative(
+                                alternative_key="single-agent-with-skills",
+                                label="Agente con skills",
+                                architecture="single_agent_with_skills",
+                                reasoning_pattern="Plan-and-Execute",
+                                pattern_family="Plan-and-Execute",
+                                blueprint_projection=DesignBlueprintProjection(
+                                    architecture="single_agent_with_skills",
+                                    reasoning_pattern="Plan-and-Execute",
+                                    cost_complexity_implications=[
+                                        "Costo relativo: medium",
+                                        "Complejidad operacional: medium",
+                                        "Mantenibilidad: high",
+                                    ],
+                                ),
+                            )
+                        ],
+                        recommended_alternative_key="single-agent-with-skills",
+                        selected_design=DesignAlternative(
+                            alternative_key="single-agent-with-skills",
+                            label="Agente con skills",
+                            architecture="single_agent_with_skills",
+                            reasoning_pattern="Plan-and-Execute",
+                            pattern_family="Plan-and-Execute",
+                            blueprint_projection=DesignBlueprintProjection(
+                                architecture="single_agent_with_skills",
+                                reasoning_pattern="Plan-and-Execute",
+                                cost_complexity_implications=[
+                                    "Costo relativo: medium",
+                                    "Complejidad operacional: medium",
+                                    "Mantenibilidad: high",
+                                ],
+                            ),
+                        ),
+                    ).model_dump(mode="json"),
+                )
+            },
             skill_catalog=[SkillDefinition(skill_key="blueprint_generation_skill", label="Blueprint", stage_hint="build")],
         )
         acp_preview = ACPPreview(
@@ -233,6 +289,8 @@ def test_build_estimation_report_returns_deterministic_comparative_projection() 
     assert artifact.agentic.pricing_snapshot.provider.value in {"openai", "codex_local"}
     assert artifact.agentic.provider_runtime_cost_total_usd > 0
     assert artifact.agentic.estimated_cost > artifact.agentic.human_delivery_cost
+    assert any("Design aporto implicaciones" in note for note in artifact.notes)
+    assert any("Estimate incorpora implicaciones" in assumption for assumption in artifact.assumptions)
     assert any(item.family_key == "deployment_infra" for item in artifact.agentic.automation_assessments)
     assert any(item.family_key == "implementation_code" for item in artifact.agentic.automation_assessments)
     assert any(item.bonuses_applied for item in artifact.agentic.automation_assessments)
