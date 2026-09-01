@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from datetime import timedelta
 from io import BytesIO
 from collections.abc import Iterator
@@ -170,11 +172,25 @@ def test_create_export_job_blueprint_professional(db_session: Session) -> None:
 
     members = _zip_members(raw_bytes)
     assert "Blueprint/README.md" in members
+    assert "Blueprint/index.html" in members
+    assert "Blueprint/navigation-manifest.v1.json" in members
+    assert "Blueprint/assets/blueprint-viewer.css" in members
+    assert "Blueprint/assets/blueprint-viewer.js" in members
     assert "Blueprint/contracts/blueprint-core.v1.json" in members
     assert "Blueprint/governance/decisiones-delegadas-y-supuestos.md" in members
     assert "Blueprint/manifest.json" in members
     assert b"Agentic Pro Project" in members["Blueprint/README.md"]
     assert b"Blueprint Profesional" in members["Blueprint/README.md"]
+    assert b"Blueprint/index.html" in members["Blueprint/README.md"]
+    assert b"Recorrido recomendado" in members["Blueprint/README.md"]
+    viewer = members["Blueprint/index.html"].decode("utf-8")
+    assert "Blueprint Viewer" in viewer
+    assert "http://" not in viewer
+    assert "https://" not in viewer
+    navigation_manifest = json.loads(members["Blueprint/navigation-manifest.v1.json"].decode("utf-8"))
+    assert navigation_manifest["contract_version"] == "blueprint-navigation-manifest.v1"
+    assert navigation_manifest["title"] == "Agentic Pro Project"
+    assert navigation_manifest["storyline"]
     governance_doc = members["Blueprint/governance/decisiones-delegadas-y-supuestos.md"].decode("utf-8")
     assert "Decisiones Delegadas y Supuestos de Implementacion" in governance_doc
     assert "No hay decisiones delegadas" in governance_doc
@@ -348,6 +364,21 @@ def test_create_export_job_blueprint_professional_includes_persisted_artifacts_a
     assert "Blueprint/diagrams/architecture_context/diagram-presentation.v1.json" in members
     assert members["Blueprint/architecture/architecture.md"].decode("utf-8").startswith("# Arquitectura")
     assert "\"estimated_cost\":20511057" in members["Blueprint/estimation/estimation-report.json"].decode("utf-8")
+
+    navigation_manifest = json.loads(members["Blueprint/navigation-manifest.v1.json"].decode("utf-8"))
+    paths = {item["path"] for item in navigation_manifest["items"]}
+    assert "Blueprint/architecture/architecture.md" in paths
+    assert "Blueprint/estimation/estimation-report.json" in paths
+    assert "Blueprint/diagrams/architecture_context/architecture_context.svg" in paths
+    assert any(chapter["id"] == "design" for chapter in navigation_manifest["storyline"])
+    assert any(chapter["id"] == "estimate" for chapter in navigation_manifest["storyline"])
+    index_html = members["Blueprint/index.html"].decode("utf-8")
+    local_hrefs = re.findall(r'href="([^"]+)"', index_html)
+    for href in local_hrefs:
+        if href == "assets/blueprint-viewer.css":
+            assert "Blueprint/assets/blueprint-viewer.css" in members
+        elif not href.startswith("#"):
+            assert not href.startswith(("http://", "https://"))
 
 
 def test_blueprint_professional_zip_includes_delegated_decisions_document_from_backlog(

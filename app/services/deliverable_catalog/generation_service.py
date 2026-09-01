@@ -70,6 +70,43 @@ def _create_generation_attention(
     db.flush()
 
 
+def _supersede_generation_attention(
+    db: Session,
+    *,
+    task: DeliverableGenerationTask,
+) -> None:
+    now = utc_now()
+    records = db.exec(
+        select(UncertaintyBacklogRecord).where(
+            UncertaintyBacklogRecord.workspace_id == task.workspace_id,
+            UncertaintyBacklogRecord.session_id == task.session_id,
+            UncertaintyBacklogRecord.product_mode == task.product_mode,
+            UncertaintyBacklogRecord.created_from == SOURCE_ACTION,
+            UncertaintyBacklogRecord.status.notin_(
+                [
+                    UncertaintyBacklogStatus.resolved.value,
+                    UncertaintyBacklogStatus.dismissed.value,
+                    UncertaintyBacklogStatus.superseded.value,
+                ]
+            ),
+        )
+    ).all()
+    for record in records:
+        affected_keys = [str(value) for value in record.affected_deliverable_keys or []]
+        if task.deliverable_key not in affected_keys:
+            continue
+        record.status = UncertaintyBacklogStatus.superseded.value
+        record.superseded_at = now
+        record.updated_at = now
+        record.payload = {
+            **(record.payload or {}),
+            "superseded_reason": "deliverable_available",
+            "superseded_by_deliverable_key": task.deliverable_key,
+        }
+        db.add(record)
+    db.flush()
+
+
 def _artifact_key_for_entry(entry) -> str:
     if entry.canonical_paths:
         return entry.canonical_paths[0]
@@ -258,6 +295,7 @@ def run_deliverable_generation_task(
         job.output_version_id = snapshot.id
         job.status = "available"
         _upsert_generated_artifact_record(db, task=task, job=job, result=result, entry=entry)
+        _supersede_generation_attention(db, task=task)
     elif result.status == "requires_attention":
         _create_generation_attention(db, task=task, result=result)
         job.status = "requires_attention"

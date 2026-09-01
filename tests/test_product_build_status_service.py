@@ -20,8 +20,15 @@ from app.services.deliverable_catalog import build_deliverable_catalog_response
 from app.services.deliverable_catalog.registry_service import get_registry_entry
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord
-from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
-from app.services.product_processing import ProductBuildLifecycle, ProductBuildProductKey, build_product_build_status
+from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord, UncertaintyBacklogRecord
+from app.services.product_processing import (
+    ProductBuildLifecycle,
+    ProductBuildProductKey,
+    ProductProcessingMode,
+    UncertaintyBacklogStatus,
+    UncertaintyDisposition,
+    build_product_build_status,
+)
 
 
 def _engine():
@@ -140,9 +147,43 @@ def test_product_build_status_hides_legacy_run_activity_when_product_is_locked()
     assert status.lifecycle == ProductBuildLifecycle.not_purchased
     assert status.entitlement.purchase_required is True
     assert status.current_activity is None
+
+
+def test_blueprint_pro_treats_deferred_basic_uncertainty_as_non_blocking() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        db.add(
+            UncertaintyBacklogRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                uncertainty_key="design:deferred-basic-question",
+                product_mode=ProductProcessingMode.basic_free.value,
+                source_stage="design",
+                target_stage="",
+                kind="question",
+                disposition=UncertaintyDisposition.defer.value,
+                status=UncertaintyBacklogStatus.deferred.value,
+                title="Decision diferida de diseno",
+                reason="Basico delega dudas no indispensables sin detener el flujo.",
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+        )
+
+    assert status.attention.total == 1
+    assert status.attention.blocking_count == 0
+    assert status.attention.items[0].blocking is False
     assert status.processing_queue is None
     assert status.last_error is None
-    assert status.attention.total == 0
     assert status.progress.percent == 0
 
 

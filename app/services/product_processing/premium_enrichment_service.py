@@ -1104,7 +1104,7 @@ def _premium_backlog_step_status(record: UncertaintyBacklogRecord) -> str:
         return "completed"
     if record.status in {UncertaintyBacklogStatus.dismissed.value, UncertaintyBacklogStatus.superseded.value}:
         return "skipped"
-    if _is_deferred_to_acp(record) or record.disposition == UncertaintyDisposition.infer.value:
+    if record.disposition in {UncertaintyDisposition.defer.value, UncertaintyDisposition.infer.value}:
         return "skipped"
     if record.status in {UncertaintyBacklogStatus.open.value, UncertaintyBacklogStatus.in_progress.value, UncertaintyBacklogStatus.deferred.value}:
         return "requires_attention"

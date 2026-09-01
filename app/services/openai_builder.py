@@ -2009,6 +2009,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
                 ],
                 "max_output_tokens": _structured_capability_max_tokens(capability, payload=payload),
                 "text_format": spec.output_model,
+                "timeout": max(1.0, spec.timeout_ms / 1000),
             }
             if spec.preferred_model == "reasoning":
                 request_kwargs["reasoning"] = {"effort": self.runtime_settings.openai.reasoning_effort}
@@ -2662,6 +2663,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
         preserve_reasoning_on_retry: bool = False,
         expand_retry_budget: bool = True,
         retry_instruction: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if self._client is None:
             raise RuntimeError("DeepSeek client no disponible.")
@@ -2687,6 +2689,8 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             "temperature": 0.1,
             "extra_body": {"thinking": {"type": thinking_mode}},
         }
+        if timeout_seconds is not None:
+            base_request_kwargs["timeout"] = max(1.0, timeout_seconds)
         if reasoning_effort:
             base_request_kwargs["reasoning_effort"] = reasoning_effort
         self._last_completion_metadata = {}
@@ -2853,6 +2857,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
                     preserve_reasoning_on_retry=_preserve_deepseek_reasoning_on_retry(capability, payload=payload),
                     expand_retry_budget=_expand_deepseek_retry_budget(capability, payload=payload),
                     retry_instruction=_deepseek_retry_instruction(capability, payload=payload),
+                    timeout_seconds=max(1.0, spec.timeout_ms / 1000),
                 )
                 normalized, schema_status = validate_or_repair_structured_payload(raw_payload, spec.output_model)
                 if capability == BuilderCapability.generate_diagram_model:

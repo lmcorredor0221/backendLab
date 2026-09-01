@@ -17,6 +17,7 @@ from app.models import (
     OpenAIProviderConfig,
 )
 from app.services.llm_finops.ledger_service import LLMUsageLedgerService
+from app.services.llm_runtime.capability_registry import BuilderCapability, get_builder_capability_spec
 from app.services.llm_runtime.builder_contracts import RequirementsDefinitionInput, RequirementsDefinitionOutput
 from app.services.llm_runtime.stage_context_types import StageContextBundle
 from app.services.openai_builder import OpenAIBuilderService
@@ -125,6 +126,9 @@ def test_openai_structured_call_records_successful_usage_in_ledger() -> None:
     assert result.currency == "USD"
     assert result.token_usage["total_tokens"] == 168
     assert result.normalized_usage is not None
+    assert service._client.responses.kwargs["timeout"] == (
+        get_builder_capability_spec(BuilderCapability.define_requirements).timeout_ms / 1000
+    )
     assert result.normalized_usage.cached_input_tokens == 12
     assert record is not None
     assert record.status == "succeeded"

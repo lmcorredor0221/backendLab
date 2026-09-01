@@ -34,6 +34,7 @@ from app.services.product_processing.contracts import (
     ProductBuildStatus,
     ProductProcessingMode,
     UncertaintyBacklogStatus,
+    UncertaintyDisposition,
     calculate_product_build_percent,
 )
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord, UncertaintyBacklogRecord
@@ -476,12 +477,12 @@ def _uncertainty_blocks_product(row: UncertaintyBacklogRecord, meta: ProductBuil
     }:
         return False
     if meta.product_key == ProductBuildProductKey.blueprint_basic:
-        return row.disposition == "block"
+        return row.disposition == UncertaintyDisposition.block.value
     if meta.product_key == ProductBuildProductKey.blueprint_pro:
-        if _is_deferred_to_acp(row):
+        if row.disposition in {UncertaintyDisposition.defer.value, UncertaintyDisposition.infer.value}:
             return False
-        return row.disposition in {"block", "resolve_now", "defer"}
-    return row.disposition in {"block", "resolve_now"} or (
+        return row.disposition in {UncertaintyDisposition.block.value, UncertaintyDisposition.resolve_now.value}
+    return row.disposition in {UncertaintyDisposition.block.value, UncertaintyDisposition.resolve_now.value} or (
         row.product_mode == ProductProcessingMode.acp_implementation.value
         and row.status in {UncertaintyBacklogStatus.open.value, UncertaintyBacklogStatus.in_progress.value}
     )

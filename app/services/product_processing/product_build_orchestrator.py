@@ -52,7 +52,7 @@ COMPLETED_STEP_STATES = {"available", "completed", "skipped"}
 QUEUE_ACTIVE_STEP_STATES = {"queued", "running", "generating"}
 QUEUE_FAILURE_STEP_STATES = {"error", "failed", "requires_attention", "locked"}
 QUEUE_ELIGIBLE_STATES = {"pending", "stale"}
-QUEUE_RETRY_ONLY_STATES = {"error"}
+QUEUE_RETRY_ONLY_STATES = {"error", "requires_attention"}
 QUEUE_ACTIVE_STATUSES = {"queued", "running"}
 MAX_PROCESSING_ATTEMPTS = 2
 ORPHANED_JOB_TIMEOUT = timedelta(minutes=5)
@@ -139,6 +139,7 @@ def ensure_product_build_orchestration(
         checkpoint_payload=run_checkpoint,
     )
     _merge_run_checkpoint(db, run=run, checkpoint_payload=run_checkpoint)
+    _recover_orphaned_processing_queue(db, run=run)
 
     _sync_expected_steps(
         db,
@@ -839,8 +840,8 @@ def _execute_expected_jobs(
             tier=tier,
             idempotency_key=f"{run.idempotency_key}:deliverable:{item.key}",
             requested_by_user_id=current_user.id if current_user is not None else None,
-            context_payload=dict(options.context_payload or {}),
-            approved_context_refs=list(options.approved_context_refs),
+            context_payload=context_payload,
+            approved_context_refs=approved_context_refs,
             allow_llm=options.allow_llm,
         )
         job, _ = runner(db, task)
@@ -1081,6 +1082,23 @@ def _process_single_queue_item(
         summary=f"Procesando {position} de {total_count}: {item.title}.",
     )
     step = _step_record(db, run=run, deliverable_key=item.key)
+    existing_attempt_count = int((step.checkpoint_payload or {}).get("attempt_count") or 0) if step is not None else 0
+    if item.deliverable_type.value == "diagram" and not allow_llm:
+        _record_queue_item_failure(
+            db,
+            run=run,
+            item=item,
+            position=position,
+            attempt_count=existing_attempt_count,
+            error_payload={
+                "code": "llm_required_for_diagram_generation",
+                "message": (
+                    "La generacion de diagramas requiere una ejecucion LLM autorizada; "
+                    "no se inicio trabajo automatico para preservar costos e idempotencia."
+                ),
+            },
+        )
+        return False
     attempt_count = int((step.checkpoint_payload or {}).get("attempt_count") or 0) + 1 if step is not None else 1
     upsert_product_build_step(
         db,
@@ -1423,22 +1441,51 @@ def _finalize_processing_queue(
 def _recover_orphaned_processing_queue(db: Session, *, run: ProductBuildRunRecord) -> bool:
     """Close jobs abandoned by a process restart without starting new LLM work."""
     queue_checkpoint = _processing_queue_checkpoint(run)
-    if str(queue_checkpoint.get("status") or "") not in QUEUE_ACTIVE_STATUSES:
-        return False
-
-    cutoff = utc_now() - ORPHANED_JOB_TIMEOUT
+    queue_status = str(queue_checkpoint.get("status") or "")
     selected_keys = [str(value) for value in queue_checkpoint.get("selected_deliverable_keys", [])]
     active_steps = [
         step
         for step in list_product_build_steps(db, run_id=run.id)
         if step.deliverable_key in selected_keys and str(step.status or "") in QUEUE_ACTIVE_STEP_STATES
     ]
-    stale_steps = [step for step in active_steps if step.updated_at <= cutoff]
+    if queue_status not in QUEUE_ACTIVE_STATUSES:
+        if not active_steps:
+            return False
+        return _mark_queue_steps_as_orphaned(
+            db,
+            run=run,
+            active_steps=active_steps,
+            summary=(
+                f"Se cerraron {len(active_steps)} entregables que seguian activos aunque la cola ya no estaba corriendo. "
+                "No se reintentaron automaticamente para preservar idempotencia y control de costos."
+            ),
+        )
+
+    cutoff = utc_now() - ORPHANED_JOB_TIMEOUT
+    stale_steps = [step for step in active_steps if _active_queue_step_updated_at(db, step=step) <= cutoff]
     if not stale_steps:
         return False
 
+    return _mark_queue_steps_as_orphaned(
+        db,
+        run=run,
+        active_steps=active_steps,
+        summary=(
+            f"Se detectaron {len(active_steps)} jobs interrumpidos. "
+            "No se reintentaron automáticamente para preservar idempotencia y control de costos."
+        ),
+    )
+
+
+def _mark_queue_steps_as_orphaned(
+    db: Session,
+    *,
+    run: ProductBuildRunRecord,
+    active_steps: list[ProductBuildStepRecord],
+    summary: str,
+) -> bool:
     orphaned_keys: list[str] = []
-    for step in stale_steps:
+    for step in active_steps:
         deliverable_key = str(step.deliverable_key or "")
         if not deliverable_key:
             continue
@@ -1464,10 +1511,7 @@ def _recover_orphaned_processing_queue(db: Session, *, run: ProductBuildRunRecor
         run=run,
         status="completed_with_errors",
         current_deliverable_key="",
-        summary=(
-            f"Se detectaron {len(orphaned_keys)} jobs interrumpidos. "
-            "No se reintentaron automáticamente para preservar idempotencia y control de costos."
-        ),
+        summary=summary,
     )
     update_product_build_run_state(
         db,
@@ -1484,6 +1528,35 @@ def _recover_orphaned_processing_queue(db: Session, *, run: ProductBuildRunRecor
     )
     db.commit()
     return True
+
+
+def _active_queue_step_updated_at(db: Session, *, step: ProductBuildStepRecord):
+    deliverable_key = str(step.deliverable_key or "")
+    if deliverable_key.startswith("diagram."):
+        diagram_key = deliverable_key.removeprefix("diagram.")
+        diagram_job = db.exec(
+            select(DiagramGenerationJobRecord)
+            .where(
+                DiagramGenerationJobRecord.session_id == step.session_id,
+                DiagramGenerationJobRecord.diagram_key == diagram_key,
+                DiagramGenerationJobRecord.status.in_(tuple(ACTIVE_JOB_STATES)),
+            )
+            .order_by(DiagramGenerationJobRecord.updated_at.desc())
+        ).first()
+        if diagram_job is not None:
+            return diagram_job.updated_at
+    deliverable_job = db.exec(
+        select(DeliverableGenerationJobRecord)
+        .where(
+            DeliverableGenerationJobRecord.session_id == step.session_id,
+            DeliverableGenerationJobRecord.deliverable_key == deliverable_key,
+            DeliverableGenerationJobRecord.status.in_(tuple(ACTIVE_JOB_STATES)),
+        )
+        .order_by(DeliverableGenerationJobRecord.updated_at.desc())
+    ).first()
+    if deliverable_job is not None:
+        return deliverable_job.updated_at
+    return step.updated_at
 
 
 def _mark_failed_queue_jobs_as_error(

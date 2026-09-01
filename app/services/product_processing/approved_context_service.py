@@ -83,7 +83,13 @@ def build_approved_deliverable_context(
         refs.append(f"artifact:{artifact.id}")
 
     if not refs:
-        return {}, []
+        return _build_snapshot_fallback_context(
+            db,
+            record=record,
+            deliverable_key=deliverable_key,
+            requested_refs=requested_refs,
+            max_context_tokens=context_policy.max_context_tokens,
+        )
 
     return (
         {
@@ -109,3 +115,89 @@ def _bounded_value(value: object, remaining_chars: int) -> tuple[object, int]:
         return value, len(serialized)
     # Preserve a valid and explicit partial representation rather than silently dropping evidence.
     return {"truncated": True, "content": serialized[:remaining_chars]}, remaining_chars
+
+
+def _build_snapshot_fallback_context(
+    db: Session,
+    *,
+    record: SessionRecord,
+    deliverable_key: str,
+    requested_refs: list[str],
+    max_context_tokens: int,
+) -> tuple[dict[str, object], list[str]]:
+    """Fallback for migrated sessions without formal approved stage artifacts."""
+
+    from app.api.routes.sessions import build_snapshot
+
+    snapshot = build_snapshot(db, record, current_user=None)
+    context = _snapshot_context_payload(snapshot)
+    value, size = _bounded_value(context, min(MAX_CONTEXT_CHARS, max(1_000, int(max_context_tokens or 5_000) * 4)))
+    refs = _snapshot_refs(snapshot)
+    if size <= 0 or not refs:
+        return {}, []
+    return (
+        {
+            "summary": f"Contexto consolidado de la sesion para {deliverable_key}.",
+            "project_title": record.title,
+            "deliverable_key": deliverable_key,
+            "context_policy": {
+                "retrieval_strategy": "approved_snapshot_fallback",
+                "requested_refs": requested_refs,
+                "max_context_tokens": max_context_tokens,
+            },
+            "approved_context": {"snapshot": value},
+        },
+        refs,
+    )
+
+
+def _snapshot_refs(snapshot: object) -> list[str]:
+    refs: list[str] = []
+    for key in ("discovery", "canvas", "blueprint", "latest_tool_recommendation", "estimation_report"):
+        if getattr(snapshot, key, None) is not None:
+            refs.append(f"session.{key}")
+    return refs
+
+
+def _snapshot_context_payload(snapshot: object) -> dict[str, object]:
+    discovery = getattr(snapshot, "discovery", None)
+    canvas = getattr(snapshot, "canvas", None)
+    blueprint = getattr(snapshot, "blueprint", None)
+    estimation = getattr(snapshot, "estimation_report", None)
+    session = getattr(snapshot, "session", None)
+    tools = list(getattr(blueprint, "tools", []) or []) if blueprint is not None else []
+    return {
+        "session_id": str(getattr(session, "id", "")),
+        "workspace_id": str(getattr(session, "workspace_id", "")),
+        "session_title": getattr(session, "title", "") or "Agente Inteligente",
+        "problem_statement": getattr(discovery, "problem_statement", "") if discovery else "",
+        "current_process": getattr(discovery, "current_process", "") if discovery else "",
+        "current_user": getattr(discovery, "current_user", "") if discovery else "",
+        "desired_outcome": getattr(discovery, "desired_outcome", "") if discovery else "",
+        "value_statement": getattr(discovery, "value_statement", "") if discovery else "",
+        "autonomy_level": getattr(discovery, "autonomy_level", "") if discovery else "",
+        "constraints": list(getattr(discovery, "constraints", []) or []) if discovery else [],
+        "user_goal": getattr(canvas, "user_goal", "") if canvas else "",
+        "mvp_scope": list(getattr(canvas, "mvp_scope", []) or []) if canvas else [],
+        "out_of_scope": list(getattr(canvas, "out_of_scope", []) or []) if canvas else [],
+        "primary_risk": getattr(canvas, "primary_risk", "") if canvas else "",
+        "success_metric": getattr(canvas, "success_metric", "") if canvas else "",
+        "architecture": getattr(blueprint, "architecture", "") if blueprint else "",
+        "reasoning_pattern": getattr(blueprint, "reasoning_pattern", "") if blueprint else "",
+        "memory_strategy": getattr(blueprint, "memory_strategy", "") if blueprint else "",
+        "guardrails": list(getattr(blueprint, "guardrails", []) or []) if blueprint else [],
+        "narrative": getattr(blueprint, "narrative", "") if blueprint else "",
+        "tools": [
+            {
+                "name": getattr(tool, "name", ""),
+                "purpose": getattr(tool, "purpose", ""),
+                "requires_approval": bool(getattr(tool, "requires_approval", False)),
+                "has_side_effects": bool(getattr(tool, "has_side_effects", False)),
+                "inputs": list(getattr(tool, "inputs", []) or []),
+                "outputs": list(getattr(tool, "outputs", []) or []),
+            }
+            for tool in tools
+        ],
+        "tool_count": len(tools),
+        "estimation_report": estimation.model_dump(mode="json") if hasattr(estimation, "model_dump") else {},
+    }

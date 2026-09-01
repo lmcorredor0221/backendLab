@@ -147,6 +147,9 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
             .where(DeliverableGenerationJobRecord.session_id == session_id)
             .order_by(DeliverableGenerationJobRecord.requested_at)
         ).all()
+        backlog = db.exec(
+            select(UncertaintyBacklogRecord).where(UncertaintyBacklogRecord.session_id == session_id)
+        ).one()
         artifact = next(
             record
             for record in db.exec(select(ArtifactRegistryRecord).where(ArtifactRegistryRecord.session_id == session_id)).all()
@@ -161,6 +164,9 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
     assert retry_job.status == "available"
     assert retry_job.idempotency_key.startswith(f"{idempotency_key}:retry:")
     assert [job.status for job in jobs] == ["requires_attention", "available"]
+    assert backlog.status == UncertaintyBacklogStatus.superseded.value
+    assert backlog.superseded_at is not None
+    assert backlog.payload["superseded_reason"] == "deliverable_available"
     assert artifact.source_action == "deliverable_generation_agent"
 
 
