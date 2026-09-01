@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 from app.models import (
@@ -24,7 +25,10 @@ from app.services.blueprint_consistency_service import (
     ensure_blueprint_consistency_report,
     render_blueprint_consistency_markdown,
 )
-from app.services.acp_construction_readiness import INTERNAL_BUILDER_TOOL_NAMES
+from app.services.acp_construction_readiness import (
+    INTERNAL_BUILDER_TOOL_NAMES,
+    is_blueprint_handoff_process_debt_issue,
+)
 from app.services.acp_paths import (
     ACP_CANONICAL_ENV_TEMPLATE_PATH,
     build_tool_contract_path,
@@ -533,12 +537,20 @@ def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
         "├── prompts/                  # Prompts de roles (planner, evaluator, system, skills)",
         "├── adapters/                 # Guías de configuración para Cursor, Codex y Claude Code",
         "├── conformance/              # Reglas de validación y linters de construcción",
+        "├── costs/                    # Estimación de costo operativo del agente",
         "├── evaluation/               # Datasets de evaluación y casos de prueba",
         "├── deployment/               # Especificaciones de infraestructura y runtime",
+        "├── index.html                # Viewer portable de navegación y storytelling",
         "└── launcher/                 # Scripts de inicialización multiplataforma",
         "```",
         "",
-        "## 3. Instrucciones de Arranque y Asistencia con IDEs",
+        "## 3. Recorrido recomendado",
+        "1. Abre `ACP/index.html` para recorrer la historia de implementación.",
+        "2. Usa `ACP/IMPLEMENTATION_GUIDE.md` como contrato rector para Codex, Cursor, Antigravity, Claude Code u otra herramienta agentica.",
+        "3. Revisa `ACP/construction-readiness/open-questions.yaml` y `ACP/construction-readiness/deferred-decisions.yaml` antes de modificar artefactos.",
+        "4. Consulta `ACP/costs/operational-cost-estimate.md` para entender supuestos de operación y consumo.",
+        "",
+        "## 4. Instrucciones de Arranque y Asistencia con IDEs",
         "### Aceleración con Herramientas Agénticas:",
         "- **Cursor IDE:** Abre la raíz del proyecto en Cursor. Las directivas de contexto se encuentran preconfiguradas.",
         "- **Claude Code:** Ejecuta `claude` en el directorio para que interprete automáticamente `ACP/manifest.yaml` y los prompts de `ACP/prompts/`.",
@@ -549,7 +561,7 @@ def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
         "- **Windows (CMD):** `ACP\\launcher\\start-acp.bat`",
         "- **macOS / Linux:** `sh ACP/launcher/start-acp.sh`",
         "",
-        "## 4. Gobernanza y Fuente de Verdad",
+        "## 5. Gobernanza y Fuente de Verdad",
         "Este paquete ha sido generado y validado contra el baseline del **Lean Agent Builder**. Todo cambio en los contratos debe registrarse en los archivos de conformance correspondientes.",
     ]
     return build_acp_file_entry(
@@ -2496,7 +2508,9 @@ def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
             "- Revisa `blocking-gaps.yaml`, `open-questions.yaml` y `deployment-decisions-needed.yaml` antes de construir.",
             "- No asumas detalles de deployment, secretos ni contratos API externos cuando aparezcan como gaps abiertos.",
             "- Manten trazabilidad entre `gap_key`, `question_key`, respuesta recibida y artefactos ACP impactados.",
-            "- Reanuda construccion solo despues de cerrar gaps bloqueantes y recalcular readiness.",
+            "- No reabras fases estables del Blueprint por flags stale o deuda operativa interna ya cerrada en el handoff.",
+            "- Resuelve o delega cada decision implementable justo antes de modificar el artefacto afectado.",
+            "- Si una respuesta contradice el Blueprint aprobado, crea una reconciliacion granular del artefacto afectado; no reinicies fases completas.",
         ]
     )
     gap_closure = "\n".join(
@@ -2541,6 +2555,426 @@ def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
             format="markdown",
             source_sections=["construction_readiness.gaps.questions"],
             content_text=serialize_markdown_document(gap_closure),
+        ),
+    ]
+
+
+def _build_implementation_guidance_files(preview: ACPPreview) -> list[ACPFileEntry]:
+    readiness = preview.construction_readiness
+    lines = [
+        "# Implementation Guide",
+        "",
+        "Este ACP es el paquete de construccion para una herramienta agentica externa.",
+        "El Blueprint aprobado se considera la fuente estable de diseno; no debe reabrirse por deuda operativa interna.",
+        "",
+        "## Politica Blueprint -> ACP",
+        "- Deuda de proceso: flags stale, warnings de sincronizacion, gates transitorios y recomendaciones internas quedan cerrados en el handoff.",
+        "- Deuda real: preguntas, restricciones o decisiones de negocio/arquitectura/implementacion viajan con trazabilidad.",
+        "- Bloqueo critico: si compromete la integridad del Blueprint aprobado, debe tratarse antes de modificar artefactos.",
+        "- Reconciliacion granular: una respuesta nueva actualiza solo diagramas, contratos, documentos o artefactos afectados.",
+        "",
+        "## Como usar el paquete",
+        "1. Lee `ACP/README.md` y `ACP/construction-readiness/overview.yaml`.",
+        "2. Revisa `ACP/construction-readiness/open-questions.yaml` y `deferred-decisions.yaml`.",
+        "3. Antes de implementar un componente, resuelve o conserva como delegada la pregunta asociada a ese componente.",
+        "4. Si una decision cambia un entregable, actualiza solo los archivos impactados y registra la razon.",
+        "5. Usa `ACP/conformance/portability-report.md` para verificar que el paquete sigue siendo portable.",
+        "",
+        "## Estado actual de readiness",
+        f"- status: {readiness.overall_status}",
+        f"- blocking_gaps: {readiness.blocking_gaps}",
+        f"- open_questions: {readiness.open_questions}",
+        f"- can_start_build: {str(readiness.can_start_build).lower()}",
+    ]
+    checklist = [
+        "# Release Readiness Checklist",
+        "",
+        "- [ ] El paquete fue abierto desde `ACP/README.md` o el viewer generado.",
+        "- [ ] Se revisaron preguntas abiertas y decisiones delegadas.",
+        "- [ ] Se confirmo que no viajan flags stale como deuda de implementacion.",
+        "- [ ] Los contratos de tools requeridos tienen owner o decision delegada.",
+        "- [ ] La estrategia de memoria tiene politica de lectura, escritura y retencion.",
+        "- [ ] Las pruebas o rubricas ausentes quedaron documentadas como trabajo de implementacion.",
+        "- [ ] Cualquier cambio posterior se aplica mediante reconciliacion granular, no reproceso de fase completa.",
+    ]
+    return [
+        build_acp_file_entry(
+            path="ACP/IMPLEMENTATION_GUIDE.md",
+            domain="governance",
+            title="Implementation guide",
+            format="markdown",
+            source_sections=["construction_readiness", "blueprint_handoff"],
+            content_text=serialize_markdown_document("\n".join(lines)),
+        ),
+        build_acp_file_entry(
+            path="ACP/release-readiness-checklist.md",
+            domain="governance",
+            title="Release readiness checklist",
+            format="markdown",
+            source_sections=["construction_readiness", "blueprint_handoff"],
+            content_text=serialize_markdown_document("\n".join(checklist)),
+        ),
+    ]
+
+
+def _build_operational_cost_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    estimation = snapshot.estimation_report
+    agentic = getattr(estimation, "agentic", None)
+    provider = str(getattr(getattr(agentic, "active_provider", None), "value", "") or "needs_review")
+    model = str(getattr(agentic, "provider_model", "") or "needs_review")
+    base_cost_cop = float(getattr(agentic, "provider_runtime_cost_total_cop", 0) or 0)
+    base_cost_usd = float(getattr(agentic, "provider_runtime_cost_total_usd", 0) or 0)
+    llm_cost_usd = float(getattr(agentic, "llm_runtime_cost_usd", 0) or 0)
+    tool_cost_usd = float(getattr(agentic, "tool_runtime_cost_usd", 0) or 0)
+    platform_cost_usd = float(getattr(agentic, "platform_overhead_cost_usd", 0) or 0)
+    warnings = list(getattr(agentic, "warnings", []) or [])
+    if not estimation or not agentic:
+        warnings.append("No existe estimacion agentic persistida; costos operativos quedan como plantilla needs_review.")
+
+    def scenario(multiplier: float) -> dict[str, Any]:
+        return {
+            "per_execution_usd": round(base_cost_usd * multiplier, 4),
+            "per_execution_cop": round(base_cost_cop * multiplier, 2),
+            "per_100_executions_usd": round(base_cost_usd * multiplier * 100, 4),
+            "per_1000_executions_usd": round(base_cost_usd * multiplier * 1000, 4),
+            "monthly_1000_executions_usd": round(base_cost_usd * multiplier * 1000, 4),
+        }
+
+    payload = {
+        "schema_version": "acp-operational-cost-estimate.v1",
+        "source_policy": "Derivado de Estimate y telemetria disponible; no ejecuta LLM durante Package.",
+        "provider": provider,
+        "model": model,
+        "currency": "USD",
+        "base_components": {
+            "llm_runtime_cost_usd": round(llm_cost_usd, 4),
+            "tool_runtime_cost_usd": round(tool_cost_usd, 4),
+            "platform_overhead_cost_usd": round(platform_cost_usd, 4),
+            "provider_runtime_cost_total_usd": round(base_cost_usd, 4),
+            "provider_runtime_cost_total_cop": round(base_cost_cop, 2),
+        },
+        "scenarios": {
+            "conservative": scenario(0.75),
+            "expected": scenario(1.0),
+            "high_consumption": scenario(1.5),
+        },
+        "assumptions": [
+            "Los escenarios escalan linealmente desde la estimacion agentic disponible.",
+            "Antes de produccion, reemplazar supuestos por metricas reales de tokens, llamadas a herramientas y latencia.",
+            "Mantener separado costo operativo de costo de construccion/desarrollo.",
+        ],
+        "warnings": warnings,
+    }
+    markdown_lines = [
+        "# Operational Cost Estimate",
+        "",
+        "Este archivo resume el costo esperado de operar el agente construido desde este ACP.",
+        "",
+        f"- Proveedor: `{provider}`",
+        f"- Modelo: `{model}`",
+        f"- Costo esperado por ejecucion: `{_format_usd(base_cost_usd)}`",
+        f"- Costo esperado por 100 ejecuciones: `{_format_usd(base_cost_usd * 100)}`",
+        f"- Costo esperado por 1000 ejecuciones: `{_format_usd(base_cost_usd * 1000)}`",
+        "",
+        "## Componentes",
+        f"- LLM runtime: `{_format_usd(llm_cost_usd)}`",
+        f"- Tools runtime: `{_format_usd(tool_cost_usd)}`",
+        f"- Overhead plataforma: `{_format_usd(platform_cost_usd)}`",
+        "",
+        "## Politica",
+        "Package no recalcula costos con LLM. Esta estimacion deriva de Estimate, pricing/telemetria disponible y supuestos explicitados.",
+    ]
+    if warnings:
+        markdown_lines.extend(["", "## Warnings"])
+        markdown_lines.extend(f"- {item}" for item in warnings[:8])
+
+    return [
+        build_acp_file_entry(
+            path="ACP/costs/operational-cost-estimate.json",
+            domain="costs",
+            title="Operational cost estimate",
+            format="json",
+            source_sections=["estimation_report", "metric_snapshots", "product_build_telemetry"],
+            content_text=serialize_json_document(payload),
+            warnings=warnings[:4],
+        ),
+        build_acp_file_entry(
+            path="ACP/costs/operational-cost-estimate.md",
+            domain="costs",
+            title="Operational cost estimate",
+            format="markdown",
+            source_sections=["estimation_report", "metric_snapshots", "product_build_telemetry"],
+            content_text=serialize_markdown_document("\n".join(markdown_lines)),
+            warnings=warnings[:4],
+        ),
+    ]
+
+
+def _acp_viewer_stage_for_path(path: str, domain: str) -> str:
+    normalized = path.lower()
+    if "/construction-readiness/" in normalized or "readiness" in domain:
+        return "readiness"
+    if "/evaluation/" in normalized or domain == "evaluation":
+        return "validate"
+    if "/costs/" in normalized or domain == "costs":
+        return "costs"
+    if "/governance/" in normalized or "question" in normalized or "decision" in normalized:
+        return "decisions"
+    if "/launcher/" in normalized or "/adapters/" in normalized:
+        return "implement"
+    if "/conformance/" in normalized or "/manifest" in normalized:
+        return "package"
+    if domain in {"architecture", "tools", "memory", "runtime", "deployment", "prompts", "workflows"}:
+        return "specification"
+    return "entry"
+
+
+def _build_acp_navigation_manifest(snapshot: SessionSnapshot, preview: ACPPreview) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for file in sorted(preview.files, key=lambda item: item.path):
+        if file.path in {"ACP/index.html", "ACP/navigation-manifest.v1.json"} or file.path.startswith("ACP/assets/"):
+            continue
+        stage = _acp_viewer_stage_for_path(file.path, file.domain)
+        items.append(
+            {
+                "id": _slugify(file.path, default="file"),
+                "path": file.path,
+                "title": file.title or _title_from_path(file.path),
+                "domain": file.domain,
+                "stage": stage,
+                "format": file.format,
+                "status": file.status,
+                "description": "; ".join(file.warnings[:2]) or f"Archivo ACP de dominio {file.domain or 'general'}.",
+                "source_sections": list(file.source_sections or []),
+            }
+        )
+    chapters = [
+        {
+            "id": "entry",
+            "title": "Entrada aprobada",
+            "narrative": "El ACP parte del Blueprint aprobado como verdad estable. No reabre etapas anteriores; convierte lo generado en insumos implementables.",
+            "why_it_matters": "Evita que la implementacion pierda contexto o reactive deuda operativa ya cerrada.",
+        },
+        {
+            "id": "validate",
+            "title": "Validar",
+            "narrative": "Agrupa pruebas, rubricas y simulacion para confirmar el comportamiento esperado antes de construir.",
+            "why_it_matters": "Convierte preguntas y riesgos en evidencia verificable.",
+        },
+        {
+            "id": "decisions",
+            "title": "Decisiones y gaps",
+            "narrative": "Muestra decisiones respondidas, delegadas o pendientes con impacto y momento recomendado de cierre.",
+            "why_it_matters": "Permite avanzar sin ocultar deuda real ni regalar decisiones de implementacion.",
+        },
+        {
+            "id": "specification",
+            "title": "Especificacion implementable",
+            "narrative": "Reune arquitectura, herramientas, memoria, prompts, runtime, workflows y deployment como contrato tecnico.",
+            "why_it_matters": "Le da a la herramienta agentica los limites, componentes y responsabilidades necesarios para construir.",
+        },
+        {
+            "id": "costs",
+            "title": "Costos operativos",
+            "narrative": "Separa el costo de operar el agente del costo de construirlo, con escenarios trazables.",
+            "why_it_matters": "Ayuda a tomar decisiones de modelo, volumen y presupuesto antes de produccion.",
+        },
+        {
+            "id": "readiness",
+            "title": "Readiness",
+            "narrative": "Resume si el paquete es consumible por una persona o herramienta agentica y que falta tratar.",
+            "why_it_matters": "Bloquea solo faltantes estructurales; las brechas holisticas viajan como preguntas/delegaciones.",
+        },
+        {
+            "id": "package",
+            "title": "Package",
+            "narrative": "Organiza archivos, manifest, conformance y viewer sin llamar LLM ni redisenar.",
+            "why_it_matters": "Garantiza portabilidad offline y una unica fuente de verdad basada en los archivos generados.",
+        },
+        {
+            "id": "implement",
+            "title": "Implementar",
+            "narrative": "Entrega guia, launcher y adapters para iniciar la construccion con Codex, Cursor, Antigravity u otra herramienta compatible.",
+            "why_it_matters": "Permite que un tercero arranque sin reconstruir contexto desde LAB.",
+        },
+    ]
+    for index, chapter in enumerate(chapters):
+        chapter_items = [item for item in items if item["stage"] == chapter["id"]]
+        chapter["key_takeaways"] = [
+            f"{len(chapter_items)} archivo(s) relacionados.",
+            f"Readiness actual: {preview.construction_readiness.overall_status}.",
+        ]
+        chapter["related_files"] = [item["id"] for item in chapter_items[:12]]
+        chapter["next_chapter_id"] = chapters[index + 1]["id"] if index + 1 < len(chapters) else ""
+    return {
+        "contract_version": "acp-navigation-manifest.v1",
+        "package_type": "agent_construction_package",
+        "session_id": str(snapshot.session.id),
+        "title": snapshot.session.title or "Agent Construction Package",
+        "blueprint_version_number": preview.blueprint_version_number,
+        "validation_status": preview.validation.overall_status,
+        "can_export_zip": preview.validation.can_export_zip,
+        "construction_readiness": preview.construction_readiness.model_dump(mode="json"),
+        "storyline": chapters,
+        "items": items,
+    }
+
+
+def _acp_viewer_css() -> str:
+    return """
+:root { color-scheme: light; --ink:#111827; --muted:#566174; --line:#d7deeb; --panel:#ffffff; --soft:#f4f7fb; --brand:#2f43bd; --accent:#2f7d52; --warn:#9a5a00; }
+* { box-sizing:border-box; }
+body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:linear-gradient(135deg,#fbfcff,#eef4ff); }
+a { color:inherit; }
+.shell { display:grid; grid-template-columns:300px minmax(0,1fr); min-height:100vh; }
+.sidebar { position:sticky; top:0; height:100vh; overflow:auto; padding:24px; border-right:1px solid var(--line); background:rgba(255,255,255,.88); backdrop-filter:blur(10px); }
+.brand { font-size:12px; letter-spacing:.18em; text-transform:uppercase; font-weight:900; color:var(--brand); }
+.title { margin:10px 0 8px; font-size:25px; line-height:1.08; }
+.meta { color:var(--muted); font-size:12px; line-height:1.5; }
+.search { width:100%; margin:18px 0 14px; border:1px solid var(--line); border-radius:14px; padding:10px 12px; }
+.nav { display:grid; gap:8px; }
+.nav button { border:1px solid var(--line); background:white; border-radius:14px; padding:10px 12px; text-align:left; font-weight:850; cursor:pointer; }
+.nav button.active { border-color:var(--brand); color:var(--brand); box-shadow:0 10px 24px rgba(47,67,189,.13); }
+.main { padding:34px; }
+.hero,.chapter,.card { border:1px solid var(--line); border-radius:24px; background:rgba(255,255,255,.94); box-shadow:0 16px 35px rgba(17,24,39,.07); }
+.hero { padding:28px; margin-bottom:22px; }
+.hero h1 { margin:0; font-size:34px; }
+.hero p,.chapter p { color:var(--muted); line-height:1.7; }
+.chapter { padding:28px; }
+.eyebrow { color:var(--brand); font-size:12px; font-weight:900; letter-spacing:.18em; text-transform:uppercase; }
+.chapter h2 { margin:8px 0 12px; font-size:30px; }
+.pills { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }
+.pill { border-radius:999px; background:#eaf0ff; color:var(--brand); padding:7px 10px; font-size:12px; font-weight:850; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin-top:18px; }
+.card { padding:16px; }
+.card small { color:var(--muted); text-transform:uppercase; letter-spacing:.12em; font-weight:850; }
+.card h3 { margin:8px 0; font-size:16px; }
+.card p { margin:0 0 12px; font-size:13px; color:var(--muted); }
+.card a { display:inline-flex; padding:8px 10px; border-radius:12px; background:var(--soft); color:var(--brand); text-decoration:none; font-weight:850; font-size:13px; }
+.status-needs_review { border-left:4px solid var(--warn); }
+.status-incomplete { border-left:4px solid #b42318; }
+.controls { display:flex; justify-content:space-between; gap:12px; margin-top:24px; }
+.controls button { border:0; border-radius:14px; padding:12px 16px; background:var(--brand); color:white; font-weight:900; cursor:pointer; }
+.controls button.secondary { background:white; color:var(--brand); border:1px solid var(--line); }
+@media (max-width:860px){ .shell{grid-template-columns:1fr;} .sidebar{position:relative;height:auto;} .main{padding:18px;} .hero h1{font-size:28px;} }
+""".strip()
+
+
+def _acp_viewer_js() -> str:
+    return """
+(function(){
+  const data = window.ACP_NAVIGATION_MANIFEST || {storyline:[], items:[]};
+  const nav = document.querySelector('[data-nav]');
+  const chapter = document.querySelector('[data-chapter]');
+  const search = document.querySelector('[data-search]');
+  let current = 0;
+  function esc(value){ return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+  function fileCard(item){
+    return `<article class="card status-${esc(item.status)}"><small>${esc(item.domain)} · ${esc(item.status)}</small><h3>${esc(item.title)}</h3><p>${esc(item.description)}</p><a href="${esc(item.path.replace(/^ACP\\//,''))}" target="_blank" rel="noreferrer">Abrir archivo</a></article>`;
+  }
+  function renderNav(){
+    nav.innerHTML = data.storyline.map((item, index) => `<button type="button" class="${index===current?'active':''}" data-index="${index}">${esc(index+1)}. ${esc(item.title)}</button>`).join('');
+    nav.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => { current = Number(btn.dataset.index || 0); render(); }));
+  }
+  function render(){
+    const item = data.storyline[current] || data.storyline[0];
+    if(!item){ chapter.innerHTML = '<p>No hay capitulos disponibles en este ACP.</p>'; return; }
+    const files = (data.items || []).filter(entry => (item.related_files || []).includes(entry.id));
+    chapter.innerHTML = `
+      <div class="eyebrow">${esc(item.id)}</div>
+      <h2>${esc(item.title)}</h2>
+      <p>${esc(item.narrative)}</p>
+      <p><strong>Por que importa:</strong> ${esc(item.why_it_matters)}</p>
+      <div class="pills">${(item.key_takeaways || []).map(t => `<span class="pill">${esc(t)}</span>`).join('')}</div>
+      <div class="grid">${files.map(fileCard).join('')}</div>
+      <div class="controls"><button class="secondary" type="button" data-prev>Anterior</button><button type="button" data-next>Siguiente</button></div>
+    `;
+    chapter.querySelector('[data-prev]').addEventListener('click', () => { current = Math.max(0, current - 1); render(); });
+    chapter.querySelector('[data-next]').addEventListener('click', () => { current = Math.min(data.storyline.length - 1, current + 1); render(); });
+    renderNav();
+  }
+  if(search){
+    search.addEventListener('input', () => {
+      const query = search.value.toLowerCase();
+      nav.querySelectorAll('button').forEach(btn => { btn.hidden = query && !btn.textContent.toLowerCase().includes(query); });
+    });
+  }
+  render();
+})();
+""".strip()
+
+
+def _build_acp_viewer_html(manifest: dict[str, Any]) -> str:
+    manifest_json = serialize_json_document(manifest).replace("</", "<\\/")
+    chapters_count = len(manifest.get("storyline", []))
+    items_count = len(manifest.get("items", []))
+    title = str(manifest.get("title") or "Agent Construction Package")
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)}</title>
+  <link rel="stylesheet" href="assets/acp-viewer.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">Lean Agent Builder</div>
+      <h1 class="title">{escape(title)}</h1>
+      <p class="meta">Agent Construction Package · {chapters_count} capitulos · {items_count} archivos · readiness {escape(str(manifest.get('validation_status') or 'needs_review'))}</p>
+      <input class="search" data-search type="search" placeholder="Buscar capitulo">
+      <nav class="nav" data-nav aria-label="Mapa ACP"></nav>
+    </aside>
+    <main class="main">
+      <section class="hero">
+        <div class="eyebrow">ACP Viewer</div>
+        <h1>De Blueprint aprobado a paquete implementable</h1>
+        <p>Este viewer recorre el ACP como historia de implementacion: entrada aprobada, validacion, decisiones, especificacion, costos, readiness, package e implementacion.</p>
+      </section>
+      <section class="chapter" data-chapter aria-live="polite"></section>
+    </main>
+  </div>
+  <script>window.ACP_NAVIGATION_MANIFEST = {manifest_json};</script>
+  <script src="assets/acp-viewer.js"></script>
+</body>
+</html>"""
+
+
+def _build_acp_viewer_files(snapshot: SessionSnapshot, preview: ACPPreview) -> list[ACPFileEntry]:
+    manifest = _build_acp_navigation_manifest(snapshot, preview)
+    return [
+        build_acp_file_entry(
+            path="ACP/navigation-manifest.v1.json",
+            domain="manifest",
+            title="ACP navigation manifest",
+            format="json",
+            source_sections=["acp_preview.files", "construction_readiness"],
+            content_text=serialize_json_document(manifest),
+        ),
+        build_acp_file_entry(
+            path="ACP/assets/acp-viewer.css",
+            domain="manifest",
+            title="ACP viewer CSS",
+            format="css",
+            source_sections=["acp_preview.files"],
+            content_text=_acp_viewer_css(),
+        ),
+        build_acp_file_entry(
+            path="ACP/assets/acp-viewer.js",
+            domain="manifest",
+            title="ACP viewer JS",
+            format="javascript",
+            source_sections=["acp_preview.files"],
+            content_text=_acp_viewer_js(),
+        ),
+        build_acp_file_entry(
+            path="ACP/index.html",
+            domain="manifest",
+            title="ACP viewer",
+            format="html",
+            source_sections=["acp_preview.files", "construction_readiness"],
+            content_text=_build_acp_viewer_html(manifest),
         ),
     ]
 
@@ -2662,6 +3096,52 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     dataset = snapshot.evaluation_dataset
     rubric = snapshot.evaluation_rubric
     if dataset is None or rubric is None:
+        delegated_evaluation_payload = {
+            "schema_version": "acp-evaluation-delegation.v1",
+            "status": "delegated_to_implementation",
+            "reason": "El Blueprint aprobado no incluye dataset/rubrica de evaluacion cerrados.",
+            "policy": "No reabrir fases estables; construir pruebas durante implementacion usando el ACP como evidencia.",
+            "required_traceability": [
+                "pregunta_o_gap_origen",
+                "respuesta_o_decision",
+                "artefactos_afectados",
+                "criterio_de_aceptacion",
+            ],
+            "starter_cases": [],
+        }
+        delegated_rubric_payload = {
+            "schema_version": "acp-rubric-delegation.v1",
+            "status": "delegated_to_implementation",
+            "dimensions": [
+                {
+                    "key": "business_alignment",
+                    "label": "Alineacion con objetivo de negocio",
+                    "minimum_score": "needs_definition",
+                },
+                {
+                    "key": "safety_and_governance",
+                    "label": "Seguridad, permisos y gobernanza",
+                    "minimum_score": "needs_definition",
+                },
+                {
+                    "key": "runtime_quality",
+                    "label": "Calidad operativa del agente",
+                    "minimum_score": "needs_definition",
+                },
+            ],
+        }
+        test_cases_text = "\n".join(
+            [
+                "Feature: ACP implementation evaluation",
+                "",
+                "  # Delegado a implementacion: completar escenarios concretos antes del primer release.",
+                "  Scenario: Definir caso de evaluacion desde una decision delegada",
+                "    Given el builder agent revisa ACP/construction-readiness/open-questions.yaml",
+                "    When una decision impacta un componente, herramienta, memoria o integracion",
+                "    Then debe crear un caso de prueba trazable antes de implementar el cambio",
+                "",
+            ]
+        )
         return [
             build_acp_file_entry(
                 path="ACP/evaluation/golden-dataset.json",
@@ -2669,7 +3149,8 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
                 title="Golden dataset",
                 format="json",
                 source_sections=["evaluation_dataset"],
-                missing_fields=["evaluation_dataset"],
+                warnings=["Dataset de evaluacion delegado a implementacion; no bloquea el paquete ACP."],
+                content_text=serialize_json_document(delegated_evaluation_payload),
             ),
             build_acp_file_entry(
                 path="ACP/evaluation/rubrics.yaml",
@@ -2677,7 +3158,8 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
                 title="Rubrics",
                 format="yaml",
                 source_sections=["evaluation_rubric"],
-                missing_fields=["evaluation_rubric"],
+                warnings=["Rubrica base delegada a implementacion; usar metodologia ACP para cerrarla."],
+                content_text=serialize_yaml_document(delegated_rubric_payload),
             ),
             build_acp_file_entry(
                 path="ACP/evaluation/benchmarks.yaml",
@@ -2694,7 +3176,8 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
                 title="Test cases",
                 format="gherkin",
                 source_sections=["evaluation_dataset"],
-                missing_fields=["evaluation_dataset"],
+                warnings=["Casos E2E delegados a implementacion; construirlos antes del primer release."],
+                content_text=serialize_markdown_document(test_cases_text),
             ),
         ]
 
@@ -2949,6 +3432,17 @@ def _build_observability_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
 
 def _build_governance_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     report = ensure_blueprint_consistency_report(snapshot)
+    process_debt = [
+        issue.model_dump(mode="json")
+        for issue in report.issues
+        if is_blueprint_handoff_process_debt_issue(issue.issue_key)
+    ]
+    real_debt = [
+        issue.model_dump(mode="json")
+        for issue in report.issues
+        if not is_blueprint_handoff_process_debt_issue(issue.issue_key)
+        and issue.severity in {"blocking", "warning"}
+    ]
     lineage_payload = {
         "generated_from_blueprint_version": report.generated_from_blueprint_version,
         "overall_status": str(report.overall_status),
@@ -2961,6 +3455,25 @@ def _build_governance_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
         "decision_history": report.decision_history,
     }
     consistency_payload = report.model_dump(mode="json")
+    handoff_closure_payload = {
+        "schema_version": "blueprint-acp-handoff-closure.v1",
+        "policy": {
+            "blueprint_approval_closes_operational_cycle": True,
+            "process_debt_does_not_travel_as_acp_debt": True,
+            "real_debt_keeps_traceability": True,
+            "critical_integrity_issues_must_block_or_be_resolved": True,
+            "reconciliation_scope": "granular_artifacts_only",
+        },
+        "classification": {
+            "process_debt_closed_or_archived": process_debt,
+            "real_debt_preserved_for_acp": real_debt,
+        },
+        "notes": [
+            "Flags stale, warnings de sincronizacion y drift transitorio del Blueprint son evidencia operativa, no deuda de implementacion.",
+            "Preguntas, restricciones o decisiones delegadas deben resolverse en el momento de implementar el artefacto afectado.",
+            "Si aparece una contradiccion real contra el Blueprint aprobado, usar reconciliacion granular; no reiniciar fases completas.",
+        ],
+    }
     return [
         build_acp_file_entry(
             path="ACP/governance/consistency-report.json",
@@ -2996,6 +3509,19 @@ def _build_governance_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             source_sections=["blueprint_consistency", "journey_artifacts"],
             content_text=serialize_json_document(decisions_payload),
         ),
+        build_acp_file_entry(
+            path="ACP/governance/blueprint-handoff-closure.yaml",
+            domain="governance",
+            title="Blueprint ACP handoff closure",
+            format="yaml",
+            source_sections=["blueprint_consistency", "blueprint_handoff"],
+            content_text=serialize_yaml_document(handoff_closure_payload),
+            warnings=[
+                "Contiene clasificacion del handoff; no usar process_debt_closed_or_archived como backlog de implementacion."
+            ]
+            if process_debt
+            else [],
+        ),
     ]
 
 
@@ -3022,6 +3548,7 @@ def generate_acp_files(
     files.extend(_build_runtime_files(snapshot, continuity_answers))
     files.extend(_build_evaluation_files(snapshot))
     files.extend(_build_deployment_files(snapshot, continuity_answers))
+    files.extend(_build_operational_cost_files(snapshot))
     files.extend(_build_observability_files(snapshot))
     files.extend(_build_governance_files(snapshot))
     files.extend(_build_estimation_files(snapshot))
@@ -3035,6 +3562,7 @@ def generate_acp_files(
         response_records,
     )
     continuity_files.extend(_build_continuity_prompt_files(base_preview))
+    continuity_files.extend(_build_implementation_guidance_files(base_preview))
     acp_without_diagrams = sorted(base_files + continuity_files, key=lambda item: item.path)
     visualization_files = build_acp_visualization_files(snapshot, acp_without_diagrams)
     acp_without_conformance = sorted(acp_without_diagrams + visualization_files, key=lambda item: item.path)
@@ -3045,7 +3573,11 @@ def generate_acp_files(
         acp_without_conformance,
         profile="acp-full",
     )
-    return sorted(acp_without_conformance + conformance_files, key=lambda item: item.path)
+    acp_without_viewer = sorted(acp_without_conformance + conformance_files, key=lambda item: item.path)
+    viewer_preview = build_acp_preview(snapshot, acp_without_viewer)
+    viewer_preview = append_construction_readiness_gaps(viewer_preview, extra_readiness_gaps)
+    viewer_files = _build_acp_viewer_files(snapshot, viewer_preview)
+    return sorted(acp_without_viewer + viewer_files, key=lambda item: item.path)
 
 
 def generate_acp_preview(

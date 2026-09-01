@@ -56,6 +56,10 @@ from app.services.attention.validation_issue_normalizer import (
     items_from_validation_issues,
     split_validation_issue_codes,
 )
+from app.services.acp_handoff_service import (
+    BLUEPRINT_PROCESS_DEBT_STAGE_KEYS,
+    has_blueprint_acp_handoff_finalized,
+)
 from app.services.commerce_service import resolve_access_request
 from app.services.lean_question_policy import filter_stage_question_texts
 from app.services.product_processing.contracts import ProductBuildProductKey
@@ -663,7 +667,12 @@ def _filter_resolved_artifact_attention_items(
     return filtered
 
 
-def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> list[AttentionItemV2]:
+def _items_from_journey_artifacts(
+    snapshot: SessionSnapshot,
+    *,
+    base: str,
+    suppress_blueprint_process_debt: bool = False,
+) -> list[AttentionItemV2]:
     items: list[AttentionItemV2] = []
     artifacts = list((snapshot.journey_latest_artifacts or {}).values())
     seen_ids: set[UUID] = set()
@@ -675,6 +684,10 @@ def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> li
         href = _stage_href(base, stage)
         product = _product_for_stage(stage)
         state = _state_value(artifact.state)
+        if suppress_blueprint_process_debt and stage in BLUEPRINT_PROCESS_DEBT_STAGE_KEYS and (
+            artifact.state == JourneyArtifactState.stale or artifact.stale_reasons
+        ):
+            continue
         items.extend(
             items_from_stage_artifact_state(
                 stage=stage,
@@ -729,14 +742,19 @@ def _items_from_journey_artifacts(snapshot: SessionSnapshot, *, base: str) -> li
     return items
 
 
-def _items_from_tool_recommendation(snapshot: SessionSnapshot, *, base: str) -> list[AttentionItemV2]:
+def _items_from_tool_recommendation(
+    snapshot: SessionSnapshot,
+    *,
+    base: str,
+    suppress_blueprint_process_debt: bool = False,
+) -> list[AttentionItemV2]:
     recommendation = snapshot.latest_tool_recommendation
     if recommendation is None:
         return []
     version = recommendation.current_blueprint_version or recommendation.source_blueprint_version
     href = _stage_href(base, "tools")
     items: list[AttentionItemV2] = []
-    if recommendation.is_stale:
+    if recommendation.is_stale and not suppress_blueprint_process_debt:
         items.append(
             create_attention_item_v2(
                 item_type="stale",
@@ -1043,6 +1061,7 @@ def _collect_attention_v2_items(
     return_href = f"{base}/attention"
     pending_requests = _pending_access_requests(db, record)
     answered_question_keys = _answered_construction_question_keys(db, record)
+    suppress_blueprint_process_debt = has_blueprint_acp_handoff_finalized(db, session_id=record.id)
     items: list[AttentionItemV2] = []
     items.extend(
         items_from_commercial_access(
@@ -1062,8 +1081,20 @@ def _collect_attention_v2_items(
                 answered_question_keys=answered_question_keys,
             )
         )
-    items.extend(_items_from_journey_artifacts(snapshot, base=base))
-    items.extend(_items_from_tool_recommendation(snapshot, base=base))
+    items.extend(
+        _items_from_journey_artifacts(
+            snapshot,
+            base=base,
+            suppress_blueprint_process_debt=suppress_blueprint_process_debt,
+        )
+    )
+    items.extend(
+        _items_from_tool_recommendation(
+            snapshot,
+            base=base,
+            suppress_blueprint_process_debt=suppress_blueprint_process_debt,
+        )
+    )
     items.extend(items_from_handoffs(snapshot.handoff_records, base_href=base, return_href=return_href))
     items.extend(items_from_governance_policies(snapshot.governance_policies, base_href=base, return_href=return_href))
     items.extend(_items_from_short_term_runtime(snapshot, base=base))

@@ -10,10 +10,13 @@ from app.models import (
     AccessRequestCreateRequest,
     AccessRequestResolveRequest,
     CommercialAccessRequestRecord,
+    CommercialEventRecord,
     CommercialAccessRequestStatus,
     CommercialPackageCatalogUpsertRequest,
     CommercialQuotaSourceKind,
     CommercialTier,
+    JourneyArtifactState,
+    JourneyStageArtifactRecord,
     PlatformRole,
     PlatformRoleAssignmentRecord,
     SessionRecord,
@@ -166,3 +169,78 @@ def test_debt_pending_resolution_opens_debt_and_blocks_next_auto_approval(db_ses
     db_session.commit()
 
     assert second_request.status == CommercialAccessRequestStatus.pending
+
+
+def test_manual_acp_approval_finalizes_blueprint_handoff(db_session: Session) -> None:
+    user = UserRecord(
+        email="manual-acp@leanbuilder.local",
+        full_name="Manual ACP Admin",
+        password_hash=hash_password("Secret123!"),
+    )
+    db_session.add(user)
+    db_session.flush()
+    workspace = WorkspaceRecord(
+        name="Manual ACP Workspace",
+        slug=f"manual-acp-{str(user.id)[:8]}",
+        created_by_user_id=user.id,
+    )
+    db_session.add(workspace)
+    db_session.flush()
+    db_session.add(WorkspaceMembershipRecord(workspace_id=workspace.id, user_id=user.id, role=WorkspaceRole.owner))
+    db_session.add(
+        PlatformRoleAssignmentRecord(
+            user_id=user.id,
+            role=PlatformRole.platform_admin,
+            is_active=True,
+        )
+    )
+    record = SessionRecord(user_id=user.id, workspace_id=workspace.id, title="Manual ACP Project")
+    db_session.add(record)
+    db_session.flush()
+    tools_artifact = JourneyStageArtifactRecord(
+        workspace_id=workspace.id,
+        session_id=record.id,
+        stage_key="tools",
+        artifact_kind="tool_recommendation",
+        version_number=1,
+        state=JourneyArtifactState.stale,
+        stale_reasons=["memory_reprocessed"],
+    )
+    db_session.add(tools_artifact)
+    db_session.commit()
+
+    access_response = request_access(
+        db_session,
+        payload=AccessRequestCreateRequest(session_id=record.id, capability="acp.build", reason="Manual ACP"),
+        record=record,
+        current_user=user,
+        product_key="acp",
+        target_tier=CommercialTier.acp,
+    )
+    stored_request = db_session.exec(
+        select(CommercialAccessRequestRecord).where(CommercialAccessRequestRecord.id == access_response.id)
+    ).one()
+    assert stored_request.status == CommercialAccessRequestStatus.pending
+
+    resolve_access_request(
+        db_session,
+        access_request=stored_request,
+        payload=AccessRequestResolveRequest(
+            decision="approved",
+            resolution_note="Aprobacion manual ACP.",
+            approval_mode="manual_standard",
+        ),
+        current_user=user,
+    )
+    db_session.commit()
+    db_session.refresh(tools_artifact)
+
+    handoff_events = db_session.exec(
+        select(CommercialEventRecord).where(
+            CommercialEventRecord.session_id == record.id,
+            CommercialEventRecord.event_key == "blueprint_acp_handoff_finalized",
+        )
+    ).all()
+    assert tools_artifact.state == JourneyArtifactState.approved
+    assert tools_artifact.stale_reasons == []
+    assert len(handoff_events) == 1

@@ -1386,6 +1386,16 @@ def create_access_request(
         )
     ).first()
     if existing is not None:
+        if existing.product_key == "acp":
+            from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
+
+            finalize_blueprint_for_acp_handoff(
+                db,
+                session_record=session_record,
+                actor_user_id=current_user.id,
+                source="access_request_existing",
+                correlation_id=f"access_request:{existing.id}",
+            )
         return serialize_access_request(existing)
     record = CommercialAccessRequestRecord(
         workspace_id=workspace_id,
@@ -1416,6 +1426,16 @@ def create_access_request(
         actor_user_id=current_user.id,
         reason=record.reason or f"Solicitud de acceso a {record.product_key} creada.",
     )
+    if record.product_key == "acp":
+        from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
+
+        finalize_blueprint_for_acp_handoff(
+            db,
+            session_record=session_record,
+            actor_user_id=current_user.id,
+            source="access_request_created",
+            correlation_id=f"access_request:{record.id}",
+        )
     _auto_approve_access_request_from_workspace_balance(
         db,
         access_request=record,
@@ -1459,6 +1479,16 @@ def request_access(
         )
     ).first()
     if existing is not None:
+        if existing.product_key == "acp":
+            from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
+
+            finalize_blueprint_for_acp_handoff(
+                db,
+                session_record=record,
+                actor_user_id=current_user.id,
+                source="access_request_existing",
+                correlation_id=f"access_request:{existing.id}",
+            )
         return serialize_access_request(existing)
     access_request = CommercialAccessRequestRecord(
         workspace_id=record.workspace_id,
@@ -1489,6 +1519,16 @@ def request_access(
         actor_user_id=current_user.id,
         reason=access_request.reason or f"Solicitud de acceso a {access_request.product_key} creada.",
     )
+    if access_request.product_key == "acp":
+        from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
+
+        finalize_blueprint_for_acp_handoff(
+            db,
+            session_record=record,
+            actor_user_id=current_user.id,
+            source="access_request_created",
+            correlation_id=f"access_request:{access_request.id}",
+        )
     _auto_approve_access_request_from_workspace_balance(
         db,
         access_request=access_request,
@@ -1607,6 +1647,16 @@ def _auto_approve_access_request_from_workspace_balance(
         actor_user_id=actor_user.id if actor_user is not None else None,
         reason=access_request.resolution_note,
     )
+    if access_request.product_key == "acp":
+        from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
+
+        finalize_blueprint_for_acp_handoff(
+            db,
+            session_record=session_record,
+            actor_user_id=actor_user.id if actor_user is not None else None,
+            source=f"access_request_auto_approved:{approval_mode}",
+            correlation_id=f"access_request:{access_request.id}",
+        )
     return True
 
 
@@ -1714,6 +1764,16 @@ def _apply_access_request_manual_approval(
         actor_user_id=current_user.id,
         reason=access_request.resolution_note,
     )
+    if product_key == "acp":
+        from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
+
+        finalize_blueprint_for_acp_handoff(
+            db,
+            session_record=session_record,
+            actor_user_id=current_user.id,
+            source=f"access_request_manual_approved:{approval_mode}",
+            correlation_id=f"access_request:{access_request.id}",
+        )
 
 
 def process_pending_access_requests_fifo(

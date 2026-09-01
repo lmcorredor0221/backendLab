@@ -136,9 +136,13 @@ def _implementation_actions(preview: ACPPreview, *, profile: str) -> list[str]:
     actions: list[str] = []
     readiness = preview.construction_readiness
     if readiness.open_questions:
-        actions.append("Resolver las preguntas abiertas antes de ejecutar construccion automatizada.")
+        actions.append(
+            "Revisar preguntas abiertas y resolverlas o conservarlas como decisiones delegadas antes de tocar el artefacto afectado."
+        )
     if readiness.blocking_gaps:
-        actions.append("Cerrar gaps bloqueantes o convertirlos en decisiones diferidas dentro del ACP.")
+        actions.append(
+            "Cerrar bloqueos reales de integridad; no reabrir el Blueprint por deuda operativa interna cerrada en el handoff."
+        )
     if profile == "blueprint-professional":
         actions.append("Adquirir ACP para obtener launcher, adapters, readiness operativo, prompts y runtime package.")
     elif profile == "acp-portable":

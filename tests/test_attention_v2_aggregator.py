@@ -1593,6 +1593,7 @@ def test_premium_enrichment_resolution_removes_item_from_attention(client: TestC
             uncertainty_key="untraced_item:CA-999",
             product_mode="premium_enrichment",
             source_stage="define",
+            disposition="resolve_now",
             status="open",
             title="Trazabilidad de requerimiento CA-999",
             reason="Falta vincular con Canvas",

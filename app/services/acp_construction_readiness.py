@@ -45,6 +45,22 @@ CONSTRUCTION_GAP_CATALOG: dict[str, dict[str, str]] = {
     },
 }
 
+BLUEPRINT_HANDOFF_PROCESS_DEBT_ISSUE_KEYS = {
+    "tools_recommendation_stale",
+    "memory_recommendation_stale",
+    "estimate_stale",
+}
+BLUEPRINT_HANDOFF_PROCESS_DEBT_PREFIXES = (
+    "validate_source_stage_drift:",
+)
+
+
+def is_blueprint_handoff_process_debt_issue(issue_key: str) -> bool:
+    normalized = issue_key.strip()
+    return normalized in BLUEPRINT_HANDOFF_PROCESS_DEBT_ISSUE_KEYS or any(
+        normalized.startswith(prefix) for prefix in BLUEPRINT_HANDOFF_PROCESS_DEBT_PREFIXES
+    )
+
 
 def _file_map(files: list[ACPFileEntry]) -> dict[str, ACPFileEntry]:
     return {item.path: item for item in files}
@@ -589,22 +605,30 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
 
 def _collect_consistency_gap(snapshot: SessionSnapshot) -> ConstructionGapEntry | None:
     report = ensure_blueprint_consistency_report(snapshot)
-    if not report.blocking_issues and not report.warnings:
+    actionable_issues = [
+        issue
+        for issue in report.issues
+        if not is_blueprint_handoff_process_debt_issue(issue.issue_key)
+        and issue.severity in {"blocking", "warning"}
+    ]
+    if not actionable_issues:
         return None
 
-    severity = "blocking" if report.blocking_issues else "warning"
+    blocking_issues = [issue for issue in actionable_issues if issue.severity == "blocking"]
+    warning_issues = [issue for issue in actionable_issues if issue.severity == "warning"]
+    severity = "blocking" if blocking_issues else "warning"
     summary = (
-        "El package detecto drift o cobertura incompleta entre Requirement, Design, Tools, Memory, Validate y Estimate."
+        "El package detecto deuda real de coherencia entre Requirement, Design, Tools, Memory, Validate y Estimate."
     )
     remediation = (
-        "Reaprobar o regenerar las etapas afectadas hasta que el blueprint vivo vuelva a coincidir con la cadena aprobada."
+        "Resolver bloqueos reales o delegar decisiones implementables; no reabrir fases estables por deuda operativa interna."
     )
     closure_criteria = [
-        "Alinear blueprint, tools y memory con la ultima aprobacion vigente.",
-        "Regenerar Validate o Estimate si quedaron ligados a versiones previas.",
-        "Confirmar que solo queda lineage exportable en el paquete profesional/ACP.",
+        "Confirmar que los issues bloqueantes restantes comprometen la integridad del Blueprint.",
+        "Registrar como decision delegada aquello que pueda resolverse durante implementacion.",
+        "Mantener fuera del ACP los flags stale, warnings de sincronizacion y estados transitorios del Blueprint.",
     ]
-    assumptions = list(report.warnings[:3])
+    assumptions = [issue.detail for issue in (blocking_issues + warning_issues)[:3]]
     return ConstructionGapEntry(
         gap_key="cross_stage_consistency_drift",
         title="La cadena aprobada no esta coherente extremo a extremo",

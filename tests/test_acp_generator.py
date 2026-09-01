@@ -212,8 +212,14 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     paths = [item.path for item in preview.files]
     assert paths == sorted(paths)
     assert "ACP/manifest.yaml" in paths
+    assert "ACP/index.html" in paths
+    assert "ACP/navigation-manifest.v1.json" in paths
+    assert "ACP/assets/acp-viewer.css" in paths
+    assert "ACP/assets/acp-viewer.js" in paths
     assert "ACP/tools/external/tool-build-blueprint.yaml" in paths
     assert "ACP/memory/strategy.yaml" in paths
+    assert "ACP/costs/operational-cost-estimate.json" in paths
+    assert "ACP/costs/operational-cost-estimate.md" in paths
     assert "ACP/evaluation/rubrics.yaml" in paths
     assert "ACP/observability/alerts.yaml" in paths
     assert "ACP/deployment/env.template" in paths
@@ -228,6 +234,8 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "ACP/construction-readiness/required-api-contracts.yaml" in paths
     assert "ACP/construction-readiness/deployment-decisions-needed.yaml" in paths
     assert "ACP/construction-readiness/resolution-workflow.yaml" in paths
+    assert "ACP/IMPLEMENTATION_GUIDE.md" in paths
+    assert "ACP/release-readiness-checklist.md" in paths
     assert "ACP/prompts/builder-handoff.md" in paths
     assert "ACP/prompts/gap-closure.md" in paths
     assert "ACP/diagrams/Architecture.md" in paths
@@ -269,6 +277,19 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
     assert "Lee primero `ACP/construction-readiness/overview.yaml`." in builder_handoff.content_text
     assert "`ACP/blueprint.graph.json`" in builder_handoff.content_text
+    implementation_guide = next(item for item in preview.files if item.path == "ACP/IMPLEMENTATION_GUIDE.md")
+    assert "Deuda de proceso" in implementation_guide.content_text
+    cost_estimate = next(item for item in preview.files if item.path == "ACP/costs/operational-cost-estimate.json")
+    assert '"schema_version": "acp-operational-cost-estimate.v1"' in cost_estimate.content_text
+    navigation_manifest = next(item for item in preview.files if item.path == "ACP/navigation-manifest.v1.json")
+    assert '"contract_version": "acp-navigation-manifest.v1"' in navigation_manifest.content_text
+    assert '"storyline": [' in navigation_manifest.content_text
+    viewer = next(item for item in preview.files if item.path == "ACP/index.html")
+    assert "ACP Viewer" in viewer.content_text
+    assert "http://" not in viewer.content_text
+    assert "https://" not in viewer.content_text
+    handoff_closure = next(item for item in preview.files if item.path == "ACP/governance/blueprint-handoff-closure.yaml")
+    assert "blueprint_approval_closes_operational_cycle: true" in handoff_closure.content_text
     assert preview.validation.can_export_zip is True
     assert preview.validation.overall_status == "needs_review"
     assert preview.validation.completeness_percent > 0
@@ -276,6 +297,26 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert preview.construction_readiness.can_start_build is False
     assert preview.construction_readiness.blocking_gaps == 0
     assert preview.construction_readiness.open_questions >= 1
+
+
+def test_generate_acp_preview_delegates_missing_evaluation_without_blocking_zip() -> None:
+    snapshot = build_ready_snapshot().model_copy(
+        update={
+            "evaluation_dataset": None,
+            "evaluation_rubric": None,
+            "evaluation_runs": [],
+        }
+    )
+
+    preview = generate_acp_preview(snapshot)
+
+    files_by_path = {item.path: item for item in preview.files}
+    assert preview.validation.can_export_zip is True
+    assert files_by_path["ACP/evaluation/golden-dataset.json"].status == "needs_review"
+    assert "delegated_to_implementation" in files_by_path["ACP/evaluation/golden-dataset.json"].content_text
+    assert files_by_path["ACP/evaluation/rubrics.yaml"].status == "needs_review"
+    assert files_by_path["ACP/evaluation/test-cases.feature"].status == "needs_review"
+    assert not any(issue.code == "acp_file_incomplete" for issue in preview.validation.issues)
 
 
 def test_generate_acp_preview_produces_deterministic_construction_readiness() -> None:
@@ -383,6 +424,11 @@ def test_build_acp_zip_contains_construction_readiness_block() -> None:
         names = sorted(archive.namelist())
 
     assert "ACP/construction-readiness/overview.yaml" in names
+    assert "ACP/index.html" in names
+    assert "ACP/navigation-manifest.v1.json" in names
+    assert "ACP/assets/acp-viewer.css" in names
+    assert "ACP/assets/acp-viewer.js" in names
+    assert "ACP/costs/operational-cost-estimate.md" in names
     assert "ACP/construction-readiness/blocking-gaps.yaml" in names
     assert "ACP/prompts/builder-handoff.md" in names
     assert "ACP/diagrams/KnowledgeGraph.md" in names

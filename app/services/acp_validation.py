@@ -64,8 +64,8 @@ VALIDATION_ISSUE_CATALOG: dict[str, dict[str, str]] = {
         "remediation": "Cerrar los gaps del blueprint o aceptar explicitamente el riesgo antes del export final.",
     },
     "missing_evaluation_base": {
-        "severity": "error",
-        "remediation": "Generar dataset, rubrica o casos base de evaluacion antes de validar el ACP.",
+        "severity": "warning",
+        "remediation": "Incluir la brecha como pregunta/delegacion de implementacion cuando el Blueprint base ya esta aprobado.",
     },
     "runtime_signals_missing": {
         "severity": "warning",
@@ -76,16 +76,16 @@ VALIDATION_ISSUE_CATALOG: dict[str, dict[str, str]] = {
         "remediation": "Asignar nombre estable a la tool para poder generar su contrato.",
     },
     "tool_missing_description": {
-        "severity": "error",
-        "remediation": "Completar el `purpose` de la tool con una descripcion accionable.",
+        "severity": "warning",
+        "remediation": "Incluir la descripcion faltante como pregunta/delegacion de implementacion en el ACP.",
     },
     "tool_missing_inputs": {
-        "severity": "error",
-        "remediation": "Declarar al menos un input para la tool.",
+        "severity": "warning",
+        "remediation": "Incluir los inputs faltantes como contrato pendiente dentro del ACP.",
     },
     "tool_missing_outputs": {
-        "severity": "error",
-        "remediation": "Declarar al menos un output verificable para la tool.",
+        "severity": "warning",
+        "remediation": "Incluir los outputs faltantes como contrato pendiente dentro del ACP.",
     },
     "acp_file_incomplete": {
         "severity": "error",
@@ -237,10 +237,8 @@ def _iter_tool_issues(snapshot: SessionSnapshot) -> Iterable[ACPValidationIssue]
                 _issue(
                     "tool_missing_description",
                     f"La tool '{tool.name or f'#{index}'}' no tiene descripcion/purpose.",
-                    severity="error",
                     path=tool_path,
                     source_sections=["blueprint.tools"],
-                    blocking=True,
                 )
             )
         if not tool.inputs:
@@ -248,10 +246,8 @@ def _iter_tool_issues(snapshot: SessionSnapshot) -> Iterable[ACPValidationIssue]
                 _issue(
                     "tool_missing_inputs",
                     f"La tool '{tool.name or f'#{index}'}' no define inputs.",
-                    severity="error",
                     path=tool_path,
                     source_sections=["blueprint.tools"],
-                    blocking=True,
                 )
             )
         if not tool.outputs:
@@ -259,10 +255,8 @@ def _iter_tool_issues(snapshot: SessionSnapshot) -> Iterable[ACPValidationIssue]
                 _issue(
                     "tool_missing_outputs",
                     f"La tool '{tool.name or f'#{index}'}' no define outputs.",
-                    severity="error",
                     path=tool_path,
                     source_sections=["blueprint.tools"],
-                    blocking=True,
                 )
             )
     return issues
@@ -415,10 +409,8 @@ def build_acp_validation_report(
             _issue(
                 "missing_evaluation_base",
                 "Falta dataset, rubrica o casos de evaluacion base para el ACP.",
-                severity="error",
                 path="ACP/evaluation/rubrics.yaml",
                 source_sections=["evaluation_dataset", "evaluation_rubric", "evaluation", "delivery_package.deliverables"],
-                blocking=True,
             )
         )
 

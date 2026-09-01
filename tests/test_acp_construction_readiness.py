@@ -6,8 +6,11 @@ from app.models import (
     ACPValidationReport,
     ArtifactStatus,
     BlueprintArtifact,
+    BlueprintConsistencyIssue,
+    BlueprintConsistencyReport,
     BlueprintTool,
     MemoryProfile,
+    ReviewState,
     SessionCreateResponse,
     SessionSnapshot,
     SessionStage,
@@ -126,6 +129,49 @@ def test_build_initial_construction_readiness_returns_ready_to_build_when_contra
     assert readiness.open_questions == 0
     assert readiness.gaps == []
     assert readiness.next_recommended_action == "start_agentic_build"
+
+
+def test_blueprint_handoff_process_debt_does_not_become_acp_blocker() -> None:
+    snapshot = build_snapshot().model_copy(
+        update={
+            "blueprint_consistency": BlueprintConsistencyReport(
+                overall_status=ReviewState.blocked,
+                summary="Stale operativo del Blueprint antes de aprobar ACP.",
+                issues=[
+                    BlueprintConsistencyIssue(
+                        issue_key="tools_recommendation_stale",
+                        severity="blocking",
+                        category="design_to_tools",
+                        title="Tools stale",
+                        detail="La recomendacion de herramientas esta desactualizada.",
+                        affected_stage_keys=["tools"],
+                    ),
+                    BlueprintConsistencyIssue(
+                        issue_key="validate_source_stage_drift:memory",
+                        severity="blocking",
+                        category="memory_to_validate",
+                        title="Validate stale",
+                        detail="Validate referencia una version previa de Memory.",
+                        affected_stage_keys=["memory", "validate"],
+                    ),
+                ],
+                blocking_issues=[
+                    "La recomendacion de herramientas esta desactualizada.",
+                    "Validate referencia una version previa de Memory.",
+                ],
+            )
+        }
+    )
+
+    readiness = build_initial_construction_readiness(
+        snapshot,
+        build_complete_acp_files(),
+        build_valid_validation_report(),
+    )
+
+    assert readiness.overall_status == "ready_to_build"
+    assert readiness.blocking_gaps == 0
+    assert not any(item.gap_key == "cross_stage_consistency_drift" for item in readiness.gaps)
 
 
 def test_build_initial_construction_readiness_requires_answers_when_only_warning_gaps_remain() -> None:
@@ -251,4 +297,3 @@ def test_acp_questions_are_non_blocking_and_rich_in_options() -> None:
             assert opt.description != ""
             assert opt.impact != ""
             assert opt.example != ""
-

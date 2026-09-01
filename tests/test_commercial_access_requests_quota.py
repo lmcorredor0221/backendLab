@@ -6,10 +6,13 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from app.models import (
     AccessRequestCreateRequest,
     CommercialAccessRequestRecord,
+    CommercialEventRecord,
     CommercialAccessRequestStatus,
     CommercialEntitlementRecord,
     CommercialQuotaSourceKind,
     CommercialTier,
+    JourneyArtifactState,
+    JourneyStageArtifactRecord,
     JourneyStateRecord,
     JourneyStateTransitionRecord,
     SessionRecord,
@@ -55,6 +58,18 @@ def _seed_project_context(session: Session, *, email: str) -> tuple[UserRecord, 
 def test_request_access_auto_approves_when_workspace_has_available_balance() -> None:
     with _db_session() as session:
         user, record = _seed_project_context(session, email="quota-autoapprove@leanbuilder.local")
+        tools_artifact = JourneyStageArtifactRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            stage_key="tools",
+            artifact_kind="tool_recommendation",
+            version_number=1,
+            state=JourneyArtifactState.stale,
+            stale_reasons=["memory_reprocessed"],
+            proposal_payload={"summary": "Herramientas previas aprobadas"},
+        )
+        session.add(tools_artifact)
+        session.commit()
         upsert_quota_product_config(
             session,
             product_key="acp",
@@ -73,6 +88,12 @@ def test_request_access_auto_approves_when_workspace_has_available_balance() -> 
 
         access_request = session.exec(select(CommercialAccessRequestRecord)).one()
         entitlements = session.exec(select(CommercialEntitlementRecord)).all()
+        handoff_event = session.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == record.id,
+                CommercialEventRecord.event_key == "blueprint_acp_handoff_finalized",
+            )
+        ).one()
         snapshot = get_balance_snapshot(session, workspace_id=record.workspace_id, product_key="acp")
         journey_state = session.exec(select(JourneyStateRecord).where(JourneyStateRecord.session_id == record.id)).one()
         journey_events = session.exec(
@@ -85,6 +106,10 @@ def test_request_access_auto_approves_when_workspace_has_available_balance() -> 
         assert access_request.status == CommercialAccessRequestStatus.approved
         assert access_request.resolution_note == "Autoaprobada por saldo disponible del workspace."
         assert len(entitlements) == 1
+        session.refresh(tools_artifact)
+        assert tools_artifact.state == JourneyArtifactState.approved
+        assert tools_artifact.stale_reasons == []
+        assert handoff_event.metadata_payload["closed_process_items"][0]["stage_key"] == "tools"
         assert snapshot.total_available_units == 0
         assert journey_state.state_key == "acp_prep"
         assert [item.event_key for item in journey_events] == [

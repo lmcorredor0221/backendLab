@@ -235,7 +235,10 @@ def test_validation_report_tool_issues_use_generated_contract_paths() -> None:
 
     issue = next(item for item in report.issues if item.code == "tool_missing_outputs")
     assert issue.path == "ACP/tools/external/tool-build-blueprint.yaml"
+    assert issue.severity == "warning"
+    assert issue.blocking is False
     assert issue.remediation
+    assert report.can_export_zip is True
 
 
 def test_acp_preview_uses_file_statuses_for_completeness_and_hashes() -> None:
