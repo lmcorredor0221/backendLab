@@ -11,6 +11,7 @@ from collections.abc import Iterable
 
 import sqlalchemy as sa
 from alembic import op
+from alembic.runtime.migration import MigrationContext
 from sqlalchemy.dialects import postgresql
 
 
@@ -33,6 +34,9 @@ def _json_type() -> sa.types.TypeEngine:
 
 
 def _has_table(table_name: str) -> bool:
+    context = op.get_context()
+    if isinstance(context, MigrationContext) and context.as_sql:
+        return False
     return sa.inspect(op.get_bind()).has_table(table_name)
 
 
@@ -94,7 +98,7 @@ def upgrade() -> None:
             ("ix_tool_pattern_learning_candidates_promotion_status", ["promotion_status"]),
             ("ix_tool_pattern_learning_candidates_global_promotion_allowed", ["global_promotion_allowed"]),
             ("ix_tool_pattern_learning_candidates_dedupe_signature", ["dedupe_signature"]),
-            ("ix_tool_pattern_learning_candidates_replacement_global_pattern_id", ["replacement_global_pattern_id"]),
+            ("ix_tool_pattern_learning_candidates_replacement_pattern_id", ["replacement_global_pattern_id"]),
             ("ix_tool_pattern_learning_candidates_contract_quality", ["contract_quality"]),
             ("ix_tool_pattern_learning_candidates_last_seen_at", ["last_seen_at"]),
             ("ix_tool_pattern_learning_candidates_workspace_status", ["workspace_id", "promotion_status"]),
