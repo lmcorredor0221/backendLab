@@ -2,21 +2,35 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
+from app.core.config import get_settings
 from app.models import (
     CatalogItemSummary,
     CatalogSummaryEntry,
+    CommercialQuotaWorkspaceOverrideRecord,
     FeatureFlagEntry,
+    GovernancePolicyRecord,
+    PlatformRole,
+    PlatformRoleAssignmentRecord,
     RuntimeCatalogEntryRecord,
     RuntimeFeatureFlagRecord,
+    RuntimeGovernanceScopeType,
+    RuntimeSettingsAuditRecord,
     SchemaMigrationRecord,
+    UserRecord,
     WorkspaceContract,
+    WorkspaceRecord,
+    WorkspaceRuntimeSettingsRecord,
     WorkspaceSectionEntry,
+    WorkflowTemplateRecord,
+    utc_now,
 )
 from app.services.deliverable_catalog.governance_bootstrap import seed_deliverable_governance_defaults
 from app.services.stage5_service import (
+    DEFAULT_GOVERNANCE_POLICIES,
+    DEFAULT_WORKFLOW_TEMPLATES,
     FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
     FEATURE_FLAG_DELIVERABLE_CATALOG,
     FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN,
@@ -39,6 +53,7 @@ CATALOG_VERSION_CURRENT = "stage6.v3"
 FEATURE_FLAG_PRODUCT_EXPERIENCE_V2 = "product_experience_v2"
 FEATURE_FLAG_ATTENTION_V2 = "attention_v2"
 FEATURE_FLAG_REACT_RUNTIME = "react_runtime_v1"
+WORKSPACE_BASE_INHERITANCE_EVENT = "workspace_base_configuration_inherited"
 
 
 DEFAULT_FEATURE_FLAGS = [
@@ -1558,7 +1573,7 @@ def apply_workspace_bootstrap(session: Session, workspace_id: UUID) -> None:
     seed_runtime_catalogs(session)
     seed_workflow_templates(session, workspace_id=workspace_id)
     seed_governance_policies(session, workspace_id=workspace_id)
-    seed_deliverable_governance_defaults(session)
+    _seed_deliverable_governance_defaults_if_available(session)
     sync_skill_catalog(session)
     _ensure_migration(
         session,
@@ -1595,6 +1610,390 @@ def apply_workspace_bootstrap(session: Session, workspace_id: UUID) -> None:
         migration_key=MIGRATION_KEY_STAGE6,
         description="Contrato base de estimacion comparativa, catalogos gobernados y feature flag de scaffolding.",
     )
+
+
+def initialize_new_workspace_configuration(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    actor_user_id: UUID | None = None,
+) -> None:
+    """Seed a newly-created workspace from the Platform Admin workspace when available."""
+    source_workspace_id = _resolve_platform_admin_template_workspace_id(session, exclude_workspace_id=workspace_id)
+    if source_workspace_id is None:
+        apply_workspace_bootstrap(session, workspace_id)
+        return
+
+    seed_runtime_catalogs(session)
+    _seed_deliverable_governance_defaults_if_available(session)
+    sync_skill_catalog(session)
+    _inherit_runtime_feature_flags(session, source_workspace_id=source_workspace_id, target_workspace_id=workspace_id)
+    _inherit_workflow_templates(session, source_workspace_id=source_workspace_id, target_workspace_id=workspace_id)
+    _inherit_governance_policies(session, source_workspace_id=source_workspace_id, target_workspace_id=workspace_id)
+    _inherit_commercial_quota_overrides(
+        session,
+        source_workspace_id=source_workspace_id,
+        target_workspace_id=workspace_id,
+        actor_user_id=actor_user_id,
+    )
+    _inherit_workspace_runtime_settings(
+        session,
+        source_workspace_id=source_workspace_id,
+        target_workspace_id=workspace_id,
+        actor_user_id=actor_user_id,
+    )
+    _record_workspace_inheritance_audit(
+        session,
+        source_workspace_id=source_workspace_id,
+        target_workspace_id=workspace_id,
+        actor_user_id=actor_user_id,
+    )
+    _ensure_migration(
+        session,
+        migration_key=MIGRATION_KEY_STAGE0,
+        description="Base de migracion, feature flags y catalogos del workspace contract v1.",
+    )
+    _ensure_migration(
+        session,
+        migration_key=MIGRATION_KEY_STAGE1,
+        description="Paridad del blueprint: ToT, roadmap de evolucion y catalogos activos de etapa 1.",
+    )
+    _ensure_migration(
+        session,
+        migration_key=MIGRATION_KEY_STAGE2,
+        description="Runtime real de skills, catalogo persistido y trazas operativas por skill.",
+    )
+    _ensure_migration(
+        session,
+        migration_key=MIGRATION_KEY_STAGE3,
+        description="Evaluation workbench con datasets, rubricas, corridas persistidas y comparables.",
+    )
+    _ensure_migration(
+        session,
+        migration_key=MIGRATION_KEY_STAGE4,
+        description="Operacion activa con metricas, artefactos versionados, integraciones y alertas persistidas.",
+    )
+    _ensure_migration(
+        session,
+        migration_key=MIGRATION_KEY_STAGE5,
+        description="Workflow templates, handoffs, gobierno y subprocesos especializados opcionales de MVP 3.",
+    )
+    _ensure_migration(
+        session,
+        migration_key=MIGRATION_KEY_STAGE6,
+        description="Contrato base de estimacion comparativa, catalogos gobernados y feature flag de scaffolding.",
+    )
+
+
+def _resolve_platform_admin_template_workspace_id(
+    session: Session,
+    *,
+    exclude_workspace_id: UUID,
+) -> UUID | None:
+    configured_email = get_settings().local_admin_email.strip().lower()
+    query = (
+        select(UserRecord, PlatformRoleAssignmentRecord)
+        .join(PlatformRoleAssignmentRecord, PlatformRoleAssignmentRecord.user_id == UserRecord.id)
+        .where(
+            PlatformRoleAssignmentRecord.role == PlatformRole.platform_admin,
+            PlatformRoleAssignmentRecord.is_active == True,  # noqa: E712
+            UserRecord.is_active == True,  # noqa: E712
+        )
+    )
+    if configured_email:
+        query = query.where(UserRecord.email == configured_email)
+    row = session.exec(query.order_by(PlatformRoleAssignmentRecord.created_at.asc())).first()
+    if row is None and configured_email:
+        row = session.exec(
+            select(UserRecord, PlatformRoleAssignmentRecord)
+            .join(PlatformRoleAssignmentRecord, PlatformRoleAssignmentRecord.user_id == UserRecord.id)
+            .where(
+                PlatformRoleAssignmentRecord.role == PlatformRole.platform_admin,
+                PlatformRoleAssignmentRecord.is_active == True,  # noqa: E712
+                UserRecord.is_active == True,  # noqa: E712
+            )
+            .order_by(PlatformRoleAssignmentRecord.created_at.asc())
+        ).first()
+    if row is None:
+        return None
+
+    admin_user = row[0]
+    candidate_id = admin_user.default_workspace_id
+    if candidate_id is None or candidate_id == exclude_workspace_id:
+        return None
+    workspace = session.get(WorkspaceRecord, candidate_id)
+    if workspace is None or not workspace.is_active:
+        return None
+    return workspace.id
+
+
+def _inherit_runtime_feature_flags(
+    session: Session,
+    *,
+    source_workspace_id: UUID,
+    target_workspace_id: UUID,
+) -> None:
+    existing = {
+        item.flag_key
+        for item in session.exec(
+            select(RuntimeFeatureFlagRecord).where(RuntimeFeatureFlagRecord.workspace_id == target_workspace_id)
+        ).all()
+    }
+    source_rows = session.exec(
+        select(RuntimeFeatureFlagRecord)
+        .where(RuntimeFeatureFlagRecord.workspace_id == source_workspace_id)
+        .order_by(RuntimeFeatureFlagRecord.flag_key.asc())
+    ).all()
+    for row in source_rows:
+        if row.flag_key in existing:
+            continue
+        session.add(
+            RuntimeFeatureFlagRecord(
+                workspace_id=target_workspace_id,
+                flag_key=row.flag_key,
+                enabled=row.enabled,
+                description=row.description,
+                stage_hint=row.stage_hint,
+            )
+        )
+        existing.add(row.flag_key)
+
+    for payload in DEFAULT_FEATURE_FLAGS:
+        if payload["key"] in existing:
+            continue
+        session.add(
+            RuntimeFeatureFlagRecord(
+                workspace_id=target_workspace_id,
+                flag_key=payload["key"],
+                enabled=payload["enabled"],
+                description=payload["description"],
+                stage_hint=payload["stage_hint"],
+            )
+        )
+        existing.add(payload["key"])
+    session.flush()
+
+
+def _seed_deliverable_governance_defaults_if_available(session: Session) -> None:
+    try:
+        seed_deliverable_governance_defaults(session)
+    except OperationalError as exc:
+        session.rollback()
+        if "deliverable_governance_v1" not in str(exc):
+            raise
+
+
+def _inherit_workflow_templates(
+    session: Session,
+    *,
+    source_workspace_id: UUID,
+    target_workspace_id: UUID,
+) -> None:
+    existing = {
+        item.template_key
+        for item in session.exec(
+            select(WorkflowTemplateRecord).where(WorkflowTemplateRecord.workspace_id == target_workspace_id)
+        ).all()
+    }
+    source_rows = session.exec(
+        select(WorkflowTemplateRecord)
+        .where(WorkflowTemplateRecord.workspace_id == source_workspace_id)
+        .order_by(WorkflowTemplateRecord.template_key.asc())
+    ).all()
+    for row in source_rows:
+        if row.template_key in existing:
+            continue
+        session.add(
+            WorkflowTemplateRecord(
+                workspace_id=target_workspace_id,
+                template_key=row.template_key,
+                label=row.label,
+                summary=row.summary,
+                architecture_scope=list(row.architecture_scope or []),
+                supports_approvals=row.supports_approvals,
+                supports_handoffs=row.supports_handoffs,
+                workflow_profile=dict(row.workflow_profile or {}),
+                governance_hints=list(row.governance_hints or []),
+                is_active=row.is_active,
+            )
+        )
+        existing.add(row.template_key)
+
+    for payload in DEFAULT_WORKFLOW_TEMPLATES:
+        if payload["template_key"] in existing:
+            continue
+        session.add(WorkflowTemplateRecord(workspace_id=target_workspace_id, **payload))
+        existing.add(str(payload["template_key"]))
+    session.flush()
+
+
+def _inherit_governance_policies(
+    session: Session,
+    *,
+    source_workspace_id: UUID,
+    target_workspace_id: UUID,
+) -> None:
+    existing = {
+        item.policy_key
+        for item in session.exec(
+            select(GovernancePolicyRecord).where(GovernancePolicyRecord.workspace_id == target_workspace_id)
+        ).all()
+    }
+    source_rows = session.exec(
+        select(GovernancePolicyRecord)
+        .where(GovernancePolicyRecord.workspace_id == source_workspace_id)
+        .order_by(GovernancePolicyRecord.policy_key.asc())
+    ).all()
+    for row in source_rows:
+        if row.policy_key in existing:
+            continue
+        session.add(
+            GovernancePolicyRecord(
+                workspace_id=target_workspace_id,
+                policy_key=row.policy_key,
+                label=row.label,
+                summary=row.summary,
+                scope=row.scope,
+                is_active=row.is_active,
+                policy_payload=dict(row.policy_payload or {}),
+            )
+        )
+        existing.add(row.policy_key)
+
+    for payload in DEFAULT_GOVERNANCE_POLICIES:
+        if payload["policy_key"] in existing:
+            continue
+        session.add(GovernancePolicyRecord(workspace_id=target_workspace_id, **payload))
+        existing.add(str(payload["policy_key"]))
+    session.flush()
+
+
+def _active_workspace_runtime_settings(
+    session: Session,
+    *,
+    workspace_id: UUID,
+) -> WorkspaceRuntimeSettingsRecord | None:
+    return session.exec(
+        select(WorkspaceRuntimeSettingsRecord)
+        .where(
+            WorkspaceRuntimeSettingsRecord.workspace_id == workspace_id,
+            WorkspaceRuntimeSettingsRecord.is_active == True,  # noqa: E712
+        )
+        .order_by(WorkspaceRuntimeSettingsRecord.version.desc())
+    ).first()
+
+
+def _inherit_workspace_runtime_settings(
+    session: Session,
+    *,
+    source_workspace_id: UUID,
+    target_workspace_id: UUID,
+    actor_user_id: UUID | None,
+) -> None:
+    existing = _active_workspace_runtime_settings(session, workspace_id=target_workspace_id)
+    if existing is not None:
+        return
+    source = _active_workspace_runtime_settings(session, workspace_id=source_workspace_id)
+    if source is None:
+        return
+    now = utc_now()
+    session.add(
+        WorkspaceRuntimeSettingsRecord(
+            workspace_id=target_workspace_id,
+            active_provider=source.active_provider,
+            agent_execution_backend=source.agent_execution_backend,
+            knowledge_access_backend=source.knowledge_access_backend,
+            provider_overrides=dict(source.provider_overrides or {}),
+            uses_platform_credentials=source.uses_platform_credentials,
+            is_active=True,
+            version=1,
+            updated_by_user_id=actor_user_id,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    session.flush()
+
+
+def _record_workspace_inheritance_audit(
+    session: Session,
+    *,
+    source_workspace_id: UUID,
+    target_workspace_id: UUID,
+    actor_user_id: UUID | None,
+) -> None:
+    session.add(
+        RuntimeSettingsAuditRecord(
+            scope_type=RuntimeGovernanceScopeType.workspace,
+            scope_id=str(target_workspace_id),
+            change_type=WORKSPACE_BASE_INHERITANCE_EVENT,
+            before_payload_redacted={},
+            after_payload_redacted={
+                "source_workspace_id": str(source_workspace_id),
+                "target_workspace_id": str(target_workspace_id),
+                "copied": [
+                    "runtime_feature_flags",
+                    "workflow_templates",
+                    "governance_policies",
+                    "commercial_quota_workspace_overrides",
+                    "workspace_runtime_settings_if_present",
+                ],
+                "secret_policy": "provider secrets are not copied between workspaces",
+            },
+            actor_user_id=actor_user_id,
+        )
+    )
+    session.flush()
+
+
+def _inherit_commercial_quota_overrides(
+    session: Session,
+    *,
+    source_workspace_id: UUID,
+    target_workspace_id: UUID,
+    actor_user_id: UUID | None,
+) -> None:
+    existing = {
+        item.product_key
+        for item in session.exec(
+            select(CommercialQuotaWorkspaceOverrideRecord).where(
+                CommercialQuotaWorkspaceOverrideRecord.workspace_id == target_workspace_id
+            )
+        ).all()
+    }
+    source_rows = session.exec(
+        select(CommercialQuotaWorkspaceOverrideRecord)
+        .where(CommercialQuotaWorkspaceOverrideRecord.workspace_id == source_workspace_id)
+        .order_by(CommercialQuotaWorkspaceOverrideRecord.product_key.asc())
+    ).all()
+    now = utc_now()
+    for row in source_rows:
+        if row.product_key in existing:
+            continue
+        session.add(
+            CommercialQuotaWorkspaceOverrideRecord(
+                workspace_id=target_workspace_id,
+                product_key=row.product_key,
+                is_active=row.is_active,
+                enabled_override=row.enabled_override,
+                free_units_override=row.free_units_override,
+                consumption_priority_override=list(row.consumption_priority_override or []),
+                checkout_required_on_zero_balance_override=row.checkout_required_on_zero_balance_override,
+                fifo_auto_approval_enabled_override=row.fifo_auto_approval_enabled_override,
+                default_blocked_request_ttl_hours_override=row.default_blocked_request_ttl_hours_override,
+                default_checkout_ttl_minutes_override=row.default_checkout_ttl_minutes_override,
+                debt_enabled_override=row.debt_enabled_override,
+                effective_from=row.effective_from,
+                effective_to=row.effective_to,
+                notes=row.notes,
+                updated_by_user_id=actor_user_id,
+                metadata_payload=dict(row.metadata_payload or {}),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        existing.add(row.product_key)
+    session.flush()
 
 
 def _ensure_migration(session: Session, *, migration_key: str, description: str) -> None:

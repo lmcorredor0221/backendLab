@@ -126,8 +126,14 @@ def ensure_personal_workspace(session: Session, user: UserRecord, default_name: 
     user.updated_at = utc_now()
     session.add(user)
     from app.services.commercial_quota_service import initialize_workspace_commercial_quota
+    from app.services.workspace_bootstrap import initialize_new_workspace_configuration
 
     initialize_workspace_commercial_quota(
+        session,
+        workspace_id=workspace.id,
+        actor_user_id=user.id,
+    )
+    initialize_new_workspace_configuration(
         session,
         workspace_id=workspace.id,
         actor_user_id=user.id,
