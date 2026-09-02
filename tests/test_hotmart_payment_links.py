@@ -290,6 +290,46 @@ def test_hotmart_payment_link_error_keeps_order_pending_and_records_failed_attem
     assert failed.response_payload_redacted["client_secret"] == "[redacted]"
 
 
+def test_hotmart_oauth_error_keeps_order_pending_and_records_failed_attempt(db_session: Session) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_hotmart(db_session, workspace)
+    order = _create_hotmart_order(db_session, record, user)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/security/oauth/token"
+        return httpx.Response(
+            401,
+            json={
+                "error": "unauthorized_client",
+                "error_description": "The user does not have permission to continue with this request.",
+                "client_secret": "must-redact",
+            },
+        )
+
+    with pytest.raises(HotmartPaymentLinkError) as exc_info:
+        create_hotmart_payment_link_for_order(
+            db_session,
+            workspace_id=workspace.id,
+            payload=HotmartPaymentLinkCreateRequest(
+                order_id=order.id,
+                environment="sandbox",
+                callback_url="https://example.test/hotmart/webhook",
+            ),
+            transport=httpx.MockTransport(handler),
+        )
+    db_session.commit()
+
+    refreshed_order = db_session.get(CommercialOrderRecord, order.id)
+    failed = db_session.exec(select(HotmartPaymentLinkRecord)).one()
+    assert exc_info.value.code == "oauth_rejected"
+    assert exc_info.value.http_status == 401
+    assert refreshed_order is not None
+    assert refreshed_order.status == CommercialOrderStatus.pending
+    assert failed.activation_status == "failed"
+    assert failed.response_payload_redacted["error"] == "unauthorized_client"
+    assert failed.response_payload_redacted["client_secret"] == "[redacted]"
+
+
 def test_refresh_hotmart_payment_link_marks_available_link_active(db_session: Session) -> None:
     user, workspace, record = _seed_checkout_context(db_session)
     _configure_hotmart(db_session, workspace)

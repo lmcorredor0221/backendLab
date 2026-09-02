@@ -23,7 +23,12 @@ from app.models import (
     utc_now,
 )
 from app.services.commerce_service import ensure_order_commercial_snapshot, get_price, record_commercial_event
-from app.services.hotmart.auth import HotmartAuthClient, default_hotmart_api_base_url, normalize_hotmart_environment
+from app.services.hotmart.auth import (
+    HotmartAuthClient,
+    HotmartAuthError,
+    default_hotmart_api_base_url,
+    normalize_hotmart_environment,
+)
 from app.services.hotmart.redaction import redact_payload
 from app.services.hotmart.secrets import build_hotmart_status, load_hotmart_credentials
 
@@ -504,7 +509,7 @@ def create_hotmart_payment_link_for_order(
             transport=transport,
         ).fetch_access_token(credentials)
         api_result = api_client.create_payment_link(access_token=token.access_token, payload=request_payload)
-    except HotmartPaymentLinkError as exc:
+    except (HotmartAuthError, HotmartPaymentLinkError) as exc:
         failed = HotmartPaymentLinkRecord(
             workspace_id=workspace_id,
             order_id=order.id,
@@ -529,7 +534,14 @@ def create_hotmart_payment_link_for_order(
         )
         session.add(failed)
         session.flush()
-        raise
+        if isinstance(exc, HotmartPaymentLinkError):
+            raise
+        raise HotmartPaymentLinkError(
+            exc.code,
+            str(exc),
+            http_status=exc.http_status,
+            payload=exc.payload,
+        ) from exc
 
     link = HotmartPaymentLinkRecord(
         workspace_id=workspace_id,
