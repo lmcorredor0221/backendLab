@@ -7,6 +7,7 @@ Create Date: 2026-09-02 00:00:00.000000
 """
 from __future__ import annotations
 
+import sqlalchemy as sa
 from alembic import op
 
 
@@ -86,8 +87,32 @@ def _quoted_columns(columns: tuple[str, ...]) -> str:
     return ", ".join(f'"{column}"' for column in columns)
 
 
+def _can_create_index(table_name: str) -> bool:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return True
+
+    result = bind.execute(
+        sa.text(
+            """
+            select pg_catalog.pg_get_userbyid(c.relowner) = current_user
+            from pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = current_schema()
+              and c.relname = :table_name
+              and c.relkind in ('r', 'p')
+            limit 1
+            """
+        ),
+        {"table_name": table_name},
+    ).scalar()
+    return bool(result)
+
+
 def upgrade() -> None:
     for index_name, table_name, columns in INDEXES:
+        if not _can_create_index(table_name):
+            continue
         op.execute(
             f'CREATE INDEX IF NOT EXISTS "{index_name}" '
             f'ON "{table_name}" ({_quoted_columns(columns)})'

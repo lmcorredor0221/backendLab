@@ -28,8 +28,21 @@ def _has_table(table_name: str) -> bool:
     return sa.inspect(op.get_bind()).has_table(table_name)
 
 
+def _can_create_table() -> bool:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return True
+    return bool(
+        bind.execute(
+            sa.text("select has_schema_privilege(current_user, current_schema(), 'CREATE')")
+        ).scalar()
+    )
+
+
 def upgrade() -> None:
     if _has_table("platform_provider_secrets"):
+        return
+    if not _can_create_table():
         return
 
     uuid = _uuid_type()

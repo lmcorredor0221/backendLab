@@ -5,6 +5,8 @@ import hashlib
 from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import inspect
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 try:
@@ -89,12 +91,21 @@ def _supports_platform_managed_credentials(session: Session, provider_key: LLMPr
     return provider_record.supports_platform_managed_credentials
 
 
+def _platform_secret_storage_available(session: Session) -> bool:
+    try:
+        return inspect(session.connection()).has_table("platform_provider_secrets")
+    except SQLAlchemyError:
+        return False
+
+
 def _platform_secret_record(
     session: Session,
     provider_key: LLMProviderKey,
     *,
     secret_kind: str = "api_key",
 ) -> PlatformProviderSecretRecord | None:
+    if not _platform_secret_storage_available(session):
+        return None
     return session.exec(
         select(PlatformProviderSecretRecord).where(
             PlatformProviderSecretRecord.provider_key == provider_key,
@@ -517,6 +528,11 @@ def upsert_platform_provider_secret(
     rotate: bool = False,
 ) -> PlatformProviderSecretResponse:
     backfill_platform_runtime_governance(session)
+    if not _platform_secret_storage_available(session):
+        raise ValueError(
+            "El almacenamiento global de secretos no esta disponible en esta base de datos. "
+            "Usa secretos por workspace o ejecuta migraciones con un usuario owner."
+        )
     if not _supports_platform_managed_credentials(session, provider_key):
         raise ValueError(f"El provider {provider_key.value} no soporta credenciales administradas por plataforma.")
 
@@ -582,6 +598,11 @@ def delete_platform_provider_secret(
     actor_user_id: UUID | None = None,
 ) -> PlatformProviderSecretResponse:
     backfill_platform_runtime_governance(session)
+    if not _platform_secret_storage_available(session):
+        raise ValueError(
+            "El almacenamiento global de secretos no esta disponible en esta base de datos. "
+            "Usa secretos por workspace o ejecuta migraciones con un usuario owner."
+        )
     before_view = build_platform_provider_secret_view(session, provider_key)
     record = _platform_secret_record(session, provider_key)
     if record is None:
