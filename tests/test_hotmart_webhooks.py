@@ -686,6 +686,47 @@ def test_hotmart_webhook_rejects_invalid_hottok_and_records_redacted_event(db_se
     assert db_session.exec(select(CommercialEntitlementRecord)).all() == []
 
 
+def test_hotmart_duplicate_webhook_revalidates_hottok_and_records_retry_diagnostics(db_session: Session) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_hottok(db_session, workspace)
+    order = _create_hotmart_order(db_session, record, user, "duplicate-invalid-token")
+    payload = _approved_payload(order, event_id="evt-duplicate-invalid-token", transaction="HP126-DUP")
+
+    process_hotmart_webhook(
+        db_session,
+        payload=payload,
+        hottok_header="hottok-value",
+        environment="sandbox",
+    )
+    db_session.commit()
+
+    with pytest.raises(PermissionError):
+        process_hotmart_webhook(
+            db_session,
+            payload=payload,
+            hottok_header="wrong-token",
+            request_headers={
+                "X-HOTMART-HOTTOK": "wrong-token",
+                "User-Agent": "Hotmart retry test",
+            },
+            environment="sandbox",
+        )
+    db_session.commit()
+
+    event = db_session.exec(select(HotmartWebhookEventRecord)).one()
+    retry_diagnostics = event.payload_redacted["_lab_last_duplicate_request_diagnostics"]
+    assert event.retries == 1
+    assert event.processing_status == "rejected"
+    assert event.error_code == "invalid_hottok"
+    assert retry_diagnostics["headers_redacted"]["X-HOTMART-HOTTOK"] == "[redacted]"
+    assert retry_diagnostics["headers_redacted"]["User-Agent"] == "Hotmart retry test"
+    assert retry_diagnostics["hottok_header_present"] is True
+    assert retry_diagnostics["hottok_header_length"] == len("wrong-token")
+    assert "wrong-token" not in str(event.payload_redacted)
+    assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1
+    assert len(db_session.exec(select(CommercialEntitlementRecord)).all()) == 1
+
+
 def test_hotmart_webhook_conflict_opens_reconciliation_issue_without_duplicate_credit(db_session: Session) -> None:
     user, workspace, record = _seed_checkout_context(db_session)
     _configure_hottok(db_session, workspace)
@@ -705,6 +746,7 @@ def test_hotmart_webhook_conflict_opens_reconciliation_issue_without_duplicate_c
         db_session,
         payload=conflicting_payload,
         hottok_header="hottok-value",
+        request_headers={"X-HOTMART-HOTTOK": "hottok-value"},
         environment="sandbox",
     )
     db_session.commit()
@@ -715,4 +757,5 @@ def test_hotmart_webhook_conflict_opens_reconciliation_issue_without_duplicate_c
     assert conflicting.duplicate is True
     assert issue.issue_type == "webhook_payload_conflict"
     assert event.retries == 1
+    assert event.payload_redacted["_lab_last_duplicate_request_diagnostics"]["hottok_header_present"] is True
     assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1

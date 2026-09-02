@@ -69,6 +69,31 @@ def process_hotmart_webhook(
     if existing_event is not None:
         pending_activation = _pending_activation_for_event(session, existing_event.id)
         existing_event.retries += 1
+        retry_workspace_id = existing_event.workspace_id
+        if retry_workspace_id is None:
+            retry_order = _resolve_order(session, payload=payload, transaction=transaction)
+            retry_workspace_id = retry_order.workspace_id if retry_order is not None else _fallback_workspace_id(session, environment=env)
+        retry_hottok_validated = _validate_hottok(
+            session,
+            workspace_id=retry_workspace_id,
+            environment=env,
+            hottok_header=hottok_header,
+        )
+        _attach_request_diagnostics(
+            existing_event,
+            request_headers=request_headers,
+            hottok_header=hottok_header,
+            payload_hash=payload_hash,
+        )
+        existing_event.hottok_validated = existing_event.hottok_validated or retry_hottok_validated
+        if not retry_hottok_validated:
+            existing_event.processing_status = "rejected"
+            existing_event.error_code = "invalid_hottok"
+            existing_event.error_message = "Invalid or missing X-HOTMART-HOTTOK."
+            existing_event.processed_at = utc_now()
+            session.add(existing_event)
+            session.flush()
+            raise PermissionError("Invalid Hotmart webhook token.")
         if existing_event.payload_hash != payload_hash:
             existing_event.processing_status = "observed"
             existing_event.error_code = "payload_conflict"
@@ -501,6 +526,22 @@ def _request_diagnostics(
         if provided
         else "",
     }
+
+
+def _attach_request_diagnostics(
+    event: HotmartWebhookEventRecord,
+    *,
+    request_headers: dict[str, str] | None,
+    hottok_header: str,
+    payload_hash: str,
+) -> None:
+    diagnostics = _request_diagnostics(request_headers=request_headers, hottok_header=hottok_header)
+    if not diagnostics:
+        return
+    payload_redacted = dict(event.payload_redacted or {})
+    payload_redacted["_lab_last_duplicate_request_diagnostics"] = diagnostics
+    payload_redacted["_lab_last_duplicate_payload_hash"] = payload_hash
+    event.payload_redacted = payload_redacted
 
 
 def _resolve_order(
