@@ -29,6 +29,7 @@ async def receive_hotmart_webhook_route(
             db,
             payload=payload,
             hottok_header=x_hotmart_hottok,
+            request_headers=dict(request.headers),
             environment=environment,
         )
     except PermissionError as exc:
@@ -39,4 +40,3 @@ async def receive_hotmart_webhook_route(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     db.commit()
     return response
-

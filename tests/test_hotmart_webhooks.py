@@ -663,6 +663,10 @@ def test_hotmart_webhook_rejects_invalid_hottok_and_records_redacted_event(db_se
             db_session,
             payload=payload,
             hottok_header="wrong-token",
+            request_headers={
+                "X-HOTMART-HOTTOK": "wrong-token",
+                "User-Agent": "Hotmart webhook test",
+            },
             environment="sandbox",
         )
     db_session.commit()
@@ -671,6 +675,13 @@ def test_hotmart_webhook_rejects_invalid_hottok_and_records_redacted_event(db_se
     assert event.processing_status == "rejected"
     assert event.hottok_validated is False
     assert event.payload_redacted["data"]["purchase"]["client_secret"] == "[redacted]"
+    diagnostics = event.payload_redacted["_lab_request_diagnostics"]
+    assert diagnostics["headers_redacted"]["X-HOTMART-HOTTOK"] == "[redacted]"
+    assert diagnostics["headers_redacted"]["User-Agent"] == "Hotmart webhook test"
+    assert diagnostics["hottok_header_present"] is True
+    assert diagnostics["hottok_header_length"] == len("wrong-token")
+    assert diagnostics["hottok_header_sha256_prefix"]
+    assert "wrong-token" not in str(event.payload_redacted)
     assert db_session.exec(select(CommercialPaymentRecord)).all() == []
     assert db_session.exec(select(CommercialEntitlementRecord)).all() == []
 

@@ -35,7 +35,7 @@ from app.services.commerce_service import (
 )
 from app.services.hotmart.auth import normalize_hotmart_environment
 from app.services.hotmart.pending_activations import register_pending_hotmart_activation
-from app.services.hotmart.redaction import redact_payload
+from app.services.hotmart.redaction import redact_headers, redact_payload
 from app.services.hotmart.secrets import load_hotmart_hottok
 
 
@@ -51,6 +51,7 @@ def process_hotmart_webhook(
     *,
     payload: dict[str, Any],
     hottok_header: str,
+    request_headers: dict[str, str] | None = None,
     environment: str = "sandbox",
 ) -> HotmartWebhookIngestResponse:
     env = normalize_hotmart_environment(environment)
@@ -131,6 +132,13 @@ def process_hotmart_webhook(
         environment=env,
         hottok_header=hottok_header,
     )
+    payload_redacted = redact_payload(payload)
+    diagnostics = _request_diagnostics(
+        request_headers=request_headers,
+        hottok_header=hottok_header,
+    )
+    if diagnostics:
+        payload_redacted["_lab_request_diagnostics"] = diagnostics
     webhook_event = HotmartWebhookEventRecord(
         event_id=event_id,
         event_type=event_type,
@@ -140,7 +148,7 @@ def process_hotmart_webhook(
         hottok_validated=hottok_validated,
         processing_status="received",
         payload_hash=payload_hash,
-        payload_redacted=redact_payload(payload),
+        payload_redacted=payload_redacted,
     )
     session.add(webhook_event)
     session.flush()
@@ -473,6 +481,26 @@ def _validate_hottok(
         if normalize_hotmart_environment(settings.hotmart_environment) == environment:
             expected = settings.hotmart_hottok.strip()
     return bool(expected and hmac.compare_digest(provided, expected))
+
+
+def _request_diagnostics(
+    *,
+    request_headers: dict[str, str] | None,
+    hottok_header: str,
+) -> dict[str, Any]:
+    if request_headers is None:
+        return {}
+    normalized_headers = {str(key): str(value) for key, value in request_headers.items()}
+    provided = (hottok_header or "").strip()
+    return {
+        "headers_redacted": redact_headers(normalized_headers),
+        "header_names": sorted(normalized_headers.keys(), key=str.lower),
+        "hottok_header_present": bool(provided),
+        "hottok_header_length": len(provided),
+        "hottok_header_sha256_prefix": hashlib.sha256(provided.encode("utf-8")).hexdigest()[:12]
+        if provided
+        else "",
+    }
 
 
 def _resolve_order(
