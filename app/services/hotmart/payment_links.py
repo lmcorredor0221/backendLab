@@ -352,7 +352,7 @@ def _build_payment_link_payload(
     link_name = payload.link_name.strip() or f"{product_key}-{order.checkout_ref}"
     target_currency = (mapping.currency or str(snapshot.get("checkout_currency") or order.currency) or "USD").upper()
     value, normalized_amount_cents, trm_applied = _resolve_checkout_value(snapshot=snapshot, order=order, target_currency=target_currency)
-    return {
+    request_payload: dict[str, Any] = {
         "name": link_name[:120],
         "value": value,
         "currency": target_currency,
@@ -360,6 +360,18 @@ def _build_payment_link_payload(
             "link_callback_url": callback_url,
         },
     }
+    product_ref: dict[str, str] = {}
+    if mapping.hotmart_product_id.strip():
+        product_ref["id"] = mapping.hotmart_product_id.strip()
+    if mapping.hotmart_product_ucode.strip():
+        product_ref["ucode"] = mapping.hotmart_product_ucode.strip()
+    if product_ref:
+        request_payload["product"] = product_ref
+    if mapping.offer_code.strip():
+        request_payload["offer"] = {"code": mapping.offer_code.strip()}
+    if mapping.plan_code.strip():
+        request_payload["plan"] = {"code": mapping.plan_code.strip()}
+    return request_payload
 
 
 def _existing_payment_link(
@@ -497,6 +509,7 @@ def create_hotmart_payment_link_for_order(
             workspace_id=workspace_id,
             order_id=order.id,
             created_by_user_id=order.buyer_user_id,
+            environment=env,
             internal_product_key=product_key,
             hotmart_payment_link_id=f"failed_{order.checkout_ref}",
             provider_ref=f"failed:{order.checkout_ref}",
@@ -522,6 +535,7 @@ def create_hotmart_payment_link_for_order(
         workspace_id=workspace_id,
         order_id=order.id,
         created_by_user_id=order.buyer_user_id,
+        environment=env,
         internal_product_key=product_key,
         hotmart_payment_link_id=api_result.provider_ref,
         provider_ref=api_result.provider_ref,

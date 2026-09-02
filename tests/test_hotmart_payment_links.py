@@ -130,6 +130,7 @@ def test_create_hotmart_payment_link_from_mapped_pending_order(db_session: Sessi
         assert payload["value"] == order.total_cents / 100
         assert payload["currency"] == "USD"
         assert payload["link_configuration"]["link_callback_url"] == "https://example.test/hotmart/webhook"
+        assert payload["product"] == {"ucode": "hotmart-product-ucode"}
         return httpx.Response(
             201,
             json={
@@ -203,6 +204,59 @@ def test_create_hotmart_payment_link_uses_platform_integration_scope(db_session:
     assert response.checkout_url == "https://pay.hotmart.test/platform-link-1"
 
 
+def test_create_hotmart_payment_link_includes_product_offer_and_environment(db_session: Session) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    upsert_hotmart_credentials(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartCredentialUpsertRequest(
+            environment="production",
+            enabled=True,
+            client_id="client-id-value",
+            client_secret="client-secret-value",
+            basic_token="basic-token-value",
+        ),
+    )
+    upsert_hotmart_product_mapping(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartProductMappingUpsertRequest(
+            environment="production",
+            internal_product_key="blueprint_pro",
+            hotmart_product_id="8322629",
+            offer_code="nb6j5s6j",
+            currency="USD",
+        ),
+    )
+    db_session.commit()
+    order = _create_hotmart_order(db_session, record, user)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/oauth/token":
+            return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["product"] == {"id": "8322629"}
+        assert payload["offer"] == {"code": "nb6j5s6j"}
+        assert "plan" not in payload
+        return httpx.Response(201, json={"ucode": "pl-prod-123", "url": "https://pay.hotmart.test/pl-prod-123"})
+
+    response = create_hotmart_payment_link_for_order(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartPaymentLinkCreateRequest(
+            order_id=order.id,
+            environment="production",
+            callback_url="https://example.test/hotmart/webhook",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    db_session.commit()
+
+    stored = db_session.exec(select(HotmartPaymentLinkRecord)).one()
+    assert response.checkout_url == "https://pay.hotmart.test/pl-prod-123"
+    assert stored.environment == "production"
+
+
 def test_hotmart_payment_link_error_keeps_order_pending_and_records_failed_attempt(db_session: Session) -> None:
     user, workspace, record = _seed_checkout_context(db_session)
     _configure_hotmart(db_session, workspace)
@@ -231,6 +285,7 @@ def test_hotmart_payment_link_error_keeps_order_pending_and_records_failed_attem
     assert refreshed_order is not None
     assert refreshed_order.status == CommercialOrderStatus.pending
     assert refreshed_order.checkout_url == ""
+    assert failed.environment == "sandbox"
     assert failed.activation_status == "failed"
     assert failed.response_payload_redacted["client_secret"] == "[redacted]"
 
