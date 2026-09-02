@@ -134,7 +134,7 @@ def test_llm_finops_routes_require_platform_admin(client: TestClient) -> None:
     assert response.json()["detail"] == "Solo un platform admin puede ejecutar esta accion."
 
 
-def test_llm_finops_summary_is_scoped_to_active_workspace(client: TestClient) -> None:
+def test_llm_finops_summary_is_global_for_platform_admin(client: TestClient) -> None:
     headers = auth_headers(client)
     workspace_id = UUID(active_workspace_id(client, headers))
     seed_usage_record(
@@ -160,9 +160,9 @@ def test_llm_finops_summary_is_scoped_to_active_workspace(client: TestClient) ->
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["call_count"] == 1
-    assert payload["cost_total"] == 2.0
-    assert payload["total_tokens"] == 1000
+    assert payload["call_count"] == 2
+    assert payload["cost_total"] == 101.0
+    assert payload["total_tokens"] == 10000
 
 
 def test_llm_finops_usage_filters_and_breakdowns(client: TestClient) -> None:
@@ -202,7 +202,7 @@ def test_llm_finops_usage_filters_and_breakdowns(client: TestClient) -> None:
     assert provider_response.json()["items"][0]["provider_key"] == "openai"
 
 
-def test_llm_finops_timeseries_is_scoped_and_bucketed(client: TestClient) -> None:
+def test_llm_finops_timeseries_is_global_and_bucketed(client: TestClient) -> None:
     headers = auth_headers(client)
     workspace_id = UUID(active_workspace_id(client, headers))
     seed_usage_record(
@@ -243,5 +243,5 @@ def test_llm_finops_timeseries_is_scoped_and_bucketed(client: TestClient) -> Non
     payload = response.json()
     assert payload["count"] == 2
     assert payload["items"][0]["cost_total"] == 3.0
-    assert payload["items"][1]["cost_total"] == 2.0
+    assert payload["items"][1]["cost_total"] == 101.0
     assert payload["items"][1]["error_count"] == 1

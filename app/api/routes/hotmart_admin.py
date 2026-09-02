@@ -121,7 +121,7 @@ from app.services.hotmart.sync import (
 )
 from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
-from app.services.workspace_bootstrap import apply_workspace_bootstrap
+from app.services.workspace_bootstrap import apply_workspace_bootstrap, resolve_platform_admin_template_workspace_id
 
 
 router = APIRouter(prefix="/admin/integrations/hotmart", tags=["hotmart-admin"])
@@ -135,9 +135,10 @@ def get_hotmart_status_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartIntegrationStatusResponse:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return build_hotmart_status(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
 
@@ -150,11 +151,12 @@ def upsert_hotmart_credentials_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartIntegrationStatusResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = upsert_hotmart_credentials(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             payload=payload,
             actor_user_id=current_user.id,
         )
@@ -172,9 +174,10 @@ def list_hotmart_mappings_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartProductMappingResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_product_mappings(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
 
@@ -187,11 +190,12 @@ def upsert_hotmart_mapping_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartProductMappingResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = upsert_hotmart_product_mapping(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             payload=payload,
         )
     except ValueError as exc:
@@ -202,12 +206,13 @@ def upsert_hotmart_mapping_route(
 
 @router.get("/payment-links", response_model=list[HotmartPaymentLinkResponse])
 def list_hotmart_payment_links_route(
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartPaymentLinkResponse]:
     _ensure_platform_admin_or_403(db, current_user)
-    return list_hotmart_payment_links(db, workspace_id=workspace_context.workspace.id)
+    return list_hotmart_payment_links(db, workspace_id=workspace_context.workspace.id, limit=limit)
 
 
 @router.post("/payment-links", response_model=HotmartPaymentLinkResponse)
@@ -218,12 +223,14 @@ def create_hotmart_payment_link_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPaymentLinkResponse:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = create_hotmart_payment_link_for_order(
             db,
             workspace_id=workspace_context.workspace.id,
             payload=payload,
+            integration_workspace_id=platform_workspace_id,
         )
     except HotmartPaymentLinkError as exc:
         db.commit()
@@ -243,6 +250,7 @@ def refresh_hotmart_payment_link_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPaymentLinkResponse:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
     try:
         response = refresh_hotmart_payment_link(
@@ -250,6 +258,7 @@ def refresh_hotmart_payment_link_route(
             workspace_id=workspace_context.workspace.id,
             payment_link_id=payment_link_id,
             environment=environment,
+            integration_workspace_id=platform_workspace_id,
         )
     except HotmartPaymentLinkError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
@@ -262,15 +271,18 @@ def refresh_hotmart_payment_link_route(
 @router.get("/coupons", response_model=list[HotmartPromotionResponse])
 def list_hotmart_coupon_promotions_route(
     environment: str = Query(default="sandbox"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartPromotionResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_promotions(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
+        limit=limit,
     )
 
 
@@ -282,9 +294,10 @@ def get_hotmart_coupon_metrics_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPromotionMetricsResponse:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return build_hotmart_promotion_metrics(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
 
@@ -297,11 +310,12 @@ def create_hotmart_coupon_promotion_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPromotionResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = create_hotmart_coupon_promotion(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             payload=payload,
             actor_user_id=current_user.id,
         )
@@ -323,11 +337,12 @@ def delete_hotmart_coupon_promotion_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartPromotionDeleteResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = delete_hotmart_coupon_promotion(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             coupon_ref=coupon_ref,
             environment=environment,
             actor_user_id=current_user.id,
@@ -348,11 +363,12 @@ def run_hotmart_manual_sync_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartSyncRunResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = run_hotmart_manual_sync(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             payload=payload,
             actor_user_id=current_user.id,
         )
@@ -371,16 +387,19 @@ def run_hotmart_manual_sync_route(
 def list_hotmart_sync_runs_route(
     environment: str = Query(default="sandbox"),
     resource: str = Query(default=""),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartSyncRunResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_sync_runs(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
         resource=resource,
+        limit=limit,
     )
 
 
@@ -392,9 +411,10 @@ def list_hotmart_sync_cursors_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartSyncCursorResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_sync_cursors(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
 
@@ -403,16 +423,19 @@ def list_hotmart_sync_cursors_route(
 def list_hotmart_reconciliation_issues_route(
     environment: str = Query(default="sandbox"),
     status_filter: str = Query(default="open", alias="status"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartReconciliationIssueResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_reconciliation_issues(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
         status=status_filter,
+        limit=limit,
     )
 
 
@@ -420,6 +443,7 @@ def list_hotmart_reconciliation_issues_route(
 def list_hotmart_pending_activations_route(
     workspace_id: UUID | None = Query(default=None),
     status_filter: str = Query(default="pending_activation", alias="status"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> list[HotmartPendingActivationResponse]:
@@ -428,6 +452,7 @@ def list_hotmart_pending_activations_route(
         db,
         source_workspace_id=workspace_id,
         status_filter=status_filter,
+        limit=limit,
     )
 
 
@@ -440,11 +465,12 @@ def resolve_hotmart_reconciliation_issue_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartReconciliationIssueResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = resolve_hotmart_reconciliation_issue(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             issue_id=issue_id,
             payload=payload,
             actor_user_id=current_user.id,
@@ -464,11 +490,12 @@ def replay_hotmart_webhook_event_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartWebhookReplayResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = replay_hotmart_webhook_event(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             event_ref=event_ref,
             environment=environment,
             actor_user_id=current_user.id,
@@ -487,9 +514,10 @@ def get_hotmart_club_overview_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartClubOverviewResponse:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return get_hotmart_club_overview(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
 
@@ -502,11 +530,12 @@ def sync_hotmart_club_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartSyncRunResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     try:
         response = sync_hotmart_club(
             db,
-            workspace_id=workspace_context.workspace.id,
+            workspace_id=platform_workspace_id,
             payload=payload,
             actor_user_id=current_user.id,
         )
@@ -524,60 +553,72 @@ def sync_hotmart_club_route(
 @router.get("/club/modules", response_model=list[HotmartClubModuleResponse])
 def list_hotmart_club_modules_route(
     environment: str = Query(default="sandbox"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubModuleResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_club_modules(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
+        limit=limit,
     )
 
 
 @router.get("/club/pages", response_model=list[HotmartClubPageResponse])
 def list_hotmart_club_pages_route(
     environment: str = Query(default="sandbox"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubPageResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_club_pages(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
+        limit=limit,
     )
 
 
 @router.get("/club/students", response_model=list[HotmartClubStudentResponse])
 def list_hotmart_club_students_route(
     environment: str = Query(default="sandbox"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubStudentResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_club_students(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
+        limit=limit,
     )
 
 
 @router.get("/club/progress", response_model=list[HotmartClubProgressResponse])
 def list_hotmart_club_progress_route(
     environment: str = Query(default="sandbox"),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartClubProgressResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_club_progress(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
+        limit=limit,
     )
 
 
@@ -589,9 +630,10 @@ def get_hotmart_release_readiness_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartReleaseReadinessResponse:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return build_hotmart_release_readiness(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
 
@@ -604,9 +646,10 @@ def list_hotmart_operational_alerts_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> list[HotmartOperationalAlertResponse]:
     _ensure_platform_admin_or_403(db, current_user)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
     return list_hotmart_operational_alerts(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
 
@@ -629,10 +672,11 @@ def test_hotmart_connection_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> HotmartTestConnectionResponse:
     _ensure_platform_admin_or_403(db, current_user)
-    apply_workspace_bootstrap(db, workspace_context.workspace.id)
+    platform_workspace_id = _hotmart_platform_workspace_id(db, current_user, workspace_context)
+    apply_workspace_bootstrap(db, platform_workspace_id)
     response = test_hotmart_connection(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=platform_workspace_id,
         environment=environment,
     )
     db.commit()
@@ -644,6 +688,20 @@ def _ensure_platform_admin_or_403(db: Session, current_user: UserRecord) -> None
         ensure_platform_admin(db, current_user)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+def _hotmart_platform_workspace_id(
+    db: Session,
+    current_user: UserRecord,
+    workspace_context: WorkspaceAccessContext,
+) -> UUID:
+    """Resolve the single platform scope used to store Hotmart configuration."""
+    platform_workspace_id = resolve_platform_admin_template_workspace_id(db)
+    if platform_workspace_id is not None:
+        return platform_workspace_id
+    if current_user.default_workspace_id is not None:
+        return current_user.default_workspace_id
+    return workspace_context.workspace.id
 
 
 def _serialize_quota_product_config(record) -> CommercialQuotaProductConfigResponse:
@@ -949,6 +1007,7 @@ def get_commercial_balance_snapshot_route(
 def list_commercial_balance_ledger_route(
     product_key: str,
     workspace_id: UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
@@ -957,7 +1016,7 @@ def list_commercial_balance_ledger_route(
     target_workspace_id = workspace_id or workspace_context.workspace.id
     return [
         _serialize_balance_ledger_entry(item)
-        for item in list_balance_ledger(db, workspace_id=target_workspace_id, product_key=product_key)
+        for item in list_balance_ledger(db, workspace_id=target_workspace_id, product_key=product_key, limit=limit)
     ]
 
 
@@ -1008,6 +1067,7 @@ def list_commercial_debts_route(
     status: str = Query(default="open"),
     product_key: str = Query(default=""),
     workspace_id: UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
@@ -1019,6 +1079,7 @@ def list_commercial_debts_route(
         workspace_id=target_workspace_id,
         status=status,
         product_key=product_key,
+        limit=limit,
     )
 
 
@@ -1049,6 +1110,7 @@ def list_commercial_legacy_package_resolutions_route(
     status_filter: str = Query(default="pending", alias="status"),
     product_key: str = Query(default=""),
     workspace_id: UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
@@ -1060,6 +1122,7 @@ def list_commercial_legacy_package_resolutions_route(
         workspace_id=target_workspace_id,
         status_filter=status_filter,
         product_key=product_key,
+        limit=limit,
     )
 
 

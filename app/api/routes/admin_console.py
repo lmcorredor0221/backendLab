@@ -66,6 +66,7 @@ def get_admin_overview_route(
         workspace=workspace_context.workspace,
         filters=_filters(
             workspace_context=workspace_context,
+            platform_scope=True,
             started_from=started_from,
             started_to=started_to,
             user_id=user_id,
@@ -95,6 +96,7 @@ def get_admin_projects_analytics_route(
         db,
         filters=_filters(
             workspace_context=workspace_context,
+            platform_scope=True,
             started_from=started_from,
             started_to=started_to,
             user_id=user_id,
@@ -342,6 +344,7 @@ def _ensure_admin(
 def _filters(
     *,
     workspace_context: WorkspaceAccessContext,
+    platform_scope: bool = False,
     started_from: datetime | None = None,
     started_to: datetime | None = None,
     user_id: UUID | None = None,
@@ -352,7 +355,7 @@ def _filters(
     granularity: str = "day",
 ) -> AdminAnalyticsFilters:
     return AdminAnalyticsFilters(
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=None if platform_scope else workspace_context.workspace.id,
         started_from=started_from,
         started_to=started_to,
         user_id=user_id,

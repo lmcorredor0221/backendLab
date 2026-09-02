@@ -223,7 +223,7 @@ def seed_external_workspace(client: TestClient) -> tuple[UUID, UUID, str]:
         return workspace.id, viewer.id, viewer.email
 
 
-def test_admin_overview_uses_real_scoped_sources_and_exposes_uninstrumented_states(client: TestClient) -> None:
+def test_admin_overview_uses_real_platform_sources_and_exposes_uninstrumented_states(client: TestClient) -> None:
     headers = auth_headers(client)
     workspace_id = active_workspace_id(client, headers)
     seed_admin_console_records(client, workspace_id)
@@ -237,11 +237,13 @@ def test_admin_overview_uses_real_scoped_sources_and_exposes_uninstrumented_stat
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["workspace"]["id"] == str(workspace_id)
-    assert payload["llm"]["summary"]["call_count"] == 1
-    assert payload["llm"]["summary"]["cost_total"] == 4.5
-    assert payload["projects"]["total"] == 2
-    assert payload["projects"]["finalized"] == 1
+    assert payload["workspace"]["id"] == "platform"
+    assert payload["filters"]["scope"] == "platform"
+    assert payload["filters"]["workspace_id"] is None
+    assert payload["llm"]["summary"]["call_count"] == 2
+    assert payload["llm"]["summary"]["cost_total"] == 103.5
+    assert payload["projects"]["total"] == 3
+    assert payload["projects"]["finalized"] == 2
     assert payload["users"]["total"] >= 1
     assert payload["availability"]["connected_users"]["status"] == "not_instrumented"
     assert payload["availability"]["project_finalized_at"]["status"] == "not_instrumented"
@@ -262,9 +264,10 @@ def test_admin_projects_analytics_returns_global_distribution_without_page_bias(
     assert response.status_code == 200
     payload = response.json()
     stages = {item["stage"]: item["count"] for item in payload["distribution_by_stage"]}
-    assert payload["total"] == 2
+    assert payload["total"] == 3
     assert stages["draft_capture"] == 1
     assert stages["ready_for_export"] == 1
+    assert stages["build_blueprint"] == 1
     assert payload["created_series"]["availability"]["status"] == "available"
     assert payload["finalized_series"]["availability"]["status"] == "not_instrumented"
 

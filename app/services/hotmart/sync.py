@@ -1159,6 +1159,7 @@ def list_hotmart_sync_runs(
     workspace_id: UUID,
     environment: str = "sandbox",
     resource: str = "",
+    limit: int = 100,
 ) -> list[HotmartSyncRunResponse]:
     env = normalize_hotmart_environment(environment)
     query = select(HotmartSyncRunRecord).where(
@@ -1167,7 +1168,9 @@ def list_hotmart_sync_runs(
     )
     if resource.strip():
         query = query.where(HotmartSyncRunRecord.resource == resource.strip().lower())
-    rows = session.exec(query.order_by(HotmartSyncRunRecord.started_at.desc())).all()
+    rows = session.exec(
+        query.order_by(HotmartSyncRunRecord.started_at.desc()).limit(max(1, min(limit, 200)))
+    ).all()
     return [_serialize_sync_run(row) for row in rows]
 
 
@@ -1195,6 +1198,7 @@ def list_hotmart_reconciliation_issues(
     workspace_id: UUID,
     environment: str = "sandbox",
     status: str = "open",
+    limit: int = 100,
 ) -> list[HotmartReconciliationIssueResponse]:
     env = normalize_hotmart_environment(environment)
     query = select(HotmartReconciliationIssueRecord).where(
@@ -1203,7 +1207,9 @@ def list_hotmart_reconciliation_issues(
     )
     if status.strip() and status != "all":
         query = query.where(HotmartReconciliationIssueRecord.status == status.strip())
-    rows = session.exec(query.order_by(HotmartReconciliationIssueRecord.updated_at.desc())).all()
+    rows = session.exec(
+        query.order_by(HotmartReconciliationIssueRecord.updated_at.desc()).limit(max(1, min(limit, 200)))
+    ).all()
     return [serialize_hotmart_reconciliation_issue(row) for row in rows]
 
 

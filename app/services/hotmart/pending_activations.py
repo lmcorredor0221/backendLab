@@ -307,6 +307,7 @@ def list_user_pending_hotmart_activations(
     session: Session,
     *,
     current_user: UserRecord,
+    limit: int = 50,
 ) -> list[HotmartPendingActivationResponse]:
     email = current_user.email.strip().lower()
     if not email:
@@ -318,6 +319,7 @@ def list_user_pending_hotmart_activations(
             HotmartPendingActivationRecord.status == HotmartPendingActivationStatus.pending_activation,
         )
         .order_by(HotmartPendingActivationRecord.created_at.desc())
+        .limit(max(1, min(limit, 100)))
     ).all()
     return [serialize_hotmart_pending_activation(row) for row in rows]
 
@@ -327,6 +329,7 @@ def list_pending_hotmart_activations(
     *,
     source_workspace_id: UUID | None = None,
     status_filter: str = "",
+    limit: int = 100,
 ) -> list[HotmartPendingActivationResponse]:
     statement = select(HotmartPendingActivationRecord)
     if source_workspace_id is not None:
@@ -337,6 +340,7 @@ def list_pending_hotmart_activations(
         statement = statement.where(HotmartPendingActivationRecord.status == normalized_status)
     rows = session.exec(
         statement.order_by(HotmartPendingActivationRecord.created_at.desc(), HotmartPendingActivationRecord.provider_ref.asc())
+        .limit(max(1, min(limit, 200)))
     ).all()
     return [serialize_hotmart_pending_activation(row) for row in rows]
 

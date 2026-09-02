@@ -719,10 +719,11 @@ def list_hotmart_club_modules(
     *,
     workspace_id: UUID,
     environment: str = "sandbox",
+    limit: int = 100,
 ) -> list[HotmartClubModuleResponse]:
     env = normalize_hotmart_environment(environment)
     run = _latest_club_run(session, workspace_id=workspace_id, environment=env)
-    return [_serialize_module(item) for item in _club_snapshot_list(run, "modules")]
+    return [_serialize_module(item) for item in _club_snapshot_list(run, "modules")[: max(1, min(limit, 200))]]
 
 
 def list_hotmart_club_pages(
@@ -730,10 +731,11 @@ def list_hotmart_club_pages(
     *,
     workspace_id: UUID,
     environment: str = "sandbox",
+    limit: int = 100,
 ) -> list[HotmartClubPageResponse]:
     env = normalize_hotmart_environment(environment)
     run = _latest_club_run(session, workspace_id=workspace_id, environment=env)
-    return [_serialize_page(item) for item in _club_snapshot_list(run, "pages")]
+    return [_serialize_page(item) for item in _club_snapshot_list(run, "pages")[: max(1, min(limit, 200))]]
 
 
 def list_hotmart_club_students(
@@ -741,10 +743,11 @@ def list_hotmart_club_students(
     *,
     workspace_id: UUID,
     environment: str = "sandbox",
+    limit: int = 100,
 ) -> list[HotmartClubStudentResponse]:
     env = normalize_hotmart_environment(environment)
     run = _latest_club_run(session, workspace_id=workspace_id, environment=env)
-    return [_serialize_student(item) for item in _club_snapshot_list(run, "students")]
+    return [_serialize_student(item) for item in _club_snapshot_list(run, "students")[: max(1, min(limit, 200))]]
 
 
 def list_hotmart_club_progress(
@@ -752,7 +755,8 @@ def list_hotmart_club_progress(
     *,
     workspace_id: UUID,
     environment: str = "sandbox",
+    limit: int = 100,
 ) -> list[HotmartClubProgressResponse]:
     env = normalize_hotmart_environment(environment)
     run = _latest_club_run(session, workspace_id=workspace_id, environment=env)
-    return [_serialize_progress(item) for item in _club_snapshot_list(run, "progress")]
+    return [_serialize_progress(item) for item in _club_snapshot_list(run, "progress")[: max(1, min(limit, 200))]]

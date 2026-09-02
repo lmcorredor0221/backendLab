@@ -33,7 +33,7 @@ DEFAULT_ADMIN_PERIOD_DAYS = 30
 
 @dataclass(frozen=True)
 class AdminAnalyticsFilters:
-    workspace_id: UUID
+    workspace_id: UUID | None
     started_from: datetime | None = None
     started_to: datetime | None = None
     user_id: UUID | None = None
@@ -62,9 +62,9 @@ class AdminConsoleAnalyticsService:
 
         return {
             "workspace": {
-                "id": str(workspace.id),
-                "name": workspace.name,
-                "slug": workspace.slug,
+                "id": str(workspace.id) if normalized_filters.workspace_id is not None else "platform",
+                "name": workspace.name if normalized_filters.workspace_id is not None else "Plataforma global",
+                "slug": workspace.slug if normalized_filters.workspace_id is not None else "platform",
             },
             "period": _period_payload(normalized_filters),
             "filters": _filters_payload(normalized_filters),
@@ -72,17 +72,20 @@ class AdminConsoleAnalyticsService:
                 "llm_usage": _availability(
                     "available" if llm_summary["call_count"] else "empty",
                     source="llm_usage_ledger",
-                    reason="Ledger LLM filtrado por workspace y periodo.",
+                    reason=_scope_reason(normalized_filters, "Ledger LLM"),
                 ),
                 "projects": _availability(
                     "available" if projects["total"] else "empty",
                     source="sessions",
-                    reason="Sesiones/proyectos filtrados por workspace y periodo.",
+                    reason=_scope_reason(normalized_filters, "Sesiones/proyectos"),
                 ),
                 "users": _availability(
                     "available" if users["total"] else "empty",
                     source="workspace_memberships + users + auth_tokens",
-                    reason="Usuarios por membresia del workspace; actividad aproximada por ultimo token/uso registrado.",
+                    reason=_scope_reason(
+                        normalized_filters,
+                        "Usuarios por membresia; actividad aproximada por ultimo token/uso registrado",
+                    ),
                 ),
                 "connected_users": _availability(
                     "not_instrumented",
@@ -205,9 +208,11 @@ class AdminConsoleAnalyticsService:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        membership_statement = select(WorkspaceMembershipRecord).where(
-            WorkspaceMembershipRecord.workspace_id == filters.workspace_id
-        )
+        membership_statement = select(WorkspaceMembershipRecord)
+        if filters.workspace_id is not None:
+            membership_statement = membership_statement.where(
+                WorkspaceMembershipRecord.workspace_id == filters.workspace_id
+            )
         if role.strip():
             try:
                 membership_statement = membership_statement.where(WorkspaceMembershipRecord.role == WorkspaceRole(role))
@@ -349,13 +354,10 @@ class AdminConsoleAnalyticsService:
     ) -> dict[str, Any]:
         items: list[dict[str, Any]] = []
 
-        audits = list(
-            session.exec(
-                select(RuntimeSettingsAuditRecord).where(
-                    RuntimeSettingsAuditRecord.scope_id == str(filters.workspace_id)
-                )
-            ).all()
-        )
+        audit_statement = select(RuntimeSettingsAuditRecord)
+        if filters.workspace_id is not None:
+            audit_statement = audit_statement.where(RuntimeSettingsAuditRecord.scope_id == str(filters.workspace_id))
+        audits = list(session.exec(audit_statement).all())
         for audit in audits:
             if not _in_period(audit.created_at, filters):
                 continue
@@ -376,14 +378,10 @@ class AdminConsoleAnalyticsService:
                 }
             )
 
-        failed_calls = list(
-            session.exec(
-                select(LLMUsageLedgerRecord).where(
-                    LLMUsageLedgerRecord.workspace_id == filters.workspace_id,
-                    LLMUsageLedgerRecord.status != "succeeded",
-                )
-            ).all()
-        )
+        failed_calls_statement = select(LLMUsageLedgerRecord).where(LLMUsageLedgerRecord.status != "succeeded")
+        if filters.workspace_id is not None:
+            failed_calls_statement = failed_calls_statement.where(LLMUsageLedgerRecord.workspace_id == filters.workspace_id)
+        failed_calls = list(session.exec(failed_calls_statement).all())
         for record in failed_calls:
             if not _in_period(record.started_at, filters):
                 continue
@@ -406,9 +404,10 @@ class AdminConsoleAnalyticsService:
                 }
             )
 
-        sessions = list(
-            session.exec(select(SessionRecord).where(SessionRecord.workspace_id == filters.workspace_id)).all()
-        )
+        sessions_statement = select(SessionRecord)
+        if filters.workspace_id is not None:
+            sessions_statement = sessions_statement.where(SessionRecord.workspace_id == filters.workspace_id)
+        sessions = list(session.exec(sessions_statement).all())
         for record in sessions:
             if not _in_period(record.created_at, filters):
                 continue
@@ -429,13 +428,10 @@ class AdminConsoleAnalyticsService:
                 }
             )
 
-        invitations = list(
-            session.exec(
-                select(AdminUserInvitationRecord).where(
-                    AdminUserInvitationRecord.workspace_id == filters.workspace_id
-                )
-            ).all()
-        )
+        invitations_statement = select(AdminUserInvitationRecord)
+        if filters.workspace_id is not None:
+            invitations_statement = invitations_statement.where(AdminUserInvitationRecord.workspace_id == filters.workspace_id)
+        invitations = list(session.exec(invitations_statement).all())
         for invitation in invitations:
             if not _in_period(invitation.created_at, filters):
                 continue
@@ -491,7 +487,9 @@ def audit_admin_change(
 
 
 def _project_records(session: Session, filters: AdminAnalyticsFilters) -> list[SessionRecord]:
-    statement = select(SessionRecord).where(SessionRecord.workspace_id == filters.workspace_id)
+    statement = select(SessionRecord)
+    if filters.workspace_id is not None:
+        statement = statement.where(SessionRecord.workspace_id == filters.workspace_id)
     if filters.user_id is not None:
         statement = statement.where(SessionRecord.user_id == filters.user_id)
     if filters.project_id is not None:
@@ -512,7 +510,7 @@ def _project_records(session: Session, filters: AdminAnalyticsFilters) -> list[S
 def _last_activity_by_user(
     session: Session,
     *,
-    workspace_id: UUID,
+    workspace_id: UUID | None,
     user_ids: list[UUID],
 ) -> dict[UUID, datetime]:
     last_activity: dict[UUID, datetime] = {}
@@ -521,26 +519,18 @@ def _last_activity_by_user(
     for token in tokens:
         _remember_latest(last_activity, token.user_id, token.last_used_at)
 
-    llm_records = list(
-        session.exec(
-            select(LLMUsageLedgerRecord).where(
-                LLMUsageLedgerRecord.workspace_id == workspace_id,
-                LLMUsageLedgerRecord.user_id.in_(user_ids),
-            )
-        ).all()
-    )
+    llm_statement = select(LLMUsageLedgerRecord).where(LLMUsageLedgerRecord.user_id.in_(user_ids))
+    if workspace_id is not None:
+        llm_statement = llm_statement.where(LLMUsageLedgerRecord.workspace_id == workspace_id)
+    llm_records = list(session.exec(llm_statement).all())
     for record in llm_records:
         if record.user_id is not None:
             _remember_latest(last_activity, record.user_id, record.started_at)
 
-    project_records = list(
-        session.exec(
-            select(SessionRecord).where(
-                SessionRecord.workspace_id == workspace_id,
-                SessionRecord.user_id.in_(user_ids),
-            )
-        ).all()
-    )
+    project_statement = select(SessionRecord).where(SessionRecord.user_id.in_(user_ids))
+    if workspace_id is not None:
+        project_statement = project_statement.where(SessionRecord.workspace_id == workspace_id)
+    project_records = list(session.exec(project_statement).all())
     for record in project_records:
         _remember_latest(last_activity, record.user_id, record.updated_at)
 
@@ -709,13 +699,20 @@ def _period_payload(filters: AdminAnalyticsFilters) -> dict[str, Any]:
 
 def _filters_payload(filters: AdminAnalyticsFilters) -> dict[str, Any]:
     return {
-        "workspace_id": str(filters.workspace_id),
+        "workspace_id": str(filters.workspace_id) if filters.workspace_id is not None else None,
+        "scope": "workspace" if filters.workspace_id is not None else "platform",
         "user_id": str(filters.user_id) if filters.user_id else None,
         "project_id": str(filters.project_id) if filters.project_id else None,
         "stage": filters.stage.strip(),
         "provider_key": filters.provider_key.strip(),
         "model_name": filters.model_name.strip(),
     }
+
+
+def _scope_reason(filters: AdminAnalyticsFilters, label: str) -> str:
+    if filters.workspace_id is None:
+        return f"{label} agregado para toda la plataforma y el periodo."
+    return f"{label} filtrado por workspace y periodo."
 
 
 def _in_period(value: datetime | None, filters: AdminAnalyticsFilters) -> bool:

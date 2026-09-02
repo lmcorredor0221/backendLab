@@ -439,6 +439,7 @@ def list_hotmart_promotions(
     *,
     workspace_id: UUID,
     environment: str = "sandbox",
+    limit: int = 100,
 ) -> list[HotmartPromotionResponse]:
     env = normalize_hotmart_environment(environment)
     rows = session.exec(
@@ -448,6 +449,7 @@ def list_hotmart_promotions(
             HotmartPromotionRecord.environment == env,
         )
         .order_by(HotmartPromotionRecord.updated_at.desc())
+        .limit(max(1, min(limit, 200)))
     ).all()
     return [serialize_hotmart_promotion(row) for row in rows]
 

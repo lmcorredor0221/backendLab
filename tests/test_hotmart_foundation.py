@@ -275,6 +275,46 @@ def test_hotmart_admin_status_and_credentials_routes_are_admin_only_and_redacted
     assert "hottok-value" not in serialized
 
 
+def test_hotmart_admin_credentials_use_platform_scope_when_active_workspace_changes(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    admin_user = client.get("/api/v1/auth/me", headers=headers).json()
+    admin_workspace_id = admin_user["active_workspace_id"]
+
+    customer_response = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "hotmart-customer-scope@example.com",
+            "password": "StrongPass123!",
+            "confirm_password": "StrongPass123!",
+            "full_name": "Hotmart Customer Scope",
+            "accept_terms": True,
+            "accept_privacy": True,
+            "accept_data_treatment": True,
+        },
+    )
+    assert customer_response.status_code == 200
+    customer_workspace_id = customer_response.json()["user"]["active_workspace_id"]
+    assert customer_workspace_id != admin_workspace_id
+
+    credentials_response = client.post(
+        "/api/v1/admin/integrations/hotmart/credentials",
+        headers={**headers, "x-workspace-id": customer_workspace_id},
+        json={
+            "environment": "sandbox",
+            "enabled": True,
+            "client_id": "global-client-id",
+            "client_secret": "global-client-secret",
+            "basic_token": "global-basic-token",
+            "hottok": "global-hottok",
+        },
+    )
+
+    assert credentials_response.status_code == 200
+    payload = credentials_response.json()
+    assert payload["workspace_id"] == admin_workspace_id
+    assert payload["status"] == "configured"
+
+
 def test_hotmart_commercial_admin_routes_expose_quota_and_effective_config_for_platform_admin(client: TestClient) -> None:
     headers = _auth_headers(client)
 

@@ -192,6 +192,7 @@ def list_legacy_package_resolutions(
     workspace_id: UUID,
     status_filter: str = "pending",
     product_key: str = "",
+    limit: int = 100,
 ) -> list[CommercialLegacyPackageResolutionResponse]:
     normalized_status = status_filter.strip().lower() or "pending"
     rows = session.exec(
@@ -214,6 +215,8 @@ def list_legacy_package_resolutions(
         if normalized_status == "resolved" and response.status != LEGACY_PACKAGE_RESOLUTION_RESOLVED:
             continue
         responses.append(response)
+        if len(responses) >= max(1, min(limit, 200)):
+            break
     return responses
 
 

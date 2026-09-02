@@ -161,11 +161,12 @@ def list_llm_finops_alerts_route(
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> dict[str, object]:
     service = LLMFinOpsAlertService()
-    if sync:
+    workspace_id = _platform_admin_workspace_scope()
+    if sync and workspace_id is not None:
         service.sync_alerts(db, workspace_id=workspace_context.workspace.id, now=as_of)
     rows = service.list_alerts(
         db,
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=workspace_id,
         status=status_filter,
         limit=limit,
     )
@@ -485,7 +486,7 @@ def _filters(
     model_name: str = "",
 ) -> LLMUsageAnalyticsFilters:
     return LLMUsageAnalyticsFilters(
-        workspace_id=workspace_context.workspace.id,
+        workspace_id=_platform_admin_workspace_scope(),
         started_from=started_from,
         started_to=started_to,
         user_id=user_id,
@@ -498,6 +499,10 @@ def _filters(
         provider_key=provider_key.strip(),
         model_name=model_name.strip(),
     )
+
+
+def _platform_admin_workspace_scope() -> UUID | None:
+    return None
 
 
 def _usage_payload(record: LLMUsageLedgerRecord) -> dict[str, object]:

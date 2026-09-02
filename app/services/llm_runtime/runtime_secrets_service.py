@@ -16,6 +16,8 @@ from app.core.config import get_settings
 from app.models import (
     LLMProviderKey,
     LLMRuntimeSettings,
+    PlatformProviderSecretRecord,
+    PlatformProviderSecretResponse,
     PlatformRuntimeProviderRecord,
     RuntimeGovernanceScopeType,
     RuntimeSecretStatus,
@@ -80,6 +82,27 @@ def _supports_workspace_secrets(session: Session, provider_key: LLMProviderKey) 
     return provider_record.supports_workspace_secrets
 
 
+def _supports_platform_managed_credentials(session: Session, provider_key: LLMProviderKey) -> bool:
+    provider_record = _provider_record(session, provider_key)
+    if provider_record is None:
+        return provider_key in {LLMProviderKey.openai, LLMProviderKey.deepseek}
+    return provider_record.supports_platform_managed_credentials
+
+
+def _platform_secret_record(
+    session: Session,
+    provider_key: LLMProviderKey,
+    *,
+    secret_kind: str = "api_key",
+) -> PlatformProviderSecretRecord | None:
+    return session.exec(
+        select(PlatformProviderSecretRecord).where(
+            PlatformProviderSecretRecord.provider_key == provider_key,
+            PlatformProviderSecretRecord.secret_kind == secret_kind,
+        )
+    ).first()
+
+
 def _workspace_secret_record(
     session: Session,
     workspace_id: UUID,
@@ -125,7 +148,42 @@ def resolve_workspace_provider_secret_value(
     return None
 
 
-def _record_is_configured(record: WorkspaceProviderSecretRecord | None) -> bool:
+def resolve_platform_provider_secret_value(
+    session: Session,
+    provider_key: LLMProviderKey,
+    *,
+    secret_kind: str = "api_key",
+) -> str | None:
+    record = _platform_secret_record(session, provider_key, secret_kind=secret_kind)
+    if not _record_is_configured(record) or record is None:
+        return None
+    if record.secret_ciphertext:
+        return _decrypt_secret_value(record.secret_ciphertext)
+    if record.secret_ref:
+        return None
+    return None
+
+
+def resolve_effective_provider_secret_value(
+    session: Session,
+    workspace_id: UUID,
+    provider_key: LLMProviderKey,
+    *,
+    secret_kind: str = "api_key",
+) -> str | None:
+    runtime_record = load_workspace_runtime_settings(session, workspace_id)
+    uses_platform_credentials = True if runtime_record is None else runtime_record.uses_platform_credentials
+    if uses_platform_credentials:
+        return resolve_platform_provider_secret_value(session, provider_key, secret_kind=secret_kind)
+    return resolve_workspace_provider_secret_value(
+        session,
+        workspace_id,
+        provider_key,
+        secret_kind=secret_kind,
+    )
+
+
+def _record_is_configured(record: PlatformProviderSecretRecord | WorkspaceProviderSecretRecord | None) -> bool:
     if record is None:
         return False
     if record.status != RuntimeSecretStatus.configured:
@@ -133,7 +191,7 @@ def _record_is_configured(record: WorkspaceProviderSecretRecord | None) -> bool:
     return bool(record.secret_ciphertext or record.secret_ref)
 
 
-def _storage_mode(record: WorkspaceProviderSecretRecord | None) -> str:
+def _storage_mode(record: PlatformProviderSecretRecord | WorkspaceProviderSecretRecord | None) -> str:
     if record is None:
         return "none"
     if record.secret_ciphertext and record.secret_ref:
@@ -169,6 +227,53 @@ def _workspace_secret_runtime_state(
     return False, "workspace_missing", "No existe material secreto utilizable para este workspace."
 
 
+def _platform_secret_runtime_state(
+    record: PlatformProviderSecretRecord | None,
+) -> tuple[bool, str, str]:
+    if not _record_is_configured(record) or record is None:
+        return False, "platform_missing", "No existe un secreto global configurado para la plataforma."
+    if record.secret_ciphertext:
+        if OpenAISDK is None:
+            return False, "sdk_missing", "El SDK OpenAI-compatible no esta instalado en el backend."
+        try:
+            secret_value = _decrypt_secret_value(record.secret_ciphertext)
+        except ValueError as exc:
+            return False, "platform_invalid", str(exc)
+        if not secret_value.strip():
+            return False, "platform_invalid", "El secreto cifrado global esta vacio."
+        return True, "platform_ready", "Se resolvio el secreto cifrado global de plataforma."
+    if record.secret_ref:
+        return (
+            False,
+            "platform_reference_pending",
+            "Hay una referencia externa global configurada, pero el runtime todavia no resuelve secret_ref.",
+        )
+    return False, "platform_missing", "No existe material secreto global utilizable."
+
+
+def _build_platform_secret_response(
+    session: Session,
+    *,
+    provider_key: LLMProviderKey,
+    record: PlatformProviderSecretRecord | None,
+) -> PlatformProviderSecretResponse:
+    supports_platform_credentials = _supports_platform_managed_credentials(session, provider_key)
+    configured = _record_is_configured(record)
+    _, health_status, _ = _platform_secret_runtime_state(record)
+    return PlatformProviderSecretResponse(
+        provider_key=provider_key,
+        secret_kind=record.secret_kind if record is not None else "api_key",
+        configured=configured,
+        secret_source="platform_managed",
+        status=record.status if record is not None else RuntimeSecretStatus.not_configured,
+        health_status=health_status if supports_platform_credentials else "platform_credentials_unsupported",
+        last_rotated_at=record.last_rotated_at if record is not None else None,
+        updated_at=record.updated_at if record is not None else None,
+        storage_mode=_storage_mode(record),
+        supports_platform_managed_credentials=supports_platform_credentials,
+    )
+
+
 def _build_secret_response(
     session: Session,
     *,
@@ -185,12 +290,14 @@ def _build_secret_response(
     updated_at = record.updated_at if record is not None else None
     secret_kind = record.secret_kind if record is not None else "api_key"
 
+    platform_record = _platform_secret_record(session, provider_key)
+    platform_secret_configured = _record_is_configured(platform_record)
     if provider_key == LLMProviderKey.openai:
-        platform_configured = runtime_settings.openai.api_key_configured
+        platform_configured = platform_secret_configured or runtime_settings.openai.api_key_configured
     elif provider_key == LLMProviderKey.deepseek:
-        platform_configured = runtime_settings.deepseek.api_key_configured
+        platform_configured = platform_secret_configured or runtime_settings.deepseek.api_key_configured
     else:
-        platform_configured = False
+        platform_configured = platform_secret_configured
 
     if not supports_workspace_secrets:
         health_status = "local_runtime_ready" if runtime_settings.codex_local.available else "local_runtime_missing"
@@ -223,8 +330,11 @@ def _build_secret_response(
     else:
         secret_source = "platform_managed"
         configured = platform_configured
-        health_status = "platform_ready" if platform_configured else "platform_missing"
+        _, db_platform_health_status, _ = _platform_secret_runtime_state(platform_record)
+        health_status = db_platform_health_status if platform_secret_configured else ("platform_ready" if platform_configured else "platform_missing")
         status = RuntimeSecretStatus.configured if platform_configured else RuntimeSecretStatus.not_configured
+        last_rotated_at = platform_record.last_rotated_at if platform_record is not None else last_rotated_at
+        updated_at = platform_record.updated_at if platform_record is not None else updated_at
 
     return WorkspaceProviderSecretResponse(
         provider_key=provider_key,
@@ -256,6 +366,28 @@ def _record_secret_audit(
         RuntimeSettingsAuditRecord(
             scope_type=RuntimeGovernanceScopeType.workspace,
             scope_id=str(workspace_id),
+            change_type=change_type,
+            before_payload_redacted=before_payload,
+            after_payload_redacted=after_payload,
+            actor_user_id=actor_user_id,
+            actor_email=_resolve_actor_email(session, actor_user_id),
+        )
+    )
+
+
+def _record_platform_secret_audit(
+    session: Session,
+    *,
+    provider_key: LLMProviderKey,
+    change_type: str,
+    before_payload: dict[str, object],
+    after_payload: dict[str, object],
+    actor_user_id: UUID | None,
+) -> None:
+    session.add(
+        RuntimeSettingsAuditRecord(
+            scope_type=RuntimeGovernanceScopeType.platform,
+            scope_id=f"platform-provider-secret:{provider_key.value}",
             change_type=change_type,
             before_payload_redacted=before_payload,
             after_payload_redacted=after_payload,
@@ -365,6 +497,110 @@ def build_workspace_provider_secret_view(
         record=record,
         supports_workspace_secrets=supports_workspace_secrets,
     )
+
+
+def build_platform_provider_secret_view(
+    session: Session,
+    provider_key: LLMProviderKey,
+) -> PlatformProviderSecretResponse:
+    backfill_platform_runtime_governance(session)
+    record = _platform_secret_record(session, provider_key)
+    return _build_platform_secret_response(session, provider_key=provider_key, record=record)
+
+
+def upsert_platform_provider_secret(
+    session: Session,
+    provider_key: LLMProviderKey,
+    payload: WorkspaceProviderSecretUpsertRequest,
+    *,
+    actor_user_id: UUID | None = None,
+    rotate: bool = False,
+) -> PlatformProviderSecretResponse:
+    backfill_platform_runtime_governance(session)
+    if not _supports_platform_managed_credentials(session, provider_key):
+        raise ValueError(f"El provider {provider_key.value} no soporta credenciales administradas por plataforma.")
+
+    before_view = build_platform_provider_secret_view(session, provider_key)
+    record = _platform_secret_record(session, provider_key)
+    now = utc_now()
+    if record is None:
+        record = PlatformProviderSecretRecord(
+            provider_key=provider_key,
+            secret_kind=payload.secret_kind.strip() or "api_key",
+            created_at=now,
+        )
+
+    record.secret_kind = payload.secret_kind.strip() or record.secret_kind or "api_key"
+    secret_value = payload.secret_value.strip()
+    secret_ref = payload.secret_ref.strip()
+    if secret_value:
+        record.secret_ciphertext = _encrypt_secret_value(secret_value)
+        record.secret_ref = ""
+    else:
+        record.secret_ciphertext = ""
+        record.secret_ref = secret_ref
+    record.status = RuntimeSecretStatus.configured
+    record.last_rotated_at = now if rotate or before_view.configured else now
+    record.updated_by_user_id = actor_user_id
+    record.updated_at = now
+    session.add(record)
+    session.commit()
+
+    after_view = build_platform_provider_secret_view(session, provider_key)
+    _record_platform_secret_audit(
+        session,
+        provider_key=provider_key,
+        change_type="platform_provider_secret_rotated" if rotate else "platform_provider_secret_upserted",
+        before_payload=before_view.model_dump(mode="json"),
+        after_payload=after_view.model_dump(mode="json"),
+        actor_user_id=actor_user_id,
+    )
+    session.commit()
+    return after_view
+
+
+def rotate_platform_provider_secret(
+    session: Session,
+    provider_key: LLMProviderKey,
+    payload: WorkspaceProviderSecretUpsertRequest,
+    *,
+    actor_user_id: UUID | None = None,
+) -> PlatformProviderSecretResponse:
+    return upsert_platform_provider_secret(
+        session,
+        provider_key,
+        payload,
+        actor_user_id=actor_user_id,
+        rotate=True,
+    )
+
+
+def delete_platform_provider_secret(
+    session: Session,
+    provider_key: LLMProviderKey,
+    *,
+    actor_user_id: UUID | None = None,
+) -> PlatformProviderSecretResponse:
+    backfill_platform_runtime_governance(session)
+    before_view = build_platform_provider_secret_view(session, provider_key)
+    record = _platform_secret_record(session, provider_key)
+    if record is None:
+        raise LookupError("No existe un secreto global configurado para ese provider.")
+
+    session.delete(record)
+    session.commit()
+
+    after_view = build_platform_provider_secret_view(session, provider_key)
+    _record_platform_secret_audit(
+        session,
+        provider_key=provider_key,
+        change_type="platform_provider_secret_deleted",
+        before_payload=before_view.model_dump(mode="json"),
+        after_payload=after_view.model_dump(mode="json"),
+        actor_user_id=actor_user_id,
+    )
+    session.commit()
+    return after_view
 
 
 def upsert_workspace_provider_secret(

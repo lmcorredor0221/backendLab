@@ -1847,10 +1847,10 @@ def build_builder_service(runtime_settings: LLMRuntimeSettings | None = None) ->
     )
 
 
-def _resolve_workspace_provider_api_key(session, *, workspace_id, provider_key: LLMProviderKey) -> str | None:
-    from app.services.llm_runtime.runtime_secrets_service import resolve_workspace_provider_secret_value
+def _resolve_effective_provider_api_key(session, *, workspace_id, provider_key: LLMProviderKey) -> str | None:
+    from app.services.llm_runtime.runtime_secrets_service import resolve_effective_provider_secret_value
 
-    return resolve_workspace_provider_secret_value(
+    return resolve_effective_provider_secret_value(
         session,
         workspace_id,
         provider_key,
@@ -1881,12 +1881,12 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
     def _ensure_workspace_client(self, workspace_id) -> None:
         if self._client is not None or OpenAI is None or workspace_id is None:
             return
-        if self.runtime_settings.uses_platform_credentials or self._finops_session_factory is None:
+        if self._finops_session_factory is None:
             return
         self._workspace_client_error = ""
         try:
             with self._finops_session_factory() as session:
-                api_key = _resolve_workspace_provider_api_key(
+                api_key = _resolve_effective_provider_api_key(
                     session,
                     workspace_id=workspace_id,
                     provider_key=LLMProviderKey.openai,
@@ -1906,7 +1906,7 @@ class OpenAIBuilderService(_APIContextAwareBuilderMixin):
             self._client = OpenAI(api_key=api_key)
             self._workspace_client_error = ""
             return
-        self._workspace_client_error = "No se resolvio una API key de OpenAI para el workspace."
+        self._workspace_client_error = "No se resolvio una API key de OpenAI para el runtime efectivo."
 
     def _provider_unavailable_detail(self) -> str | None:
         detail = self._workspace_client_error.strip()
@@ -2591,12 +2591,12 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
     def _ensure_workspace_client(self, workspace_id) -> None:
         if self._client is not None or OpenAI is None or workspace_id is None:
             return
-        if self.runtime_settings.uses_platform_credentials or self._finops_session_factory is None:
+        if self._finops_session_factory is None:
             return
         self._workspace_client_error = ""
         try:
             with self._finops_session_factory() as session:
-                api_key = _resolve_workspace_provider_api_key(
+                api_key = _resolve_effective_provider_api_key(
                     session,
                     workspace_id=workspace_id,
                     provider_key=LLMProviderKey.deepseek,
@@ -2619,7 +2619,7 @@ class DeepSeekBuilderService(_APIContextAwareBuilderMixin):
             )
             self._workspace_client_error = ""
             return
-        self._workspace_client_error = "No se resolvio una API key de DeepSeek para el workspace."
+        self._workspace_client_error = "No se resolvio una API key de DeepSeek para el runtime efectivo."
 
     def _provider_unavailable_detail(self) -> str | None:
         detail = self._workspace_client_error.strip()

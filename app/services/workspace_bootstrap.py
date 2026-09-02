@@ -1618,7 +1618,7 @@ def initialize_new_workspace_configuration(
     workspace_id: UUID,
     actor_user_id: UUID | None = None,
 ) -> None:
-    """Seed a newly-created workspace from the Platform Admin workspace when available."""
+    """Seed a newly-created workspace from the Platform Admin template workspace when available."""
     source_workspace_id = _resolve_platform_admin_template_workspace_id(session, exclude_workspace_id=workspace_id)
     if source_workspace_id is None:
         apply_workspace_bootstrap(session, workspace_id)
@@ -1685,10 +1685,19 @@ def initialize_new_workspace_configuration(
     )
 
 
+def resolve_platform_admin_template_workspace_id(
+    session: Session,
+    *,
+    exclude_workspace_id: UUID | None = None,
+) -> UUID | None:
+    """Return the canonical Platform Admin workspace used as platform template."""
+    return _resolve_platform_admin_template_workspace_id(session, exclude_workspace_id=exclude_workspace_id)
+
+
 def _resolve_platform_admin_template_workspace_id(
     session: Session,
     *,
-    exclude_workspace_id: UUID,
+    exclude_workspace_id: UUID | None,
 ) -> UUID | None:
     configured_email = get_settings().local_admin_email.strip().lower()
     query = (
@@ -1718,6 +1727,17 @@ def _resolve_platform_admin_template_workspace_id(
         return None
 
     admin_user = row[0]
+    owned_workspace = session.exec(
+        select(WorkspaceRecord)
+        .where(
+            WorkspaceRecord.created_by_user_id == admin_user.id,
+            WorkspaceRecord.is_active == True,  # noqa: E712
+        )
+        .order_by(WorkspaceRecord.created_at.asc())
+    ).first()
+    if owned_workspace is not None and owned_workspace.id != exclude_workspace_id:
+        return owned_workspace.id
+
     candidate_id = admin_user.default_workspace_id
     if candidate_id is None or candidate_id == exclude_workspace_id:
         return None
@@ -1904,7 +1924,7 @@ def _inherit_workspace_runtime_settings(
             agent_execution_backend=source.agent_execution_backend,
             knowledge_access_backend=source.knowledge_access_backend,
             provider_overrides=dict(source.provider_overrides or {}),
-            uses_platform_credentials=source.uses_platform_credentials,
+            uses_platform_credentials=True,
             is_active=True,
             version=1,
             updated_by_user_id=actor_user_id,
@@ -1932,13 +1952,14 @@ def _record_workspace_inheritance_audit(
                 "source_workspace_id": str(source_workspace_id),
                 "target_workspace_id": str(target_workspace_id),
                 "copied": [
-                    "runtime_feature_flags",
-                    "workflow_templates",
-                    "governance_policies",
-                    "commercial_quota_workspace_overrides",
-                    "workspace_runtime_settings_if_present",
-                ],
-                "secret_policy": "provider secrets are not copied between workspaces",
+                "runtime_feature_flags",
+                "workflow_templates",
+                "governance_policies",
+                "commercial_quota_workspace_overrides",
+                "workspace_runtime_settings_if_present",
+            ],
+                "runtime_policy": "LLM runtime parameters are copied from the Platform Admin template workspace when present",
+                "secret_policy": "provider secrets are not copied between workspaces; inherited runtime is forced to platform-managed credentials",
             },
             actor_user_id=actor_user_id,
         )

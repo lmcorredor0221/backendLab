@@ -424,21 +424,28 @@ def create_hotmart_payment_link_for_order(
     *,
     workspace_id: UUID,
     payload: HotmartPaymentLinkCreateRequest,
+    integration_workspace_id: UUID | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> HotmartPaymentLinkResponse:
     env = normalize_hotmart_environment(payload.environment)
+    resolved_integration_workspace_id = integration_workspace_id or workspace_id
     order = _resolve_order(session, workspace_id=workspace_id, payload=payload)
     existing = _existing_payment_link(session, order_id=order.id)
     if existing is not None and not payload.force_new:
         return serialize_hotmart_payment_link(existing)
 
     product_key = _order_product_key(session, order)
-    mapping = _get_active_mapping(session, workspace_id=workspace_id, environment=env, product_key=product_key)
-    status = build_hotmart_status(session, workspace_id=workspace_id, environment=env)
+    mapping = _get_active_mapping(
+        session,
+        workspace_id=resolved_integration_workspace_id,
+        environment=env,
+        product_key=product_key,
+    )
+    status = build_hotmart_status(session, workspace_id=resolved_integration_workspace_id, environment=env)
     callback_url = payload.callback_url.strip() or status.webhook_public_url.strip()
     if not callback_url:
         raise ValueError("Hotmart payment link creation requires link_callback_url/webhook_public_url.")
-    credentials = load_hotmart_credentials(session, workspace_id=workspace_id, environment=env)
+    credentials = load_hotmart_credentials(session, workspace_id=resolved_integration_workspace_id, environment=env)
     if credentials is None:
         raise ValueError("Hotmart OAuth credentials are required before creating payment links.")
 
@@ -566,11 +573,13 @@ def list_hotmart_payment_links(
     session: Session,
     *,
     workspace_id: UUID,
+    limit: int = 100,
 ) -> list[HotmartPaymentLinkResponse]:
     rows = session.exec(
         select(HotmartPaymentLinkRecord)
         .where(HotmartPaymentLinkRecord.workspace_id == workspace_id)
         .order_by(HotmartPaymentLinkRecord.created_at.desc())
+        .limit(max(1, min(limit, 200)))
     ).all()
     return [serialize_hotmart_payment_link(row) for row in rows]
 
@@ -581,16 +590,18 @@ def refresh_hotmart_payment_link(
     workspace_id: UUID,
     payment_link_id: UUID,
     environment: str = "sandbox",
+    integration_workspace_id: UUID | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> HotmartPaymentLinkResponse:
     env = normalize_hotmart_environment(environment)
+    resolved_integration_workspace_id = integration_workspace_id or workspace_id
     link = session.get(HotmartPaymentLinkRecord, payment_link_id)
     if link is None or link.workspace_id != workspace_id:
         raise ValueError("Hotmart payment link was not found in this workspace.")
     if link.activation_status == "active":
         return serialize_hotmart_payment_link(link)
-    status = build_hotmart_status(session, workspace_id=workspace_id, environment=env)
-    credentials = load_hotmart_credentials(session, workspace_id=workspace_id, environment=env)
+    status = build_hotmart_status(session, workspace_id=resolved_integration_workspace_id, environment=env)
+    credentials = load_hotmart_credentials(session, workspace_id=resolved_integration_workspace_id, environment=env)
     if credentials is None:
         raise ValueError("Hotmart OAuth credentials are required before refreshing payment links.")
     token = HotmartAuthClient(

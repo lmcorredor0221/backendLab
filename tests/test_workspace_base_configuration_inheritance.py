@@ -116,7 +116,7 @@ def test_new_workspace_inherits_platform_admin_workspace_configuration() -> None
                         "active_provider": "deepseek",
                         "agent_execution_backend": "provider_native",
                         "knowledge_access_backend": "workspace_staged",
-                        "uses_platform_credentials": True,
+                        "uses_platform_credentials": False,
                         "openai": {
                             "fast_model": "gpt-5.4-mini",
                             "reasoning_model": "gpt-5.5",
@@ -200,7 +200,12 @@ def test_new_workspace_inherits_platform_admin_workspace_configuration() -> None
     assert inherited_quota_override.notes == "Plantilla comercial maestra"
     assert inherited_runtime.active_provider.value == "deepseek"
     assert inherited_runtime.provider_overrides["deepseek"]["reasoning_model"] == "deepseek-reasoner"
-    assert audit_row.after_payload_redacted["secret_policy"] == "provider secrets are not copied between workspaces"
+    assert inherited_runtime.uses_platform_credentials is True
+    assert (
+        audit_row.after_payload_redacted["secret_policy"]
+        == "provider secrets are not copied between workspaces; inherited runtime is forced to platform-managed credentials"
+    )
+    assert audit_row.after_payload_redacted["runtime_policy"] == "LLM runtime parameters are copied from the Platform Admin template workspace when present"
 
 
 def test_new_workspace_falls_back_to_default_bootstrap_without_platform_admin_template() -> None:

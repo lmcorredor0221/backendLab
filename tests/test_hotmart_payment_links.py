@@ -173,6 +173,36 @@ def test_create_hotmart_payment_link_from_mapped_pending_order(db_session: Sessi
     assert event.correlation_id == order.checkout_ref
 
 
+def test_create_hotmart_payment_link_uses_platform_integration_scope(db_session: Session) -> None:
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+    platform_workspace = WorkspaceRecord(name="Platform Hotmart Scope", slug="platform-hotmart-scope")
+    db_session.add(platform_workspace)
+    db_session.commit()
+    db_session.refresh(platform_workspace)
+    _configure_hotmart(db_session, platform_workspace)
+    order = _create_hotmart_order(db_session, record, user)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/oauth/token":
+            return httpx.Response(200, json={"access_token": "platform-access-token", "expires_in": 3600})
+        return httpx.Response(201, json={"ucode": "platform-link-1", "url": "https://pay.hotmart.test/platform-link-1"})
+
+    response = create_hotmart_payment_link_for_order(
+        db_session,
+        workspace_id=customer_workspace.id,
+        integration_workspace_id=platform_workspace.id,
+        payload=HotmartPaymentLinkCreateRequest(
+            order_id=order.id,
+            environment="sandbox",
+            callback_url="https://example.test/hotmart/webhook",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert response.workspace_id == customer_workspace.id
+    assert response.checkout_url == "https://pay.hotmart.test/platform-link-1"
+
+
 def test_hotmart_payment_link_error_keeps_order_pending_and_records_failed_attempt(db_session: Session) -> None:
     user, workspace, record = _seed_checkout_context(db_session)
     _configure_hotmart(db_session, workspace)

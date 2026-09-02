@@ -44,13 +44,16 @@ def list_commercial_debts(
     workspace_id: UUID,
     status: str = "open",
     product_key: str = "",
+    limit: int = 100,
 ) -> list[CommercialDebtResponse]:
     statement = select(CommercialDebtRecord).where(CommercialDebtRecord.workspace_id == workspace_id)
     if status.strip() and status != "all":
         statement = statement.where(CommercialDebtRecord.status == CommercialDebtStatus(status.strip()))
     if product_key.strip():
         statement = statement.where(CommercialDebtRecord.product_key == product_key.strip())
-    rows = session.exec(statement.order_by(CommercialDebtRecord.created_at.asc(), CommercialDebtRecord.id.asc())).all()
+    rows = session.exec(
+        statement.order_by(CommercialDebtRecord.created_at.asc(), CommercialDebtRecord.id.asc()).limit(max(1, min(limit, 200)))
+    ).all()
     return [serialize_commercial_debt(row) for row in rows]
 
 

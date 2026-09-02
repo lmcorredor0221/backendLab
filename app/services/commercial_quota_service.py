@@ -456,6 +456,7 @@ def list_balance_ledger(
     *,
     workspace_id: UUID,
     product_key: str,
+    limit: int = 100,
 ) -> list[CommercialBalanceLedgerRecord]:
     return session.exec(
         select(CommercialBalanceLedgerRecord)
@@ -464,6 +465,7 @@ def list_balance_ledger(
             CommercialBalanceLedgerRecord.product_key == product_key,
         )
         .order_by(CommercialBalanceLedgerRecord.created_at.asc(), CommercialBalanceLedgerRecord.id.asc())
+        .limit(max(1, min(limit, 200)))
     ).all()
 
 

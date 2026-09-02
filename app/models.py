@@ -141,6 +141,20 @@ class HotmartPendingActivationStatus(str, Enum):
     canceled = "canceled"
 
 
+class RuntimePropagationMode(str, Enum):
+    fallback_only = "fallback_only"
+    reset_to_platform = "reset_to_platform"
+    force_selected = "force_selected"
+    force_all = "force_all"
+
+
+class RuntimePropagationStatus(str, Enum):
+    planned = "planned"
+    applied = "applied"
+    skipped = "skipped"
+    failed = "failed"
+
+
 class ACPWorkflowRunStatus(str, Enum):
     not_started = "not_started"
     running = "running"
@@ -643,6 +657,19 @@ class WorkspaceProviderSecretResponse(ContractModel):
     supports_workspace_secrets: bool = True
 
 
+class PlatformProviderSecretResponse(ContractModel):
+    provider_key: LLMProviderKey = LLMProviderKey.openai
+    secret_kind: str = "api_key"
+    configured: bool = False
+    secret_source: str = "platform_managed"
+    status: RuntimeSecretStatus = RuntimeSecretStatus.not_configured
+    health_status: str = "platform_missing"
+    last_rotated_at: datetime | None = None
+    updated_at: datetime | None = None
+    storage_mode: str = "none"
+    supports_platform_managed_credentials: bool = True
+
+
 class PlatformRuntimeProviderResponse(ContractModel):
     provider_key: LLMProviderKey = LLMProviderKey.openai
     label: str = ""
@@ -684,6 +711,110 @@ class RuntimeSettingsAuditEntry(ContractModel):
 
 class RuntimeSettingsAuditListResponse(ContractModel):
     items: list[RuntimeSettingsAuditEntry] = PydanticField(default_factory=list)
+
+
+class RuntimePropagationRequest(ContractModel):
+    mode: RuntimePropagationMode = RuntimePropagationMode.fallback_only
+    payload: LLMRuntimeSettingsUpdateRequest
+    workspace_ids: list[UUID] = PydanticField(default_factory=list)
+    dry_run: bool = True
+
+
+class RuntimePropagationItemResponse(ContractModel):
+    workspace_id: UUID
+    workspace_name: str = ""
+    previous_workspace_runtime_version: int | None = None
+    next_workspace_runtime_version: int | None = None
+    had_override: bool = False
+    action: str = "skip"
+    status: RuntimePropagationStatus = RuntimePropagationStatus.planned
+    error_message: str = ""
+
+
+class RuntimePropagationRunResponse(ContractModel):
+    id: UUID
+    mode: RuntimePropagationMode = RuntimePropagationMode.fallback_only
+    provider_key: LLMProviderKey = LLMProviderKey.openai
+    target_scope: str = "all"
+    dry_run: bool = True
+    status: RuntimePropagationStatus = RuntimePropagationStatus.planned
+    payload_redacted: dict[str, Any] = PydanticField(default_factory=dict)
+    created_at: datetime
+    completed_at: datetime | None = None
+    items: list[RuntimePropagationItemResponse] = PydanticField(default_factory=list)
+
+
+class PlatformAdminMembershipSummary(ContractModel):
+    workspace_id: UUID
+    workspace_name: str = ""
+    workspace_slug: str = ""
+    role: WorkspaceRole = WorkspaceRole.viewer
+    is_active: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlatformAdminUserSummary(ContractModel):
+    id: UUID
+    email: str
+    full_name: str = ""
+    is_active: bool = True
+    default_workspace_id: UUID | None = None
+    platform_roles: list[PlatformRole] = PydanticField(default_factory=list)
+    workspace_count: int = 0
+    active_workspace_count: int = 0
+    project_count: int = 0
+    llm_total_tokens: int = 0
+    llm_total_cost: float = 0
+    memberships: list[PlatformAdminMembershipSummary] = PydanticField(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlatformAdminUserListResponse(ContractModel):
+    users: list[PlatformAdminUserSummary] = PydanticField(default_factory=list)
+    total: int = 0
+
+
+class PlatformAdminWorkspaceSummary(ContractModel):
+    id: UUID
+    name: str = ""
+    slug: str = ""
+    owner_emails: list[str] = PydanticField(default_factory=list)
+    member_count: int = 0
+    project_count: int = 0
+    active_runtime_provider: LLMProviderKey | None = None
+    uses_platform_credentials: bool | None = None
+    hotmart_enabled: bool | None = None
+    hotmart_status: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlatformAdminWorkspaceListResponse(ContractModel):
+    workspaces: list[PlatformAdminWorkspaceSummary] = PydanticField(default_factory=list)
+    total: int = 0
+
+
+class PlatformAdminProjectSummary(ContractModel):
+    id: UUID
+    workspace_id: UUID
+    workspace_name: str = ""
+    user_id: UUID
+    owner_email: str = ""
+    title: str = ""
+    current_stage: SessionStage = SessionStage.draft_capture
+    status: ArtifactStatus = ArtifactStatus.draft
+    commercial_tier: CommercialTier = CommercialTier.blueprint
+    llm_total_tokens: int = 0
+    llm_total_cost: float = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlatformAdminProjectListResponse(ContractModel):
+    projects: list[PlatformAdminProjectSummary] = PydanticField(default_factory=list)
+    total: int = 0
 
 
 class WorkspaceRuntimeHealthCheckEntry(ContractModel):
@@ -1087,6 +1218,10 @@ class CommercialPackageCatalogRecord(SQLModel, table=True):
 
 class CommercialDebtRecord(SQLModel, table=True):
     __tablename__ = "commercial_debts"
+    __table_args__ = (
+        Index("ix_commercial_debts_workspace_status_created", "workspace_id", "status", "created_at"),
+        Index("ix_commercial_debts_workspace_product_status", "workspace_id", "product_key", "status"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
@@ -1127,7 +1262,10 @@ class CommercialDebtSettlementRecord(SQLModel, table=True):
 
 class HotmartIntegrationConfigRecord(SQLModel, table=True):
     __tablename__ = "hotmart_integration_configs"
-    __table_args__ = (UniqueConstraint("workspace_id", "environment", name="uq_hotmart_config_workspace_environment"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "environment", name="uq_hotmart_config_workspace_environment"),
+        Index("ix_hotmart_config_workspace_environment_status", "workspace_id", "environment", "status"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
@@ -1175,6 +1313,8 @@ class HotmartProductMappingRecord(SQLModel, table=True):
     __tablename__ = "hotmart_product_mappings"
     __table_args__ = (
         UniqueConstraint("workspace_id", "internal_product_key", "environment", name="uq_hotmart_mapping_workspace_product_environment"),
+        Index("ix_hotmart_mapping_workspace_environment_active", "workspace_id", "environment", "is_active"),
+        Index("ix_hotmart_mapping_workspace_env_product_active", "workspace_id", "environment", "internal_product_key", "is_active"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -1201,7 +1341,11 @@ class HotmartProductMappingRecord(SQLModel, table=True):
 
 class HotmartPaymentLinkRecord(SQLModel, table=True):
     __tablename__ = "hotmart_payment_links"
-    __table_args__ = (UniqueConstraint("workspace_id", "hotmart_payment_link_id", name="uq_hotmart_payment_link_provider_id"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "hotmart_payment_link_id", name="uq_hotmart_payment_link_provider_id"),
+        Index("ix_hotmart_payment_links_workspace_created", "workspace_id", "created_at"),
+        Index("ix_hotmart_payment_links_workspace_env_status", "workspace_id", "environment", "activation_status"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
@@ -1229,7 +1373,11 @@ class HotmartPaymentLinkRecord(SQLModel, table=True):
 
 class HotmartPromotionRecord(SQLModel, table=True):
     __tablename__ = "hotmart_promotions"
-    __table_args__ = (UniqueConstraint("workspace_id", "environment", "coupon_code", name="uq_hotmart_promotion_coupon"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "environment", "coupon_code", name="uq_hotmart_promotion_coupon"),
+        Index("ix_hotmart_promotions_workspace_env_updated", "workspace_id", "environment", "updated_at"),
+        Index("ix_hotmart_promotions_workspace_env_status", "workspace_id", "environment", "status"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
@@ -1256,6 +1404,11 @@ class HotmartPromotionRecord(SQLModel, table=True):
 
 class HotmartSyncRunRecord(SQLModel, table=True):
     __tablename__ = "hotmart_sync_runs"
+    __table_args__ = (
+        Index("ix_hotmart_sync_runs_workspace_env_started", "workspace_id", "environment", "started_at"),
+        Index("ix_hotmart_sync_runs_workspace_env_resource_started", "workspace_id", "environment", "resource", "started_at"),
+        Index("ix_hotmart_sync_runs_workspace_env_status", "workspace_id", "environment", "status"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
@@ -1294,7 +1447,11 @@ class HotmartSyncCursorRecord(SQLModel, table=True):
 
 class HotmartWebhookEventRecord(SQLModel, table=True):
     __tablename__ = "hotmart_webhook_events"
-    __table_args__ = (UniqueConstraint("event_id", "event_type", name="uq_hotmart_webhook_event_id_type"),)
+    __table_args__ = (
+        UniqueConstraint("event_id", "event_type", name="uq_hotmart_webhook_event_id_type"),
+        Index("ix_hotmart_webhook_events_workspace_status_created", "workspace_id", "processing_status", "created_at"),
+        Index("ix_hotmart_webhook_events_workspace_type_created", "workspace_id", "event_type", "created_at"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     event_id: str = Field(default="", index=True, nullable=False)
@@ -1324,6 +1481,8 @@ class HotmartPendingActivationRecord(SQLModel, table=True):
             name="uq_hotmart_pending_activation_workspace_provider_ref",
         ),
         UniqueConstraint("activation_token", name="uq_hotmart_pending_activation_token"),
+        Index("ix_hotmart_pending_workspace_status_created", "source_workspace_id", "status", "created_at"),
+        Index("ix_hotmart_pending_buyer_status_created", "buyer_email", "status", "created_at"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -1364,6 +1523,10 @@ class HotmartPendingActivationRecord(SQLModel, table=True):
 
 class HotmartReconciliationIssueRecord(SQLModel, table=True):
     __tablename__ = "hotmart_reconciliation_issues"
+    __table_args__ = (
+        Index("ix_hotmart_reconciliation_workspace_env_status_updated", "workspace_id", "environment", "status", "updated_at"),
+        Index("ix_hotmart_reconciliation_workspace_env_severity_status", "workspace_id", "environment", "severity", "status"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
@@ -1656,6 +1819,24 @@ class WorkspaceProviderSecretRecord(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class PlatformProviderSecretRecord(SQLModel, table=True):
+    __tablename__ = "platform_provider_secrets"
+    __table_args__ = (
+        UniqueConstraint("provider_key", "secret_kind", name="uq_platform_provider_secret"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    provider_key: LLMProviderKey = Field(default=LLMProviderKey.openai, index=True, nullable=False)
+    secret_kind: str = Field(default="api_key", nullable=False)
+    secret_ciphertext: str = Field(default="", nullable=False)
+    secret_ref: str = Field(default="", nullable=False)
+    status: RuntimeSecretStatus = Field(default=RuntimeSecretStatus.not_configured, nullable=False)
+    last_rotated_at: datetime | None = Field(default=None, nullable=True)
+    updated_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
 class RuntimeSettingsAuditRecord(SQLModel, table=True):
     __tablename__ = "runtime_settings_audit"
 
@@ -1667,6 +1848,38 @@ class RuntimeSettingsAuditRecord(SQLModel, table=True):
     after_payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     actor_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
     actor_email: str = Field(default="", nullable=False)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class RuntimePropagationRunRecord(SQLModel, table=True):
+    __tablename__ = "runtime_propagation_runs"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    actor_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    mode: RuntimePropagationMode = Field(default=RuntimePropagationMode.fallback_only, index=True, nullable=False)
+    provider_key: LLMProviderKey = Field(default=LLMProviderKey.openai, index=True, nullable=False)
+    target_scope: str = Field(default="all", index=True, nullable=False)
+    payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    dry_run: bool = Field(default=True, nullable=False)
+    status: RuntimePropagationStatus = Field(default=RuntimePropagationStatus.planned, index=True, nullable=False)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    completed_at: datetime | None = Field(default=None, nullable=True)
+
+
+class RuntimePropagationItemRecord(SQLModel, table=True):
+    __tablename__ = "runtime_propagation_items"
+    __table_args__ = (
+        Index("ix_runtime_propagation_items_run_workspace", "run_id", "workspace_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    run_id: UUID = Field(foreign_key="runtime_propagation_runs.id", index=True, nullable=False)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True, nullable=False)
+    previous_workspace_runtime_version: int | None = Field(default=None, nullable=True)
+    next_workspace_runtime_version: int | None = Field(default=None, nullable=True)
+    action: str = Field(default="skip", nullable=False)
+    status: RuntimePropagationStatus = Field(default=RuntimePropagationStatus.planned, index=True, nullable=False)
+    error_message: str = Field(default="", nullable=False)
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 

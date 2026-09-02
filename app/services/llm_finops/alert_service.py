@@ -145,11 +145,13 @@ class LLMFinOpsAlertService:
         self,
         session: Session,
         *,
-        workspace_id: UUID,
+        workspace_id: UUID | None,
         status: str = "active",
         limit: int = 100,
     ) -> list[LLMFinOpsAlertRecord]:
-        statement = select(LLMFinOpsAlertRecord).where(LLMFinOpsAlertRecord.workspace_id == workspace_id)
+        statement = select(LLMFinOpsAlertRecord)
+        if workspace_id is not None:
+            statement = statement.where(LLMFinOpsAlertRecord.workspace_id == workspace_id)
         normalized_status = str(status or "").strip()
         if normalized_status:
             statement = statement.where(LLMFinOpsAlertRecord.status == normalized_status)

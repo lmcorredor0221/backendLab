@@ -6,8 +6,11 @@ from uuid import UUID
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from app.core.config import get_settings
 from app.models import (
     CommercialEventRecord,
+    CommercialPackageCatalogRecord,
+    CommercialQuotaProductConfigRecord,
     HotmartIntegrationStatusResponse,
     HotmartOperationalAlertResponse,
     HotmartPaymentLinkRecord,
@@ -23,6 +26,7 @@ from app.models import (
 )
 from app.services.hotmart.auth import normalize_hotmart_environment
 from app.services.hotmart.secrets import build_hotmart_status
+from app.services.commercial_quota_service import ensure_quota_seed
 
 
 AlertSeverity = Literal["critical", "high", "medium", "low"]
@@ -183,6 +187,28 @@ def _build_alerts(
     metrics: dict[str, int],
 ) -> list[HotmartOperationalAlertResponse]:
     alerts: list[HotmartOperationalAlertResponse] = []
+    provider = (get_settings().commerce_checkout_provider or "sandbox").strip().lower()
+    configured_env = normalize_hotmart_environment(get_settings().hotmart_environment)
+    if provider != "hotmart":
+        alerts.append(
+            _alert(
+                key="commerce_provider_not_hotmart",
+                severity="critical",
+                title="Provider comercial no apunta a Hotmart",
+                message="LAB seguira creando checkouts sandbox mientras commerce_checkout_provider no sea hotmart.",
+                evidence=[f"commerce_checkout_provider={provider or 'sandbox'}"],
+            )
+        )
+    if status.environment == "production" and configured_env != "production":
+        alerts.append(
+            _alert(
+                key="hotmart_environment_not_production",
+                severity="high",
+                title="Ambiente Hotmart productivo no esta activo",
+                message="La revision se pidio para production, pero HOTMART_ENVIRONMENT no esta en production.",
+                evidence=[f"hotmart_environment={configured_env}"],
+            )
+        )
     if not status.enabled:
         alerts.append(
             _alert(
@@ -245,6 +271,29 @@ def _build_alerts(
                 title="Sin mappings activos",
                 message="No hay productos internos conectados a productos Hotmart.",
                 evidence=["active_mappings=0"],
+            )
+        )
+    if metrics.get("complete_core_product_mappings", 0) < 2:
+        alerts.append(
+            _alert(
+                key="hotmart_core_product_mappings_incomplete",
+                severity="high",
+                title="Mappings Hotmart incompletos para productos core",
+                message="Blueprint Pro y ACP deben tener mapping activo y product id/ucode antes de vender.",
+                evidence=[
+                    f"blueprint_pro_mappings={metrics.get('blueprint_pro_mappings', 0)}",
+                    f"acp_mappings={metrics.get('acp_mappings', 0)}",
+                ],
+            )
+        )
+    if metrics.get("active_package_catalog_entries", 0) == 0:
+        alerts.append(
+            _alert(
+                key="hotmart_package_catalog_empty",
+                severity="medium",
+                title="Catalogo de paquetes vacio",
+                message="No hay paquetes activos que indiquen cuantas unidades concede una compra Hotmart.",
+                evidence=["active_package_catalog_entries=0"],
             )
         )
     if metrics["failed_webhooks"] > 0:
@@ -314,7 +363,62 @@ def build_hotmart_release_readiness(
 ) -> HotmartReleaseReadinessResponse:
     env = normalize_hotmart_environment(environment)
     status = build_hotmart_status(session, workspace_id=workspace_id, environment=env)
+    ensure_quota_seed(session)
+    settings = get_settings()
+    provider = (settings.commerce_checkout_provider or "sandbox").strip().lower()
+    configured_hotmart_environment = normalize_hotmart_environment(settings.hotmart_environment)
+    blueprint_pro_mappings = _count_rows(
+        session,
+        select(HotmartProductMappingRecord).where(
+            HotmartProductMappingRecord.workspace_id == workspace_id,
+            HotmartProductMappingRecord.environment == env,
+            HotmartProductMappingRecord.internal_product_key == "blueprint_pro",
+            HotmartProductMappingRecord.is_active == True,  # noqa: E712
+        ),
+    )
+    acp_mappings = _count_rows(
+        session,
+        select(HotmartProductMappingRecord).where(
+            HotmartProductMappingRecord.workspace_id == workspace_id,
+            HotmartProductMappingRecord.environment == env,
+            HotmartProductMappingRecord.internal_product_key == "acp",
+            HotmartProductMappingRecord.is_active == True,  # noqa: E712
+        ),
+    )
+    blueprint_pro_free_units = int(
+        session.exec(
+            select(CommercialQuotaProductConfigRecord.initial_free_units).where(
+                CommercialQuotaProductConfigRecord.product_key == "blueprint_pro"
+            )
+        ).first()
+        or 0
+    )
+    acp_free_units = int(
+        session.exec(
+            select(CommercialQuotaProductConfigRecord.initial_free_units).where(
+                CommercialQuotaProductConfigRecord.product_key == "acp"
+            )
+        ).first()
+        or 0
+    )
     metrics = {
+        "commerce_provider_hotmart": 1 if provider == "hotmart" else 0,
+        "configured_hotmart_environment_matches": 1 if configured_hotmart_environment == env else 0,
+        "blueprint_pro_mappings": blueprint_pro_mappings,
+        "acp_mappings": acp_mappings,
+        "complete_core_product_mappings": int(blueprint_pro_mappings > 0) + int(acp_mappings > 0),
+        "blueprint_pro_initial_free_units": blueprint_pro_free_units,
+        "acp_initial_free_units": acp_free_units,
+        "quota_product_configs": _count_rows(
+            session,
+            select(CommercialQuotaProductConfigRecord).where(
+                CommercialQuotaProductConfigRecord.product_key.in_({"blueprint_pro", "acp"}),
+            ),
+        ),
+        "active_package_catalog_entries": _count_rows(
+            session,
+            select(CommercialPackageCatalogRecord).where(CommercialPackageCatalogRecord.enabled == True),  # noqa: E712
+        ),
         "active_mappings": _count_rows(
             session,
             select(HotmartProductMappingRecord).where(
@@ -401,6 +505,23 @@ def build_hotmart_release_readiness(
 
     checklist = [
         _check(
+            key="commerce_provider_hotmart",
+            label="Provider comercial Hotmart",
+            passed=provider == "hotmart",
+            severity="critical",
+            detail="COMMERCE_CHECKOUT_PROVIDER debe ser hotmart para que los checkouts reales usen Hotmart.",
+            evidence=[f"commerce_checkout_provider={provider or 'sandbox'}"],
+        ),
+        _check(
+            key="hotmart_environment_matches",
+            label="Ambiente Hotmart coincide",
+            passed=configured_hotmart_environment == env,
+            severity="high",
+            detail="HOTMART_ENVIRONMENT debe coincidir con el ambiente que estas revisando.",
+            evidence=[f"configured={configured_hotmart_environment}", f"readiness={env}"],
+            warning=configured_hotmart_environment != env,
+        ),
+        _check(
             key="integration_enabled",
             label="Integracion habilitada",
             passed=status.enabled,
@@ -451,6 +572,37 @@ def build_hotmart_release_readiness(
             severity="high",
             detail="Debe existir al menos un mapping activo producto interno -> Hotmart.",
             evidence=[f"active_mappings={metrics['active_mappings']}"],
+        ),
+        _check(
+            key="core_product_mappings",
+            label="Mappings Blueprint Pro y ACP",
+            passed=metrics["complete_core_product_mappings"] == 2,
+            severity="high",
+            detail="Blueprint Pro y ACP deben estar conectados a productos/ofertas/planes de Hotmart.",
+            evidence=[
+                f"blueprint_pro_mappings={metrics['blueprint_pro_mappings']}",
+                f"acp_mappings={metrics['acp_mappings']}",
+            ],
+        ),
+        _check(
+            key="quota_product_configs",
+            label="Cuotas gratis parametrizadas",
+            passed=metrics["quota_product_configs"] >= 2,
+            severity="medium",
+            detail="Las cuotas gratis se controlan con initial_free_units para blueprint_pro y acp.",
+            evidence=[
+                f"blueprint_pro_initial_free_units={metrics['blueprint_pro_initial_free_units']}",
+                f"acp_initial_free_units={metrics['acp_initial_free_units']}",
+            ],
+        ),
+        _check(
+            key="package_catalog_configured",
+            label="Catalogo de paquetes configurado",
+            passed=metrics["active_package_catalog_entries"] > 0,
+            severity="medium",
+            detail="Los paquetes activos definen cuantas unidades concede una compra Hotmart.",
+            evidence=[f"active_package_catalog_entries={metrics['active_package_catalog_entries']}"],
+            warning=metrics["active_package_catalog_entries"] == 0,
         ),
         _check(
             key="payment_link_generated",
