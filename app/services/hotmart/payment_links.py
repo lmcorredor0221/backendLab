@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import logging
 from typing import Any
 from uuid import UUID
 
 import httpx
+from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
 from app.core.config import get_settings
@@ -31,6 +34,9 @@ from app.services.hotmart.auth import (
 )
 from app.services.hotmart.redaction import redact_payload
 from app.services.hotmart.secrets import build_hotmart_status, load_hotmart_credentials
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class HotmartPaymentLinkError(RuntimeError):
@@ -77,19 +83,43 @@ class HotmartPaymentLinkApiClient:
         return f"{self.api_base_url}{normalized_path}"
 
     def create_payment_link(self, *, access_token: str, payload: dict[str, Any]) -> HotmartPaymentLinkApiResult:
+        url = self._url(self.create_path)
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Bearer {access_token}",
         }
+        request_diagnostics = {
+            "method": "POST",
+            "url": url,
+            "path": self.create_path,
+            "timeout_seconds": self.timeout_seconds,
+            "headers_redacted": redact_payload(headers),
+            "payload_redacted": redact_payload(payload),
+        }
+        LOGGER.info("hotmart.payment_link.provider_request %s", json.dumps(request_diagnostics, ensure_ascii=False, default=str))
         with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
-            response = client.post(self._url(self.create_path), headers=headers, json=payload)
+            response = client.post(url, headers=headers, json=payload)
 
         try:
             response_payload = response.json() if response.text else {}
         except ValueError:
             response_payload = {"raw": response.text[:500]}
         redacted = redact_payload(response_payload if isinstance(response_payload, dict) else {"payload": response_payload})
+        response_diagnostics = {
+            "http_status": response.status_code,
+            "url": url,
+            "path": self.create_path,
+            "response_payload_redacted": redacted,
+        }
+        LOGGER.info("hotmart.payment_link.provider_response %s", json.dumps(response_diagnostics, ensure_ascii=False, default=str))
+        redacted = {
+            **redacted,
+            "_lab_payment_link_http_diagnostics": {
+                "request": request_diagnostics,
+                "response": response_diagnostics,
+            },
+        }
 
         if response.status_code >= 400:
             raise HotmartPaymentLinkError(
@@ -379,6 +409,17 @@ def _build_payment_link_payload(
     return request_payload
 
 
+def _trace_step(trace: list[dict[str, Any]], step: str, **details: Any) -> None:
+    entry = {
+        "order": len(trace) + 1,
+        "step": step,
+        "at": utc_now().isoformat(),
+        "details": redact_payload(details),
+    }
+    trace.append(entry)
+    LOGGER.info("hotmart.payment_link.trace %s", json.dumps(entry, ensure_ascii=False, default=str))
+
+
 def _existing_payment_link(
     session: Session,
     *,
@@ -445,28 +486,109 @@ def create_hotmart_payment_link_for_order(
     transport: httpx.BaseTransport | None = None,
 ) -> HotmartPaymentLinkResponse:
     env = normalize_hotmart_environment(payload.environment)
+    trace: list[dict[str, Any]] = []
+    _trace_step(
+        trace,
+        "create_hotmart_payment_link_for_order.started",
+        workspace_id=str(workspace_id),
+        integration_workspace_id=str(integration_workspace_id or workspace_id),
+        environment=env,
+        order_id=str(payload.order_id) if payload.order_id is not None else "",
+        checkout_ref=payload.checkout_ref,
+        force_new=payload.force_new,
+    )
     resolved_integration_workspace_id = integration_workspace_id or workspace_id
     order = _resolve_order(session, workspace_id=workspace_id, payload=payload)
+    _trace_step(
+        trace,
+        "order.resolved",
+        order_id=str(order.id),
+        checkout_ref=order.checkout_ref,
+        provider=order.provider,
+        status=str(order.status),
+        session_id=str(order.session_id or ""),
+        buyer_user_id=str(order.buyer_user_id),
+        total_cents=order.total_cents,
+        currency=order.currency,
+    )
     existing = _existing_payment_link(session, order_id=order.id)
     if existing is not None and not payload.force_new:
+        _trace_step(
+            trace,
+            "existing_payment_link.reused",
+            payment_link_id=str(existing.id),
+            provider_ref=existing.provider_ref,
+            activation_status=existing.activation_status,
+        )
         return serialize_hotmart_payment_link(existing)
 
     product_key = _order_product_key(session, order)
+    _trace_step(trace, "product_key.resolved", product_key=product_key)
     mapping = _get_active_mapping(
         session,
         workspace_id=resolved_integration_workspace_id,
         environment=env,
         product_key=product_key,
     )
+    _trace_step(
+        trace,
+        "mapping.resolved",
+        mapping_id=str(mapping.id),
+        mapping_workspace_id=str(mapping.workspace_id),
+        product_key=mapping.internal_product_key,
+        hotmart_product_id=mapping.hotmart_product_id,
+        hotmart_product_ucode=mapping.hotmart_product_ucode,
+        offer_code=mapping.offer_code,
+        plan_code=mapping.plan_code,
+        billing_mode=mapping.billing_mode,
+        currency=mapping.currency,
+        is_active=mapping.is_active,
+    )
     status = build_hotmart_status(session, workspace_id=resolved_integration_workspace_id, environment=env)
     callback_url = payload.callback_url.strip() or status.webhook_public_url.strip()
+    _trace_step(
+        trace,
+        "integration_status.resolved",
+        status=status.status,
+        enabled=status.enabled,
+        storage_mode=status.storage_mode,
+        api_base_url=status.api_base_url,
+        auth_base_url=status.auth_base_url,
+        webhook_public_url=status.webhook_public_url,
+        callback_url=callback_url,
+        client_id_configured=status.client_id_configured,
+        client_secret_configured=status.client_secret_configured,
+        basic_token_configured=status.basic_token_configured,
+        hottok_configured=status.hottok_configured,
+    )
     if not callback_url:
         raise ValueError("Hotmart payment link creation requires link_callback_url/webhook_public_url.")
     credentials = load_hotmart_credentials(session, workspace_id=resolved_integration_workspace_id, environment=env)
     if credentials is None:
         raise ValueError("Hotmart OAuth credentials are required before creating payment links.")
+    _trace_step(
+        trace,
+        "credentials.loaded",
+        source_workspace_id=str(resolved_integration_workspace_id),
+        credentials_present={
+            "client_id": bool(credentials.client_id.strip()),
+            "client_secret": bool(credentials.client_secret.strip()),
+            "basic_token": bool(credentials.basic_token.strip()),
+        },
+    )
 
     snapshot = ensure_order_commercial_snapshot(session, order)
+    _trace_step(
+        trace,
+        "commercial_snapshot.resolved",
+        snapshot_keys=sorted(snapshot.keys()),
+        checkout_currency=snapshot.get("checkout_currency"),
+        checkout_amount_cents=snapshot.get("checkout_amount_cents"),
+        net_amount_usd_cents=snapshot.get("net_amount_usd_cents"),
+        amount_usd_base_cents=snapshot.get("amount_usd_base_cents"),
+        discount_usd_cents=snapshot.get("discount_usd_cents"),
+        trm_cop_frozen=snapshot.get("trm_cop_frozen"),
+    )
     request_payload = _build_payment_link_payload(
         order=order,
         product_key=product_key,
@@ -475,6 +597,7 @@ def create_hotmart_payment_link_for_order(
         callback_url=callback_url,
         snapshot=snapshot,
     )
+    _trace_step(trace, "payment_link_payload.built", request_payload=redact_payload(request_payload))
     target_currency = str(request_payload.get("currency") or "USD").upper()
     _, normalized_amount_cents, trm_applied = _resolve_checkout_value(
         snapshot=snapshot,
@@ -501,6 +624,13 @@ def create_hotmart_payment_link_for_order(
         timeout_seconds=get_settings().hotmart_request_timeout_seconds,
         transport=transport,
     )
+    _trace_step(
+        trace,
+        "provider_client.created",
+        api_base_url=api_client.api_base_url,
+        create_path=api_client.create_path,
+        timeout_seconds=api_client.timeout_seconds,
+    )
     try:
         token = HotmartAuthClient(
             environment=env,
@@ -508,8 +638,32 @@ def create_hotmart_payment_link_for_order(
             timeout_seconds=get_settings().hotmart_request_timeout_seconds,
             transport=transport,
         ).fetch_access_token(credentials)
+        _trace_step(
+            trace,
+            "oauth.succeeded",
+            token_type=token.token_type,
+            expires_in=token.expires_in,
+            scope=token.scope,
+            response_payload_redacted=token.raw_payload_redacted,
+        )
         api_result = api_client.create_payment_link(access_token=token.access_token, payload=request_payload)
+        _trace_step(
+            trace,
+            "provider_payment_link.succeeded",
+            provider_ref=api_result.provider_ref,
+            checkout_url=api_result.checkout_url,
+            http_status=api_result.http_status,
+            response_payload_redacted=api_result.payload_redacted,
+        )
     except (HotmartAuthError, HotmartPaymentLinkError) as exc:
+        _trace_step(
+            trace,
+            "provider_payment_link.failed",
+            error_type=exc.__class__.__name__,
+            error_code=exc.code,
+            http_status=exc.http_status,
+            response_payload_redacted=exc.payload,
+        )
         failed = HotmartPaymentLinkRecord(
             workspace_id=workspace_id,
             order_id=order.id,
@@ -528,10 +682,28 @@ def create_hotmart_payment_link_for_order(
             discount_origin=str(order.metadata_payload.get("discount_origin") or "internal_upgrade_credit")
             if order.subtotal_cents != order.total_cents
             else "none",
-            request_payload_redacted=redact_payload(request_payload),
-            response_payload_redacted=exc.payload,
-            metadata_payload={"error_code": exc.code, "http_status": exc.http_status},
+            request_payload_redacted={
+                **redact_payload(request_payload),
+                "_lab_payment_link_trace": trace,
+            },
+            response_payload_redacted={
+                **exc.payload,
+                "_lab_payment_link_error": {"error_code": exc.code, "http_status": exc.http_status},
+            },
         )
+        session.add(failed)
+        session.flush()
+        _trace_step(
+            trace,
+            "failed_attempt.persisted",
+            payment_link_record_id=str(failed.id),
+            activation_status=failed.activation_status,
+        )
+        failed.request_payload_redacted = {
+            **dict(failed.request_payload_redacted or {}),
+            "_lab_payment_link_trace": trace,
+        }
+        flag_modified(failed, "request_payload_redacted")
         session.add(failed)
         session.flush()
         if isinstance(exc, HotmartPaymentLinkError):
@@ -562,10 +734,25 @@ def create_hotmart_payment_link_for_order(
         discount_origin=str(order.metadata_payload.get("discount_origin") or "internal_upgrade_credit")
         if order.subtotal_cents != order.total_cents
         else "none",
-        request_payload_redacted=redact_payload(request_payload),
+        request_payload_redacted={
+            **redact_payload(request_payload),
+            "_lab_payment_link_trace": trace,
+        },
         response_payload_redacted=api_result.payload_redacted,
     )
     session.add(link)
+    _trace_step(
+        trace,
+        "payment_link_record.persisted",
+        payment_link_record_id=str(link.id),
+        provider_ref=link.provider_ref,
+        activation_status=link.activation_status,
+    )
+    link.request_payload_redacted = {
+        **dict(link.request_payload_redacted or {}),
+        "_lab_payment_link_trace": trace,
+    }
+    flag_modified(link, "request_payload_redacted")
     order.checkout_url = api_result.checkout_url
     order.metadata_payload = {
         **order.metadata_payload,
@@ -578,6 +765,13 @@ def create_hotmart_payment_link_for_order(
     }
     order.updated_at = utc_now()
     session.add(order)
+    _trace_step(
+        trace,
+        "order.updated",
+        order_id=str(order.id),
+        checkout_url_present=bool(order.checkout_url),
+        payment_link_activation_status=order.metadata_payload.get("hotmart_payment_link_activation_status"),
+    )
     record_commercial_event(
         session,
         workspace_id=workspace_id,
@@ -591,6 +785,18 @@ def create_hotmart_payment_link_for_order(
         metadata={"order_id": str(order.id), "provider_ref": api_result.provider_ref},
         correlation_id=order.checkout_ref,
     )
+    _trace_step(
+        trace,
+        "commercial_event.recorded",
+        event_key="hotmart_payment_link_pending_activation",
+        correlation_id=order.checkout_ref,
+    )
+    link.request_payload_redacted = {
+        **dict(link.request_payload_redacted or {}),
+        "_lab_payment_link_trace": trace,
+    }
+    flag_modified(link, "request_payload_redacted")
+    session.add(link)
     session.flush()
     return serialize_hotmart_payment_link(link)
 

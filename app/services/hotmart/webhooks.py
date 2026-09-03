@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
 from app.core.config import get_settings
@@ -36,7 +38,7 @@ from app.services.commerce_service import (
 from app.services.hotmart.auth import normalize_hotmart_environment
 from app.services.hotmart.pending_activations import register_pending_hotmart_activation
 from app.services.hotmart.redaction import redact_headers, redact_payload
-from app.services.hotmart.secrets import load_hotmart_hottok
+from app.services.hotmart.secrets import resolve_hotmart_hottok
 
 
 APPROVAL_EVENTS = {"PURCHASE_APPROVED", "PURCHASE_COMPLETE", "PURCHASE_COMPLETED"}
@@ -44,6 +46,7 @@ REFUND_EVENTS = {"PURCHASE_REFUNDED", "PURCHASE_REFUND_REQUEST"}
 CHARGEBACK_EVENTS = {"PURCHASE_CHARGEBACK"}
 CANCEL_EVENTS = {"PURCHASE_CANCELED", "PURCHASE_CANCELLED", "PURCHASE_EXPIRED"}
 DELAY_EVENTS = {"PURCHASE_DELAYED", "PURCHASE_BILLET_PRINTED", "PURCHASE_WAITING_PAYMENT"}
+LOGGER = logging.getLogger(__name__)
 
 
 def process_hotmart_webhook(
@@ -59,6 +62,18 @@ def process_hotmart_webhook(
     transaction = _extract_transaction(payload)
     payload_hash = _payload_hash(payload)
     event_id = _extract_event_id(payload, event_type=event_type, transaction=transaction, payload_hash=payload_hash)
+    trace: list[dict[str, Any]] = []
+    _trace_step(
+        trace,
+        "process_hotmart_webhook.started",
+        environment=env,
+        event_id=event_id,
+        event_type=event_type,
+        transaction=transaction,
+        payload_hash=payload_hash,
+        request_headers_present=request_headers is not None,
+        hottok_header_present=bool((hottok_header or "").strip()),
+    )
 
     existing_event = session.exec(
         select(HotmartWebhookEventRecord).where(
@@ -67,38 +82,79 @@ def process_hotmart_webhook(
         )
     ).first()
     if existing_event is not None:
+        _trace_step(
+            trace,
+            "existing_event.resolved",
+            webhook_event_id=str(existing_event.id),
+            previous_status=existing_event.processing_status,
+            previous_error_code=existing_event.error_code,
+            previous_retries=existing_event.retries,
+            previous_hottok_validated=existing_event.hottok_validated,
+        )
         pending_activation = _pending_activation_for_event(session, existing_event.id)
+        _trace_step(
+            trace,
+            "pending_activation.checked",
+            pending_activation_id=str(pending_activation.id) if pending_activation is not None else "",
+            pending_activation_status=str(pending_activation.status) if pending_activation is not None else "",
+        )
         existing_event.retries += 1
         retry_workspace_id = existing_event.workspace_id
         if retry_workspace_id is None:
             retry_order = _resolve_order(session, payload=payload, transaction=transaction)
             retry_workspace_id = retry_order.workspace_id if retry_order is not None else _fallback_workspace_id(session, environment=env)
-        retry_hottok_validated = _validate_hottok(
+            _trace_step(
+                trace,
+                "duplicate_workspace.resolved",
+                order_id=str(retry_order.id) if retry_order is not None else "",
+                workspace_id=str(retry_workspace_id or ""),
+                source="order" if retry_order is not None else "environment_fallback",
+            )
+        else:
+            _trace_step(trace, "duplicate_workspace.reused", workspace_id=str(retry_workspace_id))
+        retry_hottok_validated, retry_hottok_diagnostics = _validate_hottok(
             session,
             workspace_id=retry_workspace_id,
             environment=env,
             hottok_header=hottok_header,
+        )
+        _trace_step(
+            trace,
+            "hottok.validated",
+            validated=retry_hottok_validated,
+            diagnostics=retry_hottok_diagnostics,
         )
         _attach_request_diagnostics(
             existing_event,
             request_headers=request_headers,
             hottok_header=hottok_header,
             payload_hash=payload_hash,
+            hottok_diagnostics=retry_hottok_diagnostics,
+            webhook_trace=trace,
         )
         existing_event.hottok_validated = existing_event.hottok_validated or retry_hottok_validated
         if not retry_hottok_validated:
+            _trace_step(trace, "duplicate.rejected", error_code="invalid_hottok")
             existing_event.processing_status = "rejected"
             existing_event.error_code = "invalid_hottok"
             existing_event.error_message = "Invalid or missing X-HOTMART-HOTTOK."
             existing_event.processed_at = utc_now()
+            _persist_webhook_trace(existing_event, trace, key="_lab_last_duplicate_webhook_trace")
             session.add(existing_event)
             session.flush()
             raise PermissionError("Invalid Hotmart webhook token.")
         if existing_event.payload_hash != payload_hash:
+            _trace_step(
+                trace,
+                "duplicate.payload_conflict",
+                stored_payload_hash=existing_event.payload_hash,
+                incoming_payload_hash=payload_hash,
+            )
             existing_event.processing_status = "observed"
             existing_event.error_code = "payload_conflict"
             existing_event.error_message = "Same Hotmart event id/type arrived with a different payload hash."
             existing_event.processed_at = utc_now()
+            _persist_webhook_trace(existing_event, trace, key="_lab_last_duplicate_webhook_trace")
             session.add(existing_event)
             from app.services.hotmart.sync import _open_or_update_issue
 
@@ -134,6 +190,8 @@ def process_hotmart_webhook(
                 pending_activation_id=pending_activation.id if pending_activation is not None else None,
                 message="Hotmart webhook conflict observed and sent to reconciliation.",
             )
+        _trace_step(trace, "duplicate.accepted_noop", final_status=existing_event.processing_status)
+        _persist_webhook_trace(existing_event, trace, key="_lab_last_duplicate_webhook_trace")
         session.add(existing_event)
         session.flush()
         return HotmartWebhookIngestResponse(
@@ -151,12 +209,22 @@ def process_hotmart_webhook(
 
     order = _resolve_order(session, payload=payload, transaction=transaction)
     workspace_id = order.workspace_id if order is not None else _fallback_workspace_id(session, environment=env)
-    hottok_validated = _validate_hottok(
+    _trace_step(
+        trace,
+        "order_and_workspace.resolved",
+        order_id=str(order.id) if order is not None else "",
+        order_status=str(order.status) if order is not None else "",
+        checkout_ref=order.checkout_ref if order is not None else "",
+        workspace_id=str(workspace_id or ""),
+        source="order" if order is not None else "environment_fallback",
+    )
+    hottok_validated, hottok_diagnostics = _validate_hottok(
         session,
         workspace_id=workspace_id,
         environment=env,
         hottok_header=hottok_header,
     )
+    _trace_step(trace, "hottok.validated", validated=hottok_validated, diagnostics=hottok_diagnostics)
     payload_redacted = redact_payload(payload)
     diagnostics = _request_diagnostics(
         request_headers=request_headers,
@@ -164,6 +232,9 @@ def process_hotmart_webhook(
     )
     if diagnostics:
         payload_redacted["_lab_request_diagnostics"] = diagnostics
+    if hottok_diagnostics:
+        payload_redacted["_lab_hottok_resolution_diagnostics"] = hottok_diagnostics
+    payload_redacted["_lab_webhook_trace"] = trace
     webhook_event = HotmartWebhookEventRecord(
         event_id=event_id,
         event_type=event_type,
@@ -177,17 +248,22 @@ def process_hotmart_webhook(
     )
     session.add(webhook_event)
     session.flush()
+    _trace_step(trace, "webhook_event.persisted", webhook_event_id=str(webhook_event.id), status=webhook_event.processing_status)
+    _persist_webhook_trace(webhook_event, trace)
 
     if not hottok_validated:
+        _trace_step(trace, "webhook.rejected", error_code="invalid_hottok")
         webhook_event.processing_status = "rejected"
         webhook_event.error_code = "invalid_hottok"
         webhook_event.error_message = "Invalid or missing X-HOTMART-HOTTOK."
         webhook_event.processed_at = utc_now()
+        _persist_webhook_trace(webhook_event, trace)
         session.add(webhook_event)
         session.flush()
         raise PermissionError("Invalid Hotmart webhook token.")
 
     if order is None and workspace_id is not None and event_type in APPROVAL_EVENTS:
+        _trace_step(trace, "pending_activation.registering", reason="approved_purchase_without_internal_order")
         pending_activation = register_pending_hotmart_activation(
             session,
             payload=payload,
@@ -199,6 +275,16 @@ def process_hotmart_webhook(
         )
         webhook_event.processing_status = "pending_activation"
         webhook_event.processed_at = utc_now()
+        _trace_step(
+            trace,
+            "pending_activation.registered",
+            pending_activation_id=str(pending_activation.id),
+            provider_ref=pending_activation.provider_ref,
+            buyer_email=pending_activation.buyer_email,
+            product_key=pending_activation.product_key,
+            status=str(pending_activation.status),
+        )
+        _persist_webhook_trace(webhook_event, trace)
         session.add(webhook_event)
         session.flush()
         return HotmartWebhookIngestResponse(
@@ -212,10 +298,12 @@ def process_hotmart_webhook(
         )
 
     if order is None or workspace_id is None:
+        _trace_step(trace, "webhook.unresolved", error_code="order_not_found")
         webhook_event.processing_status = "unresolved"
         webhook_event.error_code = "order_not_found"
         webhook_event.error_message = "Could not resolve internal order from Hotmart webhook."
         webhook_event.processed_at = utc_now()
+        _persist_webhook_trace(webhook_event, trace)
         session.add(webhook_event)
         session.flush()
         return HotmartWebhookIngestResponse(
@@ -228,6 +316,7 @@ def process_hotmart_webhook(
         )
 
     if event_type in APPROVAL_EVENTS:
+        _trace_step(trace, "approved_purchase.processing")
         response = _process_approved_purchase(
             session,
             order=order,
@@ -236,6 +325,7 @@ def process_hotmart_webhook(
             transaction=transaction or event_id,
         )
     elif event_type in REFUND_EVENTS | CHARGEBACK_EVENTS | CANCEL_EVENTS:
+        _trace_step(trace, "revocation.processing", event_type=event_type)
         response = _process_revocation_event(
             session,
             order=order,
@@ -245,6 +335,7 @@ def process_hotmart_webhook(
             event_type=event_type,
         )
     elif event_type in DELAY_EVENTS:
+        _trace_step(trace, "delayed_payment.recording", event_type=event_type)
         webhook_event.processing_status = "processed"
         webhook_event.processed_at = utc_now()
         session.add(webhook_event)
@@ -258,6 +349,7 @@ def process_hotmart_webhook(
             message="Hotmart delayed/waiting payment event recorded.",
         )
     else:
+        _trace_step(trace, "event.ignored", event_type=event_type)
         webhook_event.processing_status = "ignored"
         webhook_event.processed_at = utc_now()
         session.add(webhook_event)
@@ -270,6 +362,16 @@ def process_hotmart_webhook(
             order_id=order.id,
             message=f"Hotmart event {event_type or 'unknown'} does not change commerce state.",
         )
+    _trace_step(
+        trace,
+        "process_hotmart_webhook.finished",
+        processing_status=response.processing_status,
+        order_id=str(response.order_id or ""),
+        payment_id=str(response.payment_id or ""),
+        entitlement_id=str(response.entitlement_id or ""),
+        pending_activation_id=str(response.pending_activation_id or ""),
+    )
+    _persist_webhook_trace(webhook_event, trace)
     session.flush()
     return response
 
@@ -494,18 +596,68 @@ def _validate_hottok(
     workspace_id: UUID | None,
     environment: str,
     hottok_header: str,
-) -> bool:
+) -> tuple[bool, dict[str, Any]]:
     provided = (hottok_header or "").strip()
+    diagnostics: dict[str, Any] = {
+        "provided_present": bool(provided),
+        "provided_length": len(provided),
+        "provided_sha256_prefix": hashlib.sha256(provided.encode("utf-8")).hexdigest()[:12] if provided else "",
+        "provided_matches_expected": False,
+        "workspace_resolved": workspace_id is not None,
+    }
     if not provided:
-        return False
+        return False, diagnostics
     expected = ""
     if workspace_id is not None:
-        expected = load_hotmart_hottok(session, workspace_id=workspace_id, environment=environment)
+        expected, resolution_diagnostics = resolve_hotmart_hottok(
+            session,
+            workspace_id=workspace_id,
+            environment=environment,
+        )
+        diagnostics.update(resolution_diagnostics)
     if not expected:
         settings = get_settings()
         if normalize_hotmart_environment(settings.hotmart_environment) == environment:
             expected = settings.hotmart_hottok.strip()
-    return bool(expected and hmac.compare_digest(provided, expected))
+            if not diagnostics.get("expected_present"):
+                diagnostics.update(
+                    {
+                        "environment": environment,
+                        "source": "env_without_workspace" if workspace_id is None else "env_secondary_fallback",
+                        "env_candidate_configured": bool(expected),
+                        "expected_present": bool(expected),
+                        "expected_length": len(expected),
+                        "expected_sha256_prefix": hashlib.sha256(expected.encode("utf-8")).hexdigest()[:12]
+                        if expected
+                        else "",
+                    }
+                )
+    matches = bool(expected and hmac.compare_digest(provided, expected))
+    diagnostics["provided_matches_expected"] = matches
+    return matches, diagnostics
+
+
+def _trace_step(trace: list[dict[str, Any]], step: str, **details: Any) -> None:
+    entry = {
+        "order": len(trace) + 1,
+        "step": step,
+        "at": utc_now().isoformat(),
+        "details": redact_payload(details),
+    }
+    trace.append(entry)
+    LOGGER.info("hotmart.webhook.trace %s", json.dumps(entry, ensure_ascii=False, default=str))
+
+
+def _persist_webhook_trace(
+    event: HotmartWebhookEventRecord,
+    trace: list[dict[str, Any]],
+    *,
+    key: str = "_lab_webhook_trace",
+) -> None:
+    payload_redacted = dict(event.payload_redacted or {})
+    payload_redacted[key] = trace
+    event.payload_redacted = payload_redacted
+    flag_modified(event, "payload_redacted")
 
 
 def _request_diagnostics(
@@ -534,14 +686,22 @@ def _attach_request_diagnostics(
     request_headers: dict[str, str] | None,
     hottok_header: str,
     payload_hash: str,
+    hottok_diagnostics: dict[str, Any] | None = None,
+    webhook_trace: list[dict[str, Any]] | None = None,
 ) -> None:
     diagnostics = _request_diagnostics(request_headers=request_headers, hottok_header=hottok_header)
-    if not diagnostics:
+    if not diagnostics and not hottok_diagnostics:
         return
     payload_redacted = dict(event.payload_redacted or {})
-    payload_redacted["_lab_last_duplicate_request_diagnostics"] = diagnostics
+    if diagnostics:
+        payload_redacted["_lab_last_duplicate_request_diagnostics"] = diagnostics
+    if hottok_diagnostics:
+        payload_redacted["_lab_last_duplicate_hottok_resolution_diagnostics"] = hottok_diagnostics
+    if webhook_trace:
+        payload_redacted["_lab_last_duplicate_webhook_trace"] = webhook_trace
     payload_redacted["_lab_last_duplicate_payload_hash"] = payload_hash
     event.payload_redacted = payload_redacted
+    flag_modified(event, "payload_redacted")
 
 
 def _resolve_order(

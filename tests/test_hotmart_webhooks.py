@@ -219,6 +219,15 @@ def test_hotmart_approved_webhook_grants_entitlement_and_is_idempotent(db_sessio
     assert duplicate.duplicate is True
     event = db_session.exec(select(HotmartWebhookEventRecord)).one()
     assert event.retries == 1
+    trace_steps = [entry["step"] for entry in event.payload_redacted["_lab_webhook_trace"]]
+    retry_trace_steps = [entry["step"] for entry in event.payload_redacted["_lab_last_duplicate_webhook_trace"]]
+    assert "process_hotmart_webhook.started" in trace_steps
+    assert "order_and_workspace.resolved" in trace_steps
+    assert "hottok.validated" in trace_steps
+    assert "approved_purchase.processing" in trace_steps
+    assert "process_hotmart_webhook.finished" in trace_steps
+    assert "existing_event.resolved" in retry_trace_steps
+    assert "duplicate.accepted_noop" in retry_trace_steps
     assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1
     assert (
         len(
@@ -678,12 +687,21 @@ def test_hotmart_webhook_rejects_invalid_hottok_and_records_redacted_event(db_se
     assert event.hottok_validated is False
     assert event.payload_redacted["data"]["purchase"]["client_secret"] == "[redacted]"
     diagnostics = event.payload_redacted["_lab_request_diagnostics"]
+    resolution = event.payload_redacted["_lab_hottok_resolution_diagnostics"]
     assert diagnostics["headers_redacted"]["X-HOTMART-HOTTOK"] == "[redacted]"
     assert diagnostics["headers_redacted"]["User-Agent"] == "Hotmart webhook test"
     assert diagnostics["hottok_header_present"] is True
     assert diagnostics["hottok_header_length"] == len("wrong-token")
     assert diagnostics["hottok_header_sha256_prefix"]
+    assert resolution["source"] == "db_ciphertext"
+    assert resolution["expected_present"] is True
+    assert resolution["provided_matches_expected"] is False
+    trace_steps = [entry["step"] for entry in event.payload_redacted["_lab_webhook_trace"]]
+    assert "process_hotmart_webhook.started" in trace_steps
+    assert "hottok.validated" in trace_steps
+    assert "webhook.rejected" in trace_steps
     assert "wrong-token" not in str(event.payload_redacted)
+    assert "hottok-value" not in str(event.payload_redacted)
     assert db_session.exec(select(CommercialPaymentRecord)).all() == []
     assert db_session.exec(select(CommercialEntitlementRecord)).all() == []
 
@@ -715,6 +733,17 @@ def test_hotmart_webhook_uses_environment_hottok_when_db_secret_cannot_be_decryp
     assert response.processing_status == "processed"
     assert event.hottok_validated is True
     assert event.payload_redacted["_lab_request_diagnostics"]["hottok_header_present"] is True
+    resolution = event.payload_redacted["_lab_hottok_resolution_diagnostics"]
+    assert resolution["source"] == "env_fallback_after_decrypt_error"
+    assert resolution["db_secret_configured"] is True
+    assert resolution["db_decrypt_failed"] is True
+    assert resolution["env_candidate_configured"] is True
+    assert resolution["provided_matches_expected"] is True
+    trace_steps = [entry["step"] for entry in event.payload_redacted["_lab_webhook_trace"]]
+    assert "hottok.validated" in trace_steps
+    assert "approved_purchase.processing" in trace_steps
+    assert "process_hotmart_webhook.finished" in trace_steps
+    assert "env-hottok-value" not in str(event.payload_redacted)
     assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1
     assert len(db_session.exec(select(CommercialEntitlementRecord)).all()) == 1
 
@@ -748,6 +777,7 @@ def test_hotmart_duplicate_webhook_revalidates_hottok_and_records_retry_diagnost
 
     event = db_session.exec(select(HotmartWebhookEventRecord)).one()
     retry_diagnostics = event.payload_redacted["_lab_last_duplicate_request_diagnostics"]
+    retry_resolution = event.payload_redacted["_lab_last_duplicate_hottok_resolution_diagnostics"]
     assert event.retries == 1
     assert event.processing_status == "rejected"
     assert event.error_code == "invalid_hottok"
@@ -755,6 +785,12 @@ def test_hotmart_duplicate_webhook_revalidates_hottok_and_records_retry_diagnost
     assert retry_diagnostics["headers_redacted"]["User-Agent"] == "Hotmart retry test"
     assert retry_diagnostics["hottok_header_present"] is True
     assert retry_diagnostics["hottok_header_length"] == len("wrong-token")
+    assert retry_resolution["source"] == "db_ciphertext"
+    assert retry_resolution["provided_matches_expected"] is False
+    retry_trace_steps = [entry["step"] for entry in event.payload_redacted["_lab_last_duplicate_webhook_trace"]]
+    assert "existing_event.resolved" in retry_trace_steps
+    assert "hottok.validated" in retry_trace_steps
+    assert "duplicate.rejected" in retry_trace_steps
     assert "wrong-token" not in str(event.payload_redacted)
     assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1
     assert len(db_session.exec(select(CommercialEntitlementRecord)).all()) == 1
@@ -791,4 +827,6 @@ def test_hotmart_webhook_conflict_opens_reconciliation_issue_without_duplicate_c
     assert issue.issue_type == "webhook_payload_conflict"
     assert event.retries == 1
     assert event.payload_redacted["_lab_last_duplicate_request_diagnostics"]["hottok_header_present"] is True
+    retry_trace_steps = [entry["step"] for entry in event.payload_redacted["_lab_last_duplicate_webhook_trace"]]
+    assert "duplicate.payload_conflict" in retry_trace_steps
     assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1

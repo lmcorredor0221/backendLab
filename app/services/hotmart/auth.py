@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+import logging
 from typing import Any
 
 import httpx
@@ -9,6 +11,7 @@ from app.services.hotmart.redaction import redact_payload
 
 
 HOTMART_TOKEN_PATH = "/security/oauth/token"
+LOGGER = logging.getLogger(__name__)
 
 
 def normalize_hotmart_environment(environment: str | None) -> str:
@@ -107,24 +110,56 @@ class HotmartAuthClient:
             "client_id": credentials.client_id.strip(),
             "client_secret": credentials.client_secret.strip(),
         }
+        request_diagnostics = {
+            "environment": self.environment,
+            "method": "POST",
+            "url": self.token_url,
+            "path": HOTMART_TOKEN_PATH,
+            "timeout_seconds": self.timeout_seconds,
+            "credentials_present": {
+                "client_id": bool(credentials.client_id.strip()),
+                "client_secret": bool(credentials.client_secret.strip()),
+                "basic_token": bool(credentials.basic_token.strip()),
+            },
+            "headers_redacted": redact_payload(headers),
+            "params_redacted": redact_payload(params),
+        }
+        LOGGER.info("hotmart.oauth.request %s", json.dumps(request_diagnostics, ensure_ascii=False, default=str))
 
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
                 response = client.post(self.token_url, headers=headers, params=params)
         except httpx.HTTPError as exc:
-            raise HotmartAuthError("network_error", "Hotmart OAuth request failed before a response was received.") from exc
+            LOGGER.warning("hotmart.oauth.network_error %s", json.dumps(request_diagnostics, ensure_ascii=False, default=str))
+            raise HotmartAuthError(
+                "network_error",
+                "Hotmart OAuth request failed before a response was received.",
+                payload={"_lab_oauth_request_diagnostics": request_diagnostics},
+            ) from exc
 
         try:
             payload = response.json()
         except ValueError:
             payload = {"raw": response.text[:500]}
+        response_payload = payload if isinstance(payload, dict) else {"payload": payload}
+        response_diagnostics = {
+            "http_status": response.status_code,
+            "url": self.token_url,
+            "path": HOTMART_TOKEN_PATH,
+            "response_payload_redacted": redact_payload(response_payload),
+        }
+        LOGGER.info("hotmart.oauth.response %s", json.dumps(response_diagnostics, ensure_ascii=False, default=str))
 
         if response.status_code >= 400:
             raise HotmartAuthError(
                 "oauth_rejected",
                 "Hotmart rejected the OAuth credential exchange.",
                 http_status=response.status_code,
-                payload=payload if isinstance(payload, dict) else {"payload": payload},
+                payload={
+                    **redact_payload(response_payload),
+                    "_lab_oauth_request_diagnostics": request_diagnostics,
+                    "_lab_oauth_response_diagnostics": response_diagnostics,
+                },
             )
 
         if not isinstance(payload, dict) or not str(payload.get("access_token", "")).strip():
@@ -132,7 +167,11 @@ class HotmartAuthClient:
                 "invalid_oauth_response",
                 "Hotmart OAuth response did not include an access token.",
                 http_status=response.status_code,
-                payload=payload if isinstance(payload, dict) else {"payload": payload},
+                payload={
+                    **redact_payload(response_payload),
+                    "_lab_oauth_request_diagnostics": request_diagnostics,
+                    "_lab_oauth_response_diagnostics": response_diagnostics,
+                },
             )
 
         expires_in_raw = payload.get("expires_in")

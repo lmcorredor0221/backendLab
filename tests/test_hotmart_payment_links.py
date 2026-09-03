@@ -168,6 +168,16 @@ def test_create_hotmart_payment_link_from_mapped_pending_order(db_session: Sessi
     serialized = str(stored.request_payload_redacted) + str(stored.response_payload_redacted)
     assert "access-token-value" not in serialized
     assert "client-secret-value" not in serialized
+    trace = stored.request_payload_redacted["_lab_payment_link_trace"]
+    trace_steps = [entry["step"] for entry in trace]
+    assert "create_hotmart_payment_link_for_order.started" in trace_steps
+    assert "order.resolved" in trace_steps
+    assert "mapping.resolved" in trace_steps
+    assert "oauth.succeeded" in trace_steps
+    assert "provider_payment_link.succeeded" in trace_steps
+    assert "payment_link_record.persisted" in trace_steps
+    assert "commercial_event.recorded" in trace_steps
+    assert "_lab_payment_link_http_diagnostics" in stored.response_payload_redacted
     event = db_session.exec(
         select(CommercialEventRecord).where(CommercialEventRecord.event_key == "hotmart_payment_link_pending_activation")
     ).one()
@@ -288,6 +298,12 @@ def test_hotmart_payment_link_error_keeps_order_pending_and_records_failed_attem
     assert failed.environment == "sandbox"
     assert failed.activation_status == "failed"
     assert failed.response_payload_redacted["client_secret"] == "[redacted]"
+    assert failed.response_payload_redacted["_lab_payment_link_error"]["error_code"] == "payment_link_rejected"
+    trace_steps = [entry["step"] for entry in failed.request_payload_redacted["_lab_payment_link_trace"]]
+    assert "provider_payment_link.failed" in trace_steps
+    assert "failed_attempt.persisted" in trace_steps
+    assert "access-token-value" not in str(failed.request_payload_redacted)
+    assert "must-redact" not in str(failed.response_payload_redacted)
 
 
 def test_hotmart_oauth_error_keeps_order_pending_and_records_failed_attempt(db_session: Session) -> None:
@@ -328,6 +344,11 @@ def test_hotmart_oauth_error_keeps_order_pending_and_records_failed_attempt(db_s
     assert failed.activation_status == "failed"
     assert failed.response_payload_redacted["error"] == "unauthorized_client"
     assert failed.response_payload_redacted["client_secret"] == "[redacted]"
+    assert failed.response_payload_redacted["_lab_payment_link_error"]["error_code"] == "oauth_rejected"
+    trace_steps = [entry["step"] for entry in failed.request_payload_redacted["_lab_payment_link_trace"]]
+    assert "credentials.loaded" in trace_steps
+    assert "provider_payment_link.failed" in trace_steps
+    assert "failed_attempt.persisted" in trace_steps
 
 
 def test_refresh_hotmart_payment_link_marks_available_link_active(db_session: Session) -> None:

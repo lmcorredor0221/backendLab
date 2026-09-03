@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -162,6 +163,15 @@ def _settings_hotmart_hottok(environment: str) -> str:
     if normalize_hotmart_environment(settings.hotmart_environment) != environment:
         return ""
     return settings.hotmart_hottok.strip()
+
+
+def _secret_fingerprint(secret_value: str) -> dict[str, Any]:
+    value = (secret_value or "").strip()
+    return {
+        "present": bool(value),
+        "length": len(value),
+        "sha256_prefix": hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] if value else "",
+    }
 
 
 def _merge_configured_flags(
@@ -362,16 +372,58 @@ def load_hotmart_hottok(
     workspace_id: UUID,
     environment: str = "sandbox",
 ) -> str:
+    value, _diagnostics = resolve_hotmart_hottok(
+        session,
+        workspace_id=workspace_id,
+        environment=environment,
+    )
+    return value
+
+
+def resolve_hotmart_hottok(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    environment: str = "sandbox",
+) -> tuple[str, dict[str, Any]]:
     env = normalize_hotmart_environment(environment)
+    env_token = _settings_hotmart_hottok(env)
+    diagnostics: dict[str, Any] = {
+        "environment": env,
+        "workspace_id": str(workspace_id),
+        "source": "missing",
+        "db_secret_configured": False,
+        "db_secret_ref_configured": False,
+        "db_decrypt_failed": False,
+        "env_candidate_configured": bool(env_token),
+        "expected_present": False,
+        "expected_length": 0,
+        "expected_sha256_prefix": "",
+    }
+
+    def finish(source: str, token: str) -> tuple[str, dict[str, Any]]:
+        fingerprint = _secret_fingerprint(token)
+        diagnostics["source"] = source
+        diagnostics["expected_present"] = fingerprint["present"]
+        diagnostics["expected_length"] = fingerprint["length"]
+        diagnostics["expected_sha256_prefix"] = fingerprint["sha256_prefix"]
+        return token, diagnostics
+
     record = _secret_record(session, workspace_id=workspace_id, environment=env, secret_kind="hottok")
+    diagnostics["db_secret_configured"] = _is_configured(record)
+    diagnostics["db_secret_ref_configured"] = bool(record and record.secret_ref)
     if _is_configured(record) and record is not None and not record.secret_ref:
         try:
-            return _decrypt_secret_value(record.secret_ciphertext)
+            return finish("db_ciphertext", _decrypt_secret_value(record.secret_ciphertext))
         except ValueError:
             # Fall back to the runtime ENV token when DB ciphertext cannot be
             # decrypted with this deployment's current master key.
-            return _settings_hotmart_hottok(env)
-    return _settings_hotmart_hottok(env)
+            diagnostics["db_decrypt_failed"] = True
+            source = "env_fallback_after_decrypt_error" if env_token else "missing_after_decrypt_error"
+            return finish(source, env_token)
+    if record is not None and record.secret_ref:
+        return finish("external_secret_ref_unresolved", env_token)
+    return finish("env" if env_token else "missing", env_token)
 
 
 def test_hotmart_connection(
