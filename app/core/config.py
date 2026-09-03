@@ -87,6 +87,16 @@ class Settings(BaseSettings):
     hotmart_club_pages_path_template: str = "/club/api/v1/modules/{module_id}/pages"
     hotmart_club_students_path: str = "/club/api/v1/users"
     hotmart_club_progress_path_template: str = "/club/api/v1/users/{user_id}/lessons"
+    rebill_enabled: bool = False
+    rebill_environment: str = "sandbox"
+    rebill_api_base_url: str = "https://api.rebill.com/v3"
+    rebill_webhook_public_url: str = ""
+    rebill_secret_key: str = ""
+    rebill_public_key: str = ""
+    rebill_webhook_signing_secret: str = ""
+    rebill_webhook_url_secret: str = ""
+    rebill_request_timeout_seconds: int = 30
+    rebill_max_retries: int = 3
     schema_management_mode: str = "create_all_local"
 
     model_config = SettingsConfigDict(

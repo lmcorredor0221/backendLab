@@ -5,12 +5,14 @@ from uuid import uuid4
 from app.core.config import get_settings
 from app.services.hotmart.auth import normalize_hotmart_environment
 from app.services.payment_providers.base import CheckoutProviderContext, CheckoutProviderDraft
+from app.services.payment_providers.template import TemplateCommercePaymentProvider
 
 
-class HotmartPaymentProvider:
+class HotmartPaymentProvider(TemplateCommercePaymentProvider):
     provider_key = "hotmart"
+    display_name = "Hotmart"
 
-    def create_checkout_draft(self, context: CheckoutProviderContext) -> CheckoutProviderDraft:
+    def build_checkout_seed(self, context: CheckoutProviderContext) -> CheckoutProviderDraft:
         environment = normalize_hotmart_environment(get_settings().hotmart_environment)
         checkout_ref = f"hotmart_{uuid4().hex}"
         return CheckoutProviderDraft(
@@ -26,4 +28,3 @@ class HotmartPaymentProvider:
                 "cancel_url": context.cancel_url,
             },
         )
-

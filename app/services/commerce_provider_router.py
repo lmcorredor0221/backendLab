@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from app.core.config import get_settings
+from app.services.commerce_provider_registry import get_commerce_provider_registry
 from app.services.payment_providers.base import CommercePaymentProvider
-from app.services.payment_providers.hotmart import HotmartPaymentProvider
-from app.services.payment_providers.sandbox import SandboxPaymentProvider
 
 
-SUPPORTED_COMMERCE_PAYMENT_PROVIDERS = {"sandbox", "hotmart"}
+SUPPORTED_COMMERCE_PAYMENT_PROVIDERS = set(get_commerce_provider_registry().supported_provider_keys)
 
 
 def normalize_commerce_payment_provider(provider_key: str | None = None) -> str:
@@ -14,14 +13,9 @@ def normalize_commerce_payment_provider(provider_key: str | None = None) -> str:
     candidate = (raw_value or "sandbox").strip().lower()
     if candidate in {"", "default"}:
         return "sandbox"
-    if candidate not in SUPPORTED_COMMERCE_PAYMENT_PROVIDERS:
-        raise ValueError(f"Unsupported commerce checkout provider: {candidate}")
-    return candidate
+    return get_commerce_provider_registry().require_definition(candidate).provider_key
 
 
 def get_commerce_payment_provider(provider_key: str | None = None) -> CommercePaymentProvider:
     resolved = normalize_commerce_payment_provider(provider_key)
-    if resolved == "hotmart":
-        return HotmartPaymentProvider()
-    return SandboxPaymentProvider()
-
+    return get_commerce_provider_registry().create_provider(resolved)

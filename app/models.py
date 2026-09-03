@@ -1260,6 +1260,178 @@ class CommercialDebtSettlementRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class CommerceProviderConfigRecord(SQLModel, table=True):
+    __tablename__ = "commerce_provider_configs"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "provider_key",
+            "environment",
+            name="uq_commerce_provider_config_workspace_provider_environment",
+        ),
+        Index(
+            "ix_commerce_provider_config_workspace_provider_status",
+            "workspace_id",
+            "provider_key",
+            "environment",
+            "status",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    provider_key: str = Field(index=True, nullable=False)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    enabled: bool = Field(default=False, nullable=False)
+    status: str = Field(default="not_configured", index=True, nullable=False)
+    api_base_url: str = Field(default="", nullable=False)
+    webhook_public_url: str = Field(default="", nullable=False)
+    capabilities: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    last_checked_at: datetime | None = Field(default=None, nullable=True)
+    last_health_status: str = Field(default="", nullable=False)
+    last_health_message: str = Field(default="", nullable=False)
+    created_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    updated_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommerceProviderSecretRecord(SQLModel, table=True):
+    __tablename__ = "commerce_provider_secrets"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "provider_key",
+            "environment",
+            "secret_kind",
+            name="uq_commerce_provider_secret_workspace_provider_environment_kind",
+        ),
+        Index(
+            "ix_commerce_provider_secret_workspace_provider",
+            "workspace_id",
+            "provider_key",
+            "environment",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    provider_key: str = Field(index=True, nullable=False)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    secret_kind: str = Field(index=True, nullable=False)
+    secret_ciphertext: str = Field(default="", nullable=False)
+    secret_ref: str = Field(default="", nullable=False)
+    configured: bool = Field(default=False, nullable=False)
+    status: str = Field(default="not_configured", nullable=False)
+    last_rotated_at: datetime | None = Field(default=None, nullable=True)
+    updated_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommerceProviderProductMappingRecord(SQLModel, table=True):
+    __tablename__ = "commerce_provider_product_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "provider_key",
+            "environment",
+            "internal_product_key",
+            "package_code",
+            name="uq_commerce_provider_mapping_workspace_provider_product_package",
+        ),
+        Index(
+            "ix_commerce_provider_mapping_workspace_provider_active",
+            "workspace_id",
+            "provider_key",
+            "environment",
+            "is_active",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    provider_key: str = Field(index=True, nullable=False)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    internal_product_key: str = Field(index=True, nullable=False)
+    package_code: str = Field(default="", index=True, nullable=False)
+    billing_mode: str = Field(default="one_time", nullable=False)
+    currency: str = Field(default="USD", nullable=False)
+    internal_unit_amount_usd_cents: int = Field(default=0, nullable=False)
+    provider_product_id: str = Field(default="", index=True, nullable=False)
+    provider_plan_id: str = Field(default="", index=True, nullable=False)
+    provider_price_id: str = Field(default="", index=True, nullable=False)
+    provider_payment_link_id: str = Field(default="", index=True, nullable=False)
+    provider_offer_ref: str = Field(default="", index=True, nullable=False)
+    price_strategy: str = Field(default="provider_authoritative", nullable=False)
+    grants_tier: CommercialTier = Field(default=CommercialTier.blueprint_pro, nullable=False)
+    entitlement_scope: str = Field(default="project", nullable=False)
+    is_active: bool = Field(default=True, index=True, nullable=False)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommerceProviderCheckoutRecord(SQLModel, table=True):
+    __tablename__ = "commerce_provider_checkout_records"
+    __table_args__ = (
+        UniqueConstraint("provider_key", "checkout_ref", name="uq_commerce_provider_checkout_ref"),
+        Index("ix_commerce_provider_checkout_order", "order_id"),
+        Index("ix_commerce_provider_checkout_provider_checkout_id", "provider_key", "provider_checkout_id"),
+        Index("ix_commerce_provider_checkout_provider_payment_link_id", "provider_key", "provider_payment_link_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID = Field(foreign_key="workspaces.id", index=True)
+    provider_key: str = Field(index=True, nullable=False)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    order_id: UUID = Field(foreign_key="commercial_orders.id", index=True)
+    checkout_ref: str = Field(index=True, nullable=False)
+    provider_checkout_id: str = Field(default="", index=True, nullable=False)
+    provider_payment_link_id: str = Field(default="", index=True, nullable=False)
+    provider_customer_id: str = Field(default="", index=True, nullable=False)
+    checkout_url: str = Field(default="", nullable=False)
+    status: str = Field(default="pending", index=True, nullable=False)
+    amount_cents: int = Field(default=0, nullable=False)
+    currency: str = Field(default="", nullable=False)
+    request_payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    response_payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    expires_at: datetime | None = Field(default=None, nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class CommerceProviderWebhookEventRecord(SQLModel, table=True):
+    __tablename__ = "commerce_provider_webhook_events"
+    __table_args__ = (
+        UniqueConstraint("provider_key", "event_id", "event_type", name="uq_commerce_provider_webhook_event"),
+        Index("ix_commerce_provider_webhook_provider_payload_hash", "provider_key", "payload_hash"),
+        Index("ix_commerce_provider_webhook_provider_resource", "provider_key", "provider_resource_id"),
+        Index("ix_commerce_provider_webhook_workspace_status", "workspace_id", "processing_status"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    provider_key: str = Field(index=True, nullable=False)
+    environment: str = Field(default="sandbox", index=True, nullable=False)
+    event_id: str = Field(default="", index=True, nullable=False)
+    event_type: str = Field(default="", index=True, nullable=False)
+    provider_resource_id: str = Field(default="", index=True, nullable=False)
+    workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", index=True, nullable=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", index=True, nullable=True)
+    payment_id: UUID | None = Field(default=None, foreign_key="commercial_payments.id", nullable=True)
+    signature_validated: bool = Field(default=False, nullable=False)
+    processing_status: str = Field(default="received", index=True, nullable=False)
+    retries: int = Field(default=0, nullable=False)
+    payload_hash: str = Field(default="", index=True, nullable=False)
+    payload_redacted: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    error_code: str = Field(default="", nullable=False)
+    error_message: str = Field(default="", nullable=False)
+    processed_at: datetime | None = Field(default=None, nullable=True)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
 class HotmartIntegrationConfigRecord(SQLModel, table=True):
     __tablename__ = "hotmart_integration_configs"
     __table_args__ = (
@@ -6187,7 +6359,7 @@ class CommercialCheckoutSessionRequest(ContractModel):
     product_key: str
     price_code: str = ""
     package_code: str = ""
-    provider: Literal["sandbox", "hotmart"] | None = None
+    provider: str | None = None
     success_url: str = ""
     cancel_url: str = ""
     idempotency_key: str = ""
@@ -6237,6 +6409,194 @@ class CommercialOrderResponse(ContractModel):
     entitlement: CommercialEntitlementSummary | None = None
     created_at: datetime
     updated_at: datetime
+
+
+CommerceProviderEnvironment = Literal["sandbox", "production"]
+
+
+class CommerceProviderDefinitionResponse(ContractModel):
+    contract_version: str = "commerce-provider-definition.v1"
+    provider_key: str
+    display_name: str
+    capabilities: list[str] = PydanticField(default_factory=list)
+    default_environment: CommerceProviderEnvironment = "sandbox"
+
+
+class CommerceProviderSecretStatusResponse(ContractModel):
+    secret_kind: str
+    configured: bool = False
+    status: str = "not_configured"
+    storage_mode: str = "none"
+    last_rotated_at: datetime | None = None
+
+
+class CommerceProviderCredentialUpsertRequest(ContractModel):
+    environment: CommerceProviderEnvironment = "sandbox"
+    enabled: bool = True
+    api_base_url: str = ""
+    webhook_public_url: str = ""
+    secrets: dict[str, str] = PydanticField(default_factory=dict)
+
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, value: str) -> str:
+        candidate = value.strip().lower()
+        if candidate not in {"sandbox", "production"}:
+            raise ValueError("environment must be sandbox or production.")
+        return candidate
+
+
+class CommerceProviderStatusResponse(ContractModel):
+    contract_version: str = "commerce-provider-status.v1"
+    workspace_id: UUID
+    provider_key: str
+    environment: CommerceProviderEnvironment = "sandbox"
+    enabled: bool = False
+    status: str = "not_configured"
+    api_base_url: str = ""
+    webhook_public_url: str = ""
+    capabilities: list[str] = PydanticField(default_factory=list)
+    secret_statuses: list[CommerceProviderSecretStatusResponse] = PydanticField(default_factory=list)
+    last_health_check_at: datetime | None = None
+    last_health_status: str = ""
+    last_health_message: str = ""
+    updated_at: datetime | None = None
+
+
+class CommerceProviderTestConnectionResponse(ContractModel):
+    contract_version: str = "commerce-provider-test-connection.v1"
+    workspace_id: UUID
+    provider_key: str
+    environment: CommerceProviderEnvironment = "sandbox"
+    reachable: bool = False
+    status: str = "not_configured"
+    message: str = ""
+    http_status: int | None = None
+    checked_at: datetime
+
+
+class CommerceProviderProductMappingUpsertRequest(ContractModel):
+    environment: CommerceProviderEnvironment = "sandbox"
+    internal_product_key: str
+    package_code: str = ""
+    billing_mode: str = "one_time"
+    currency: str = "USD"
+    internal_unit_amount_usd_cents: int = 0
+    provider_product_id: str = ""
+    provider_plan_id: str = ""
+    provider_price_id: str = ""
+    provider_payment_link_id: str = ""
+    provider_offer_ref: str = ""
+    price_strategy: str = "provider_authoritative"
+    grants_tier: CommercialTier = CommercialTier.blueprint_pro
+    entitlement_scope: str = "project"
+    is_active: bool = True
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, value: str) -> str:
+        candidate = value.strip().lower()
+        if candidate not in {"sandbox", "production"}:
+            raise ValueError("environment must be sandbox or production.")
+        return candidate
+
+
+class CommerceProviderProductMappingResponse(ContractModel):
+    contract_version: str = "commerce-provider-product-mapping.v1"
+    id: UUID
+    workspace_id: UUID
+    provider_key: str
+    environment: CommerceProviderEnvironment = "sandbox"
+    internal_product_key: str
+    package_code: str = ""
+    billing_mode: str = "one_time"
+    currency: str = "USD"
+    internal_unit_amount_usd_cents: int = 0
+    provider_product_id: str = ""
+    provider_plan_id: str = ""
+    provider_price_id: str = ""
+    provider_payment_link_id: str = ""
+    provider_offer_ref: str = ""
+    price_strategy: str = "provider_authoritative"
+    grants_tier: CommercialTier = CommercialTier.blueprint_pro
+    entitlement_scope: str = "project"
+    is_active: bool = True
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+    updated_at: datetime
+
+
+class CommerceProviderCheckoutRecordResponse(ContractModel):
+    contract_version: str = "commerce-provider-checkout-record.v1"
+    id: UUID
+    workspace_id: UUID
+    provider_key: str
+    environment: CommerceProviderEnvironment = "sandbox"
+    order_id: UUID
+    checkout_ref: str = ""
+    provider_checkout_id: str = ""
+    provider_payment_link_id: str = ""
+    provider_customer_id: str = ""
+    checkout_url: str = ""
+    status: str = "pending"
+    amount_cents: int = 0
+    currency: str = ""
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class CommerceProviderWebhookEventResponse(ContractModel):
+    contract_version: str = "commerce-provider-webhook-event.v1"
+    id: UUID
+    provider_key: str
+    environment: CommerceProviderEnvironment = "sandbox"
+    event_id: str = ""
+    event_type: str = ""
+    provider_resource_id: str = ""
+    workspace_id: UUID | None = None
+    order_id: UUID | None = None
+    payment_id: UUID | None = None
+    signature_validated: bool = False
+    processing_status: str = "received"
+    retries: int = 0
+    error_code: str = ""
+    error_message: str = ""
+    processed_at: datetime | None = None
+    created_at: datetime
+
+
+class CommerceProviderReadinessCheckResponse(ContractModel):
+    key: str
+    label: str
+    status: Literal["ok", "warning", "blocking"] = "blocking"
+    detail: str = ""
+
+
+class CommerceProviderReadinessResponse(ContractModel):
+    contract_version: str = "commerce-provider-readiness.v1"
+    workspace_id: UUID
+    provider_key: str
+    environment: CommerceProviderEnvironment = "sandbox"
+    ready: bool = False
+    status: str = "blocked"
+    checks: list[CommerceProviderReadinessCheckResponse] = PydanticField(default_factory=list)
+    checked_at: datetime = PydanticField(default_factory=utc_now)
+
+
+class CommerceProviderWebhookIngestResponse(ContractModel):
+    contract_version: str = "commerce-provider-webhook-ingest.v1"
+    provider_key: str
+    event_id: str
+    event_type: str = ""
+    provider_resource_id: str = ""
+    processing_status: str = "received"
+    duplicate: bool = False
+    workspace_id: UUID | None = None
+    order_id: UUID | None = None
+    payment_id: UUID | None = None
+    entitlement_id: UUID | None = None
+    message: str = ""
 
 
 class HotmartCredentialUpsertRequest(ContractModel):

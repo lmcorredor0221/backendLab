@@ -1,6 +1,7 @@
 from app.api.routes import (
     auth,
     commerce,
+    commerce_provider_admin,
     deliverable_catalog,
     diagram_center,
     estimation_calibration,
@@ -11,6 +12,7 @@ from app.api.routes import (
     platform_runtime,
     runtime_settings,
     runtime_status,
+    rebill_webhooks,
     session_acp,
     session_diagrams,
     session_operations,
@@ -20,6 +22,7 @@ from app.api.routes import (
 __all__ = [
     "auth",
     "commerce",
+    "commerce_provider_admin",
     "deliverable_catalog",
     "diagram_center",
     "estimation_calibration",
@@ -30,6 +33,7 @@ __all__ = [
     "platform_runtime",
     "runtime_settings",
     "runtime_status",
+    "rebill_webhooks",
     "sessions",
     "session_acp",
     "session_diagrams",

@@ -1010,24 +1010,23 @@ def create_checkout_session(
         return serialize_checkout_response(db, existing)
 
     provider = get_commerce_payment_provider(resolved_request.provider)
-    provider_draft = provider.create_checkout_draft(
-        CheckoutProviderContext(
-            workspace_id=resolved_record.workspace_id,
-            session_record=resolved_record,
-            current_user=current_user,
-            product=product,
-            price=price,
-            subtotal_cents=price.unit_amount_cents,
-            discount_cents=discount_cents,
-            total_cents=net_total_cents,
-            currency=price.currency,
-            is_upgrade=is_upgrade,
-            idempotency_key=idempotency_key,
-            success_url=validated_success_url,
-            cancel_url=validated_cancel_url,
-            base_url=base_url,
-        )
+    provider_context = CheckoutProviderContext(
+        workspace_id=resolved_record.workspace_id,
+        session_record=resolved_record,
+        current_user=current_user,
+        product=product,
+        price=price,
+        subtotal_cents=price.unit_amount_cents,
+        discount_cents=discount_cents,
+        total_cents=net_total_cents,
+        currency=price.currency,
+        is_upgrade=is_upgrade,
+        idempotency_key=idempotency_key,
+        success_url=validated_success_url,
+        cancel_url=validated_cancel_url,
+        base_url=base_url,
     )
+    provider_draft = provider.create_checkout_draft(provider_context)
     snapshot = _build_order_commercial_snapshot(
         product=product,
         price=price,
@@ -1082,6 +1081,25 @@ def create_checkout_session(
         },
     )
     db.add(line)
+    db.flush()
+    finalize_checkout = getattr(provider, "finalize_checkout", None)
+    if callable(finalize_checkout):
+        finalization = finalize_checkout(db, order=order, context=provider_context)
+        finalization_metadata = dict(getattr(finalization, "metadata", {}) or {})
+        if getattr(finalization, "status", None) is not None:
+            order.status = finalization.status
+        if getattr(finalization, "checkout_url", ""):
+            order.checkout_url = finalization.checkout_url
+        provider_checkout_id = str(getattr(finalization, "provider_checkout_id", "") or "")
+        provider_payment_link_id = str(getattr(finalization, "provider_payment_link_id", "") or "")
+        if provider_checkout_id:
+            finalization_metadata["provider_checkout_id"] = provider_checkout_id
+        if provider_payment_link_id:
+            finalization_metadata["provider_payment_link_id"] = provider_payment_link_id
+        if finalization_metadata:
+            order.metadata_payload = {**dict(order.metadata_payload or {}), **finalization_metadata}
+            order.updated_at = utc_now()
+            db.add(order)
     record_commercial_event(
         db,
         workspace_id=resolved_record.workspace_id,
@@ -1093,10 +1111,10 @@ def create_checkout_session(
         metadata={
             "order_id": str(order.id),
             "price_code": price.price_code,
-            "provider": provider_draft.provider,
+            "provider": order.provider,
             "package_code": resolved_package_code,
         },
-        correlation_id=provider_draft.checkout_ref,
+        correlation_id=order.checkout_ref,
     )
     db.flush()
     return serialize_checkout_response(db, order)
@@ -1110,9 +1128,12 @@ def checkout_idempotency_key(session_id: UUID, product_key: str, user_id: UUID, 
 def serialize_checkout_response(db: Session, order: CommercialOrderRecord) -> CommercialCheckoutSessionResponse:
     line = db.exec(select(CommercialOrderLineRecord).where(CommercialOrderLineRecord.order_id == order.id)).first()
     entitlement = find_entitlement_for_order(db, order)
-    next_action = "refresh_access" if order.status == CommercialOrderStatus.paid else "open_checkout"
-    if order.provider == "hotmart" and not order.checkout_url and order.status == CommercialOrderStatus.pending:
-        next_action = "await_payment_link"
+    try:
+        provider = get_commerce_payment_provider(order.provider)
+        build_next_action = getattr(provider, "build_next_action", None)
+        next_action = build_next_action(order) if callable(build_next_action) else "open_checkout"
+    except ValueError:
+        next_action = "refresh_access" if order.status == CommercialOrderStatus.paid else "open_checkout"
     return CommercialCheckoutSessionResponse(
         checkout_ref=order.checkout_ref,
         order_id=order.id,
@@ -1191,91 +1212,23 @@ def complete_checkout_session(
         )
         return serialize_checkout_response(db, order)
 
-    line = db.exec(select(CommercialOrderLineRecord).where(CommercialOrderLineRecord.order_id == order.id)).first()
-    if line is None:
-        raise ValueError("Checkout order has no order line.")
-    product = get_product(db, line.product_key)
     payment_id = request.provider_payment_id.strip() or f"sandbox_pay_{checkout_ref}"
-    payment = db.exec(
-        select(CommercialPaymentRecord).where(
-            CommercialPaymentRecord.provider == order.provider,
-            CommercialPaymentRecord.provider_payment_id == payment_id,
-        )
-    ).first()
-    if payment is None:
-        payment = CommercialPaymentRecord(
-            workspace_id=order.workspace_id,
-            session_id=order.session_id,
-            order_id=order.id,
-            provider=order.provider,
+    from app.services.commerce_provider_fulfillment import ProviderPaymentEvent, apply_provider_payment_success
+
+    apply_provider_payment_success(
+        db,
+        order=order,
+        event=ProviderPaymentEvent(
+            provider_key=order.provider,
             provider_payment_id=payment_id,
-            provider_checkout_ref=checkout_ref,
-            status=CommercialPaymentStatus.succeeded,
+            event_id=checkout_ref,
+            event_type="sandbox_checkout_success",
             amount_cents=order.total_cents,
             currency=order.currency,
-            idempotency_key=f"{checkout_ref}:success",
-            metadata_payload={"sandbox": True},
-        )
-        db.add(payment)
-        db.flush()
-    settle_open_debts_from_paid_order(
-        db,
-        order=order,
-        payment=payment,
+            metadata={"sandbox": True},
+        ),
         actor_user_id=current_user.id,
-    )
-    apply_package_credits_from_paid_order(
-        db,
-        order=order,
-        payment=payment,
-        actor_user_id=current_user.id,
-    )
-
-    entitlement = find_entitlement_for_order(db, order)
-    if entitlement is None:
-        entitlement = CommercialEntitlementRecord(
-            workspace_id=order.workspace_id,
-            session_id=order.session_id,
-            product_key=product.product_key,
-            tier=product.tier,
-            status=CommercialEntitlementStatus.active,
-            source=CommercialEntitlementSource.checkout,
-            order_id=order.id,
-            order_line_id=line.id,
-            payment_id=payment.id,
-            granted_by_user_id=current_user.id,
-            metadata_payload={"non_revenue": False, "provider": "sandbox"},
-        )
-        db.add(entitlement)
-
-    if tier_rank(product.tier) > tier_rank(session_record.commercial_tier):
-        session_record.commercial_tier = product.tier
-        session_record.updated_at = utc_now()
-        db.add(session_record)
-
-    order.status = CommercialOrderStatus.paid
-    order.paid_at = utc_now()
-    order.updated_at = utc_now()
-    db.add(order)
-    record_commercial_event(
-        db,
-        workspace_id=order.workspace_id,
-        session_id=order.session_id,
-        user_id=current_user.id,
         event_key="payment_confirmed",
-        product_key=product.product_key,
-        source="commerce_checkout",
-        revenue_cents=order.total_cents,
-        currency=order.currency,
-        metadata={"order_id": str(order.id), "entitlement_id": str(entitlement.id)},
-        correlation_id=checkout_ref,
-    )
-    from app.services.product_processing.product_build_activation_service import activate_product_builds_for_paid_order
-
-    activate_product_builds_for_paid_order(
-        db,
-        order=order,
-        current_user=current_user,
         source="commerce_checkout",
     )
     return serialize_checkout_response(db, order)
