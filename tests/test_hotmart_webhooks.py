@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from cryptography.fernet import Fernet
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
+from app.core.config import get_settings
 from app.models import (
     CommercialAccessRequestRecord,
     CommercialAccessRequestStatus,
@@ -684,6 +686,37 @@ def test_hotmart_webhook_rejects_invalid_hottok_and_records_redacted_event(db_se
     assert "wrong-token" not in str(event.payload_redacted)
     assert db_session.exec(select(CommercialPaymentRecord)).all() == []
     assert db_session.exec(select(CommercialEntitlementRecord)).all() == []
+
+
+def test_hotmart_webhook_uses_environment_hottok_when_db_secret_cannot_be_decrypted(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "hotmart_environment", "sandbox")
+    monkeypatch.setattr(settings, "runtime_secrets_master_key", Fernet.generate_key().decode("utf-8"))
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_hottok(db_session, workspace)
+    order = _create_hotmart_order(db_session, record, user, "env-token-fallback")
+
+    monkeypatch.setattr(settings, "runtime_secrets_master_key", Fernet.generate_key().decode("utf-8"))
+    monkeypatch.setattr(settings, "hotmart_hottok", "env-hottok-value")
+
+    response = process_hotmart_webhook(
+        db_session,
+        payload=_approved_payload(order, event_id="evt-env-token-fallback", transaction="HP126-ENV"),
+        hottok_header="env-hottok-value",
+        request_headers={"X-HOTMART-HOTTOK": "env-hottok-value"},
+        environment="sandbox",
+    )
+    db_session.commit()
+
+    event = db_session.exec(select(HotmartWebhookEventRecord)).one()
+    assert response.processing_status == "processed"
+    assert event.hottok_validated is True
+    assert event.payload_redacted["_lab_request_diagnostics"]["hottok_header_present"] is True
+    assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1
+    assert len(db_session.exec(select(CommercialEntitlementRecord)).all()) == 1
 
 
 def test_hotmart_duplicate_webhook_revalidates_hottok_and_records_retry_diagnostics(db_session: Session) -> None:

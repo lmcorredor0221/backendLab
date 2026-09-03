@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from fastapi.testclient import TestClient
+from cryptography.fernet import Fernet
 import httpx
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -17,6 +18,8 @@ from app.models import (
 from app.core.config import get_settings
 from app.services.hotmart.secrets import (
     build_hotmart_status,
+    load_hotmart_credentials,
+    load_hotmart_hottok,
     test_hotmart_connection as run_hotmart_connection_test,
     upsert_hotmart_credentials,
 )
@@ -175,6 +178,44 @@ def test_hotmart_test_connection_uses_environment_credentials_without_db_config(
     config = db_session.exec(select(HotmartIntegrationConfigRecord)).one()
     assert config.status == "connected"
     assert config.last_health_status == "connected"
+
+
+def test_hotmart_loaders_fall_back_to_environment_when_db_secret_cannot_be_decrypted(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(db_session)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "hotmart_environment", "production")
+    monkeypatch.setattr(settings, "runtime_secrets_master_key", Fernet.generate_key().decode("utf-8"))
+    upsert_hotmart_credentials(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartCredentialUpsertRequest(
+            environment="production",
+            enabled=True,
+            client_id="db-client-id",
+            client_secret="db-client-secret",
+            basic_token="db-basic-token",
+            hottok="db-hottok-value",
+        ),
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(settings, "runtime_secrets_master_key", Fernet.generate_key().decode("utf-8"))
+    monkeypatch.setattr(settings, "hotmart_client_id", "env-client-id")
+    monkeypatch.setattr(settings, "hotmart_client_secret", "env-client-secret")
+    monkeypatch.setattr(settings, "hotmart_basic_token", "env-basic-token")
+    monkeypatch.setattr(settings, "hotmart_hottok", "env-hottok-value")
+
+    credentials = load_hotmart_credentials(db_session, workspace_id=workspace.id, environment="production")
+    hottok = load_hotmart_hottok(db_session, workspace_id=workspace.id, environment="production")
+
+    assert credentials is not None
+    assert credentials.client_id == "env-client-id"
+    assert credentials.client_secret == "env-client-secret"
+    assert credentials.basic_token == "env-basic-token"
+    assert hottok == "env-hottok-value"
 
 
 def test_hotmart_test_connection_uses_sandbox_oauth_and_redacts_token(db_session: Session) -> None:

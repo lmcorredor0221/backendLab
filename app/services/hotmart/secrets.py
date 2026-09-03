@@ -140,6 +140,30 @@ def _settings_credentials_configured(environment: str) -> dict[str, bool]:
     }
 
 
+def _settings_hotmart_credentials(environment: str) -> HotmartCredentials | None:
+    settings = get_settings()
+    if normalize_hotmart_environment(settings.hotmart_environment) != environment:
+        return None
+    if not (
+        settings.hotmart_client_id.strip()
+        and settings.hotmart_client_secret.strip()
+        and settings.hotmart_basic_token.strip()
+    ):
+        return None
+    return HotmartCredentials(
+        client_id=settings.hotmart_client_id.strip(),
+        client_secret=settings.hotmart_client_secret.strip(),
+        basic_token=settings.hotmart_basic_token.strip(),
+    )
+
+
+def _settings_hotmart_hottok(environment: str) -> str:
+    settings = get_settings()
+    if normalize_hotmart_environment(settings.hotmart_environment) != environment:
+        return ""
+    return settings.hotmart_hottok.strip()
+
+
 def _merge_configured_flags(
     record_flags: dict[str, bool],
     settings_flags: dict[str, bool],
@@ -315,23 +339,16 @@ def load_hotmart_credentials(
     for secret_kind in HOTMART_OAUTH_SECRET_KINDS:
         record = records.get(secret_kind)
         if not _is_configured(record) or record is None:
-            settings = get_settings()
-            if normalize_hotmart_environment(settings.hotmart_environment) != env:
-                return None
-            if not (
-                settings.hotmart_client_id.strip()
-                and settings.hotmart_client_secret.strip()
-                and settings.hotmart_basic_token.strip()
-            ):
-                return None
-            return HotmartCredentials(
-                client_id=settings.hotmart_client_id.strip(),
-                client_secret=settings.hotmart_client_secret.strip(),
-                basic_token=settings.hotmart_basic_token.strip(),
-            )
+            return _settings_hotmart_credentials(env)
         if record.secret_ref:
             return None
-        values[secret_kind] = _decrypt_secret_value(record.secret_ciphertext)
+        try:
+            values[secret_kind] = _decrypt_secret_value(record.secret_ciphertext)
+        except ValueError:
+            # Production can retain encrypted DB credentials created with an older
+            # master key. If the runtime also provides matching ENV credentials,
+            # recover without blocking Hotmart callbacks or admin checks.
+            return _settings_hotmart_credentials(env)
     return HotmartCredentials(
         client_id=values["client_id"],
         client_secret=values["client_secret"],
@@ -348,11 +365,13 @@ def load_hotmart_hottok(
     env = normalize_hotmart_environment(environment)
     record = _secret_record(session, workspace_id=workspace_id, environment=env, secret_kind="hottok")
     if _is_configured(record) and record is not None and not record.secret_ref:
-        return _decrypt_secret_value(record.secret_ciphertext)
-    settings = get_settings()
-    if normalize_hotmart_environment(settings.hotmart_environment) == env:
-        return settings.hotmart_hottok.strip()
-    return ""
+        try:
+            return _decrypt_secret_value(record.secret_ciphertext)
+        except ValueError:
+            # Fall back to the runtime ENV token when DB ciphertext cannot be
+            # decrypted with this deployment's current master key.
+            return _settings_hotmart_hottok(env)
+    return _settings_hotmart_hottok(env)
 
 
 def test_hotmart_connection(
