@@ -54,6 +54,7 @@ def process_hotmart_webhook(
     *,
     payload: dict[str, Any],
     hottok_header: str,
+    hottok_source: str = "x-hotmart-hottok",
     request_headers: dict[str, str] | None = None,
     environment: str = "sandbox",
 ) -> HotmartWebhookIngestResponse:
@@ -73,6 +74,7 @@ def process_hotmart_webhook(
         payload_hash=payload_hash,
         request_headers_present=request_headers is not None,
         hottok_header_present=bool((hottok_header or "").strip()),
+        hottok_source=hottok_source,
     )
 
     existing_event = session.exec(
@@ -117,6 +119,7 @@ def process_hotmart_webhook(
             workspace_id=retry_workspace_id,
             environment=env,
             hottok_header=hottok_header,
+            hottok_source=hottok_source,
         )
         _trace_step(
             trace,
@@ -128,6 +131,7 @@ def process_hotmart_webhook(
             existing_event,
             request_headers=request_headers,
             hottok_header=hottok_header,
+            hottok_source=hottok_source,
             payload_hash=payload_hash,
             hottok_diagnostics=retry_hottok_diagnostics,
             webhook_trace=trace,
@@ -223,12 +227,14 @@ def process_hotmart_webhook(
         workspace_id=workspace_id,
         environment=env,
         hottok_header=hottok_header,
+        hottok_source=hottok_source,
     )
     _trace_step(trace, "hottok.validated", validated=hottok_validated, diagnostics=hottok_diagnostics)
     payload_redacted = redact_payload(payload)
     diagnostics = _request_diagnostics(
         request_headers=request_headers,
         hottok_header=hottok_header,
+        hottok_source=hottok_source,
     )
     if diagnostics:
         payload_redacted["_lab_request_diagnostics"] = diagnostics
@@ -596,9 +602,11 @@ def _validate_hottok(
     workspace_id: UUID | None,
     environment: str,
     hottok_header: str,
+    hottok_source: str = "x-hotmart-hottok",
 ) -> tuple[bool, dict[str, Any]]:
     provided = (hottok_header or "").strip()
     diagnostics: dict[str, Any] = {
+        "provided_source": hottok_source,
         "provided_present": bool(provided),
         "provided_length": len(provided),
         "provided_sha256_prefix": hashlib.sha256(provided.encode("utf-8")).hexdigest()[:12] if provided else "",
@@ -664,6 +672,7 @@ def _request_diagnostics(
     *,
     request_headers: dict[str, str] | None,
     hottok_header: str,
+    hottok_source: str = "x-hotmart-hottok",
 ) -> dict[str, Any]:
     if request_headers is None:
         return {}
@@ -672,6 +681,7 @@ def _request_diagnostics(
     return {
         "headers_redacted": redact_headers(normalized_headers),
         "header_names": sorted(normalized_headers.keys(), key=str.lower),
+        "hottok_source": hottok_source,
         "hottok_header_present": bool(provided),
         "hottok_header_length": len(provided),
         "hottok_header_sha256_prefix": hashlib.sha256(provided.encode("utf-8")).hexdigest()[:12]
@@ -685,11 +695,16 @@ def _attach_request_diagnostics(
     *,
     request_headers: dict[str, str] | None,
     hottok_header: str,
+    hottok_source: str = "x-hotmart-hottok",
     payload_hash: str,
     hottok_diagnostics: dict[str, Any] | None = None,
     webhook_trace: list[dict[str, Any]] | None = None,
 ) -> None:
-    diagnostics = _request_diagnostics(request_headers=request_headers, hottok_header=hottok_header)
+    diagnostics = _request_diagnostics(
+        request_headers=request_headers,
+        hottok_header=hottok_header,
+        hottok_source=hottok_source,
+    )
     if not diagnostics and not hottok_diagnostics:
         return
     payload_redacted = dict(event.payload_redacted or {})

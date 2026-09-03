@@ -45,6 +45,7 @@ from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.hotmart.pending_activations import claim_hotmart_pending_activation
 from app.services.hotmart.secrets import upsert_hotmart_credentials
 from app.services.hotmart.webhooks import process_hotmart_webhook
+from app.api.routes.hotmart_webhooks import _extract_hottok
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 
 
@@ -734,9 +735,9 @@ def test_hotmart_webhook_uses_environment_hottok_when_db_secret_cannot_be_decryp
     assert event.hottok_validated is True
     assert event.payload_redacted["_lab_request_diagnostics"]["hottok_header_present"] is True
     resolution = event.payload_redacted["_lab_hottok_resolution_diagnostics"]
-    assert resolution["source"] == "env_fallback_after_decrypt_error"
+    assert resolution["source"] == "env_primary"
     assert resolution["db_secret_configured"] is True
-    assert resolution["db_decrypt_failed"] is True
+    assert resolution["db_decrypt_failed"] is False
     assert resolution["env_candidate_configured"] is True
     assert resolution["provided_matches_expected"] is True
     trace_steps = [entry["step"] for entry in event.payload_redacted["_lab_webhook_trace"]]
@@ -746,6 +747,58 @@ def test_hotmart_webhook_uses_environment_hottok_when_db_secret_cannot_be_decryp
     assert "env-hottok-value" not in str(event.payload_redacted)
     assert len(db_session.exec(select(CommercialPaymentRecord)).all()) == 1
     assert len(db_session.exec(select(CommercialEntitlementRecord)).all()) == 1
+
+
+def test_hotmart_webhook_prefers_environment_hottok_over_database_secret(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "hotmart_environment", "sandbox")
+    monkeypatch.setattr(settings, "hotmart_hottok", "env-hottok-value")
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_hottok(db_session, workspace)
+    order = _create_hotmart_order(db_session, record, user, "env-token-primary")
+
+    response = process_hotmart_webhook(
+        db_session,
+        payload=_approved_payload(order, event_id="evt-env-token-primary", transaction="HP126-ENV-PRIMARY"),
+        hottok_header="env-hottok-value",
+        request_headers={"X-HOTMART-HOTTOK": "env-hottok-value"},
+        environment="sandbox",
+    )
+    db_session.commit()
+
+    event = db_session.exec(select(HotmartWebhookEventRecord)).one()
+    assert response.processing_status == "processed"
+    assert event.hottok_validated is True
+    resolution = event.payload_redacted["_lab_hottok_resolution_diagnostics"]
+    assert resolution["source"] == "env_primary"
+    assert resolution["db_secret_configured"] is True
+    assert resolution["env_candidate_configured"] is True
+    assert resolution["provided_matches_expected"] is True
+    assert "env-hottok-value" not in str(event.payload_redacted)
+    assert "hottok-value" not in str(event.payload_redacted)
+
+
+def test_hotmart_webhook_hottok_extractor_accepts_header_variants_and_payload_fallback() -> None:
+    token, source = _extract_hottok(
+        request_headers={"hottok": "alternate-header-token"},
+        payload={"hottok": "payload-token"},
+        header_value="",
+    )
+
+    assert token == "alternate-header-token"
+    assert source == "hottok-header"
+
+    token, source = _extract_hottok(
+        request_headers={},
+        payload={"hottok": "payload-token"},
+        header_value="",
+    )
+
+    assert token == "payload-token"
+    assert source == "payload.hottok"
 
 
 def test_hotmart_duplicate_webhook_revalidates_hottok_and_records_retry_diagnostics(db_session: Session) -> None:

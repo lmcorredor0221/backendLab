@@ -412,6 +412,9 @@ def resolve_hotmart_hottok(
     record = _secret_record(session, workspace_id=workspace_id, environment=env, secret_kind="hottok")
     diagnostics["db_secret_configured"] = _is_configured(record)
     diagnostics["db_secret_ref_configured"] = bool(record and record.secret_ref)
+    if env_token:
+        return finish("env_primary", env_token)
+
     if _is_configured(record) and record is not None and not record.secret_ref:
         try:
             return finish("db_ciphertext", _decrypt_secret_value(record.secret_ciphertext))
