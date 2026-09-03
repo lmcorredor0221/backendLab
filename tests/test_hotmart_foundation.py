@@ -218,6 +218,52 @@ def test_hotmart_loaders_fall_back_to_environment_when_db_secret_cannot_be_decry
     assert hottok == "env-hottok-value"
 
 
+def test_hotmart_effective_runtime_prefers_environment_over_database_config(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(db_session)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "hotmart_environment", "production")
+    monkeypatch.setattr(settings, "hotmart_enabled", True)
+    monkeypatch.setattr(settings, "hotmart_api_base_url", "https://env-api.hotmart.test")
+    monkeypatch.setattr(settings, "hotmart_auth_base_url", "https://env-auth.hotmart.test")
+    monkeypatch.setattr(settings, "hotmart_webhook_public_url", "https://env-webhook.test/hotmart")
+    monkeypatch.setattr(settings, "hotmart_client_id", "env-client-id")
+    monkeypatch.setattr(settings, "hotmart_client_secret", "env-client-secret")
+    monkeypatch.setattr(settings, "hotmart_basic_token", "env-basic-token")
+    monkeypatch.setattr(settings, "hotmart_hottok", "env-hottok")
+    upsert_hotmart_credentials(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartCredentialUpsertRequest(
+            environment="production",
+            enabled=True,
+            api_base_url="https://db-api.hotmart.test",
+            auth_base_url="https://db-auth.hotmart.test",
+            webhook_public_url="https://db-webhook.test/hotmart",
+            client_id="db-client-id",
+            client_secret="db-client-secret",
+            basic_token="db-basic-token",
+            hottok="db-hottok",
+        ),
+    )
+    db_session.commit()
+
+    status = build_hotmart_status(db_session, workspace_id=workspace.id, environment="production")
+    credentials = load_hotmart_credentials(db_session, workspace_id=workspace.id, environment="production")
+    hottok = load_hotmart_hottok(db_session, workspace_id=workspace.id, environment="production")
+
+    assert status.api_base_url == "https://env-api.hotmart.test"
+    assert status.auth_base_url == "https://env-auth.hotmart.test"
+    assert status.webhook_public_url == "https://env-webhook.test/hotmart"
+    assert credentials is not None
+    assert credentials.client_id == "env-client-id"
+    assert credentials.client_secret == "env-client-secret"
+    assert credentials.basic_token == "env-basic-token"
+    assert hottok == "env-hottok"
+
+
 def test_hotmart_test_connection_uses_sandbox_oauth_and_redacts_token(db_session: Session) -> None:
     workspace = _workspace(db_session)
     upsert_hotmart_credentials(

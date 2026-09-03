@@ -55,19 +55,21 @@ def _decrypt_secret_value(secret_ciphertext: str) -> str:
 
 
 def _resolved_api_base_url(environment: str, explicit_value: str = "") -> str:
-    return (explicit_value or get_settings().hotmart_api_base_url or default_hotmart_api_base_url(environment)).rstrip("/")
+    settings = get_settings()
+    return (settings.hotmart_api_base_url or explicit_value or default_hotmart_api_base_url(environment)).rstrip("/")
 
 
 def _resolved_auth_base_url(environment: str, explicit_value: str = "") -> str:
     env = normalize_hotmart_environment(environment)
-    configured_value = (explicit_value or get_settings().hotmart_auth_base_url).strip().rstrip("/")
+    settings = get_settings()
+    configured_value = (settings.hotmart_auth_base_url or explicit_value).strip().rstrip("/")
     if env == "sandbox" and configured_value == LEGACY_SANDBOX_AUTH_BASE_URL:
         configured_value = ""
     return (configured_value or default_hotmart_auth_base_url(env)).rstrip("/")
 
 
 def _resolved_webhook_public_url(explicit_value: str = "") -> str:
-    return explicit_value or get_settings().hotmart_webhook_public_url
+    return get_settings().hotmart_webhook_public_url or explicit_value
 
 
 def _config_record(
@@ -344,6 +346,9 @@ def load_hotmart_credentials(
     environment: str = "sandbox",
 ) -> HotmartCredentials | None:
     env = normalize_hotmart_environment(environment)
+    env_credentials = _settings_hotmart_credentials(env)
+    if env_credentials is not None:
+        return env_credentials
     records = _secret_records(session, workspace_id=workspace_id, environment=env)
     values: dict[str, str] = {}
     for secret_kind in HOTMART_OAUTH_SECRET_KINDS:
