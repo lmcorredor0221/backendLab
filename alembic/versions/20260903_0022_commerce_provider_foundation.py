@@ -53,7 +53,10 @@ def _can_create_table() -> bool:
 
 def upgrade() -> None:
     if not _can_create_table():
-        return
+        raise RuntimeError(
+            "Cannot create commerce provider tables because the database role does not have "
+            "CREATE privilege on the current schema. Run the migration with the database owner."
+        )
     uuid = _uuid_type()
     json_type = _json_type()
     json_default = _json_default()

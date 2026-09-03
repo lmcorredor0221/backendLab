@@ -43,7 +43,10 @@ def upgrade() -> None:
     if _has_table("platform_provider_secrets"):
         return
     if not _can_create_table():
-        return
+        raise RuntimeError(
+            "Cannot create platform_provider_secrets because the database role does not have "
+            "CREATE privilege on the current schema. Run the migration with the database owner."
+        )
 
     uuid = _uuid_type()
     op.create_table(
