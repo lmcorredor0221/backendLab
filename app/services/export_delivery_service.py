@@ -230,6 +230,7 @@ def _export_job_contract_drift_reasons(
     definition: ExportDefinition,
     profile: str,
     preview: ACPPreview,
+    force_rebuild: bool = False,
 ) -> list[str]:
     expected_file_name = _expected_file_name(record=record, definition=definition)
     expected_storage_key = _expected_storage_key(
@@ -239,6 +240,10 @@ def _export_job_contract_drift_reasons(
     )
     reasons: list[str] = []
 
+    if force_rebuild:
+        reasons.append("force_rebuild")
+    if job.completed_at is not None and record.updated_at is not None and record.updated_at > job.completed_at:
+        reasons.append("session_updated")
     if job.product_key != definition.product_key:
         reasons.append("product_key")
     if job.profile != profile:
@@ -556,14 +561,20 @@ def _payload_for_definition(
     snapshot: SessionSnapshot,
     preview: ACPPreview,
 ) -> bytes:
+    overview_markdown = _blueprint_markdown(snapshot, preview).decode("utf-8")
     if definition.key == "acp_portable_zip":
-        return build_acp_zip(preview)
+        return build_acp_zip(
+            preview,
+            db=db,
+            snapshot=snapshot,
+            overview_markdown=overview_markdown,
+        )
     if definition.key == "blueprint_professional":
         return build_blueprint_zip(
             db,
             snapshot=snapshot,
             preview=preview,
-            overview_markdown=_blueprint_markdown(snapshot, preview).decode("utf-8"),
+            overview_markdown=overview_markdown,
         )
     if definition.key == "estimation_pack":
         return _json_bytes(
@@ -647,8 +658,6 @@ def _conformance_errors(definition: ExportDefinition, preview: ACPPreview) -> li
         errors.append("ACP conformance is not ready for portable ZIP export.")
     if preview.construction_readiness.blocking_gaps:
         errors.append("ACP has blocking implementation gaps.")
-    if preview.construction_readiness.open_questions:
-        errors.append("ACP has open implementation questions.")
     return errors
 
 
@@ -785,6 +794,7 @@ def create_export_job(
             definition=definition,
             profile=profile,
             preview=preview,
+            force_rebuild=payload.force_rebuild,
         )
         if regeneration_reasons:
             _rerun_existing_export_job(
@@ -907,11 +917,7 @@ def retry_export_job_response(
     definition = _definition(job.artifact_kind)
     if not _capability_allowed(access, definition.required_capability):
         raise PermissionError(f"Export requires capability {definition.required_capability}.")
-    if job.status == ExportJobStatus.running:
-        raise ValueError("Export job is already running.")
     _refresh_ready_export_job(db, job)
-    if job.status == ExportJobStatus.ready and job.expires_at is not None and job.expires_at >= utc_now():
-        return _serialize_job(job)
 
     retry_count = int(job.metadata_payload.get("retry_count", 0) or 0) + 1
     job.metadata_payload = {**job.metadata_payload, "retry_count": retry_count, "last_retry_at": utc_now().isoformat()}

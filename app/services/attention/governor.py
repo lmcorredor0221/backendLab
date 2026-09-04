@@ -205,6 +205,26 @@ def _suppress_derived_promotion_blockers(items: list[AttentionItemV2]) -> list[A
     return [item for item in items if not _is_derived_promotion_blocker(item)]
 
 
+def _is_lab_operational_debt(item: AttentionItemV2) -> bool:
+    """Identifica deuda operativa interna de LAB que no debe transferirse al usuario en fase ACP."""
+    # 1. Gaps originados por artefactos de validacion/simulacion interna de LAB
+    if item.source == "journey.validation_simulation_artifact":
+        return True
+    # 2. Operaciones HITL de background o skills de generacion interna
+    if item.source == "runtime_operation" and item.type == "hitl":
+        return True
+    # 3. Politicas de gobernanza de Blueprint promotion
+    if item.source == "governance_policy" or item.product == "blueprint":
+        return True
+    # 4. Gaps generados por pasos tecnicos internos de product build
+    if item.source == "product_build_step":
+        return True
+    # 5. Errores tecnicos internos o inconsistencias residuales de LAB
+    if item.type in {"inconsistency", "runtime_error", "validation"} and item.source != "acp_questions":
+        return True
+    return False
+
+
 def govern_attention_items(
     items: Iterable[AttentionItemV2],
     *,
@@ -219,9 +239,24 @@ def govern_attention_items(
     leaking into the active user inbox while preserving runtime recovery items.
     """
 
-    del current_stage  # Reserved for future stage-aware prioritization.
     mode = _mode_for_session(record, access)
     visible = list(items)
+
+    tier_str = str(getattr(access, "tier", None) or getattr(record, "commercial_tier", None) or "")
+    is_acp_tier = tier_str.lower() == "acp" or tier_str == str(CommercialTier.acp)
+    capabilities = getattr(access, "capabilities", []) or []
+    has_acp_cap = any(getattr(c, "capability", "") == "acp.build" and getattr(c, "allowed", False) for c in capabilities)
+    is_in_acp_flow = is_acp_tier or has_acp_cap or current_stage in {"validate", "package", "acp", "acp_prep"}
+
+    if is_in_acp_flow:
+        # Regla obligatoria: en ACP toda la deuda operativa de LAB queda cerrada.
+        # Solo se presentan al usuario preguntas y decisiones funcionales o de implementacion.
+        return [
+            item
+            for item in visible
+            if not _is_lab_operational_debt(item)
+            and item.type in {"question", "gap", "decision"}
+        ]
 
     if mode == ProductProcessingMode.basic_free:
         visible = [item for item in visible if not _is_basic_blueprint_noise(item)]

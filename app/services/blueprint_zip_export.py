@@ -331,7 +331,7 @@ def _canonical_stage(value: str) -> str:
         return "discover"
     if "definition" in normalized or "define" in normalized:
         return "define"
-    if "design" in normalized or "architecture" in normalized:
+    if "design" in normalized or "architecture" in normalized or "contract" in normalized:
         return "design"
     if "tool" in normalized:
         return "tools"
@@ -364,17 +364,86 @@ def _path_title(path: str) -> str:
     return stem.replace("-", " ").replace("_", " ").strip().title() or "Archivo Blueprint"
 
 
-def _navigation_item(*, path: str, title: str = "", stage: str = "", item_type: str = "artifact", description: str = "") -> dict:
-    resolved_stage = _canonical_stage(stage or _stage_from_path(path))
-    item_id = re.sub(r"[^a-zA-Z0-9._:-]+", "-", path.removeprefix("Blueprint/")).strip("-").lower()
+def _diagram_item_details(diagram_key: str, filename: str) -> tuple[str, str, str]:
+    """
+    Retorna (stage, title, description) canonicos para un archivo de diagrama.
+    """
+    try:
+        from app.services.diagram_center.registry_service import load_diagram_registry
+
+        registry = load_diagram_registry()
+        entry = registry.entries.get(diagram_key)
+    except Exception:
+        entry = None
+
+    base_title = entry.title if entry else _path_title(diagram_key)
+    base_stage = _canonical_stage(entry.stage if entry else "design")
+    base_desc = entry.description if entry else f"Diagrama {base_title}."
+
+    if filename.endswith(".svg"):
+        return base_stage, f"{base_title} (SVG)", f"Renderizado visual vectorial SVG para {base_title}."
+    if filename.endswith(".mmd"):
+        return base_stage, f"{base_title} (Mermaid)", f"Especificacion Mermaid del diagrama {base_title}."
+    if filename.endswith(".puml"):
+        return base_stage, f"{base_title} (PlantUML)", f"Especificacion PlantUML del diagrama {base_title}."
+    if filename.endswith(".bpmn.xml"):
+        return base_stage, f"{base_title} (BPMN 2.0 XML)", f"Definicion BPMN 2.0 XML ejecutable de {base_title}."
+    if filename == "diagram-model.v1.json":
+        return base_stage, f"{base_title} (Modelo Semantico)", f"Modelo canonico estructurado JSON de {base_title}."
+    if filename == "diagram-quality.v1.json":
+        return base_stage, f"{base_title} (Reporte de Calidad)", f"Metricas de calidad, conectividad y validacion de {base_title}."
+    if filename == "diagram-presentation.v1.json":
+        return base_stage, f"{base_title} (Presentacion Visual)", f"Configuracion de layout y presentacion de {base_title}."
+    if filename.endswith("-json.txt"):
+        return base_stage, f"{base_title} (Raw JSON)", f"Representacion textual JSON de {base_title}."
+
+    return base_stage, f"{base_title} ({_path_title(filename)})", base_desc
+
+
+def _navigation_item(
+    *,
+    path: str,
+    title: str = "",
+    stage: str = "",
+    item_type: str = "artifact",
+    description: str = "",
+) -> dict:
+    parts = PurePosixPath(path).parts
+    relative_path = path.removeprefix("Blueprint/").lstrip("/")
+
+    resolved_stage = stage
+    resolved_title = title
+    resolved_desc = description
+
+    if not resolved_title or not resolved_stage:
+        if len(parts) >= 4 and parts[1] == "diagrams":
+            diagram_key = parts[2]
+            filename = parts[3]
+            d_stage, d_title, d_desc = _diagram_item_details(diagram_key, filename)
+            resolved_stage = resolved_stage or d_stage
+            resolved_title = resolved_title or d_title
+            resolved_desc = resolved_desc or d_desc
+        elif len(parts) >= 4 and parts[1] == "commercial" and parts[2] == "diagrams":
+            filename = parts[3]
+            resolved_stage = resolved_stage or "design"
+            resolved_title = resolved_title or f"{_path_title(filename)} (Mermaid)"
+            resolved_desc = resolved_desc or f"Diagrama comercial Mermaid de {_path_title(filename)}."
+        else:
+            resolved_stage = resolved_stage or _stage_from_path(path)
+            resolved_title = resolved_title or _path_title(path)
+            resolved_desc = resolved_desc or f"Archivo de soporte para {_STAGE_LABELS.get(_canonical_stage(resolved_stage), 'Blueprint')}."
+
+    canonical_stage = _canonical_stage(resolved_stage)
+    item_id = re.sub(r"[^a-zA-Z0-9._:-]+", "-", relative_path).strip("-").lower()
     return {
         "id": item_id,
-        "title": title or _path_title(path),
-        "stage": resolved_stage,
+        "title": resolved_title,
+        "stage": canonical_stage,
         "type": item_type,
-        "description": description or f"Archivo de soporte para {_STAGE_LABELS.get(resolved_stage, 'Blueprint')}.",
+        "description": resolved_desc,
         "path": path,
-        "order": _STAGE_ORDER.get(resolved_stage, 100),
+        "relative_path": relative_path,
+        "order": _STAGE_ORDER.get(canonical_stage, 100),
         "related_artifacts": [],
         "related_diagrams": [],
     }
@@ -427,8 +496,12 @@ def _storyline_narrative(snapshot: SessionSnapshot, stage: str, items: list[dict
 
 def _build_storyline(snapshot: SessionSnapshot, *, items: list[dict], decisions: list[dict]) -> list[dict]:
     stages = []
-    for stage in ["discover", "define", "design", "tools", "memory", "validation", "estimate", "governance", "diagrams"]:
-        stage_items = [item for item in items if item["stage"] == stage]
+    all_stages = ["discover", "define", "design", "tools", "memory", "validation", "estimate", "governance", "diagrams"]
+    for stage in all_stages:
+        if stage == "diagrams":
+            stage_items = [item for item in items if item["type"] == "diagram"]
+        else:
+            stage_items = [item for item in items if item["stage"] == stage]
         stage_decisions = [item for item in decisions if item["stage"] == stage]
         if not stage_items and not stage_decisions and stage not in {"discover", "define", "design", "memory", "estimate"}:
             continue
@@ -446,9 +519,23 @@ def _build_storyline(snapshot: SessionSnapshot, *, items: list[dict], decisions:
 
     chapters: list[dict] = []
     for index, stage in enumerate(stages):
-        stage_items = [item for item in items if item["stage"] == stage]
+        if stage == "diagrams":
+            stage_items = [item for item in items if item["type"] == "diagram"]
+        else:
+            stage_items = [item for item in items if item["stage"] == stage]
         stage_decisions = [item for item in decisions if item["stage"] == stage]
         narrative = _storyline_narrative(snapshot, stage, stage_items, stage_decisions)
+
+        evidence_candidates = sorted(
+            stage_items,
+            key=lambda x: (
+                0 if x["path"].endswith(".svg")
+                else (1 if x["path"].endswith(".md")
+                else (2 if x["path"].endswith(".json") and not x["path"].endswith("diagram-quality.v1.json")
+                else 3))
+            ),
+        )
+
         chapters.append(
             {
                 "id": stage,
@@ -461,7 +548,7 @@ def _build_storyline(snapshot: SessionSnapshot, *, items: list[dict], decisions:
                     f"{len(stage_items)} artefacto(s) o diagrama(s) relacionados.",
                     f"{len(stage_decisions)} decision(es), supuesto(s) o pendiente(s) relacionados.",
                 ],
-                "evidence_refs": [item["path"] for item in stage_items[:5]],
+                "evidence_refs": [item["path"] for item in evidence_candidates[:5]],
                 "related_artifacts": [item["id"] for item in stage_items if item["type"] == "artifact"],
                 "related_diagrams": [item["id"] for item in stage_items if item["type"] == "diagram"],
                 "next_chapter_id": stages[index + 1] if index + 1 < len(stages) else "",
@@ -540,9 +627,9 @@ def _build_blueprint_readme(manifest: dict, *, overview_markdown: str) -> str:
         "",
         "## Por donde empezar",
         "",
-        "1. Abre `Blueprint/index.html` para recorrer el Blueprint como una experiencia guiada.",
+        "1. Abre [index.html](index.html) (`Blueprint/index.html`) para recorrer el Blueprint como una experiencia guiada.",
         "2. Usa el mapa lateral del viewer para navegar por problema, contexto, solucion, arquitectura, herramientas, memoria, validacion y estimacion.",
-        "3. Consulta `Blueprint/governance/decisiones-delegadas-y-supuestos.md` para revisar preguntas, inferencias o decisiones trasladadas a etapas posteriores.",
+        "3. Consulta [Decisiones Delegadas y Supuestos](governance/decisiones-delegadas-y-supuestos.md) (`Blueprint/governance/decisiones-delegadas-y-supuestos.md`) para revisar preguntas, inferencias o decisiones trasladadas a etapas posteriores.",
         "4. Entra a los artefactos o diagramas vinculados cuando necesites detalle tecnico o evidencia.",
         "",
         "## Resumen ejecutivo",
@@ -561,7 +648,9 @@ def _build_blueprint_readme(manifest: dict, *, overview_markdown: str) -> str:
         lines.append(f"- {chapter.get('title')}: {chapter.get('why_it_matters')}")
     lines.extend(["", "## Contenido principal", ""])
     for item in manifest.get("items", []):
-        lines.append(f"- `{item.get('path')}` - {item.get('title')}")
+        rel_path = str(item.get("relative_path") or item.get("path", "")).removeprefix("Blueprint/").lstrip("/")
+        title = item.get("title") or rel_path
+        lines.append(f"- [{title}]({rel_path}) (`{rel_path}`)")
     warnings = manifest.get("warnings", [])
     lines.extend(["", "## Decisiones, supuestos y pendientes", ""])
     if warnings:
@@ -577,12 +666,12 @@ def _build_blueprint_readme(manifest: dict, *, overview_markdown: str) -> str:
             "",
             "## Estructura del paquete",
             "",
-            "- `Blueprint/index.html`: viewer autocontenido para navegar el Blueprint.",
-            "- `Blueprint/navigation-manifest.v1.json`: indice canonico usado por README y viewer.",
-            "- `Blueprint/contracts/`: contratos canonicos del Blueprint.",
-            "- `Blueprint/governance/`: decisiones delegadas, supuestos e inferencias.",
-            "- `Blueprint/diagrams/`: modelos, calidad y renderings de diagramas.",
-            "- `Blueprint/deliverables/`: entregables derivados del Blueprint.",
+            "- [index.html](index.html) (`Blueprint/index.html`): viewer autocontenido para navegar el Blueprint.",
+            "- [navigation-manifest.v1.json](navigation-manifest.v1.json): indice canonico usado por README y viewer.",
+            "- `contracts/`: contratos canonicos del Blueprint.",
+            "- [governance/decisiones-delegadas-y-supuestos.md](governance/decisiones-delegadas-y-supuestos.md): decisiones delegadas, supuestos e inferencias.",
+            "- `diagrams/`: modelos, calidad y renderings de diagramas.",
+            "- `deliverables/`: entregables derivados del Blueprint.",
             "",
             "## Documento profesional completo",
             "",
@@ -615,7 +704,10 @@ a { color:inherit; }
 .eyebrow { color:var(--brand); font-size:12px; font-weight:900; letter-spacing:.18em; text-transform:uppercase; }
 .chapter h2 { margin:8px 0 12px; font-size:30px; }
 .chapter p { color:var(--muted); line-height:1.7; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; margin-top:20px; }
+.section-group { margin-top:24px; padding-top:18px; border-top:1px dashed var(--line); }
+.section-group:first-of-type { border-top:none; padding-top:0; margin-top:14px; }
+.section-header { font-size:14px; font-weight:850; color:var(--ink); margin-bottom:12px; display:flex; align-items:center; gap:8px; text-transform:uppercase; letter-spacing:.06em; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; margin-top:10px; }
 .card { padding:16px; }
 .card small { color:var(--muted); text-transform:uppercase; letter-spacing:.12em; font-weight:800; }
 .card h3 { margin:8px 0; font-size:16px; }
@@ -641,11 +733,104 @@ def _viewer_js() -> str:
   const search = document.querySelector('[data-search]');
   let current = 0;
   function esc(value){ return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+  function resolveHref(item){
+    const raw = item.relative_path || item.path || '';
+    return raw.replace(/^Blueprint\\//, '');
+  }
   function linkCard(item){
-    return `<article class="card"><small>${esc(item.type)} · ${esc(item.stage)}</small><h3>${esc(item.title)}</h3><p>${esc(item.description)}</p><a href="${esc(item.path)}" target="_blank" rel="noreferrer">Abrir</a></article>`;
+    const href = resolveHref(item);
+    const isSvg = href.endsWith('.svg');
+    const isMd = href.endsWith('.md');
+    const isJson = href.endsWith('.json');
+    const isMmd = href.endsWith('.mmd') || href.endsWith('.mermaid');
+    const isXml = href.endsWith('.xml');
+    let badge = esc(item.type);
+    let actionLabel = 'Abrir';
+    if (isSvg) { badge = 'DIAGRAMA SVG'; actionLabel = 'Ver diagrama SVG'; }
+    else if (isMd) { badge = 'DOCUMENTO'; actionLabel = 'Leer documento'; }
+    else if (isJson) { badge = 'CONTRATO JSON'; actionLabel = 'Ver contrato JSON'; }
+    else if (isMmd) { badge = 'MERMAID'; actionLabel = 'Ver Mermaid'; }
+    else if (isXml) { badge = 'BPMN XML'; actionLabel = 'Ver XML BPMN'; }
+
+    return `<article class="card">
+      <small>${badge} · ${esc(item.stage)}</small>
+      <h3>${esc(item.title)}</h3>
+      <p>${esc(item.description)}</p>
+      <a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(actionLabel)}</a>
+    </article>`;
   }
   function decisionCard(item){
     return `<article class="card decision"><small>${esc(item.status)} · ${esc(item.impact_level)}</small><h3>${esc(item.title)}</h3><p>${esc(item.recommendation || item.why_later)}</p><p><strong>Momento:</strong> ${esc(item.resolution_moment)}</p></article>`;
+  }
+  function renderSegmentedContent(artifacts, diagrams, decisionsList){
+    const allItems = [...artifacts, ...diagrams];
+    const svgItems = [];
+    const mmdItems = [];
+    const jsonItems = [];
+    const mdItems = [];
+    const otherItems = [];
+
+    allItems.forEach(item => {
+      const href = resolveHref(item).toLowerCase();
+      const title = (item.title || '').toLowerCase();
+      if (href.endsWith('.svg')) {
+        svgItems.push(item);
+      } else if (href.endsWith('.mmd') || href.endsWith('.mermaid') || href.endsWith('.xml') || title.includes('mermaid') || title.includes('bpmn')) {
+        mmdItems.push(item);
+      } else if (href.endsWith('.json')) {
+        jsonItems.push(item);
+      } else if (href.endsWith('.md')) {
+        mdItems.push(item);
+      } else {
+        otherItems.push(item);
+      }
+    });
+
+    let html = '';
+
+    if (svgItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">🎨 Diagramas Visuales Vectoriales (SVG) (${svgItems.length})</div>
+        <div class="grid">${svgItems.map(linkCard).join('')}</div>
+      </div>`;
+    }
+
+    if (mmdItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📐 Código & Especificaciones de Diagrama (Mermaid / BPMN) (${mmdItems.length})</div>
+        <div class="grid">${mmdItems.map(linkCard).join('')}</div>
+      </div>`;
+    }
+
+    if (jsonItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📜 Contratos Semánticos, Modelos & Calidad (.json) (${jsonItems.length})</div>
+        <div class="grid">${jsonItems.map(linkCard).join('')}</div>
+      </div>`;
+    }
+
+    if (mdItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📄 Documentación & Entregables (.md) (${mdItems.length})</div>
+        <div class="grid">${mdItems.map(linkCard).join('')}</div>
+      </div>`;
+    }
+
+    if (otherItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📦 Otros Artefactos (${otherItems.length})</div>
+        <div class="grid">${otherItems.map(linkCard).join('')}</div>
+      </div>`;
+    }
+
+    if (decisionsList && decisionsList.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">⚠️ Decisiones Delegadas, Supuestos & Gobernanza (${decisionsList.length})</div>
+        <div class="grid">${decisionsList.map(decisionCard).join('')}</div>
+      </div>`;
+    }
+
+    return html || '<p>No hay elementos disponibles en esta sección.</p>';
   }
   function renderNav(){
     nav.innerHTML = data.storyline.map((item, index) => `<button type="button" class="${index===current?'active':''}" data-index="${index}">${esc(index+1)}. ${esc(item.title)}</button>`).join('');
@@ -662,8 +847,8 @@ def _viewer_js() -> str:
       <h2>${esc(item.title)}</h2>
       <p>${esc(item.narrative)}</p>
       <div class="takeaways">${(item.key_takeaways || []).map(t => `<span class="pill">${esc(t)}</span>`).join('')}</div>
-      <div class="grid">${[...artifacts, ...diagrams].map(linkCard).join('')}${decisions.map(decisionCard).join('')}</div>
-      <p><strong>Por que importa:</strong> ${esc(item.why_it_matters)}</p>
+      ${renderSegmentedContent(artifacts, diagrams, decisions)}
+      <p style="margin-top:24px;"><strong>Por que importa:</strong> ${esc(item.why_it_matters)}</p>
       <p><strong>Siguiente mirada:</strong> ${esc(item.next_question)}</p>
       <div class="controls"><button class="secondary" type="button" data-prev>Anterior</button><button type="button" data-next>Siguiente</button></div>
     `;
@@ -687,6 +872,24 @@ def _build_blueprint_viewer_html(manifest: dict) -> str:
     chapters_count = len(manifest.get("storyline", []))
     items_count = len(manifest.get("items", []))
     warnings_count = len(manifest.get("warnings", []))
+
+    item_map = {item["id"]: item for item in manifest.get("items", [])}
+    noscript_chapters: list[str] = []
+    for ch in manifest.get("storyline", []):
+        ch_title = escape(str(ch.get("title") or ""))
+        ch_narrative = escape(str(ch.get("narrative") or ""))
+        link_items: list[str] = []
+        for it_id in (ch.get("related_artifacts", []) + ch.get("related_diagrams", [])):
+            it = item_map.get(it_id)
+            if it:
+                href = escape(str(it.get("relative_path") or it.get("path", "")).removeprefix("Blueprint/").lstrip("/"))
+                title = escape(str(it.get("title") or href))
+                link_items.append(f'<li><a href="{href}">{title}</a></li>')
+        links_markup = f'<ul style="margin:8px 0 16px 20px; line-height:1.6;">{"".join(link_items)}</ul>' if link_items else '<p style="color:#666;">Sin archivos vinculados.</p>'
+        noscript_chapters.append(f'<div style="margin-bottom:16px;"><h3 style="margin:4px 0;">{ch_title}</h3><p style="margin:4px 0; color:#444;">{ch_narrative}</p>{links_markup}</div>')
+
+    noscript_content = "".join(noscript_chapters)
+
     return f"""<!doctype html>
 <html lang="es">
 <head>
@@ -705,6 +908,16 @@ def _build_blueprint_viewer_html(manifest: dict) -> str:
       <nav class="nav" data-nav aria-label="Mapa del Blueprint"></nav>
     </aside>
     <main class="main">
+      <noscript>
+        <section class="hero" style="border-left:4px solid var(--brand); margin-bottom:20px;">
+          <div class="eyebrow">Modo Portable sin JavaScript</div>
+          <h2>Navegación directa de entregables y diagramas</h2>
+          <p>Se detectó que JavaScript está desactivado en el entorno local. Puedes acceder directamente a todos los archivos y diagramas usando los siguientes enlaces:</p>
+          <div style="margin-top:16px;">
+            {noscript_content}
+          </div>
+        </section>
+      </noscript>
       <section class="hero">
         <div class="eyebrow">Blueprint Viewer</div>
         <h1>Recorre la historia de la solucion</h1>
@@ -726,13 +939,113 @@ def _rendering_zip_path(diagram_key: str, rendering_key: str) -> str:
     return f"Blueprint/diagrams/{diagram_key}/{diagram_key}-{_safe_name(rendering_key, 'rendering')}.txt"
 
 
-def build_blueprint_zip(
+def _validate_blueprint_package_integrity(
+    files: dict[str, bytes],
+    manifest: dict[str, Any],
+) -> None:
+    """
+    Valida la integridad y portabilidad del paquete Blueprint Pro antes de comprimirlo:
+    1. index.html y assets indispensables existen.
+    2. Todo item referenciado en el manifest tiene un archivo fisico en files.
+    3. Ningun enlace relativo o interno contiene rutas absolutas, prefijo duplicado Blueprint/,
+       ni referencias a localhost o servidores externos.
+    4. Todos los IDs referenciados en el storyline existen en manifest['items'].
+    5. Todos los enlaces en index.html y README.md resuelven a archivos existentes en el paquete.
+    """
+    errors: list[str] = []
+
+    # 1. Archivos estructurales obligatorios
+    required_files = [
+        "Blueprint/index.html",
+        "Blueprint/README.md",
+        "Blueprint/manifest.json",
+        "Blueprint/navigation-manifest.v1.json",
+        "Blueprint/assets/blueprint-viewer.css",
+        "Blueprint/assets/blueprint-viewer.js",
+    ]
+    for req in required_files:
+        if req not in files or not files[req]:
+            errors.append(f"Archivo estructural obligatorio ausente o vacio: {req}")
+
+    # 2. Validar cada item del manifest
+    item_ids: set[str] = set()
+    for item in manifest.get("items", []):
+        item_id = str(item.get("id") or "")
+        path = str(item.get("path") or "")
+        rel_path = str(item.get("relative_path") or "").strip()
+        item_ids.add(item_id)
+
+        if not path.startswith("Blueprint/"):
+            errors.append(f"El campo path del item '{item_id}' debe iniciar con 'Blueprint/': {path}")
+        if not rel_path:
+            errors.append(f"El item '{item_id}' carece de relative_path valido.")
+        elif rel_path.startswith(("Blueprint/", "/", "\\", "http://", "https://", "file:")):
+            errors.append(f"El relative_path del item '{item_id}' es invalido o no es relativo: {rel_path}")
+
+        # Comprobar que el archivo existe en files
+        if path not in files:
+            errors.append(f"El item '{item_id}' referencia un path inexistente en el paquete: {path}")
+        expected_full_path = f"Blueprint/{rel_path}"
+        if expected_full_path not in files:
+            errors.append(f"El relative_path '{rel_path}' del item '{item_id}' no resuelve a un archivo: {expected_full_path}")
+
+    # 3. Validar storyline references
+    for chapter in manifest.get("storyline", []):
+        ch_id = chapter.get("id", "unknown")
+        for ref_id in chapter.get("related_artifacts", []):
+            if ref_id not in item_ids:
+                errors.append(f"Capitulo '{ch_id}' referencia related_artifact desconocido: '{ref_id}'")
+        for ref_id in chapter.get("related_diagrams", []):
+            if ref_id not in item_ids:
+                errors.append(f"Capitulo '{ch_id}' referencia related_diagram desconocido: '{ref_id}'")
+        for ev_ref in chapter.get("evidence_refs", []):
+            if ev_ref not in files:
+                errors.append(f"Capitulo '{ch_id}' referencia evidence_ref inexistente: '{ev_ref}'")
+
+    # 4. Validar enlaces en index.html
+    if "Blueprint/index.html" in files:
+        html_content = files["Blueprint/index.html"].decode("utf-8", errors="replace")
+        for match in re.finditer(r'(?:href|src)=["\']([^"\']+)["\']', html_content):
+            target = match.group(1).split("#")[0].strip()
+            if not target or target.startswith(("javascript:", "mailto:", "data:")):
+                continue
+            if target.startswith(("http://", "https://", "//")):
+                errors.append(f"index.html contiene enlace absoluto o externo no portable: '{target}'")
+            elif target.startswith("Blueprint/"):
+                errors.append(f"index.html contiene enlace con prefijo redundante Blueprint/: '{target}'")
+            else:
+                expected = f"Blueprint/{target}"
+                if expected not in files:
+                    errors.append(f"index.html contiene enlace roto '{target}' -> falta '{expected}'")
+
+    # 5. Validar enlaces markdown en README.md
+    if "Blueprint/README.md" in files:
+        readme_content = files["Blueprint/README.md"].decode("utf-8", errors="replace")
+        for match in re.finditer(r'\[([^\]]+)\]\(([^)]+)\)', readme_content):
+            target = match.group(2).split("#")[0].strip()
+            if not target or target.startswith(("http://", "https://", "mailto:")):
+                continue
+            if target.startswith("Blueprint/"):
+                errors.append(f"README.md contiene enlace con prefijo redundante Blueprint/: '{target}'")
+            else:
+                expected = f"Blueprint/{target}"
+                if expected not in files:
+                    errors.append(f"README.md contiene enlace roto '{target}' -> falta '{expected}'")
+
+    if errors:
+        raise ValueError(
+            f"Fallo de integridad en el paquete Blueprint Pro ({len(errors)} errores):\n"
+            + "\n".join(f"  - {err}" for err in errors[:15])
+        )
+
+
+def build_blueprint_files(
     db: Session,
     *,
     snapshot: SessionSnapshot,
     preview: ACPPreview,
     overview_markdown: str,
-) -> bytes:
+) -> dict[str, bytes]:
     generated_at = _stable_generated_at(snapshot)
     canonical = build_canonical_export_document(
         snapshot,
@@ -780,6 +1093,13 @@ def build_blueprint_zip(
             else:
                 files[zip_path] = serialize_json_document(rendering_value).encode("utf-8")
 
+    # Limpiar cualquier clave espuria que termine en '/' o este vacia
+    files = {
+        path: content
+        for path, content in files.items()
+        if path and not path.endswith("/") and isinstance(content, (bytes, bytearray))
+    }
+
     navigation_manifest = _build_blueprint_navigation_manifest(
         db,
         snapshot=snapshot,
@@ -806,6 +1126,19 @@ def build_blueprint_zip(
         }
     ).encode("utf-8")
 
+    # Validacion estricta de integridad y portabilidad antes de comprimir
+    _validate_blueprint_package_integrity(files, navigation_manifest)
+    return files
+
+
+def build_blueprint_zip(
+    db: Session,
+    *,
+    snapshot: SessionSnapshot,
+    preview: ACPPreview,
+    overview_markdown: str,
+) -> bytes:
+    files = build_blueprint_files(db, snapshot=snapshot, preview=preview, overview_markdown=overview_markdown)
     buffer = BytesIO()
     with ZipFile(buffer, mode="w", compression=ZIP_DEFLATED) as archive:
         for path in sorted(files):

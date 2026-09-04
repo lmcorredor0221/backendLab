@@ -380,7 +380,7 @@ ALLOWED_ACP_FILE_STATUSES = {"complete", "incomplete", "needs_review"}
 ALLOWED_ACP_VALIDATION_SEVERITIES = {"info", "warning", "error"}
 ALLOWED_CONSTRUCTION_GAP_SEVERITIES = {"info", "warning", "blocking"}
 ALLOWED_CONSTRUCTION_GAP_STATUSES = {"open", "answered", "waived", "resolved"}
-ALLOWED_CONSTRUCTION_QUESTION_STATUSES = {"open", "answered", "deferred", "resolved"}
+ALLOWED_CONSTRUCTION_QUESTION_STATUSES = {"open", "answered", "deferred", "resolved", "dismissed"}
 ALLOWED_CONSTRUCTION_READINESS_STATUSES = {"not_started", "needs_questions", "blocked", "ready_to_build"}
 
 
@@ -5034,7 +5034,7 @@ ACPFileStatus = Literal["complete", "incomplete", "needs_review"]
 ACPValidationSeverity = Literal["info", "warning", "error"]
 ConstructionGapSeverity = Literal["info", "warning", "blocking"]
 ConstructionGapStatus = Literal["open", "answered", "waived", "resolved"]
-ConstructionQuestionStatus = Literal["open", "answered", "deferred", "resolved"]
+ConstructionQuestionStatus = Literal["open", "answered", "deferred", "resolved", "dismissed"]
 ConstructionQuestionImpactKind = Literal[
     "no_material_impact",
     "localized_impact",
@@ -5195,14 +5195,18 @@ class ConstructionQuestionViewEntry(ContractModel):
 class ConstructionQuestionAnswerRequest(ContractModel):
     answer_text: str = ""
     owner_role: str = ""
-    decision: Literal["answer", "delegate"] = "answer"
+    decision: Literal["answer", "choose_option", "delegate", "dismiss"] = "answer"
+    selected_option_key: str = ""
     impacted_artifacts: list[str] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
     def validate_answer_payload(self) -> "ConstructionQuestionAnswerRequest":
         normalized = self.answer_text.strip()
+        selected_opt = self.selected_option_key.strip()
         if self.decision == "answer" and not normalized:
             raise ValueError("Construction question answer cannot be empty")
+        if self.decision == "choose_option" and not selected_opt and not normalized:
+            raise ValueError("Must select an option or provide answer text for choose_option decision")
         return self
 
 
@@ -7820,6 +7824,7 @@ class ExportJobCreateRequest(ContractModel):
     artifact_kind: str
     idempotency_key: str = ""
     profile: str = ""
+    force_rebuild: bool = False
 
 
 class ExportJobResponse(ContractModel):

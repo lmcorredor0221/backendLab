@@ -65,6 +65,7 @@ from app.services.acp_export_profiles import (
 from app.services.acp_generator import generate_acp_preview
 from app.services.acp_validation import derive_acp_export_status, should_block_acp_export
 from app.services.acp_zip_export import build_acp_zip
+from app.services.export_delivery_service import _blueprint_markdown
 from app.services.auth_service import get_current_user
 from app.services.commerce_service import record_commercial_event as record_dedicated_commercial_event
 from app.services.diagram_center.catalog_service import build_catalog_v3
@@ -543,7 +544,6 @@ def get_acp_questions_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> list[ConstructionQuestionViewEntry]:
     record = get_or_404(db, session_id, current_user.id)
-    ensure_acp_build_access(record, db=db, current_user=current_user)
     preview = resolve_profiled_preview(db, record, profile=resolve_acp_profile(profile))
     response_records = load_construction_question_response_records_for_preview(db, session_id)
     return build_construction_question_views(preview, response_records)
@@ -558,7 +558,6 @@ def answer_acp_question_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> ConstructionQuestionViewEntry:
     record = get_or_404(db, session_id, current_user.id)
-    ensure_acp_build_access(record, db=db, current_user=current_user)
     ensure_acp_evaluation_seed_snapshot(
         db,
         record,
@@ -715,7 +714,13 @@ def export_acp_zip_route(
         readiness=readiness,
     )
 
-    zip_bytes = build_acp_zip(preview)
+    overview_markdown = _blueprint_markdown(export_snapshot, preview).decode("utf-8")
+    zip_bytes = build_acp_zip(
+        preview,
+        db=db,
+        snapshot=export_snapshot,
+        overview_markdown=overview_markdown,
+    )
     zip_checksum = hashlib.sha256(zip_bytes).hexdigest()
     export_record = record_export_artifact(
         db,

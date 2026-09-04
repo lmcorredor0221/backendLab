@@ -1475,17 +1475,33 @@ def upsert_construction_question_response(
     record.target_owner = question.target_owner
     record.blocking = question.blocking
     is_delegate = payload.decision == "delegate"
+    is_dismiss = payload.decision == "dismiss"
+    is_choose = payload.decision == "choose_option"
     normalized_answer = payload.answer_text.strip()
+    if is_choose and not normalized_answer:
+        normalized_answer = payload.selected_option_key.strip()
     if is_delegate and not normalized_answer:
         normalized_answer = "Delegado a implementacion. Resolver durante la construccion con trazabilidad ACP."
-    record.status = "deferred" if is_delegate else "answered"
+    if is_dismiss and not normalized_answer:
+        normalized_answer = "Descartado por el usuario. No aplicable para este alcance."
+
+    if is_delegate:
+        record.status = "deferred"
+        record.blocking = False
+    elif is_dismiss:
+        record.status = "dismissed"
+        record.blocking = False
+    else:
+        record.status = "answered"
+        record.blocking = False
+
     record.answer_text = normalized_answer
     record.owner_role = payload.owner_role.strip() or question.owner_role or question.target_owner
     record.impacted_artifacts = payload.impacted_artifacts or question.impacted_artifacts
     record.answered_by_user_id = current_user.id
     record.answered_by_display = current_user.full_name or current_user.email
     record.answered_at = now
-    record.resolved_at = now if is_delegate else None
+    record.resolved_at = now if (is_delegate or is_dismiss or record.status in {"answered", "resolved"}) else None
     record.updated_at = now
     session.add(record)
     session.flush()

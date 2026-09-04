@@ -27,6 +27,7 @@ CURRENT_QUESTION_STATUS_ORDER = {
     "answered": 1,
     "deferred": 2,
     "resolved": 3,
+    "dismissed": 4,
 }
 
 DOMAIN_PHASE_HINTS: dict[str, tuple[str, ...]] = {
@@ -379,9 +380,17 @@ def apply_uncertainty_backlog_acp_answer(
         record.assumed_answer = payload.answer_text.strip() or (
             "Delegado a implementacion. Resolver durante la construccion con trazabilidad ACP."
         )
+    elif payload.decision == "dismiss":
+        record.disposition = "dismiss"
+        record.target_stage = "closed"
+        record.status = "dismissed"
+        record.assumed_answer = payload.answer_text.strip() or (
+            "Descartado por el usuario. No aplicable para este alcance."
+        )
+        record.resolved_at = now
     else:
         record.status = "resolved"
-        record.assumed_answer = payload.answer_text.strip()
+        record.assumed_answer = payload.answer_text.strip() or payload.selected_option_key.strip()
         record.resolved_at = now
     if payload.impacted_artifacts:
         record.affected_deliverable_keys = _dedupe_strings(payload.impacted_artifacts)
@@ -681,6 +690,8 @@ def _current_question_status(
         return "open"
     if record.status == "deferred":
         return "deferred"
+    if record.status == "dismissed":
+        return "dismissed"
     if not record.answer_text.strip():
         return "open"
     if record.status == "resolved":
@@ -711,6 +722,8 @@ def _build_question_view(
             options=question.options,
             impact_analysis=impact_analysis,
         )
+    resolved_status = _current_question_status(question.question_key, record)
+    is_actively_blocking = question.blocking if resolved_status == "open" else False
     return ConstructionQuestionViewEntry(
         question_key=question.question_key,
         gap_key=gap.gap_key,
@@ -721,8 +734,8 @@ def _build_question_view(
         purpose=question.purpose,
         expected_answer_format=question.expected_answer_format,
         target_owner=question.target_owner,
-        blocking=question.blocking,
-        status=_current_question_status(question.question_key, record),
+        blocking=is_actively_blocking,
+        status=resolved_status,
         answer_text=record.answer_text,
         owner_role=record.owner_role,
         answered_by_display=record.answered_by_display,

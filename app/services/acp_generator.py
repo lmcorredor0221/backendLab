@@ -2367,9 +2367,59 @@ def _build_construction_readiness_files(
             for gap in blocking_gaps
         ]
     }
-    open_questions_payload = {"open_questions": open_questions}
-    impact_log_payload = {"question_decisions": decision_log}
-    deferred_decisions_payload = {"deferred_decisions": deferred_decisions}
+    open_questions_payload = {
+        "open_questions": [
+            {
+                "question_key": question["question_key"],
+                "gap_key": question["gap_key"],
+                "domain": question["domain"],
+                "question_text": question["question_text"],
+                "rationale": question["rationale"],
+                "target_owner": question["target_owner"],
+                "expected_answer_format": question["expected_answer_format"],
+                "blocking": question["blocking"],
+                "impacted_artifacts": question["impacted_artifacts"],
+                "options": question.get("options", []),
+            }
+            for question in open_questions
+        ]
+    }
+    impact_log_payload = {
+        "question_outcomes": impact_outcomes,
+        "question_impacts": decision_log,
+    }
+    structured_deferred_decisions = []
+    for item in deferred_decisions:
+        question_text = str(item.get("question_text") or "").strip()
+        domain = str(item.get("domain") or "general")
+        options = item.get("options") or []
+        structured_deferred_decisions.append(
+            {
+                "question_key": item.get("question_key"),
+                "domain": domain,
+                "gap_key": item.get("gap_key"),
+                "status": "deferred_to_implementation",
+                "question_text": question_text,
+                "rationale": item.get("rationale") or "",
+                "target_owner": item.get("target_owner") or "developer",
+                "options": options,
+                "agentic_instruction": {
+                    "policy": "DO_NOT_ASSUME_SILENTLY",
+                    "behavior": "MUST_PROMPT_USER_DURING_IMPLEMENTATION",
+                    "action_required": (
+                        "Formular la pregunta durante la implementacion explicando las alternativas "
+                        "disponibles y solicitando confirmacion del desarrollador antes de asumir una respuesta."
+                    ),
+                    "notes": item.get("answer_text") or "Decision delegada formalmente desde la etapa ACP.",
+                },
+            }
+        )
+    deferred_decisions_payload = {
+        "contract_version": "acp-agentic-deferred.v1",
+        "description": "Decisiones pendientes de resolucion transferidas formalmente a la herramienta agentica de implementacion.",
+        "execution_policy": "DO_NOT_ASSUME_SILENTLY",
+        "deferred_decisions": structured_deferred_decisions,
+    }
     assumptions_payload = {"assumptions": assumptions}
     external_dependencies_payload = {"external_dependencies": external_dependencies}
     required_api_contracts_payload = {"required_api_contracts": required_api_contracts}
@@ -2845,7 +2895,10 @@ a { color:inherit; }
 .chapter h2 { margin:8px 0 12px; font-size:30px; }
 .pills { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }
 .pill { border-radius:999px; background:#eaf0ff; color:var(--brand); padding:7px 10px; font-size:12px; font-weight:850; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin-top:18px; }
+.section-group { margin-top:24px; padding-top:18px; border-top:1px dashed var(--line); }
+.section-group:first-of-type { border-top:none; padding-top:0; margin-top:14px; }
+.section-header { font-size:14px; font-weight:850; color:var(--ink); margin-bottom:12px; display:flex; align-items:center; gap:8px; text-transform:uppercase; letter-spacing:.06em; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin-top:10px; }
 .card { padding:16px; }
 .card small { color:var(--muted); text-transform:uppercase; letter-spacing:.12em; font-weight:850; }
 .card h3 { margin:8px 0; font-size:16px; }
@@ -2870,7 +2923,83 @@ def _acp_viewer_js() -> str:
   let current = 0;
   function esc(value){ return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
   function fileCard(item){
-    return `<article class="card status-${esc(item.status)}"><small>${esc(item.domain)} · ${esc(item.status)}</small><h3>${esc(item.title)}</h3><p>${esc(item.description)}</p><a href="${esc(item.path.replace(/^ACP\\//,''))}" target="_blank" rel="noreferrer">Abrir archivo</a></article>`;
+    const path = (item.path || '').replace(/^ACP\\//, '');
+    const isSvg = path.endsWith('.svg');
+    const isMd = path.endsWith('.md');
+    const isJson = path.endsWith('.json');
+    const isMmd = path.endsWith('.mmd') || path.endsWith('.mermaid');
+    const isXml = path.endsWith('.xml');
+    let badge = esc(item.domain || 'archivo');
+    let actionLabel = 'Abrir archivo';
+    if (isSvg) { badge = 'DIAGRAMA SVG'; actionLabel = 'Ver diagrama SVG'; }
+    else if (isMd) { badge = 'DOCUMENTO'; actionLabel = 'Leer documento'; }
+    else if (isJson) { badge = 'CONTRATO JSON'; actionLabel = 'Ver contrato JSON'; }
+    else if (isMmd) { badge = 'MERMAID'; actionLabel = 'Ver Mermaid'; }
+    else if (isXml) { badge = 'BPMN XML'; actionLabel = 'Ver XML BPMN'; }
+
+    return `<article class="card status-${esc(item.status)}"><small>${badge} · ${esc(item.status)}</small><h3>${esc(item.title)}</h3><p>${esc(item.description)}</p><a href="${esc(path)}" target="_blank" rel="noreferrer">${esc(actionLabel)}</a></article>`;
+  }
+  function renderSegmentedFiles(filesList){
+    const svgItems = [];
+    const mmdItems = [];
+    const jsonItems = [];
+    const mdItems = [];
+    const otherItems = [];
+
+    (filesList || []).forEach(item => {
+      const path = (item.path || '').toLowerCase();
+      const title = (item.title || '').toLowerCase();
+      if (path.endsWith('.svg')) {
+        svgItems.push(item);
+      } else if (path.endsWith('.mmd') || path.endsWith('.mermaid') || path.endsWith('.xml') || title.includes('mermaid') || title.includes('bpmn')) {
+        mmdItems.push(item);
+      } else if (path.endsWith('.json')) {
+        jsonItems.push(item);
+      } else if (path.endsWith('.md')) {
+        mdItems.push(item);
+      } else {
+        otherItems.push(item);
+      }
+    });
+
+    let html = '';
+
+    if (svgItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">🎨 Diagramas Visuales Vectoriales (SVG) (${svgItems.length})</div>
+        <div class="grid">${svgItems.map(fileCard).join('')}</div>
+      </div>`;
+    }
+
+    if (mmdItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📐 Código & Especificaciones de Diagrama (Mermaid / BPMN) (${mmdItems.length})</div>
+        <div class="grid">${mmdItems.map(fileCard).join('')}</div>
+      </div>`;
+    }
+
+    if (jsonItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📜 Contratos Semánticos, Modelos & Calidad (.json) (${jsonItems.length})</div>
+        <div class="grid">${jsonItems.map(fileCard).join('')}</div>
+      </div>`;
+    }
+
+    if (mdItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📄 Documentación & Entregables (.md) (${mdItems.length})</div>
+        <div class="grid">${mdItems.map(fileCard).join('')}</div>
+      </div>`;
+    }
+
+    if (otherItems.length > 0) {
+      html += `<div class="section-group">
+        <div class="section-header">📦 Otros Artefactos (${otherItems.length})</div>
+        <div class="grid">${otherItems.map(fileCard).join('')}</div>
+      </div>`;
+    }
+
+    return html || '<p>No hay archivos en este capítulo.</p>';
   }
   function renderNav(){
     nav.innerHTML = data.storyline.map((item, index) => `<button type="button" class="${index===current?'active':''}" data-index="${index}">${esc(index+1)}. ${esc(item.title)}</button>`).join('');
@@ -2886,7 +3015,7 @@ def _acp_viewer_js() -> str:
       <p>${esc(item.narrative)}</p>
       <p><strong>Por que importa:</strong> ${esc(item.why_it_matters)}</p>
       <div class="pills">${(item.key_takeaways || []).map(t => `<span class="pill">${esc(t)}</span>`).join('')}</div>
-      <div class="grid">${files.map(fileCard).join('')}</div>
+      ${renderSegmentedFiles(files)}
       <div class="controls"><button class="secondary" type="button" data-prev>Anterior</button><button type="button" data-next>Siguiente</button></div>
     `;
     chapter.querySelector('[data-prev]').addEventListener('click', () => { current = Math.max(0, current - 1); render(); });

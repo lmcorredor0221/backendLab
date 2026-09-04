@@ -156,8 +156,6 @@ def _collect_knowledge_gap(files: dict[str, ACPFileEntry]) -> ConstructionGapEnt
     sources = files.get("ACP/knowledge/sources.yaml")
     ingestion = files.get("ACP/knowledge/ingestion.yaml")
     embeddings = files.get("ACP/knowledge/embeddings.yaml")
-    if not any(item is not None and (item.warnings or _contains_needs_review(item)) for item in [sources, ingestion, embeddings]):
-        return None
     return _gap(
         gap_key="knowledge_sources_missing",
         title="La capa de conocimiento aun no esta especificada",
@@ -302,8 +300,6 @@ def _collect_runtime_gap(snapshot: SessionSnapshot, files: dict[str, ACPFileEntr
         item is not None and (item.warnings or _contains_needs_review(item))
         for item in [runtime_models, runtime_providers, runtime_config]
     )
-    if not has_runtime_placeholder and env_template is not None:
-        return None
     severity = "warning"
     return _gap(
         gap_key="runtime_contract_incomplete",
@@ -422,8 +418,6 @@ def _collect_deployment_gap(files: dict[str, ACPFileEntry]) -> ConstructionGapEn
     kubernetes = files.get("ACP/deployment/kubernetes/README.md")
     cicd = files.get("ACP/deployment/cicd/README.md")
     env_template = files.get(ACP_CANONICAL_ENV_TEMPLATE_PATH)
-    if not any(item is not None and (item.warnings or _contains_needs_review(item)) for item in [docker_compose, kubernetes, cicd, env_template]):
-        return None
     return _gap(
         gap_key="deployment_target_unknown",
         title="El entorno de despliegue aun no esta decidido",
