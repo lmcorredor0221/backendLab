@@ -33,14 +33,31 @@ def load_layout_policy_profiles() -> dict[str, dict[str, Any]]:
     }
 
 
-def layout_policy_for_notation(notation: DiagramNotation | str) -> dict[str, Any]:
+def resolve_preferred_direction(notation: DiagramNotation | str, diagram_key: str = "") -> str:
+    notation_value = notation.value if isinstance(notation, DiagramNotation) else str(notation or "").lower()
+    key_value = str(diagram_key or "").lower()
+
+    # Vertical (TD): activity flows, tree reasoning and state machines
+    # read naturally from top to bottom — each step/state flows downward.
+    vertical_notations = {"uml_activity", "state"}
+    vertical_tokens = ("activity", "tot", "tree", "htn", "state", "waterfall")
+    if notation_value in vertical_notations or any(token in key_value for token in vertical_tokens):
+        return "TD"
+
+    # Horizontal (LR): sequence, BPMN, architecture, RAG, MCP, C4 and agentic
+    # orchestration read naturally left-to-right as pipelines, lifelines or layered systems.
+    return "LR"
+
+
+def layout_policy_for_notation(notation: DiagramNotation | str, diagram_key: str = "") -> dict[str, Any]:
     notation_value = notation.value if isinstance(notation, DiagramNotation) else str(notation)
     profile = load_layout_policy_profiles().get(notation_value) or load_layout_policy_profiles().get("flowchart") or {}
     policy = dict(DEFAULT_LAYOUT_POLICY)
+    direction = profile.get("preferred_direction") or resolve_preferred_direction(notation, diagram_key)
     policy.update(
         {
             "preferred_strategy": profile.get("layout_strategy") or policy["preferred_strategy"],
-            "preferred_direction": profile.get("preferred_direction") or policy["preferred_direction"],
+            "preferred_direction": direction,
             "max_nodes_per_view": int(profile.get("max_nodes_before_split") or policy["max_nodes_per_view"]),
             "max_edges_per_view": int(profile.get("max_edges_before_split") or policy["max_edges_per_view"]),
             "max_edge_density": float(profile.get("max_edge_density") or policy["max_edge_density"]),

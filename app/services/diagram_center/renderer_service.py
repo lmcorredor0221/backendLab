@@ -25,17 +25,35 @@ def _kind(value: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(value or "").lower()).strip("_")
 
 
+def _mermaid_node_syntax(node: Any) -> str:
+    kind = _kind(getattr(node, "kind", ""))
+    agent_kind = _kind(str(getattr(node, "agent_kind", "") or (node.metadata.get("agent_kind") if hasattr(node, "metadata") and isinstance(node.metadata, dict) else "") or ""))
+    memory_kind = _kind(str(getattr(node, "memory_kind", "") or (node.metadata.get("memory_kind") if hasattr(node, "metadata") and isinstance(node.metadata, dict) else "") or ""))
+    tool_kind = _kind(str(getattr(node, "tool_kind", "") or (node.metadata.get("tool_kind") if hasattr(node, "metadata") and isinstance(node.metadata, dict) else "") or ""))
+    label = _safe_mermaid_text(node.label)
+
+    if memory_kind in {"vector_store", "short_term_buffer", "working_memory", "shared_state"} or any(token in kind for token in ("database", "memory", "vector", "rag", "db", "store")):
+        return f'{node.id}[("{label}")]'
+    if agent_kind == "orchestrator" or any(token in kind for token in ("orchestrator", "supervisor", "master")):
+        return f'{node.id}{{{{{label}}}}}'
+    if tool_kind in {"mcp_server", "approval_gate", "guardrail_gate"} or any(token in kind for token in ("guardrail", "gate", "approval", "mcp")):
+        return f'{node.id}{{{label}}}'
+    if "agent" in kind or "worker" in kind:
+        return f'{node.id}(["{label}"])'
+    return f'{node.id}["{label}"]'
+
+
 def _render_flowchart(model: DiagramModel) -> str:
     lines = [f"flowchart {model.direction}"]
     for group in model.groups:
         lines.append(f"  subgraph {group.id}[\"{_safe_mermaid_text(group.label)}\"]")
         for node in [item for item in model.nodes if item.group_id == group.id]:
-            lines.append(f"    {node.id}[\"{_safe_mermaid_text(node.label)}\"]")
+            lines.append(f"    {_mermaid_node_syntax(node)}")
         lines.append("  end")
     grouped_node_ids = {node.id for node in model.nodes if node.group_id}
     for node in model.nodes:
         if node.id not in grouped_node_ids:
-            lines.append(f"  {node.id}[\"{_safe_mermaid_text(node.label)}\"]")
+            lines.append(f"  {_mermaid_node_syntax(node)}")
     for edge in model.edges:
         label = f"|{_safe_mermaid_text(edge.label)}|" if edge.label else ""
         lines.append(f"  {edge.source} -->{label} {edge.target}")
@@ -666,11 +684,90 @@ def _svg_node(
             f'<g filter="url(#shadow)"><path d="M {x:.1f} {y+14:.1f} H {x+86:.1f} L {x+100:.1f} {y:.1f} H {x+width:.1f} V {y+height:.1f} H {x:.1f} Z" fill="#ffffff" stroke="#3047b8" stroke-width="1.8"/>'
             f'<text x="{x+22:.1f}" y="{y+40:.1f}" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="700" fill="#10172a">{label_text}</text></g>'
         )
+    # Taxonomy-aware visual styling for SVG nodes
+    target_node = next((n for n in model.nodes if n.id == node_id), None)
+    agent_kind = _kind(str(getattr(target_node, "agent_kind", "") or (target_node.metadata.get("agent_kind") if target_node and isinstance(target_node.metadata, dict) else "") or ""))
+    memory_kind = _kind(str(getattr(target_node, "memory_kind", "") or (target_node.metadata.get("memory_kind") if target_node and isinstance(target_node.metadata, dict) else "") or ""))
+    tool_kind = _kind(str(getattr(target_node, "tool_kind", "") or (target_node.metadata.get("tool_kind") if target_node and isinstance(target_node.metadata, dict) else "") or ""))
+    label_lower = (label or "").lower()
+
+    # Determine visual theme colors and badge text based on taxonomy
+    if "orchestrator" in normalized_kind or "supervisor" in normalized_kind or agent_kind == "orchestrator" or any(k in label_lower for k in ("orquestador", "supervisor", "planner")):
+        accent_color = "#1e40af"
+        bg_header = "#e0e7ff"
+        badge_text = "ORQUESTADOR"
+        border_stroke = "#1e40af"
+        stroke_width = "2.2"
+    elif agent_kind == "evaluator" or any(k in normalized_kind for k in ("evaluator", "critic")) or any(k in label_lower for k in ("evaluador", "autoreflexion", "reflexion", "critic")):
+        accent_color = "#b45309"
+        bg_header = "#fef3c7"
+        badge_text = "AGENTE EVALUADOR"
+        border_stroke = "#b45309"
+        stroke_width = "2.0"
+    elif agent_kind == "worker" or normalized_kind in {"agent", "worker", "specialist"} or any(k in label_lower for k in ("especialista", "worker", "clasificador", "extractor")):
+        accent_color = "#4f46e5"
+        bg_header = "#e0e7ff"
+        badge_text = "AGENTE WORKER"
+        border_stroke = "#4f46e5"
+        stroke_width = "2.0"
+    elif memory_kind in {"vector_store", "short_term_buffer", "working_memory", "shared_state"} or normalized_kind in {"memory", "rag", "vector_store"} or any(k in label_lower for k in ("memoria", "memory", "rag", "vector", "buffer", "embeddings", "knowledge", "manuales")):
+        accent_color = "#059669"
+        bg_header = "#d1fae5"
+        badge_text = "MEMORIA / RAG"
+        border_stroke = "#059669"
+        stroke_width = "2.0"
+    elif tool_kind == "approval_gate" or any(k in normalized_kind for k in ("approval", "hitl")) or any(k in label_lower for k in ("approval gate", "aprobador humano", "hitl", "human-in-the-loop", "intervencion humana")):
+        accent_color = "#dc2626"
+        bg_header = "#fee2e2"
+        badge_text = "APPROVAL GATE (HITL)"
+        border_stroke = "#dc2626"
+        stroke_width = "2.2"
+    elif tool_kind == "guardrail_gate" or any(k in normalized_kind for k in ("guardrail", "gate")) or any(k in label_lower for k in ("guardrail", "sanitiz", "pii", "seguridad", "validacion")):
+        accent_color = "#c2410c"
+        bg_header = "#ffedd5"
+        badge_text = "GUARDRAIL DE SEGURIDAD"
+        border_stroke = "#c2410c"
+        stroke_width = "2.0"
+    elif any(k in normalized_kind for k in ("checkpoint", "state_buffer")) or any(k in label_lower for k in ("checkpoint", "estado de sesion", "session state")):
+        accent_color = "#7e22ce"
+        bg_header = "#f3e8ff"
+        badge_text = "CHECKPOINT DE ESTADO"
+        border_stroke = "#7e22ce"
+        stroke_width = "2.0"
+    elif tool_kind == "mcp_server" or normalized_kind == "mcp_server" or any(k in label_lower for k in ("servidor mcp", "mcp server", "mcp proxy")):
+        accent_color = "#d97706"
+        bg_header = "#fef3c7"
+        badge_text = "SERVIDOR MCP"
+        border_stroke = "#d97706"
+        stroke_width = "2.0"
+    elif normalized_kind == "boundary" or any(k in label_lower for k in ("cliente", "canal", "gateway api", "input validation")):
+        accent_color = "#475569"
+        bg_header = "#f1f5f9"
+        badge_text = "CANAL / BOUNDARY"
+        border_stroke = "#64748b"
+        stroke_width = "1.8"
+    elif model.notation == DiagramNotation.c4:
+        accent_color = "#1e293b"
+        bg_header = "#e2e8f0"
+        badge_text = "C4 CONTENEDOR"
+        border_stroke = "#475569"
+        stroke_width = "1.8"
+    else:
+        accent_color = "#2563eb"
+        bg_header = "#eff6ff"
+        badge_text = "COMPONENTE"
+        border_stroke = "#93c5fd"
+        stroke_width = "1.8"
+
+    badge_width = min(width - 20, len(badge_text) * 6.5 + 14)
     return (
-        f'<g filter="url(#shadow)"><rect x="{x:.1f}" y="{y:.1f}" width="{width}" height="{height}" rx="10" fill="#ffffff" stroke="#cbd3e1"/></g>'
-        f'<rect x="{x:.1f}" y="{y:.1f}" width="5" height="{height}" rx="2.5" fill="#3047b8"/>'
-        f'{_svg_multiline_text(label_lines, x=x + 22, y=y + 28, anchor="start", size=14, weight=800, fill="#10172a")}'
-        f'<text x="{x+22:.1f}" y="{y+height-15:.1f}" font-family="Inter,Arial,sans-serif" font-size="11" fill="#69748b">{kind_text}</text>'
+        f'<g filter="url(#shadow)" data-node-id="{escape(node_id)}" data-node-kind="{escape(normalized_kind)}">'
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="{width}" height="{height}" rx="12" fill="#ffffff" stroke="{border_stroke}" stroke-width="{stroke_width}"/>'
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="6" height="{height}" rx="3" fill="{accent_color}"/>'
+        f'<rect x="{x+10:.1f}" y="{y+8:.1f}" width="{badge_width:.1f}" height="18" rx="5" fill="{bg_header}"/>'
+        f'<text x="{x+16:.1f}" y="{y+21:.1f}" font-family="Inter,Arial,sans-serif" font-size="9" font-weight="900" letter-spacing="0.5" fill="{accent_color}">{badge_text}</text>'
+        f'{_svg_multiline_text(label_lines, x=x + 16, y=y + 44, anchor="start", size=13, weight=800, fill="#10172a")}'
+        f'</g>'
     )
 
 
@@ -1150,7 +1247,7 @@ def render_svg(model: DiagramModel) -> str:
         '<rect width="100%" height="100%" rx="20" fill="#f8f9fc"/>',
         f'<text x="40" y="42" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="800" letter-spacing="3" fill="#3047b8">{escape(model.notation.value.upper())}</text>',
     ]
-    for edge in model.edges:
+    for edge_idx, edge in enumerate(model.edges):
         route = routes.get(edge.id)
         if not route:
             continue
@@ -1163,11 +1260,14 @@ def render_svg(model: DiagramModel) -> str:
         )
         if edge.label:
             label_x, label_y = route.label_position
+            # Stagger y position when multiple edges exist to avoid label text overlap
+            stagger_offset = ((edge_idx % 3) - 1) * 26
+            final_label_y = label_y + stagger_offset
             label = escape(edge.label[:48])
             label_width = max(56, min(260, len(edge.label[:48]) * 7 + 18))
             parts.append(
-                f'<rect x="{label_x-label_width/2:.1f}" y="{label_y-15:.1f}" width="{label_width:.1f}" height="22" rx="11" fill="#f8f9fc" stroke="#d8deea" stroke-width="1"/>'
-                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="11" fill="#44506a">{label}</text>'
+                f'<rect x="{label_x-label_width/2:.1f}" y="{final_label_y-15:.1f}" width="{label_width:.1f}" height="22" rx="11" fill="#ffffff" stroke="#cbd3e1" stroke-width="1.2"/>'
+                f'<text x="{label_x:.1f}" y="{final_label_y:.1f}" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="11" font-weight="600" fill="#334155">{label}</text>'
             )
     for node in model.nodes:
         x, y = positions[node.id]

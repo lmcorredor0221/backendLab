@@ -17,7 +17,6 @@ from app.services.diagram_center.persistence import (
     DiagramVersionRecord,
 )
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
-from app.services.diagram_center.registry_service import build_prompt_spec, get_registry_entry
 from app.services.diagram_center.renderer_service import RENDERER_REVISION, render_diagram
 from app.services.llm_runtime.capability_registry import BuilderCapability
 from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
@@ -25,9 +24,9 @@ from app.services.llm_runtime.stage_context_types import StageContextBundle
 from app.services.openai_builder import build_builder_service
 
 
-MAX_CONTEXT_ITEMS = 18
-MAX_CONTEXT_CHARS_PER_ITEM = 6000
-RESOLVED_INPUT_EVIDENCE_LIMIT = 1400
+MAX_CONTEXT_ITEMS = 36
+MAX_CONTEXT_CHARS_PER_ITEM = 24000
+RESOLVED_INPUT_EVIDENCE_LIMIT = 16000
 
 _REQUIRED_INPUT_MATCHERS: dict[str, dict[str, set[str]]] = {
     "session.discovery": {"artifact_keys": {"discovery_artifact", "discovery_analysis_artifact"}, "stages": {"discover"}},
@@ -125,12 +124,12 @@ def _compact(value: object, *, limit: int = MAX_CONTEXT_CHARS_PER_ITEM) -> objec
     return value
 
 
-def _compact_text(value: object, *, limit: int = 240) -> str:
+def _compact_text(value: object, *, limit: int = 2400) -> str:
     normalized = " ".join(str(value or "").split()).strip()
     return normalized[:limit]
 
 
-def _summarize_list(values: list[object], *, limit: int = 4, item_limit: int = 100) -> list[str]:
+def _summarize_list(values: list[object], *, limit: int = 20, item_limit: int = 1200) -> list[str]:
     return [_compact_text(item, limit=item_limit) for item in values[:limit] if _compact_text(item, limit=item_limit)]
 
 
@@ -144,42 +143,43 @@ def _design_architecture_brief(content: dict[str, Any]) -> tuple[object, str]:
     roles = selected_design.get("roles") if isinstance(selected_design.get("roles"), list) else []
     handoffs = selected_design.get("handoffs") if isinstance(selected_design.get("handoffs"), list) else []
     concise_payload = {
-        "summary": _compact_text(content.get("summary")),
+        "summary": _compact_text(content.get("summary"), limit=4000),
         "architecture_pattern": _compact_text(
             selected_design.get("architecture")
             or selected_design.get("architecture_pattern")
-            or selected_design.get("alternative_key")
+            or selected_design.get("alternative_key"),
+            limit=1000,
         ),
-        "coordination_model": _compact_text(selected_design.get("coordination_model")),
-        "reasoning_pattern": _compact_text(selected_design.get("reasoning_pattern")),
-        "topology": _compact_text(selected_design.get("topology"), limit=320),
+        "coordination_model": _compact_text(selected_design.get("coordination_model"), limit=1000),
+        "reasoning_pattern": _compact_text(selected_design.get("reasoning_pattern"), limit=1000),
+        "topology": _compact_text(selected_design.get("topology"), limit=3200),
         "roles": [
             {
-                "key": _compact_text(item.get("key")),
-                "title": _compact_text(item.get("title")),
-                "responsibility": _compact_text(item.get("responsibility"), limit=180),
+                "key": _compact_text(item.get("key"), limit=200),
+                "title": _compact_text(item.get("title"), limit=200),
+                "responsibility": _compact_text(item.get("responsibility"), limit=1500),
             }
-            for item in roles[:4]
+            for item in roles[:20]
             if isinstance(item, dict)
         ],
         "handoffs": [
             {
-                "from_role": _compact_text(item.get("from_role")),
-                "to_role": _compact_text(item.get("to_role")),
-                "trigger": _compact_text(item.get("trigger"), limit=160),
+                "from_role": _compact_text(item.get("from_role"), limit=200),
+                "to_role": _compact_text(item.get("to_role"), limit=200),
+                "trigger": _compact_text(item.get("trigger"), limit=1000),
             }
-            for item in handoffs[:4]
+            for item in handoffs[:20]
             if isinstance(item, dict)
         ],
         "approval_points": _summarize_list(
             selected_design.get("approval_points") if isinstance(selected_design.get("approval_points"), list) else [],
-            limit=4,
-            item_limit=120,
+            limit=15,
+            item_limit=1000,
         ),
         "guardrails": _summarize_list(
             blueprint_projection.get("guardrails") if isinstance(blueprint_projection.get("guardrails"), list) else [],
-            limit=4,
-            item_limit=120,
+            limit=15,
+            item_limit=1000,
         ),
     }
     role_titles = [item.get("title") or item.get("key") for item in concise_payload["roles"] if isinstance(item, dict)]
@@ -518,6 +518,8 @@ def create_generation_job(
     reason: str,
     idempotency_key: str,
 ) -> DiagramGenerationJobRecord:
+    from app.services.diagram_center.registry_service import get_registry_entry
+
     entry = get_registry_entry(diagram_key)
     if entry is None or not entry.active:
         raise LookupError("Diagram type not found")
@@ -578,6 +580,8 @@ def run_generation_job(
 
 
 def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
+    from app.services.diagram_center.registry_service import build_prompt_spec, get_registry_entry
+
     job = db.get(DiagramGenerationJobRecord, job_id)
     if job is None or job.status not in {"queued", "updating"}:
         return

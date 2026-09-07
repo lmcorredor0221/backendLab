@@ -28,6 +28,15 @@ COMMERCE_PROVIDER_SECRET_KINDS: dict[str, tuple[str, ...]] = {
     "sandbox": (),
     "hotmart": (),
     "rebill": ("secret_key", "public_key", "webhook_signing_secret", "webhook_url_secret"),
+    "payu": (
+        "secret_key",
+        "public_key",
+        "merchant_id",
+        "account_id",
+        "webhook_signing_secret",
+        "webhook_url_secret",
+    ),
+    "rapyd": ("access_key", "secret_key", "webhook_url_secret"),
 }
 
 
@@ -112,16 +121,35 @@ def _secret_records(
 
 def _settings_secret_value(provider_key: str, environment: str, secret_kind: str) -> str:
     settings = get_settings()
-    if provider_key != "rebill":
-        return ""
-    if normalize_commerce_provider_environment(settings.rebill_environment) != environment:
-        return ""
-    mapping = {
-        "secret_key": settings.rebill_secret_key,
-        "public_key": settings.rebill_public_key,
-        "webhook_signing_secret": settings.rebill_webhook_signing_secret,
-        "webhook_url_secret": settings.rebill_webhook_url_secret,
-    }
+    mapping: dict[str, str] = {}
+    if provider_key == "rebill":
+        if normalize_commerce_provider_environment(settings.rebill_environment) != environment:
+            return ""
+        mapping = {
+            "secret_key": settings.rebill_secret_key,
+            "public_key": settings.rebill_public_key,
+            "webhook_signing_secret": settings.rebill_webhook_signing_secret,
+            "webhook_url_secret": settings.rebill_webhook_url_secret,
+        }
+    elif provider_key == "payu":
+        if normalize_commerce_provider_environment(settings.payu_environment) != environment:
+            return ""
+        mapping = {
+            "secret_key": settings.payu_api_key,
+            "public_key": settings.payu_api_login,
+            "merchant_id": settings.payu_merchant_id,
+            "account_id": settings.payu_account_id,
+            "webhook_signing_secret": settings.payu_webhook_signing_secret,
+            "webhook_url_secret": settings.payu_webhook_url_secret,
+        }
+    elif provider_key == "rapyd":
+        if normalize_commerce_provider_environment(settings.rapyd_environment) != environment:
+            return ""
+        mapping = {
+            "access_key": settings.rapyd_access_key,
+            "secret_key": settings.rapyd_secret_key,
+            "webhook_url_secret": settings.rapyd_webhook_url_secret,
+        }
     return str(mapping.get(secret_kind, "") or "").strip()
 
 
@@ -131,20 +159,40 @@ def _settings_enabled(provider_key: str, environment: str) -> bool:
         return True
     if provider_key == "rebill" and normalize_commerce_provider_environment(settings.rebill_environment) == environment:
         return bool(settings.rebill_enabled)
+    if provider_key == "payu" and normalize_commerce_provider_environment(settings.payu_environment) == environment:
+        return bool(settings.payu_enabled)
+    if provider_key == "rapyd" and normalize_commerce_provider_environment(settings.rapyd_environment) == environment:
+        return bool(settings.rapyd_enabled)
     return False
 
 
-def _settings_api_base_url(provider_key: str) -> str:
+def _settings_api_base_url(provider_key: str, environment: str = "sandbox") -> str:
     settings = get_settings()
     if provider_key == "rebill":
         return settings.rebill_api_base_url.rstrip("/")
+    if provider_key == "payu":
+        if settings.payu_api_base_url.strip():
+            return settings.payu_api_base_url.rstrip("/")
+        if environment == "production":
+            return "https://api.payulatam.com/payments-api/4.0/service.cgi"
+        return "https://sandbox.api.payulatam.com/payments-api/4.0/service.cgi"
+    if provider_key == "rapyd":
+        if settings.rapyd_api_base_url.strip():
+            return settings.rapyd_api_base_url.rstrip("/")
+        if environment == "production":
+            return "https://api.rapyd.net"
+        return "https://sandboxapi.rapyd.net"
     return ""
 
 
-def _settings_webhook_public_url(provider_key: str) -> str:
+def _settings_webhook_public_url(provider_key: str, environment: str = "sandbox") -> str:
     settings = get_settings()
     if provider_key == "rebill":
         return settings.rebill_webhook_public_url
+    if provider_key == "payu" and normalize_commerce_provider_environment(settings.payu_environment) == environment:
+        return settings.payu_webhook_public_url
+    if provider_key == "rapyd" and normalize_commerce_provider_environment(settings.rapyd_environment) == environment:
+        return settings.rapyd_webhook_public_url
     return ""
 
 
@@ -212,7 +260,11 @@ def _secret_status(
 
 
 def _computed_status(secret_statuses: list[CommerceProviderSecretStatusResponse], *, provider_key: str) -> str:
-    required = {"rebill": {"secret_key"}}.get(provider_key, set())
+    required = {
+        "rebill": {"secret_key"},
+        "payu": {"secret_key", "public_key", "merchant_id", "account_id"},
+        "rapyd": {"access_key", "secret_key"},
+    }.get(provider_key, set())
     if not required:
         return "configured" if provider_key == "sandbox" else "not_configured"
     configured = {item.secret_kind for item in secret_statuses if item.configured}
@@ -300,9 +352,9 @@ def build_commerce_provider_status(
         environment=env,  # type: ignore[arg-type]
         enabled=enabled,
         status=config.status if config is not None and config.status != "not_configured" else computed_status,
-        api_base_url=(config.api_base_url if config is not None and config.api_base_url else _settings_api_base_url(provider)),
+        api_base_url=(config.api_base_url if config is not None and config.api_base_url else _settings_api_base_url(provider, env)),
         webhook_public_url=(
-            config.webhook_public_url if config is not None and config.webhook_public_url else _settings_webhook_public_url(provider)
+            config.webhook_public_url if config is not None and config.webhook_public_url else _settings_webhook_public_url(provider, env)
         ),
         capabilities=list(definition.capabilities),
         secret_statuses=secret_statuses,
@@ -333,8 +385,8 @@ def upsert_commerce_provider_credentials(
             created_by_user_id=actor_user_id,
         )
     config.enabled = payload.enabled
-    config.api_base_url = payload.api_base_url.strip().rstrip("/") or _settings_api_base_url(provider)
-    config.webhook_public_url = payload.webhook_public_url.strip() or _settings_webhook_public_url(provider)
+    config.api_base_url = payload.api_base_url.strip().rstrip("/") or _settings_api_base_url(provider, env)
+    config.webhook_public_url = payload.webhook_public_url.strip() or _settings_webhook_public_url(provider, env)
     config.capabilities = {capability: True for capability in definition.capabilities}
     config.updated_by_user_id = actor_user_id
     config.updated_at = utc_now()

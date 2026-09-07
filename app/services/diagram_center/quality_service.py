@@ -97,6 +97,11 @@ def _semantic_checks(model: DiagramModel, checks: dict[str, bool], warnings: lis
         if not checks["c4_no_class_mix"]:
             warnings.append("C4 no debe mezclar clases/atributos UML de bajo nivel.")
 
+    if any(token in (model.diagram_key or "").lower() for token in ("agent", "orchestration", "memory", "rag", "tool")):
+        checks["agentic_has_taxonomy_diversity"] = _has_kind(model, "orchestrator", "worker", "evaluator", "vector", "memory", "mcp", "gate", "guardrail", "tool")
+        if not checks["agentic_has_taxonomy_diversity"]:
+            warnings.append("El diagrama agentico deberia diferenciar visualmente orquestadores, memorias RAG y herramientas MCP.")
+
 
 def evaluate_diagram_quality(model: DiagramModel) -> DiagramQualityReport:
     errors: list[str] = []

@@ -236,10 +236,10 @@ def test_deepseek_api_context_does_not_instruct_filesystem_reads_when_workspace_
 
 
 def test_complex_capabilities_get_larger_structured_output_budget_without_expanding_bpmn() -> None:
-    assert _structured_capability_max_tokens(BuilderCapability.propose_agent_design) == 6144
-    assert _structured_capability_max_tokens(BuilderCapability.critique_agent_design) == 6144
-    assert _structured_capability_max_tokens(BuilderCapability.recommend_memory_architecture) == 6144
-    assert _structured_capability_max_tokens(BuilderCapability.critique_memory_architecture) == 6144
+    assert _structured_capability_max_tokens(BuilderCapability.propose_agent_design) == 16384
+    assert _structured_capability_max_tokens(BuilderCapability.critique_agent_design) == 16384
+    assert _structured_capability_max_tokens(BuilderCapability.recommend_memory_architecture) == 16384
+    assert _structured_capability_max_tokens(BuilderCapability.critique_memory_architecture) == 16384
 
     bpmn_payload = DiagramGenerationInput(
         diagram_key="current_process_map",

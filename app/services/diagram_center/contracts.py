@@ -29,12 +29,39 @@ class DiagramNotation(StrEnum):
     capability = "capability"
 
 
+class AgentNodeKind(StrEnum):
+    orchestrator = "orchestrator"
+    worker = "worker"
+    evaluator = "evaluator"
+    human_gate = "human_gate"
+    autonomous_loop = "autonomous_loop"
+
+
+class MemoryNodeKind(StrEnum):
+    working_memory = "working_memory"
+    vector_store = "vector_store"
+    short_term_buffer = "short_term_buffer"
+    shared_state = "shared_state"
+
+
+class ToolNodeKind(StrEnum):
+    mcp_server = "mcp_server"
+    internal_tool = "internal_tool"
+    external_api = "external_api"
+    guardrail_gate = "guardrail_gate"
+
+
 class DiagramNode(BaseModel):
     id: str
     label: str
     kind: str = "component"
     description: str = ""
     group_id: str | None = None
+    agent_kind: AgentNodeKind | str | None = None
+    memory_kind: MemoryNodeKind | str | None = None
+    tool_kind: ToolNodeKind | str | None = None
+    token_budget: int | None = None
+    reasoning_pattern: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     source_refs: list[str] = Field(default_factory=list)
 

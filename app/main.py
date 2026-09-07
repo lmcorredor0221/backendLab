@@ -18,7 +18,9 @@ from app.api.routes import (
     llm_finops,
     platform_admin,
     platform_runtime,
+    payu_routes,
     productization,
+    rapyd_routes,
     runtime_settings,
     runtime_status,
     rebill_webhooks,
@@ -66,7 +68,9 @@ app.include_router(health.router)
 app.include_router(hotmart_admin.router, prefix=settings.api_v1_prefix)
 app.include_router(hotmart_webhooks.router, prefix=settings.api_v1_prefix)
 app.include_router(platform_runtime.router, prefix=settings.api_v1_prefix)
+app.include_router(payu_routes.router, prefix=settings.api_v1_prefix)
 app.include_router(productization.router, prefix=settings.api_v1_prefix)
+app.include_router(rapyd_routes.router, prefix=settings.api_v1_prefix)
 app.include_router(runtime_settings.router, prefix=settings.api_v1_prefix)
 app.include_router(runtime_status.router, prefix=settings.api_v1_prefix)
 app.include_router(rebill_webhooks.router, prefix=settings.api_v1_prefix)

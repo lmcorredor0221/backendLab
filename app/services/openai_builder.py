@@ -287,8 +287,8 @@ def _structured_capability_max_tokens(capability: BuilderCapability, *, payload:
         BuilderCapability.critique_memory_architecture,
         BuilderCapability.analyze_estimation_risks,
     }:
-        return 6144
-    return 4096
+        return 16384
+    return 8192
 
 
 def _preserve_deepseek_reasoning_on_retry(capability: BuilderCapability, *, payload: object | None = None) -> bool:
@@ -419,10 +419,10 @@ def _is_deepseek_length_finish_reason(finish_reason: str) -> bool:
 def _deepseek_retry_max_tokens(max_tokens: int, *, expand_budget: bool) -> int:
     if not expand_budget:
         return max_tokens
-    return min(max_tokens * 2, 8192)
+    return min(max_tokens * 2, 16384)
 
 
-def _compact_text(value: object, *, limit: int = 220, fallback: str = "") -> str:
+def _compact_text(value: object, *, limit: int = 4000, fallback: str = "") -> str:
     normalized = " ".join(str(value or "").split()).strip()
     if not normalized:
         return fallback
@@ -431,7 +431,7 @@ def _compact_text(value: object, *, limit: int = 220, fallback: str = "") -> str
     return normalized[: max(0, limit - 3)].rstrip() + "..."
 
 
-def _compact_string_list(values: list[object], *, limit: int = 5, item_limit: int = 180) -> list[str]:
+def _compact_string_list(values: list[object], *, limit: int = 25, item_limit: int = 2000) -> list[str]:
     items: list[str] = []
     for value in values[:limit]:
         compact = _compact_text(value, limit=item_limit)
@@ -440,40 +440,40 @@ def _compact_string_list(values: list[object], *, limit: int = 5, item_limit: in
     return items
 
 
-def _compact_source_refs(values: list[str], *, limit: int = 8) -> list[str]:
+def _compact_source_refs(values: list[str], *, limit: int = 25) -> list[str]:
     return [item.strip() for item in values[:limit] if item and item.strip()]
 
 
 def _compact_discovery_input(discovery: DiscoveryInput | DiscoveryArtifact) -> dict[str, Any]:
     return {
-        "problem_statement": _compact_text(discovery.problem_statement, limit=520),
-        "current_user": _compact_text(discovery.current_user, limit=180),
-        "current_process": _compact_text(discovery.current_process, limit=640),
-        "desired_outcome": _compact_text(discovery.desired_outcome, limit=520),
-        "autonomy_level": _compact_text(discovery.autonomy_level, limit=24),
-        "constraints": _compact_string_list(list(discovery.constraints), limit=10, item_limit=220),
+        "problem_statement": _compact_text(discovery.problem_statement, limit=4000),
+        "current_user": _compact_text(discovery.current_user, limit=1000),
+        "current_process": _compact_text(discovery.current_process, limit=4000),
+        "desired_outcome": _compact_text(discovery.desired_outcome, limit=4000),
+        "autonomy_level": _compact_text(discovery.autonomy_level, limit=100),
+        "constraints": _compact_string_list(list(discovery.constraints), limit=25, item_limit=1000),
         "operational_baseline": {
-            "current_time_spent": _compact_text(discovery.operational_baseline.current_time_spent, limit=140),
-            "current_cost": _compact_text(discovery.operational_baseline.current_cost, limit=220),
+            "current_time_spent": _compact_text(discovery.operational_baseline.current_time_spent, limit=1000),
+            "current_cost": _compact_text(discovery.operational_baseline.current_cost, limit=1000),
             "frequent_errors": _compact_string_list(
                 list(discovery.operational_baseline.frequent_errors),
-                limit=10,
-                item_limit=220,
+                limit=25,
+                item_limit=1000,
             ),
             "automation_opportunities": _compact_string_list(
                 list(discovery.operational_baseline.automation_opportunities),
-                limit=10,
-                item_limit=220,
+                limit=25,
+                item_limit=1000,
             ),
         },
         "mvp_definition": {
-            "v1_scope": _compact_string_list(list(discovery.mvp_definition.v1_scope), limit=10, item_limit=180),
-            "out_of_scope": _compact_string_list(list(discovery.mvp_definition.out_of_scope), limit=10, item_limit=180),
-            "north_star_metric": _compact_text(discovery.mvp_definition.north_star_metric, limit=260),
+            "v1_scope": _compact_string_list(list(discovery.mvp_definition.v1_scope), limit=25, item_limit=1000),
+            "out_of_scope": _compact_string_list(list(discovery.mvp_definition.out_of_scope), limit=25, item_limit=1000),
+            "north_star_metric": _compact_text(discovery.mvp_definition.north_star_metric, limit=1000),
             "non_delegable_decisions": _compact_string_list(
                 list(discovery.mvp_definition.non_delegable_decisions),
-                limit=10,
-                item_limit=180,
+                limit=25,
+                item_limit=1000,
             ),
         },
     }
@@ -483,8 +483,8 @@ def _compact_discovery_artifact(discovery: DiscoveryArtifact) -> dict[str, Any]:
     payload = _compact_discovery_input(discovery)
     payload.update(
         {
-            "case_type": _compact_text(discovery.case_type, limit=60),
-            "value_statement": _compact_text(discovery.value_statement, limit=420),
+            "case_type": _compact_text(discovery.case_type, limit=200),
+            "value_statement": _compact_text(discovery.value_statement, limit=2000),
         }
     )
     return payload
@@ -492,15 +492,15 @@ def _compact_discovery_artifact(discovery: DiscoveryArtifact) -> dict[str, Any]:
 
 def _compact_canvas_artifact(canvas: CanvasArtifact) -> dict[str, Any]:
     return {
-        "user_goal": _compact_text(canvas.user_goal, limit=520),
-        "success_metric": _compact_text(canvas.success_metric, limit=260),
-        "primary_risk": _compact_text(canvas.primary_risk, limit=320),
-        "mvp_scope": _compact_string_list(list(canvas.mvp_scope), limit=10, item_limit=180),
-        "out_of_scope": _compact_string_list(list(canvas.out_of_scope), limit=10, item_limit=180),
+        "user_goal": _compact_text(canvas.user_goal, limit=4000),
+        "success_metric": _compact_text(canvas.success_metric, limit=2000),
+        "primary_risk": _compact_text(canvas.primary_risk, limit=2000),
+        "mvp_scope": _compact_string_list(list(canvas.mvp_scope), limit=25, item_limit=1000),
+        "out_of_scope": _compact_string_list(list(canvas.out_of_scope), limit=25, item_limit=1000),
         "agent_profile": {
-            "mission": _compact_text(canvas.agent_profile.mission, limit=420),
-            "primary_user": _compact_text(canvas.agent_profile.primary_user, limit=180),
-            "agent_task": _compact_text(canvas.agent_profile.agent_task, limit=420),
+            "mission": _compact_text(canvas.agent_profile.mission, limit=3000),
+            "primary_user": _compact_text(canvas.agent_profile.primary_user, limit=1000),
+            "agent_task": _compact_text(canvas.agent_profile.agent_task, limit=3000),
             "allowed_decisions": _compact_string_list(
                 list(canvas.agent_profile.allowed_decisions),
                 limit=8,

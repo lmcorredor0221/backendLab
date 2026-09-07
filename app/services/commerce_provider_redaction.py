@@ -10,6 +10,7 @@ SENSITIVE_KEY_PARTS = {
     "hottok",
     "key",
     "password",
+    "signature",
     "secret",
     "token",
     "x-api-key",

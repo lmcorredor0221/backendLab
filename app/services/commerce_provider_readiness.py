@@ -55,7 +55,11 @@ def build_commerce_provider_readiness(
             detail="El provider puede recibir checkouts." if status.enabled else "Activa el provider antes de dirigir compras.",
         )
     )
-    required_secret_kinds = {"rebill": {"secret_key", "webhook_signing_secret"}}.get(provider, set())
+    required_secret_kinds = {
+        "rebill": {"secret_key", "webhook_signing_secret"},
+        "payu": {"secret_key", "public_key", "merchant_id", "account_id"},
+        "rapyd": {"access_key", "secret_key", "webhook_url_secret"},
+    }.get(provider, set())
     configured_secret_kinds = {item.secret_kind for item in status.secret_statuses if item.configured}
     for secret_kind in sorted(required_secret_kinds):
         checks.append(

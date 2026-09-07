@@ -334,9 +334,11 @@ def build_diagram_detail_v3(
         should_persist_refresh = True
     if item.access.access_state == "preview":
         model = _limited_preview(model)
-
         renderings = render_diagram(model)
-    elif _renderings_need_refresh(renderings, model, item) and not item.needs_layout_upgrade:
+    elif _renderings_need_refresh(renderings, model, item):
+        # Always re-render with the current renderer to ensure the viewer shows content.
+        # Whether a layout_upgrade is needed or not, the existing SVG must be refreshed
+        # so the frontend can display the diagram without hanging on a blank spinner.
         metadata = dict(model.metadata or {})
         previous_revision = _svg_renderer_revision(renderings.get("svg") or "")
         if previous_revision and previous_revision != RENDERER_REVISION:

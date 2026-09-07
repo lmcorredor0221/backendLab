@@ -45,6 +45,18 @@ def _rebill_provider_factory() -> CommercePaymentProvider:
     return RebillPaymentProvider()
 
 
+def _payu_provider_factory() -> CommercePaymentProvider:
+    from app.services.payment_providers.payu import PayUPaymentProvider
+
+    return PayUPaymentProvider()
+
+
+def _rapyd_provider_factory() -> CommercePaymentProvider:
+    from app.services.payment_providers.rapyd import RapydPaymentProvider
+
+    return RapydPaymentProvider()
+
+
 def get_commerce_provider_registry() -> CommerceProviderRegistry:
     return CommerceProviderRegistry(
         [
@@ -65,6 +77,18 @@ def get_commerce_provider_registry() -> CommerceProviderRegistry:
                 display_name="Rebill",
                 capabilities=("hosted_checkout", "payment_links", "subscriptions", "webhooks"),
                 create_provider=_rebill_provider_factory,
+            ),
+            CommerceProviderDefinition(
+                provider_key="payu",
+                display_name="PayU Latam",
+                capabilities=("hosted_checkout", "webhooks", "refunds"),
+                create_provider=_payu_provider_factory,
+            ),
+            CommerceProviderDefinition(
+                provider_key="rapyd",
+                display_name="Rapyd",
+                capabilities=("hosted_checkout", "payment_links", "webhooks", "refunds"),
+                create_provider=_rapyd_provider_factory,
             ),
         ]
     )

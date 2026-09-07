@@ -24,20 +24,20 @@ from app.services.llm_runtime.stage_context_types import (
 
 
 CAPABILITY_BUDGET_OVERRIDES: dict[str, tuple[int, int, int]] = {
-    "normalize_discovery": (1200, 4, 5200),
-    "build_canvas": (1400, 5, 6000),
-    "define_requirements": (2100, 7, 8600),
-    "propose_agent_design": (4500, 11, 19600),
-    "critique_agent_design": (5200, 12, 22800),
-    "synthesize_blueprint_narrative": (2600, 7, 11200),
-    "recommend_minimal_tools": (2800, 9, 12400),
-    "recommend_memory_architecture": (5200, 12, 22800),
-    "critique_memory_architecture": (4800, 12, 20800),
-    "generate_validation_scenarios": (3000, 10, 13200),
-    "simulate_validation_scenario": (2200, 7, 9200),
-    "judge_validation_run": (2400, 8, 10400),
-    "analyze_estimation_risks": (3000, 9, 13200),
-    "generate_diagram_model": (2600, 8, 11200),
+    "normalize_discovery": (16000, 10, 64000),
+    "build_canvas": (16000, 10, 64000),
+    "define_requirements": (24000, 15, 96000),
+    "propose_agent_design": (32000, 20, 128000),
+    "critique_agent_design": (32000, 20, 128000),
+    "synthesize_blueprint_narrative": (24000, 15, 96000),
+    "recommend_minimal_tools": (24000, 15, 96000),
+    "recommend_memory_architecture": (32000, 20, 128000),
+    "critique_memory_architecture": (32000, 20, 128000),
+    "generate_validation_scenarios": (24000, 15, 96000),
+    "simulate_validation_scenario": (24000, 15, 96000),
+    "judge_validation_run": (24000, 15, 96000),
+    "analyze_estimation_risks": (24000, 15, 96000),
+    "generate_diagram_model": (24000, 15, 96000),
 }
 
 CAPABILITY_STAGE_DEFAULTS = {
@@ -167,7 +167,7 @@ def _list_texts(value: Any, *, limit: int = 4) -> list[str]:
     return terms
 
 
-def _clip_text(value: str, *, limit: int = 900, fallback: str = "") -> str:
+def _clip_text(value: str, *, limit: int = 8000, fallback: str = "") -> str:
     normalized = _compact_text(value, fallback=fallback)
     if not normalized or normalized == fallback:
         return normalized
@@ -176,7 +176,7 @@ def _clip_text(value: str, *, limit: int = 900, fallback: str = "") -> str:
     return normalized[: max(0, limit - 3)].rstrip() + "..."
 
 
-def _join_compact(items: list[str], *, limit: int = 4, item_limit: int = 180) -> str:
+def _join_compact(items: list[str], *, limit: int = 10, item_limit: int = 1000) -> str:
     compacted = [_clip_text(item, limit=item_limit, fallback="") for item in items if str(item or "").strip()]
     return "; ".join(compacted[:limit])
 
@@ -222,7 +222,7 @@ def _design_memory_signal_summary(snapshot: SessionSnapshot) -> str:
         parts.append(f"implicaciones de memoria: {_join_compact(memory_implications, limit=5)}")
     if tool_implications:
         parts.append(f"implicaciones de tools: {_join_compact(tool_implications, limit=4)}")
-    return _clip_text("; ".join(parts), limit=900, fallback="")
+    return _clip_text("; ".join(parts), limit=4000, fallback="")
 
 
 def _definition_reference_summary(definition: RequirementsDefinitionOutput) -> str:

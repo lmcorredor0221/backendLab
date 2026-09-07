@@ -125,13 +125,13 @@ KNOWLEDGE_KEYWORDS = (
 MEMORY_TAXONOMY_PATH = Path(__file__).resolve().parents[3] / "Docs" / "system-analysis" / "29-memory-m0-taxonomy-manifest.json"
 
 MEMORY_CONTEXT_BUDGET_DEFAULTS = (
-    ("planner", 2400, 8, 12000),
-    ("executor", 1800, 10, 9000),
-    ("evaluator", 2200, 8, 11000),
-    ("tool_use", 1200, 6, 6000),
-    ("memory", 1600, 12, 8000),
-    ("retrieval", 1400, 6, 7000),
-    ("recovery", 1200, 6, 6000),
+    ("planner", 24000, 20, 96000),
+    ("executor", 18000, 20, 72000),
+    ("evaluator", 22000, 20, 88000),
+    ("tool_use", 12000, 15, 48000),
+    ("memory", 16000, 25, 64000),
+    ("retrieval", 14000, 15, 56000),
+    ("recovery", 12000, 15, 48000),
 )
 
 

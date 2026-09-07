@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import hmac
 import json
-from collections.abc import Iterator
+from urllib.parse import urlencode
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -42,6 +43,13 @@ from app.services.commercial_catalog_service import upsert_package_catalog_entry
 from app.services.commercial_debt_service import create_commercial_debt
 from app.services.commercial_quota_service import get_balance_snapshot
 from app.services.payment_providers.rebill import RebillPaymentProvider
+from app.services.payment_providers.rapyd import RapydPaymentProvider
+from app.services.payu.checkout_redirect import render_payu_checkout_redirect, resolve_payu_response_redirect
+from app.services.payu.signatures import format_payu_confirmation_value, sign_payu_payment_form
+from app.services.payu.webhooks import process_payu_webhook
+from app.services.rapyd.client import RapydApiResult
+from app.services.rapyd.signatures import sign_rapyd_webhook
+from app.services.rapyd.webhooks import process_rapyd_webhook
 from app.services.rebill.client import RebillApiResult
 from app.services.rebill.webhooks import process_rebill_webhook
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord  # noqa: F401
@@ -91,9 +99,13 @@ def test_commerce_provider_router_normalizes_supported_providers() -> None:
     assert normalize_commerce_payment_provider("default") == "sandbox"
     assert normalize_commerce_payment_provider("HOTMART") == "hotmart"
     assert normalize_commerce_payment_provider("REBILL") == "rebill"
+    assert normalize_commerce_payment_provider("PAYU") == "payu"
+    assert normalize_commerce_payment_provider("RAPYD") == "rapyd"
     assert get_commerce_payment_provider("sandbox").provider_key == "sandbox"
     assert get_commerce_payment_provider("hotmart").provider_key == "hotmart"
     assert get_commerce_payment_provider("rebill").provider_key == "rebill"
+    assert get_commerce_payment_provider("payu").provider_key == "payu"
+    assert get_commerce_payment_provider("rapyd").provider_key == "rapyd"
 
     with pytest.raises(ValueError, match="Unsupported commerce checkout provider"):
         normalize_commerce_payment_provider("stripe")
@@ -195,6 +207,39 @@ class FakeRebillClient:
         return self.__class__.payment_payload
 
 
+class FakeRapydClient:
+    create_calls: list[dict[str, object]] = []
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    def create_checkout(
+        self,
+        *,
+        access_key: str,
+        secret_key: str,
+        payload: dict[str, object],
+        idempotency_key: str,
+    ) -> RapydApiResult:
+        self.__class__.create_calls.append(
+            {
+                "access_key": access_key,
+                "secret_key": secret_key,
+                "payload": payload,
+                "idempotency_key": idempotency_key,
+                "api_base_url": self.config.api_base_url,
+            }
+        )
+        response_payload = {"data": {"id": "checkout_123", "redirect_url": "https://checkout.rapyd.test/checkout_123"}}
+        return RapydApiResult(
+            provider_ref="checkout_123",
+            checkout_url="https://checkout.rapyd.test/checkout_123",
+            http_status=200,
+            payload=response_payload,
+            payload_redacted=response_payload,
+        )
+
+
 def _configure_rebill(session: Session, workspace: WorkspaceRecord, user: UserRecord) -> None:
     upsert_commerce_provider_credentials(
         session,
@@ -223,6 +268,79 @@ def _configure_rebill(session: Session, workspace: WorkspaceRecord, user: UserRe
             billing_mode="one_time",
             currency="USD",
             provider_product_id="prd_rebill_blueprint",
+        ),
+    )
+    session.flush()
+
+
+def _configure_payu(session: Session, workspace: WorkspaceRecord, user: UserRecord) -> None:
+    upsert_commerce_provider_credentials(
+        session,
+        workspace_id=workspace.id,
+        provider_key="payu",
+        payload=CommerceProviderCredentialUpsertRequest(
+            environment="sandbox",
+            enabled=True,
+            api_base_url="https://sandbox.api.payulatam.test/payments-api/4.0/service.cgi",
+            webhook_public_url="https://api.lean.test/api/v1/webhooks/payu/url_secret/sandbox",
+            secrets={
+                "secret_key": "4Vj8eK4rloUd272L48hsrarnUA",
+                "public_key": "pRRXKOl8ikMmt9u",
+                "merchant_id": "508029",
+                "account_id": "512321",
+                "webhook_url_secret": "url_secret",
+            },
+        ),
+        actor_user_id=user.id,
+    )
+    upsert_commerce_provider_mapping(
+        session,
+        workspace_id=workspace.id,
+        provider_key="payu",
+        payload=CommerceProviderProductMappingUpsertRequest(
+            environment="sandbox",
+            internal_product_key="blueprint_pro",
+            billing_mode="one_time",
+            currency="USD",
+            provider_product_id="512321",
+            provider_plan_id="CO",
+            provider_price_id="VISA,MASTERCARD",
+        ),
+    )
+    session.flush()
+
+
+def _configure_rapyd(session: Session, workspace: WorkspaceRecord, user: UserRecord) -> None:
+    upsert_commerce_provider_credentials(
+        session,
+        workspace_id=workspace.id,
+        provider_key="rapyd",
+        payload=CommerceProviderCredentialUpsertRequest(
+            environment="sandbox",
+            enabled=True,
+            api_base_url="https://sandboxapi.rapyd.test",
+            webhook_public_url="https://api.lean.test/api/v1/webhooks/rapyd/url_secret/sandbox",
+            secrets={
+                "access_key": "access_rapyd_test",
+                "secret_key": "secret_rapyd_test",
+                "webhook_url_secret": "url_secret",
+            },
+        ),
+        actor_user_id=user.id,
+    )
+    upsert_commerce_provider_mapping(
+        session,
+        workspace_id=workspace.id,
+        provider_key="rapyd",
+        payload=CommerceProviderProductMappingUpsertRequest(
+            environment="sandbox",
+            internal_product_key="blueprint_pro",
+            billing_mode="one_time",
+            currency="USD",
+            provider_product_id="ewallet_lab",
+            provider_plan_id="CO",
+            provider_price_id="co_visa_card,co_pse_bank",
+            provider_offer_ref="LAB Blueprint",
         ),
     )
     session.flush()
@@ -286,6 +404,435 @@ def test_rebill_checkout_provider_creates_hosted_checkout_with_provider_record(
     }
     assert "prices" not in payload
     assert "plan" not in payload
+
+
+def test_payu_checkout_provider_creates_signed_webcheckout_redirect(
+    db_session: Session,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_payu(db_session, workspace, user)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="payu",
+            idempotency_key=f"{record.id}:payu-provider",
+            success_url="https://example.test/success",
+            cancel_url="https://example.test/cancel",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    order = db_session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == response.order_id)).one()
+    checkout_record = db_session.exec(select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "payu")).one()
+    fields = checkout_record.metadata_payload["payu_form_fields"]
+    assert response.provider == "payu"
+    assert response.checkout_ref.startswith("payu_")
+    assert response.checkout_url.endswith(f"/api/v1/commerce/checkout-redirects/payu/{response.checkout_ref}")
+    assert response.next_action == "open_checkout"
+    assert order.metadata_payload["provider_stage"] == "payu_webcheckout_form_created"
+    assert checkout_record.provider_checkout_id == fields["referenceCode"]
+    assert checkout_record.checkout_url == response.checkout_url
+    assert checkout_record.metadata_payload["payu_checkout_gateway_url"] == "https://sandbox.checkout.payulatam.com/ppp-web-gateway-payu/"
+    assert fields["merchantId"] == "508029"
+    assert fields["accountId"] == "512321"
+    assert fields["amount"] == "49.00"
+    assert fields["currency"] == "USD"
+    assert fields["tax"] == "0"
+    assert fields["taxReturnBase"] == "0"
+    assert fields["buyerEmail"] == user.email
+    assert fields["confirmationUrl"] == "https://api.lean.test/api/v1/webhooks/payu/url_secret/sandbox"
+    assert fields["responseUrl"].endswith(f"/api/v1/commerce/checkout-responses/payu/{response.checkout_ref}")
+    assert fields["paymentMethods"] == "VISA,MASTERCARD"
+    assert fields["billingCountry"] == "CO"
+    assert fields["extra1"] == order.checkout_ref
+    assert fields["extra2"] == str(order.id)
+    assert fields["extra3"] == str(workspace.id)
+    assert fields["signature"] == sign_payu_payment_form(
+        api_key="4Vj8eK4rloUd272L48hsrarnUA",
+        merchant_id="508029",
+        reference_code=fields["referenceCode"],
+        amount="49.00",
+        currency="USD",
+        payment_methods="VISA,MASTERCARD",
+    )
+
+    html = render_payu_checkout_redirect(db_session, checkout_ref=response.checkout_ref)
+    assert 'method="post"' in html
+    assert 'action="https://sandbox.checkout.payulatam.com/ppp-web-gateway-payu/"' in html
+    assert f'name="referenceCode" value="{fields["referenceCode"]}"' in html
+
+
+def test_rapyd_checkout_provider_creates_hosted_checkout_with_provider_record(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_rapyd(db_session, workspace, user)
+    FakeRapydClient.create_calls = []
+    monkeypatch.setattr(RapydPaymentProvider, "client_factory", FakeRapydClient)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="rapyd",
+            idempotency_key=f"{record.id}:rapyd-provider",
+            success_url="https://example.test/success",
+            cancel_url="https://example.test/cancel",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    order = db_session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == response.order_id)).one()
+    checkout_record = db_session.exec(
+        select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "rapyd")
+    ).one()
+    assert response.provider == "rapyd"
+    assert response.checkout_ref.startswith("rapyd_")
+    assert response.checkout_url == "https://checkout.rapyd.test/checkout_123"
+    assert response.next_action == "open_checkout"
+    assert order.metadata_payload["provider_stage"] == "rapyd_checkout_created"
+    assert order.metadata_payload["rapyd_checkout_id"] == "checkout_123"
+    assert checkout_record.provider_checkout_id == "checkout_123"
+    assert checkout_record.checkout_url == response.checkout_url
+    assert FakeRapydClient.create_calls[0]["access_key"] == "access_rapyd_test"
+    assert FakeRapydClient.create_calls[0]["secret_key"] == "secret_rapyd_test"
+    assert FakeRapydClient.create_calls[0]["idempotency_key"] == f"rapyd:{order.id}:checkout"
+    assert FakeRapydClient.create_calls[0]["api_base_url"] == "https://sandboxapi.rapyd.test"
+    payload = FakeRapydClient.create_calls[0]["payload"]
+    assert isinstance(payload, dict)
+    assert payload["amount"] == 49.0
+    assert payload["country"] == "CO"
+    assert payload["currency"] == "USD"
+    assert payload["merchant_reference_id"] == order.checkout_ref
+    assert payload["complete_payment_url"] == "https://example.test/success"
+    assert payload["error_payment_url"] == "https://example.test/cancel"
+    assert payload["payment_method_types_include"] == ["co_visa_card", "co_pse_bank"]
+    assert payload["merchant_ewallet"] == "ewallet_lab"
+    assert payload["statement_descriptor"] == "LAB Blueprint"
+    assert payload["metadata"]["lab_order_id"] == str(order.id)
+    assert payload["metadata"]["lab_checkout_ref"] == response.checkout_ref
+    assert checkout_record.request_payload_redacted["metadata"]["lab_provider"] == "rapyd"
+
+
+def test_payu_checkout_response_redirects_by_verified_browser_state(
+    db_session: Session,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_payu(db_session, workspace, user)
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="payu",
+            idempotency_key=f"{record.id}:payu-response-provider",
+            success_url="https://example.test/success",
+            cancel_url="https://example.test/cancel",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    checkout_record = db_session.exec(select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "payu")).one()
+    query = {
+        "merchantId": "508029",
+        "referenceCode": checkout_record.provider_checkout_id,
+        "TX_VALUE": "49.00",
+        "currency": "USD",
+        "transactionState": "4",
+        "lapTransactionState": "APPROVED",
+    }
+    query["signature"] = hashlib.md5(
+        f"4Vj8eK4rloUd272L48hsrarnUA~508029~{query['referenceCode']}~49.0~USD~4".encode("utf-8")
+    ).hexdigest()
+
+    approved_redirect = resolve_payu_response_redirect(db_session, checkout_ref=checkout.checkout_ref, query_params=query)
+    rejected_redirect = resolve_payu_response_redirect(
+        db_session,
+        checkout_ref=checkout.checkout_ref,
+        query_params={**query, "signature": "bad-signature"},
+    )
+
+    assert approved_redirect.startswith("https://example.test/success?")
+    assert "payment_status=approved" in approved_redirect
+    assert rejected_redirect.startswith("https://example.test/cancel?")
+    assert "payment_status=unverified" in rejected_redirect
+
+
+def test_payu_confirmation_approved_payment_uses_common_fulfillment_and_dedupes(
+    db_session: Session,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_payu(db_session, workspace, user)
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="payu",
+            idempotency_key=f"{record.id}:payu-webhook-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    order = db_session.get(CommercialOrderRecord, checkout.order_id)
+    checkout_record = db_session.exec(select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "payu")).one()
+    assert order is not None
+    payload = {
+        "merchant_id": "508029",
+        "reference_sale": checkout_record.provider_checkout_id,
+        "value": "49.00",
+        "currency": "USD",
+        "state_pol": "4",
+        "reference_pol": "7069375",
+        "transaction_id": "payu_txn_123",
+        "response_code_pol": "APPROVED",
+        "extra1": order.checkout_ref,
+        "extra2": str(order.id),
+        "extra3": str(workspace.id),
+    }
+    payload["sign"] = hashlib.md5(
+        f"4Vj8eK4rloUd272L48hsrarnUA~508029~{payload['reference_sale']}~49.0~USD~4".encode("utf-8")
+    ).hexdigest()
+    raw_body = urlencode(payload).encode("utf-8")
+
+    response = process_payu_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers={"content-type": "application/x-www-form-urlencoded"},
+        url_secret="url_secret",
+        environment="sandbox",
+    )
+    duplicate = process_payu_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers={"content-type": "application/x-www-form-urlencoded"},
+        url_secret="url_secret",
+        environment="sandbox",
+    )
+    db_session.commit()
+
+    db_session.refresh(order)
+    payments = db_session.exec(select(CommercialPaymentRecord).where(CommercialPaymentRecord.order_id == order.id)).all()
+    entitlements = db_session.exec(
+        select(CommercialEntitlementRecord).where(CommercialEntitlementRecord.order_id == order.id)
+    ).all()
+    webhook_event = db_session.exec(select(CommerceProviderWebhookEventRecord).where(CommerceProviderWebhookEventRecord.provider_key == "payu")).one()
+    assert response.processing_status == "processed"
+    assert duplicate.duplicate is True
+    assert order.status == CommercialOrderStatus.paid
+    assert len(payments) == 1
+    assert payments[0].provider == "payu"
+    assert payments[0].provider_payment_id == "payu_txn_123"
+    assert len(entitlements) == 1
+    assert webhook_event.signature_validated is True
+    assert webhook_event.retries == 1
+
+
+def test_payu_confirmation_rejects_invalid_signature(
+    db_session: Session,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_payu(db_session, workspace, user)
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="payu",
+            idempotency_key=f"{record.id}:payu-invalid-signature",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    order = db_session.get(CommercialOrderRecord, checkout.order_id)
+    assert order is not None
+    payload = {
+        "merchant_id": "508029",
+        "reference_sale": str(order.metadata_payload["payu_reference_code"]),
+        "value": "49.00",
+        "currency": "USD",
+        "state_pol": "4",
+        "transaction_id": "payu_txn_invalid",
+        "sign": "bad-signature",
+        "extra1": order.checkout_ref,
+        "extra2": str(order.id),
+        "extra3": str(workspace.id),
+    }
+
+    with pytest.raises(PermissionError, match="Invalid PayU confirmation signature"):
+        process_payu_webhook(
+            db_session,
+            raw_body=urlencode(payload).encode("utf-8"),
+            request_headers={"content-type": "application/x-www-form-urlencoded"},
+            url_secret="url_secret",
+            environment="sandbox",
+        )
+
+    webhook_event = db_session.exec(select(CommerceProviderWebhookEventRecord).where(CommerceProviderWebhookEventRecord.provider_key == "payu")).one()
+    assert order.status == CommercialOrderStatus.pending
+    assert webhook_event.processing_status == "rejected"
+    assert webhook_event.signature_validated is False
+
+
+def test_payu_confirmation_amount_formatting_matches_payu_rounding_rules() -> None:
+    assert format_payu_confirmation_value("150.00") == "150.0"
+    assert format_payu_confirmation_value("150.25") == "150.25"
+    assert format_payu_confirmation_value("150") == "150.0"
+
+
+def test_rapyd_webhook_payment_succeeded_uses_common_fulfillment_and_dedupes(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_rapyd(db_session, workspace, user)
+    FakeRapydClient.create_calls = []
+    monkeypatch.setattr(RapydPaymentProvider, "client_factory", FakeRapydClient)
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="rapyd",
+            idempotency_key=f"{record.id}:rapyd-webhook-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    order = db_session.get(CommercialOrderRecord, checkout.order_id)
+    assert order is not None
+    payload = {
+        "id": "wh_rapyd_approved_1",
+        "type": "PAYMENT_SUCCEEDED",
+        "data": {
+            "id": "payment_rapyd_123",
+            "status": "CLO",
+            "amount": 49.0,
+            "currency_code": "USD",
+            "merchant_reference_id": order.checkout_ref,
+            "metadata": {
+                "lab_order_id": str(order.id),
+                "lab_checkout_ref": order.checkout_ref,
+                "lab_workspace_id": str(workspace.id),
+            },
+        },
+    }
+    raw_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    headers = {
+        "access_key": "access_rapyd_test",
+        "salt": "salt12345678",
+        "timestamp": "1700000000",
+        "signature": sign_rapyd_webhook(
+            webhook_url="https://api.lean.test/api/v1/webhooks/rapyd/url_secret/sandbox",
+            salt="salt12345678",
+            timestamp="1700000000",
+            access_key="access_rapyd_test",
+            secret_key="secret_rapyd_test",
+            body_string=raw_body.decode("utf-8"),
+        ),
+    }
+
+    response = process_rapyd_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers=headers,
+        url_secret="url_secret",
+        environment="sandbox",
+    )
+    duplicate = process_rapyd_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers=headers,
+        url_secret="url_secret",
+        environment="sandbox",
+    )
+    db_session.commit()
+
+    db_session.refresh(order)
+    payments = db_session.exec(select(CommercialPaymentRecord).where(CommercialPaymentRecord.order_id == order.id)).all()
+    entitlements = db_session.exec(
+        select(CommercialEntitlementRecord).where(CommercialEntitlementRecord.order_id == order.id)
+    ).all()
+    webhook_event = db_session.exec(select(CommerceProviderWebhookEventRecord).where(CommerceProviderWebhookEventRecord.provider_key == "rapyd")).one()
+    assert response.processing_status == "processed"
+    assert duplicate.duplicate is True
+    assert order.status == CommercialOrderStatus.paid
+    assert len(payments) == 1
+    assert payments[0].provider == "rapyd"
+    assert payments[0].provider_payment_id == "payment_rapyd_123"
+    assert len(entitlements) == 1
+    assert webhook_event.signature_validated is True
+    assert webhook_event.retries == 1
+
+
+def test_rapyd_webhook_rejects_invalid_signature(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_rapyd(db_session, workspace, user)
+    monkeypatch.setattr(RapydPaymentProvider, "client_factory", FakeRapydClient)
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="rapyd",
+            idempotency_key=f"{record.id}:rapyd-invalid-signature",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    payload = {
+        "id": "wh_rapyd_invalid_sig",
+        "type": "PAYMENT_SUCCEEDED",
+        "data": {
+            "id": "payment_rapyd_invalid",
+            "status": "CLO",
+            "metadata": {
+                "lab_order_id": str(checkout.order_id),
+                "lab_workspace_id": str(workspace.id),
+            },
+        },
+    }
+    raw_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(PermissionError, match="Invalid Rapyd webhook signature"):
+        process_rapyd_webhook(
+            db_session,
+            raw_body=raw_body,
+            request_headers={
+                "access_key": "access_rapyd_test",
+                "salt": "salt12345678",
+                "timestamp": "1700000000",
+                "signature": "bad-signature",
+            },
+            url_secret="url_secret",
+            environment="sandbox",
+        )
+
+    order = db_session.get(CommercialOrderRecord, checkout.order_id)
+    webhook_event = db_session.exec(select(CommerceProviderWebhookEventRecord).where(CommerceProviderWebhookEventRecord.provider_key == "rapyd")).one()
+    assert order is not None
+    assert order.status == CommercialOrderStatus.pending
+    assert webhook_event.processing_status == "rejected"
+    assert webhook_event.signature_validated is False
 
 
 def test_rebill_webhook_approved_payment_uses_common_fulfillment_and_dedupes(

@@ -82,13 +82,13 @@ def _profile_key_for_entry(*, key: str, category: str = "", family: str = "", ty
         return "uml.class.v1"
     if "state" in lookup:
         return "uml.state.v1"
-    if "c4_context" in lookup or "solution_architecture" in lookup:
+    if "c4_context" in lookup or "solution_architecture" in lookup or "architecture_overview" in lookup:
         return "c4.context.v1"
-    if "c4_container" in lookup or "logical_architecture" in lookup:
+    if "c4_container" in lookup or "logical_architecture" in lookup or "application_architecture" in lookup:
         return "c4.container.v1"
     if "entity_relationship" in lookup or "data_model" in lookup or "erd" in lookup:
         return "data.erd.v1"
-    if "agent" in lookup or "orchestration" in lookup or "memory_rag" in lookup:
+    if "agent" in lookup or "orchestration" in lookup or "memory_rag" in lookup or "architecture" in lookup:
         return "agentic.workflow.v1"
     return ""
 
@@ -208,9 +208,16 @@ def list_registry_entries(*, include_inactive: bool = False) -> list[DiagramRegi
     return sorted(entries, key=lambda entry: (entry.sort_order, entry.title.lower()))
 
 
+_DIAGRAM_KEY_ALIASES: dict[str, str] = {
+    "arch-prop": "agent_orchestration",
+    "architecture_overview": "solution_architecture",
+}
+
+
 def get_registry_entry(diagram_key: str) -> DiagramRegistryEntry | None:
     normalized = diagram_key.strip().lower()
-    return next((entry for entry in list_registry_entries(include_inactive=True) if entry.key.lower() == normalized), None)
+    resolved_key = _DIAGRAM_KEY_ALIASES.get(normalized, normalized)
+    return next((entry for entry in list_registry_entries(include_inactive=True) if entry.key.lower() == resolved_key), None)
 
 
 def _safe_notation(value: Any, fallback: DiagramNotation) -> DiagramNotation:
@@ -247,7 +254,7 @@ def build_prompt_spec(entry: DiagramRegistryEntry, *, override: dict[str, Any] |
     )
     forbidden_mixes = list(override.get("forbidden_mixes") or notation_profile.get("forbidden_mixes") or entry.forbidden_mixes)
     layout_guidance = merge_layout_policy(
-        layout_policy_for_notation(effective_notation),
+        layout_policy_for_notation(effective_notation, entry.key),
         override.get("layout_guidance"),
     )
     semantic_rules = [
@@ -257,6 +264,54 @@ def build_prompt_spec(entry: DiagramRegistryEntry, *, override: dict[str, Any] |
         "Mantener trazabilidad a fuentes aprobadas en todos los nodos, relaciones y supuestos.",
         *list(entry.semantic_rules),
     ]
+    if entry.family == "agentic":
+        semantic_rules.extend(
+            [
+                "Diferenciar explicitamente agentes orquestadores, trabajadores, evaluadores y guardrails usando `kind` o `metadata.agent_kind`.",
+                "Representar patrones de razonamiento (Plan-and-Execute, ReAct, ToT, HTN) mostrando la secuencia formal de pensamiento, planificacion, ejecucion y retroalimentacion.",
+                "Diferenciar los tipos de memoria: Working Memory (buffer volatil), Vector Store (RAG/Embeddings) y Shared State KV usando `kind` o `metadata.memory_kind`.",
+                "Representar conectores de herramientas etiquetando explicitamente servidores MCP, herramientas internas y Approval Gates (Human-in-the-Loop).",
+            ]
+        )
+    elif effective_notation == DiagramNotation.c4:
+        semantic_rules.extend(
+            [
+                "Modelar la arquitectura utilizando el estandar C4 (Personas, Sistemas de Software, Contenedores y Base de Datos).",
+                "Representar claramente los limites del sistema (System Boundaries) y las interacciones principales.",
+            ]
+        )
+    elif effective_notation == DiagramNotation.bpmn:
+        semantic_rules.extend(
+            [
+                "Inferir dinamicamente pools como participantes, organizaciones, sistemas externos o areas responsables desde el contexto aprobado.",
+                "Inferir dinamicamente lanes como roles, equipos o responsabilidades dentro de cada pool.",
+                "Declarar pools y lanes en el campo `pools`; no usar un pool o lane generico salvo que no exista evidencia suficiente.",
+                "Asignar cada nodo BPMN a `metadata.pool_id` y `metadata.lane_id` usando ids existentes en `pools`.",
+                "Usar `sequence_flow` dentro del mismo pool y `message_flow` cuando la relacion cruza participantes o sistemas.",
+                "No representar BPMN como grafo generico; usar eventos, tareas, gateways, subprocesos, pools, lanes y flujos BPMN segun aplique.",
+            ]
+        )
+    elif effective_notation == DiagramNotation.entity_relationship:
+        semantic_rules.extend(
+            [
+                "Modelar entidades de datos con sus atributos principales, Claves Primarias (PK) y Claves Foraneas (FK).",
+                "Establecer relaciones de cardinalidad claras (1:1, 1:N, N:M) entre entidades.",
+            ]
+        )
+    elif effective_notation == DiagramNotation.sequence:
+        semantic_rules.extend(
+            [
+                "Representar participantes como lineas de vida verticales alineadas en orden cronologico de izquierda a derecha.",
+                "Modelar la secuencia temporal mediante mensajes sincronos, asincronos y respuestas de retorno.",
+            ]
+        )
+    elif effective_notation == DiagramNotation.uml_use_case:
+        semantic_rules.extend(
+            [
+                "Modelar actores externos y casos de uso dentro del limite del sistema.",
+                "Usar relaciones de asociacion, <<include>> y <<extend>> segun la especificacion UML.",
+            ]
+        )
     if effective_notation == DiagramNotation.bpmn:
         semantic_rules.extend(
             [

@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session, select
 
+from app.core.config import get_settings
 from app.db import get_session
 from app.models import (
     CommerceProviderConfigRecord,
@@ -38,6 +39,8 @@ from app.services.commerce_provider_secrets import (
 )
 from app.services.commerce_provider_utils import normalize_commerce_provider_environment
 from app.services.hotmart.secrets import test_hotmart_connection
+from app.services.payu.client import PayUClient, PayUClientConfig
+from app.services.rapyd.client import RapydClient, RapydClientConfig
 from app.services.rebill.client import RebillClient, RebillClientConfig
 from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
@@ -111,6 +114,7 @@ def test_commerce_provider_connection_route(
     workspace_id = _commerce_platform_workspace_id(db, current_user, workspace_context)
     apply_workspace_bootstrap(db, workspace_id)
     env = normalize_commerce_provider_environment(environment)
+    checked_at = utc_now()
     if provider_key.strip().lower() == "hotmart":
         hotmart_response = test_hotmart_connection(db, workspace_id=workspace_id, environment=env)
         db.commit()
@@ -132,7 +136,23 @@ def test_commerce_provider_connection_route(
             reachable=True,
             status="connected",
             message="Sandbox provider is always available locally.",
-            checked_at=utc_now(),
+            checked_at=checked_at,
+        )
+    if provider_key.strip().lower() == "payu":
+        return _test_payu_connection(
+            db,
+            workspace_id=workspace_id,
+            provider_key=provider_key,
+            environment=env,
+            checked_at=checked_at,
+        )
+    if provider_key.strip().lower() == "rapyd":
+        return _test_rapyd_connection(
+            db,
+            workspace_id=workspace_id,
+            provider_key=provider_key,
+            environment=env,
+            checked_at=checked_at,
         )
     status_response = build_commerce_provider_status(
         db,
@@ -147,7 +167,6 @@ def test_commerce_provider_connection_route(
         environment=env,
         secret_kind="secret_key",
     )
-    checked_at = utc_now()
     if not secret_key:
         return CommerceProviderTestConnectionResponse(
             workspace_id=workspace_id,
@@ -190,6 +209,171 @@ def test_commerce_provider_connection_route(
         http_status=http_status,
         checked_at=checked_at,
     )
+
+
+def _test_payu_connection(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    provider_key: str,
+    environment: str,
+    checked_at,
+) -> CommerceProviderTestConnectionResponse:
+    status_response = build_commerce_provider_status(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+    )
+    api_key = load_commerce_provider_secret(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+        secret_kind="secret_key",
+    )
+    api_login = load_commerce_provider_secret(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+        secret_kind="public_key",
+    )
+    if not api_key or not api_login:
+        return CommerceProviderTestConnectionResponse(
+            workspace_id=workspace_id,
+            provider_key="payu",
+            environment=environment,  # type: ignore[arg-type]
+            reachable=False,
+            status="missing_credentials",
+            message="PayU API key and API login are required to validate the provider connection.",
+            checked_at=checked_at,
+        )
+    client = PayUClient(
+        PayUClientConfig(
+            api_base_url=status_response.api_base_url,
+            timeout_seconds=get_settings().payu_request_timeout_seconds,
+            environment=environment,
+        )
+    )
+    reachable, message, http_status = client.test_connection(
+        api_key=api_key,
+        api_login=api_login,
+        is_test=environment == "sandbox",
+    )
+    _update_provider_connection_status(
+        db,
+        workspace_id=workspace_id,
+        provider_key="payu",
+        environment=environment,
+        checked_at=checked_at,
+        reachable=reachable,
+        message=message,
+    )
+    return CommerceProviderTestConnectionResponse(
+        workspace_id=workspace_id,
+        provider_key="payu",
+        environment=environment,  # type: ignore[arg-type]
+        reachable=reachable,
+        status="connected" if reachable else "connection_failed",
+        message=message,
+        http_status=http_status,
+        checked_at=checked_at,
+    )
+
+
+def _test_rapyd_connection(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    provider_key: str,
+    environment: str,
+    checked_at,
+) -> CommerceProviderTestConnectionResponse:
+    status_response = build_commerce_provider_status(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+    )
+    access_key = load_commerce_provider_secret(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+        secret_kind="access_key",
+    )
+    secret_key = load_commerce_provider_secret(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+        secret_kind="secret_key",
+    )
+    if not access_key or not secret_key:
+        return CommerceProviderTestConnectionResponse(
+            workspace_id=workspace_id,
+            provider_key="rapyd",
+            environment=environment,  # type: ignore[arg-type]
+            reachable=False,
+            status="missing_credentials",
+            message="Rapyd access key and secret key are required to validate the provider connection.",
+            checked_at=checked_at,
+        )
+    client = RapydClient(
+        RapydClientConfig(
+            api_base_url=status_response.api_base_url,
+            timeout_seconds=get_settings().rapyd_request_timeout_seconds,
+            environment=environment,
+        )
+    )
+    reachable, message, http_status = client.test_connection(access_key=access_key, secret_key=secret_key)
+    _update_provider_connection_status(
+        db,
+        workspace_id=workspace_id,
+        provider_key="rapyd",
+        environment=environment,
+        checked_at=checked_at,
+        reachable=reachable,
+        message=message,
+    )
+    return CommerceProviderTestConnectionResponse(
+        workspace_id=workspace_id,
+        provider_key="rapyd",
+        environment=environment,  # type: ignore[arg-type]
+        reachable=reachable,
+        status="connected" if reachable else "connection_failed",
+        message=message,
+        http_status=http_status,
+        checked_at=checked_at,
+    )
+
+
+def _update_provider_connection_status(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    provider_key: str,
+    environment: str,
+    checked_at,
+    reachable: bool,
+    message: str,
+) -> None:
+    config = db.exec(
+        select(CommerceProviderConfigRecord).where(
+            CommerceProviderConfigRecord.workspace_id == workspace_id,
+            CommerceProviderConfigRecord.provider_key == provider_key,
+            CommerceProviderConfigRecord.environment == environment,
+        )
+    ).first()
+    if config is not None:
+        config.last_checked_at = checked_at
+        config.last_health_status = "connected" if reachable else "connection_failed"
+        config.last_health_message = message
+        config.status = "connected" if reachable else "connection_failed"
+        config.updated_at = checked_at
+        db.add(config)
+        db.commit()
 
 
 @router.get("/{provider_key}/mappings", response_model=list[CommerceProviderProductMappingResponse])
