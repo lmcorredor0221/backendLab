@@ -209,8 +209,11 @@ def list_registry_entries(*, include_inactive: bool = False) -> list[DiagramRegi
 
 
 _DIAGRAM_KEY_ALIASES: dict[str, str] = {
+    # "arch-prop" is a legacy short-hand used in some older job records
     "arch-prop": "agent_orchestration",
-    "architecture_overview": "solution_architecture",
+    # NOTE: "architecture_overview" is a real entry in the registry — do NOT alias it.
+    # It was previously aliased to "solution_architecture" which caused generation to be
+    # silently blocked (idempotency collision) and the existing v1 version to be invisible.
 }
 
 

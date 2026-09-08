@@ -57,6 +57,7 @@ def measure_generic_node(node: DiagramNode, notation: DiagramNotation) -> Diagra
     max_chars = 34 if notation in {DiagramNotation.flowchart, DiagramNotation.capability, DiagramNotation.c4} else 30
     lines = wrap_label(node.label, max_chars=max_chars, max_lines=3)
     max_line = max((len(line) for line in lines), default=10)
-    width = _clamp(230 + max(0, max_line - 22) * 7, minimum=240, maximum=380)
-    height = _clamp(70 + (len(lines) - 1) * 18, minimum=76, maximum=124)
+    width = _clamp(240 + max(0, max_line - 22) * 7, minimum=260, maximum=400)
+    # Minimum height: badge row (26px) + label area (at least 1 line = 22px) + top+bottom padding (24px) = 96px
+    height = _clamp(86 + (len(lines) - 1) * 20, minimum=96, maximum=140)
     return DiagramNodeSize(width=width, height=height, label_lines=lines)

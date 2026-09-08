@@ -10,7 +10,7 @@ from app.services.diagram_center.layout_engine import compute_layered_layout, ro
 from app.services.diagram_center.layout_sizing import measure_generic_node
 
 
-RENDERER_REVISION = "diagram-renderer.v1.3.0"
+RENDERER_REVISION = "diagram-renderer.v1.4.0"
 
 
 def _safe_mermaid_text(value: str) -> str:
@@ -759,14 +759,16 @@ def _svg_node(
         border_stroke = "#93c5fd"
         stroke_width = "1.8"
 
-    badge_width = min(width - 20, len(badge_text) * 6.5 + 14)
+    badge_width = min(width - 24, len(badge_text) * 7.2 + 18)
+    badge_height = 22
+    label_start_y = y + 52  # badge top(8) + badge height(22) + gap(10) + first line anchor
     return (
         f'<g filter="url(#shadow)" data-node-id="{escape(node_id)}" data-node-kind="{escape(normalized_kind)}">'
         f'<rect x="{x:.1f}" y="{y:.1f}" width="{width}" height="{height}" rx="12" fill="#ffffff" stroke="{border_stroke}" stroke-width="{stroke_width}"/>'
         f'<rect x="{x:.1f}" y="{y:.1f}" width="6" height="{height}" rx="3" fill="{accent_color}"/>'
-        f'<rect x="{x+10:.1f}" y="{y+8:.1f}" width="{badge_width:.1f}" height="18" rx="5" fill="{bg_header}"/>'
-        f'<text x="{x+16:.1f}" y="{y+21:.1f}" font-family="Inter,Arial,sans-serif" font-size="9" font-weight="900" letter-spacing="0.5" fill="{accent_color}">{badge_text}</text>'
-        f'{_svg_multiline_text(label_lines, x=x + 16, y=y + 44, anchor="start", size=13, weight=800, fill="#10172a")}'
+        f'<rect x="{x+12:.1f}" y="{y+8:.1f}" width="{badge_width:.1f}" height="{badge_height}" rx="5" fill="{bg_header}"/>'
+        f'<text x="{x+20:.1f}" y="{y+23:.1f}" font-family="Inter,Arial,sans-serif" font-size="10" font-weight="900" letter-spacing="0.7" fill="{accent_color}">{badge_text}</text>'
+        f'{_svg_multiline_text(label_lines, x=x + 18, y=label_start_y, anchor="start", size=13, weight=700, fill="#10172a")}'
         f'</g>'
     )
 

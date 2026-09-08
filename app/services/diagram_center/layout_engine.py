@@ -60,11 +60,11 @@ def compute_layered_layout(
     model: DiagramModel,
     node_sizes: dict[str, DiagramNodeSize],
     *,
-    min_width: int = 1120,
+    min_width: int = 1400,
     margin_x: int = 72,
-    margin_y: int = 90,
-    gap_x: int = 108,
-    gap_y: int = 58,
+    margin_y: int = 100,
+    gap_x: int = 140,
+    gap_y: int = 80,
 ) -> LayeredLayout:
     if not model.nodes:
         return LayeredLayout(positions={}, width=min_width, height=360, layers={})

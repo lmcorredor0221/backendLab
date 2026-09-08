@@ -327,7 +327,7 @@ def test_standard_specific_renderers_and_quality_warnings() -> None:
     assert "<bpmn:lane" in bpmn_renderings["bpmn_xml"]
     assert "<bpmn:messageFlow" in bpmn_renderings["bpmn_xml"]
     assert 'data-diagram-notation="bpmn"' in bpmn_renderings["svg"]
-    assert 'data-renderer-revision="diagram-renderer.v1.3.0"' in bpmn_renderings["svg"]
+    assert 'data-renderer-revision="diagram-renderer.v1.4.0"' in bpmn_renderings["svg"]
     assert 'data-bpmn-kind="pool"' in bpmn_renderings["svg"]
     assert 'data-bpmn-kind="lane-label"' in bpmn_renderings["svg"]
     assert 'data-pool-id="customer_pool"' in bpmn_renderings["svg"]
@@ -493,7 +493,7 @@ def test_detail_rehydrates_and_persists_legacy_current_process_when_policy_chang
         assert "<bpmn:startEvent" in detail.renderings["bpmn_xml"]
         assert 'data-diagram-notation="bpmn"' in detail.renderings["svg"]
         assert 'data-renderer-key="renderer.bpmn_js.v1"' in detail.renderings["svg"]
-        assert 'data-renderer-revision="diagram-renderer.v1.3.0"' in detail.renderings["svg"]
+        assert 'data-renderer-revision="diagram-renderer.v1.4.0"' in detail.renderings["svg"]
         assert 'data-bpmn-kind="pool"' in detail.renderings["svg"]
         assert "BPMN 2.0" in detail.renderings["svg"]
 
@@ -539,7 +539,7 @@ def test_catalog_flags_legacy_renderer_revision_for_layout_upgrade() -> None:
     )
     old_renderings = render_diagram(model)
     old_renderings["svg"] = old_renderings["svg"].replace(
-        'data-renderer-revision="diagram-renderer.v1.3.0"',
+        'data-renderer-revision="diagram-renderer.v1.4.0"',
         'data-renderer-revision="diagram-renderer.v1.2.0"',
     )
     assert 'data-renderer-revision="diagram-renderer.v1.2.0"' in old_renderings["svg"]
@@ -580,16 +580,23 @@ def test_catalog_flags_legacy_renderer_revision_for_layout_upgrade() -> None:
 
         assert item.needs_layout_upgrade is True
         assert "diagram-renderer.v1.2.0" in item.layout_upgrade_reason
-        assert "diagram-renderer.v1.3.0" in item.layout_upgrade_reason
+        assert "diagram-renderer.v1.4.0" in item.layout_upgrade_reason
         assert "layout_upgrade" in item.available_actions
 
         detail = build_diagram_detail_v3(db, record=record, role=WorkspaceRole.owner, diagram_key=entry.key)
         assert detail is not None
         assert detail.item.needs_layout_upgrade is True
-        assert 'data-renderer-revision="diagram-renderer.v1.2.0"' in detail.renderings["svg"]
+        assert 'data-renderer-revision="diagram-renderer.v1.4.0"' in detail.renderings["svg"]
+        assert detail.model.metadata["legacy_renderer_revision"] == "diagram-renderer.v1.2.0"
+        assert detail.model.metadata["layout_upgrade_reason"] == "layout_upgrade"
 
         persisted = db.exec(select(DiagramVersionRecord).where(DiagramVersionRecord.id == version.id)).one()
-        assert persisted.renderings["svg"] == old_renderings["svg"]
+        assert persisted.renderings["svg"] == detail.renderings["svg"]
+        assert 'data-renderer-revision="diagram-renderer.v1.4.0"' in persisted.renderings["svg"]
+
+        refreshed_catalog = build_catalog_v3(db, record=record, role=WorkspaceRole.owner)
+        refreshed_item = next(item for item in refreshed_catalog.entries if item.key == entry.key)
+        assert refreshed_item.needs_layout_upgrade is False
 
 
 def test_provider_registry_exposes_diagram_generation_as_governed_capability() -> None:

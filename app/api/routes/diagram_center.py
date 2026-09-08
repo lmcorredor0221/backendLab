@@ -134,6 +134,10 @@ def generate_diagram_v3(
             detail={"code": item.access.reason_code, "message": item.access.reason, "cta_label": item.access.cta_label},
         )
     try:
+        # When the user explicitly clicks "Generar" or "Regenerar", we want a fresh job
+        # regardless of whether an 'available' job already exists. If no idempotency_key is
+        # provided by the caller, generate a unique one to bypass the idempotency guard.
+        effective_idempotency_key = payload.idempotency_key.strip() if payload.idempotency_key else ""
         job = create_generation_job(
             db,
             record=record,
@@ -141,12 +145,33 @@ def generate_diagram_v3(
             user_id=current_user.id,
             detail_level=payload.detail_level,
             reason=payload.reason,
-            idempotency_key=payload.idempotency_key,
+            idempotency_key=effective_idempotency_key,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if job.status in {"queued", "updating"}:
         background_tasks.add_task(run_generation_job, job.id, db.get_bind())
+    elif job.status == "available":
+        # The idempotency guard returned an already-completed job. Since the user explicitly
+        # requested generation, force a new job with a unique key and dispatch it immediately.
+        from uuid import uuid4 as _uuid4
+        from app.services.diagram_center.generation_service import create_generation_job as _cg
+        forced_key = f"user_force:{record.id}:{diagram_key}:{_uuid4()}"
+        try:
+            forced_job = _cg(
+                db,
+                record=record,
+                diagram_key=diagram_key,
+                user_id=current_user.id,
+                detail_level=payload.detail_level,
+                reason=payload.reason,
+                idempotency_key=forced_key,
+            )
+            if forced_job.status in {"queued", "updating"}:
+                background_tasks.add_task(run_generation_job, forced_job.id, db.get_bind())
+            job = forced_job
+        except Exception:
+            pass  # Fall through and return the existing job info
     return job_response(job)
 
 
