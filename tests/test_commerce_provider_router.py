@@ -525,6 +525,73 @@ def test_rapyd_checkout_provider_creates_hosted_checkout_with_provider_record(
     assert checkout_record.request_payload_redacted["metadata"]["lab_provider"] == "rapyd"
 
 
+def test_rapyd_checkout_uses_market_mapping_amount_and_currency(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_rapyd(db_session, workspace, user)
+    upsert_package_catalog_entry(
+        db_session,
+        payload=CommercialPackageCatalogUpsertRequest(
+            package_code="blueprint_pro_co",
+            display_name="Blueprint Pro - Colombia",
+            product_key="blueprint_pro",
+            granted_units=1,
+            granted_units_blueprint_pro=1,
+            offer_code="rapyd_blueprint_pro_co",
+            plan_code="blueprint_pro_co",
+        ),
+    )
+    upsert_commerce_provider_mapping(
+        db_session,
+        workspace_id=workspace.id,
+        provider_key="rapyd",
+        payload=CommerceProviderProductMappingUpsertRequest(
+            environment="sandbox",
+            internal_product_key="blueprint_pro",
+            package_code="blueprint_pro_co",
+            billing_mode="one_time",
+            currency="COP",
+            internal_unit_amount_usd_cents=19_900_000,
+            provider_plan_id="CO",
+            provider_offer_ref="LAB Blueprint",
+            grants_tier="blueprint_pro",
+        ),
+    )
+    FakeRapydClient.create_calls = []
+    monkeypatch.setattr(RapydPaymentProvider, "client_factory", FakeRapydClient)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            package_code="blueprint_pro_co",
+            provider="rapyd",
+            idempotency_key=f"{record.id}:rapyd-co-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    order = db_session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == response.order_id)).one()
+    checkout_record = db_session.exec(
+        select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "rapyd")
+    ).one()
+    payload = FakeRapydClient.create_calls[0]["payload"]
+    assert order.currency == "USD"
+    assert order.total_cents == 4900
+    assert payload["amount"] == 199000.0
+    assert payload["country"] == "CO"
+    assert payload["currency"] == "COP"
+    assert payload["metadata"]["lab_package_code"] == "blueprint_pro_co"
+    assert checkout_record.amount_cents == 19_900_000
+    assert checkout_record.currency == "COP"
+
+
 def test_payu_checkout_response_redirects_by_verified_browser_state(
     db_session: Session,
 ) -> None:

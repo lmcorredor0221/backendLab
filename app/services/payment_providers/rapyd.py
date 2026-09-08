@@ -138,10 +138,11 @@ class RapydPaymentProvider(TemplateCommercePaymentProvider):
                 order_id=order.id,
                 checkout_ref=order.checkout_ref,
             )
+        checkout_amount_cents = _rapyd_checkout_amount_cents(order=order, mapping=mapping)
         checkout_record.provider_checkout_id = result.provider_ref
         checkout_record.checkout_url = result.checkout_url
         checkout_record.status = "created"
-        checkout_record.amount_cents = order.total_cents
+        checkout_record.amount_cents = checkout_amount_cents
         checkout_record.currency = str(payload.get("currency") or order.currency)
         checkout_record.request_payload_redacted = redact_payload(payload)
         checkout_record.response_payload_redacted = result.payload_redacted
@@ -185,8 +186,9 @@ def _build_rapyd_checkout_payload(
     if not country:
         raise ValueError("Rapyd country is required in the provider_plan_id mapping field, for example CO, MX or AR.")
     currency = (mapping.currency or order.currency or "USD").strip().upper()
+    amount_cents = _rapyd_checkout_amount_cents(order=order, mapping=mapping)
     payload: dict[str, object] = {
-        "amount": _rapyd_amount_from_cents(order.total_cents),
+        "amount": _rapyd_amount_from_cents(amount_cents),
         "country": country,
         "currency": currency,
         "description": _safe_rapyd_text(context.product.name or context.product.product_key),
@@ -217,6 +219,13 @@ def _build_rapyd_checkout_payload(
     if statement_descriptor:
         payload["statement_descriptor"] = statement_descriptor
     return payload
+
+
+def _rapyd_checkout_amount_cents(*, order: CommercialOrderRecord, mapping) -> int:
+    mapping_amount_cents = int(getattr(mapping, "internal_unit_amount_usd_cents", 0) or 0)
+    if mapping_amount_cents > 0:
+        return mapping_amount_cents
+    return max(0, order.total_cents)
 
 
 def _rapyd_amount_from_cents(amount_cents: int) -> float:
