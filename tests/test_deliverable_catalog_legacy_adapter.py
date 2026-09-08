@@ -8,11 +8,14 @@ def test_unified_deliverable_registry_includes_legacy_artifacts_and_diagrams() -
     keys = {entry.deliverable_key for entry in registry.entries}
     artifact_keys = {entry["artifact_key"] for entry in get_artifact_taxonomy_entries()}
     diagram_keys = {f"diagram.{entry['diagram_key']}" for entry in get_diagram_taxonomy_entries()}
+    diagram_center_keys = {f"diagram.{entry.key}" for entry in load_diagram_registry().entries}
 
     assert artifact_keys <= keys
     assert diagram_keys <= keys
+    assert diagram_center_keys <= keys
     assert "discovery.analysis" in keys
     assert "diagram.architecture_overview" in keys
+    assert "diagram.solution_architecture" in keys
     assert "discovery.problem_context_brief" in keys
     assert len(keys) == len(registry.entries)
 

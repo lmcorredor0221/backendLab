@@ -345,7 +345,9 @@ def test_enqueue_product_build_processing_persists_queue_selection() -> None:
     with Session(engine) as db:
         persisted_run = db.get(ProductBuildRunRecord, run_id)
         assert persisted_run is not None
-        assert queued_item.key in (persisted_run.checkpoint_payload or {}).get("processing_queue", {}).get("selected_deliverable_keys", [])
+        selected_keys = (persisted_run.checkpoint_payload or {}).get("processing_queue", {}).get("selected_deliverable_keys", [])
+        assert queued_item.key in selected_keys
+        assert "diagram.solution_architecture" in selected_keys
         selected_steps = [
             step
             for step in list_product_build_steps(db, run_id=run_id)

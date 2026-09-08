@@ -74,7 +74,7 @@ def test_request_access_auto_approves_when_workspace_has_available_balance() -> 
             session,
             product_key="acp",
             display_name="ACP",
-            initial_free_units=1,
+            initial_free_units=2,
         )
 
         response = request_access(
@@ -110,7 +110,7 @@ def test_request_access_auto_approves_when_workspace_has_available_balance() -> 
         assert tools_artifact.state == JourneyArtifactState.approved
         assert tools_artifact.stale_reasons == []
         assert handoff_event.metadata_payload["closed_process_items"][0]["stage_key"] == "tools"
-        assert snapshot.total_available_units == 0
+        assert snapshot.total_available_units == 1
         assert journey_state.state_key == "acp_prep"
         assert [item.event_key for item in journey_events] == [
             "journey_initialized",

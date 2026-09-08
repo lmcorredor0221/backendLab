@@ -48,6 +48,12 @@ def ensure_product_build_run(
         )
     ).first()
     if existing is not None:
+        tier_value = entitlement_tier.value if isinstance(entitlement_tier, CommercialTier) else str(entitlement_tier)
+        if existing.entitlement_tier != tier_value or existing.access_state != access_state:
+            existing.entitlement_tier = tier_value
+            existing.access_state = access_state
+            existing.updated_at = utc_now()
+            db.add(existing)
         return existing
 
     tier_value = entitlement_tier.value if isinstance(entitlement_tier, CommercialTier) else str(entitlement_tier)

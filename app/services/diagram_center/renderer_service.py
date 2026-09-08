@@ -10,7 +10,7 @@ from app.services.diagram_center.layout_engine import compute_layered_layout, ro
 from app.services.diagram_center.layout_sizing import measure_generic_node
 
 
-RENDERER_REVISION = "diagram-renderer.v1.4.0"
+RENDERER_REVISION = "diagram-renderer.v1.5.0"
 
 
 def _safe_mermaid_text(value: str) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from app.services.diagram_center.contracts import DiagramEdge, DiagramModel, DiagramNode
 from app.services.diagram_center.renderer_service import render_svg
@@ -13,6 +14,12 @@ def _load_model(name: str) -> DiagramModel:
     return DiagramModel.model_validate_json((FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
+def _viewbox_size(svg: str) -> tuple[int, int]:
+    match = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg)
+    assert match is not None
+    return int(match.group(1)), int(match.group(2))
+
+
 def test_dlg7_activity_renderer_uses_uml_activity_semantics() -> None:
     model = _load_model("dense_uml_activity.json")
 
@@ -23,6 +30,40 @@ def test_dlg7_activity_renderer_uses_uml_activity_semantics() -> None:
     assert "<polygon" in svg
     assert 'data-edge-kind="relationship"' in svg
     assert "uml-activity-arrow" in svg
+
+
+def test_dlg7_activity_renderer_honors_top_bottom_direction() -> None:
+    model = DiagramModel(
+        diagram_key="activity_diagram",
+        title="Actividad vertical",
+        notation="uml_activity",
+        direction="TB",
+        nodes=[
+            DiagramNode(id="start", label="Inicio", kind="start"),
+            DiagramNode(id="question", label="Usuario pregunta", kind="activity"),
+            DiagramNode(id="retrieve", label="Recuperar respuesta", kind="activity"),
+            DiagramNode(id="evaluate", label="Respuesta suficiente", kind="decision"),
+            DiagramNode(id="compose", label="Preparar respuesta", kind="activity"),
+            DiagramNode(id="validate", label="Validar trazabilidad", kind="activity"),
+            DiagramNode(id="respond", label="Responder al usuario", kind="activity"),
+            DiagramNode(id="end", label="Fin", kind="end"),
+        ],
+        edges=[
+            DiagramEdge(id="e1", source="start", target="question"),
+            DiagramEdge(id="e2", source="question", target="retrieve"),
+            DiagramEdge(id="e3", source="retrieve", target="evaluate"),
+            DiagramEdge(id="e4", source="evaluate", target="compose", label="Si"),
+            DiagramEdge(id="e5", source="compose", target="validate"),
+            DiagramEdge(id="e6", source="validate", target="respond"),
+            DiagramEdge(id="e7", source="respond", target="end"),
+        ],
+        source_refs=["test:activity-vertical"],
+    )
+
+    svg = render_svg(model)
+    width, height = _viewbox_size(svg)
+
+    assert height > width
 
 
 def test_dlg7_use_case_renderer_keeps_actor_and_use_case_semantics() -> None:

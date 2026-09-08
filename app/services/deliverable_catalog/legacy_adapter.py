@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.models import CommercialTier
@@ -19,6 +20,7 @@ from app.services.deliverable_catalog.contracts import (
     DeliverableRegistryEntry,
     DeliverableType,
 )
+from app.services.shared_specs import resolve_shared_spec_path
 
 
 _TYPE_BY_ARTIFACT_CATEGORY = {
@@ -79,6 +81,10 @@ def _formats_from_diagram(item: dict[str, Any]) -> DeliverableFormats:
     available = [str(value) for value in formats.get("available", []) if str(value).strip()]
     preferred = str(formats.get("preferred") or (available[0] if available else "svg"))
     return DeliverableFormats(preferred=preferred, available=available or [preferred])
+
+
+def _formats_from_diagram_center_entry() -> DeliverableFormats:
+    return DeliverableFormats(preferred="svg", available=["svg", "mermaid", "json"])
 
 
 def _content_protection(access_level: str) -> DeliverableContentProtection:
@@ -210,10 +216,103 @@ def adapt_diagram_entry(item: dict[str, Any], *, sort_offset: int = 2000) -> Del
     )
 
 
+def _diagram_center_access_level(required_tier: str) -> str:
+    if required_tier == CommercialTier.acp.value:
+        return "restricted"
+    if required_tier == CommercialTier.blueprint_pro.value:
+        return "premium"
+    return "view_only"
+
+
+def _diagram_center_portable_paths(diagram_key: str, item: dict[str, Any]) -> list[str]:
+    paths = [str(value) for value in item.get("portable_paths", []) if str(value).strip()]
+    return paths or [f"Deliverables/diagram.{diagram_key}.svg"]
+
+
+def _diagram_center_entries() -> list[dict[str, Any]]:
+    payload = json.loads(resolve_shared_spec_path("diagram-registry.v1.json").read_text(encoding="utf-8"))
+    return [entry for entry in payload.get("entries", []) if isinstance(entry, dict)]
+
+
+def adapt_diagram_center_registry_entry(item: dict[str, Any], *, sort_offset: int = 3000) -> DeliverableRegistryEntry:
+    diagram_key = str(item["key"])
+    required_tier = str(item.get("required_tier") or CommercialTier.blueprint.value)
+    tier = CommercialTier(required_tier)
+    products = [str(value) for value in item.get("products", []) if str(value).strip()]
+    required_inputs = [str(value) for value in item.get("required_inputs", []) if str(value).strip()]
+    access_level = _diagram_center_access_level(required_tier)
+    portable_paths = _diagram_center_portable_paths(diagram_key, item)
+    return DeliverableRegistryEntry(
+        deliverable_key=f"diagram.{diagram_key}",
+        title=str(item.get("title") or diagram_key),
+        description=str(item.get("description") or "Diagrama migrado desde diagram-registry."),
+        deliverable_type=DeliverableType.diagram,
+        category=str(item.get("category") or "architecture"),
+        stage=str(item.get("stage") or "design"),
+        enabled_from_stage=str(item.get("stage") or "design"),
+        product_scope=_diagram_product_scope(products, required_tier),
+        required_tier=tier,
+        access_level=access_level,
+        formats=_formats_from_diagram_center_entry(),
+        generation_mode=DeliverableGenerationMode.llm_supported,
+        prompt_policy=DeliverablePromptPolicy(
+            prompt_template_key=f"deliverables.diagram.{diagram_key}.v1",
+            prompt_status="active",
+            prompt_version="1.0.0",
+            schema_contract="diagram-model.v1",
+            validator_key="diagram.graph_integrity.v1",
+            fallback_policy="fail_visible_without_synthetic_diagram",
+            max_iterations=3,
+        ),
+        context_policy=DeliverableContextPolicy(
+            short_term_refs=required_inputs,
+            long_term_collections=["repo_docs.agent_patterns"],
+            max_context_tokens=6000,
+            retrieval_strategy="stage_artifacts_plus_relevant_long_term_memory",
+        ),
+        quality_policy=DeliverableQualityPolicy(
+            schema_contract="diagram-model.v1",
+            validator_key="diagram.graph_integrity.v1",
+            minimum_score=80,
+            checks=["unique_node_ids", "valid_edges", "source_refs_present"],
+        ),
+        dependency_policy=DeliverableDependencyPolicy(
+            depends_on=required_inputs,
+            invalidates_on_change=required_inputs,
+        ),
+        access_policy=DeliverableAccessPolicy(
+            preview_mode=str(item.get("preview_mode") or ("none" if tier == CommercialTier.acp else "limited")),
+            sample_enabled=False,
+            content_protection=_content_protection(access_level),
+        ),
+        canonical_paths=portable_paths,
+        portable_paths=portable_paths,
+        exportable=True,
+        blueprint_download=tier != CommercialTier.acp and "blueprint" in products,
+        acp_download="acp" in products,
+        sort_order=sort_offset + int(item.get("sort_order") or 0),
+        active=bool(item.get("active", True)),
+    )
+
+
+def adapt_diagram_center_registry_entries(*, existing_keys: set[str] | None = None) -> list[DeliverableRegistryEntry]:
+    seen = {key.lower() for key in existing_keys or set()}
+    entries: list[DeliverableRegistryEntry] = []
+    for item in _diagram_center_entries():
+        deliverable_key = f"diagram.{item.get('key')}"
+        if deliverable_key.lower() in seen:
+            continue
+        entry = adapt_diagram_center_registry_entry(item)
+        entries.append(entry)
+        seen.add(entry.deliverable_key.lower())
+    return entries
+
+
 def adapt_legacy_taxonomy_entries() -> list[DeliverableRegistryEntry]:
     entries: list[DeliverableRegistryEntry] = []
     for index, item in enumerate(get_artifact_taxonomy_entries(), start=1):
         entries.append(adapt_artifact_entry(item, sort_offset=1000 + index))
     for index, item in enumerate(get_diagram_taxonomy_entries(), start=1):
         entries.append(adapt_diagram_entry(item, sort_offset=2000 + index))
+    entries.extend(adapt_diagram_center_registry_entries(existing_keys={entry.deliverable_key for entry in entries}))
     return entries

@@ -499,15 +499,15 @@ def resolve_effective_entitlement_state(db: Session, session_record: SessionReco
     effective_tier, purchase_refs, active = effective_tier_from_records(session_record, entitlements)
     checkout_state = resolve_checkout_state(db, session_record)
     reason_code = "allowed" if effective_tier != CommercialTier.blueprint else "free_access"
-    if checkout_state == "pending":
+    if checkout_state == "pending" and effective_tier == CommercialTier.blueprint:
         reason_code = "checkout_pending"
-    elif any(item.status == CommercialEntitlementStatus.suspended for item in entitlements):
+    elif not active and any(item.status == CommercialEntitlementStatus.suspended for item in entitlements):
         reason_code = "entitlement_suspended"
-    elif any(item.status == CommercialEntitlementStatus.expired for item in entitlements):
+    elif not active and any(item.status == CommercialEntitlementStatus.expired for item in entitlements):
         reason_code = "entitlement_expired"
-    elif any(item.status == CommercialEntitlementStatus.revoked for item in entitlements):
+    elif not active and any(item.status == CommercialEntitlementStatus.revoked for item in entitlements):
         reason_code = "entitlement_revoked"
-    elif any(item.status == CommercialEntitlementStatus.refunded for item in entitlements):
+    elif not active and any(item.status == CommercialEntitlementStatus.refunded for item in entitlements):
         reason_code = "entitlement_revoked"
     return EffectiveEntitlementState(
         tier=effective_tier,
@@ -1311,6 +1311,38 @@ def _record_access_request_journey_transition(
     )
 
 
+def _sync_blueprint_pro_build_after_access_approval(
+    db: Session,
+    *,
+    session_record: SessionRecord,
+    access_request: CommercialAccessRequestRecord,
+    source: str,
+) -> None:
+    if access_request.product_key != "blueprint_pro":
+        return
+
+    from app.services.product_processing.contracts import ProductBuildProductKey
+    from app.services.product_processing.product_build_orchestrator import (
+        ProductBuildOrchestrationOptions,
+        ensure_product_build_orchestration,
+    )
+
+    stage_val = getattr(session_record.current_stage, "value", str(session_record.current_stage or "discover"))
+    ensure_product_build_orchestration(
+        db,
+        record=session_record,
+        product_key=ProductBuildProductKey.blueprint_pro,
+        current_user=None,
+        options=ProductBuildOrchestrationOptions(
+            current_stage=stage_val,
+            activation_payload={
+                "source": source,
+                "access_request_id": str(access_request.id),
+            },
+        ),
+    )
+
+
 def create_access_request(
     db: Session,
     *,
@@ -1529,6 +1561,10 @@ def _auto_approve_access_request_from_workspace_balance(
         workspace_id=access_request.workspace_id,
         actor_user_id=actor_user.id if actor_user is not None else None,
     )
+    db.flush()
+    db.refresh(access_request)
+    if access_request.status != CommercialAccessRequestStatus.pending:
+        return True
     snapshot = get_balance_snapshot(
         db,
         workspace_id=access_request.workspace_id,
@@ -1599,6 +1635,12 @@ def _auto_approve_access_request_from_workspace_balance(
         event_key=f"approve_{access_request.product_key}_access",
         actor_user_id=actor_user.id if actor_user is not None else None,
         reason=access_request.resolution_note,
+    )
+    _sync_blueprint_pro_build_after_access_approval(
+        db,
+        session_record=session_record,
+        access_request=access_request,
+        source=f"access_request_auto_approved:{approval_mode}",
     )
     if access_request.product_key == "acp":
         from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
@@ -1717,6 +1759,12 @@ def _apply_access_request_manual_approval(
         actor_user_id=current_user.id,
         reason=access_request.resolution_note,
     )
+    _sync_blueprint_pro_build_after_access_approval(
+        db,
+        session_record=session_record,
+        access_request=access_request,
+        source=f"access_request_manual_approved:{approval_mode}",
+    )
     if product_key == "acp":
         from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
 
@@ -1795,8 +1843,8 @@ def resolve_access_request_by_id(
     if record.status != CommercialAccessRequestStatus.pending:
         return serialize_access_request(record, db)
     if request.decision == "approved":
-        if request.approval_mode != "manual_standard" and not is_admin:
-            raise PermissionError("Solo un platform admin puede usar excepciones comerciales.")
+        if not is_admin:
+            raise PermissionError("Solo un platform admin puede aprobar solicitudes de acceso comercial.")
         _apply_access_request_manual_approval(
             db,
             access_request=record,
@@ -1862,8 +1910,8 @@ def resolve_access_request(
     if access_request.status != CommercialAccessRequestStatus.pending:
         return serialize_access_request(access_request, db)
     if payload.decision == "approved":
-        if payload.approval_mode != "manual_standard" and not is_admin:
-            raise PermissionError("Solo un platform admin puede usar excepciones comerciales.")
+        if not is_admin:
+            raise PermissionError("Solo un platform admin puede aprobar solicitudes de acceso comercial.")
         _apply_access_request_manual_approval(
             db,
             access_request=access_request,
