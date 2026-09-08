@@ -30,6 +30,8 @@ from app.models import (
     CommercialOrderRecord,
     CommercialOrderResponse,
     CommercialOrderStatus,
+    CommercialPackageCatalogRecord,
+    CommercialPackageType,
     CommercialPaymentRecord,
     CommercialPaymentStatus,
     CommercialPriceStatus,
@@ -230,6 +232,78 @@ PRICE_SEED: tuple[dict, ...] = (
     },
 )
 
+MARKET_PACKAGE_SEED: tuple[dict, ...] = (
+    {
+        "package_code": "blueprint_pro_co",
+        "display_name": "Blueprint Pro - Colombia",
+        "product_key": "blueprint_pro",
+        "granted_units": 1,
+        "granted_units_blueprint_pro": 1,
+        "offer_code": "rapyd_blueprint_pro_co",
+        "plan_code": "blueprint_pro_co",
+        "recommendation_priority": 40,
+        "metadata": {"market": "CO", "provider": "rapyd"},
+    },
+    {
+        "package_code": "blueprint_pro_mx",
+        "display_name": "Blueprint Pro - Mexico",
+        "product_key": "blueprint_pro",
+        "granted_units": 1,
+        "granted_units_blueprint_pro": 1,
+        "offer_code": "rapyd_blueprint_pro_mx",
+        "plan_code": "blueprint_pro_mx",
+        "recommendation_priority": 41,
+        "metadata": {"market": "MX", "provider": "rapyd"},
+    },
+    {
+        "package_code": "blueprint_pro_ar",
+        "display_name": "Blueprint Pro - Argentina",
+        "product_key": "blueprint_pro",
+        "granted_units": 1,
+        "granted_units_blueprint_pro": 1,
+        "offer_code": "rapyd_blueprint_pro_ar",
+        "plan_code": "blueprint_pro_ar",
+        "recommendation_priority": 42,
+        "metadata": {"market": "AR", "provider": "rapyd"},
+    },
+    {
+        "package_code": "acp_co",
+        "display_name": "ACP - Colombia",
+        "product_key": "acp",
+        "granted_units": 1,
+        "granted_units_blueprint_pro": 1,
+        "granted_units_acp": 1,
+        "offer_code": "rapyd_acp_co",
+        "plan_code": "acp_co",
+        "recommendation_priority": 50,
+        "metadata": {"market": "CO", "provider": "rapyd"},
+    },
+    {
+        "package_code": "acp_mx",
+        "display_name": "ACP - Mexico",
+        "product_key": "acp",
+        "granted_units": 1,
+        "granted_units_blueprint_pro": 1,
+        "granted_units_acp": 1,
+        "offer_code": "rapyd_acp_mx",
+        "plan_code": "acp_mx",
+        "recommendation_priority": 51,
+        "metadata": {"market": "MX", "provider": "rapyd"},
+    },
+    {
+        "package_code": "acp_ar",
+        "display_name": "ACP - Argentina",
+        "product_key": "acp",
+        "granted_units": 1,
+        "granted_units_blueprint_pro": 1,
+        "granted_units_acp": 1,
+        "offer_code": "rapyd_acp_ar",
+        "plan_code": "acp_ar",
+        "recommendation_priority": 52,
+        "metadata": {"market": "AR", "provider": "rapyd"},
+    },
+)
+
 REDACTED_KEYS = {"api_key", "token", "secret", "password", "content", "raw_prompt", "diagram_content"}
 
 
@@ -273,6 +347,35 @@ def ensure_commercial_seed(db: Session) -> None:
             existing.unit_amount_cents = item["unit_amount_cents"]
             existing.currency = item["currency"]
         existing.status = CommercialPriceStatus.active
+        existing.updated_at = utc_now()
+        db.add(existing)
+
+    for item in MARKET_PACKAGE_SEED:
+        package_code = item["package_code"]
+        existing = db.exec(
+            select(CommercialPackageCatalogRecord).where(CommercialPackageCatalogRecord.package_code == package_code)
+        ).first()
+        if existing is None:
+            existing = CommercialPackageCatalogRecord(package_code=package_code)
+        existing.display_name = item["display_name"]
+        existing.product_key = item["product_key"]
+        existing.package_type = CommercialPackageType.one_time
+        existing.enabled = True
+        existing.granted_units = int(item.get("granted_units", 0))
+        existing.granted_units_blueprint_pro = int(item.get("granted_units_blueprint_pro", 0))
+        existing.granted_units_acp = int(item.get("granted_units_acp", 0))
+        existing.validity_days = None
+        existing.billing_cycle = ""
+        existing.renewal_policy = ""
+        existing.recommendation_priority = int(item["recommendation_priority"])
+        existing.hotmart_environment = "production"
+        existing.hotmart_product_id = ""
+        existing.hotmart_product_ucode = ""
+        existing.offer_code = item["offer_code"]
+        existing.plan_code = item["plan_code"]
+        existing.checkout_currency_mode = "provider_market"
+        existing.hotmart_price_strategy = "provider_authoritative"
+        existing.metadata_payload = dict(item.get("metadata", {}))
         existing.updated_at = utc_now()
         db.add(existing)
     ensure_quota_seed(db)

@@ -32,9 +32,14 @@ from app.models import (
     WorkspaceRole,
 )
 from app.services.auth_service import hash_password
-from app.services.commerce_service import request_access, resolve_access_request
+from app.services.commerce_service import ensure_commercial_seed, request_access, resolve_access_request
 from app.services.commercial_access import build_commercial_access_snapshot_v2
-from app.services.commercial_catalog_service import recommend_package_for_product, upsert_package_catalog_entry
+from app.services.commercial_catalog_service import (
+    get_package_catalog_entry,
+    package_units_for_product,
+    recommend_package_for_product,
+    upsert_package_catalog_entry,
+)
 from app.services.commercial_debt_service import list_commercial_debts
 from app.services.commercial_quota_service import grant_balance_units
 from app.services.product_processing import (
@@ -102,6 +107,29 @@ def test_package_recommendation_prefers_minimum_sufficient_offer(db_session: Ses
 
     assert recommendation.package_code == "bundle-monthly"
     assert recommendation.granted_units_for_product == 2
+
+
+def test_commercial_seed_creates_rapyd_market_packages(db_session: Session) -> None:
+    ensure_commercial_seed(db_session)
+    db_session.commit()
+
+    expected_codes = {
+        "blueprint_pro_co": ("blueprint_pro", 1, 0),
+        "blueprint_pro_mx": ("blueprint_pro", 1, 0),
+        "blueprint_pro_ar": ("blueprint_pro", 1, 0),
+        "acp_co": ("acp", 1, 1),
+        "acp_mx": ("acp", 1, 1),
+        "acp_ar": ("acp", 1, 1),
+    }
+    for package_code, (product_key, blueprint_units, acp_units) in expected_codes.items():
+        package = get_package_catalog_entry(db_session, package_code=package_code)
+        assert package is not None
+        assert package.product_key == product_key
+        assert package.enabled is True
+        assert package.checkout_currency_mode == "provider_market"
+        assert package.metadata_payload["provider"] == "rapyd"
+        assert package_units_for_product(package, "blueprint_pro") == blueprint_units
+        assert package_units_for_product(package, "acp") == acp_units
 
 
 def test_debt_pending_resolution_opens_debt_and_blocks_next_auto_approval(db_session: Session) -> None:
