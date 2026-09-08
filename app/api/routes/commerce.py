@@ -306,7 +306,10 @@ def _product_overview(db: Session, record: SessionRecord, current_user: UserReco
 @router.get("/commerce/products", response_model=list[ProductCatalogResponse])
 @router.get("/commerce/catalog", response_model=list[ProductCatalogResponse])
 def list_products_route(db: Session = Depends(get_session)) -> list[ProductCatalogResponse]:
-    return list_active_products(db)
+    products = list_active_products(db)
+    if db.new or db.dirty:
+        db.commit()
+    return products
 
 
 @router.post("/commerce/checkout-sessions", response_model=CommercialCheckoutSessionResponse)
