@@ -4,13 +4,22 @@ from html import escape
 import json
 import math
 import re
+from typing import Any
 
 from app.services.diagram_center.contracts import DiagramLane, DiagramModel, DiagramNotation, DiagramPool
 from app.services.diagram_center.layout_engine import compute_layered_layout, route_layered_edges
 from app.services.diagram_center.layout_sizing import measure_generic_node
+from app.services.diagram_center.node_semantics import (
+    is_decision_gate_node,
+    is_storage_node,
+    node_memory_kind,
+    node_tool_kind,
+    normalize_kind,
+    normalize_label,
+)
 
 
-RENDERER_REVISION = "diagram-renderer.v1.5.0"
+RENDERER_REVISION = "diagram-renderer.v1.6.0"
 
 
 def _safe_mermaid_text(value: str) -> str:
@@ -22,21 +31,24 @@ def _safe_puml_text(value: str) -> str:
 
 
 def _kind(value: str) -> str:
-    return re.sub(r"[^a-z0-9_]+", "_", str(value or "").lower()).strip("_")
+    return normalize_kind(value)
 
 
 def _mermaid_node_syntax(node: Any) -> str:
-    kind = _kind(getattr(node, "kind", ""))
+    kind = normalize_kind(getattr(node, "kind", ""))
     agent_kind = _kind(str(getattr(node, "agent_kind", "") or (node.metadata.get("agent_kind") if hasattr(node, "metadata") and isinstance(node.metadata, dict) else "") or ""))
-    memory_kind = _kind(str(getattr(node, "memory_kind", "") or (node.metadata.get("memory_kind") if hasattr(node, "metadata") and isinstance(node.metadata, dict) else "") or ""))
-    tool_kind = _kind(str(getattr(node, "tool_kind", "") or (node.metadata.get("tool_kind") if hasattr(node, "metadata") and isinstance(node.metadata, dict) else "") or ""))
+    memory_kind = node_memory_kind(node)
+    tool_kind = node_tool_kind(node)
+    normalized_label = normalize_label(getattr(node, "label", ""))
     label = _safe_mermaid_text(node.label)
 
-    if memory_kind in {"vector_store", "short_term_buffer", "working_memory", "shared_state"} or any(token in kind for token in ("database", "memory", "vector", "rag", "db", "store")):
+    if is_storage_node(node, kind=kind, label=normalized_label, memory_kind=memory_kind):
         return f'{node.id}[("{label}")]'
     if agent_kind == "orchestrator" or any(token in kind for token in ("orchestrator", "supervisor", "master")):
         return f'{node.id}{{{{{label}}}}}'
-    if tool_kind in {"mcp_server", "approval_gate", "guardrail_gate"} or any(token in kind for token in ("guardrail", "gate", "approval", "mcp")):
+    if is_decision_gate_node(node, kind=kind, label=normalized_label, tool_kind=tool_kind, memory_kind=memory_kind):
+        return f'{node.id}{{{label}}}'
+    if tool_kind == "mcp_server" or "mcp" in kind:
         return f'{node.id}{{{label}}}'
     if "agent" in kind or "worker" in kind:
         return f'{node.id}(["{label}"])'
@@ -687,9 +699,17 @@ def _svg_node(
     # Taxonomy-aware visual styling for SVG nodes
     target_node = next((n for n in model.nodes if n.id == node_id), None)
     agent_kind = _kind(str(getattr(target_node, "agent_kind", "") or (target_node.metadata.get("agent_kind") if target_node and isinstance(target_node.metadata, dict) else "") or ""))
-    memory_kind = _kind(str(getattr(target_node, "memory_kind", "") or (target_node.metadata.get("memory_kind") if target_node and isinstance(target_node.metadata, dict) else "") or ""))
-    tool_kind = _kind(str(getattr(target_node, "tool_kind", "") or (target_node.metadata.get("tool_kind") if target_node and isinstance(target_node.metadata, dict) else "") or ""))
-    label_lower = (label or "").lower()
+    memory_kind = node_memory_kind(target_node)
+    tool_kind = node_tool_kind(target_node)
+    label_lower = normalize_label(label)
+    is_storage_semantic = is_storage_node(target_node, kind=normalized_kind, label=label_lower, memory_kind=memory_kind)
+    is_decision_semantic = is_decision_gate_node(
+        target_node,
+        kind=normalized_kind,
+        label=label_lower,
+        tool_kind=tool_kind,
+        memory_kind=memory_kind,
+    )
 
     # Determine visual theme colors and badge text based on taxonomy
     if "orchestrator" in normalized_kind or "supervisor" in normalized_kind or agent_kind == "orchestrator" or any(k in label_lower for k in ("orquestador", "supervisor", "planner")):
@@ -710,30 +730,43 @@ def _svg_node(
         badge_text = "AGENTE WORKER"
         border_stroke = "#4f46e5"
         stroke_width = "2.0"
+    elif is_decision_semantic:
+        if tool_kind == "approval_gate" or any(k in normalized_kind for k in ("approval", "hitl")) or any(k in label_lower for k in ("approval gate", "aprobacion humana", "aprobador humano", "hitl", "human in the loop", "intervencion humana")):
+            accent_color = "#dc2626"
+            bg_header = "#fee2e2"
+            badge_text = "APPROVAL GATE (HITL)"
+            border_stroke = "#dc2626"
+            stroke_width = "2.2"
+        elif tool_kind == "guardrail_gate" or any(k in normalized_kind for k in ("guardrail", "gate")) or any(k in label_lower for k in ("guardrail", "sanitiz", "pii", "seguridad", "validacion")):
+            accent_color = "#c2410c"
+            bg_header = "#ffedd5"
+            badge_text = "GUARDRAIL / GATE"
+            border_stroke = "#c2410c"
+            stroke_width = "2.0"
+        elif "checkpoint" in normalized_kind or "checkpoint" in label_lower:
+            accent_color = "#7e22ce"
+            bg_header = "#f3e8ff"
+            badge_text = "CHECKPOINT / GATE"
+            border_stroke = "#7e22ce"
+            stroke_width = "2.0"
+        else:
+            accent_color = "#b45309"
+            bg_header = "#fef3c7"
+            badge_text = "DECISION / GATE"
+            border_stroke = "#b45309"
+            stroke_width = "2.0"
     elif memory_kind in {"vector_store", "short_term_buffer", "working_memory", "shared_state"} or normalized_kind in {"memory", "rag", "vector_store"} or any(k in label_lower for k in ("memoria", "memory", "rag", "vector", "buffer", "embeddings", "knowledge", "manuales")):
         accent_color = "#059669"
         bg_header = "#d1fae5"
         badge_text = "MEMORIA / RAG"
         border_stroke = "#059669"
         stroke_width = "2.0"
-    elif tool_kind == "approval_gate" or any(k in normalized_kind for k in ("approval", "hitl")) or any(k in label_lower for k in ("approval gate", "aprobador humano", "hitl", "human-in-the-loop", "intervencion humana")):
-        accent_color = "#dc2626"
-        bg_header = "#fee2e2"
-        badge_text = "APPROVAL GATE (HITL)"
-        border_stroke = "#dc2626"
-        stroke_width = "2.2"
-    elif tool_kind == "guardrail_gate" or any(k in normalized_kind for k in ("guardrail", "gate")) or any(k in label_lower for k in ("guardrail", "sanitiz", "pii", "seguridad", "validacion")):
-        accent_color = "#c2410c"
-        bg_header = "#ffedd5"
-        badge_text = "GUARDRAIL DE SEGURIDAD"
-        border_stroke = "#c2410c"
-        stroke_width = "2.0"
-    elif any(k in normalized_kind for k in ("checkpoint", "state_buffer")) or any(k in label_lower for k in ("checkpoint", "estado de sesion", "session state")):
-        accent_color = "#7e22ce"
-        bg_header = "#f3e8ff"
-        badge_text = "CHECKPOINT DE ESTADO"
-        border_stroke = "#7e22ce"
-        stroke_width = "2.0"
+    elif is_storage_semantic:
+        accent_color = "#0f766e"
+        bg_header = "#ccfbf1"
+        badge_text = "DATOS / LOG"
+        border_stroke = "#0f766e"
+        stroke_width = "1.9"
     elif tool_kind == "mcp_server" or normalized_kind == "mcp_server" or any(k in label_lower for k in ("servidor mcp", "mcp server", "mcp proxy")):
         accent_color = "#d97706"
         bg_header = "#fef3c7"
@@ -762,8 +795,34 @@ def _svg_node(
     badge_width = min(width - 24, len(badge_text) * 7.2 + 18)
     badge_height = 22
     label_start_y = y + 52  # badge top(8) + badge height(22) + gap(10) + first line anchor
+    if is_decision_semantic:
+        cx = x + width / 2
+        cy = y + height / 2
+        points = f"{cx:.1f},{y:.1f} {x+width:.1f},{cy:.1f} {cx:.1f},{y+height:.1f} {x:.1f},{cy:.1f}"
+        decision_lines = label_lines[:2]
+        decision_label_y = cy + 7 - (len(decision_lines) - 1) * 8
+        return (
+            f'<g filter="url(#shadow)" data-node-id="{escape(node_id)}" data-node-kind="{escape(normalized_kind)}" data-node-shape="decision">'
+            f'<polygon points="{points}" fill="#ffffff" stroke="{border_stroke}" stroke-width="{stroke_width}"/>'
+            f'<text x="{cx:.1f}" y="{y+height*0.28:.1f}" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="9" font-weight="900" letter-spacing="0.7" fill="{accent_color}">{badge_text}</text>'
+            f'{_svg_multiline_text(decision_lines, x=cx, y=decision_label_y, size=12, weight=800, fill="#10172a")}'
+            f'</g>'
+        )
+    if is_storage_semantic:
+        cylinder_top = 16
+        return (
+            f'<g filter="url(#shadow)" data-node-id="{escape(node_id)}" data-node-kind="{escape(normalized_kind)}" data-node-shape="storage">'
+            f'<path d="M {x:.1f} {y+cylinder_top:.1f} C {x:.1f} {y+4:.1f} {x+width:.1f} {y+4:.1f} {x+width:.1f} {y+cylinder_top:.1f} '
+            f'V {y+height-cylinder_top:.1f} C {x+width:.1f} {y+height+4:.1f} {x:.1f} {y+height+4:.1f} {x:.1f} {y+height-cylinder_top:.1f} Z" '
+            f'fill="#ffffff" stroke="{border_stroke}" stroke-width="{stroke_width}"/>'
+            f'<path d="M {x:.1f} {y+cylinder_top:.1f} C {x:.1f} {y+28:.1f} {x+width:.1f} {y+28:.1f} {x+width:.1f} {y+cylinder_top:.1f}" fill="none" stroke="{border_stroke}" stroke-width="1.2" opacity="0.75"/>'
+            f'<rect x="{x+12:.1f}" y="{y+12:.1f}" width="{badge_width:.1f}" height="{badge_height}" rx="5" fill="{bg_header}"/>'
+            f'<text x="{x+20:.1f}" y="{y+27:.1f}" font-family="Inter,Arial,sans-serif" font-size="10" font-weight="900" letter-spacing="0.7" fill="{accent_color}">{badge_text}</text>'
+            f'{_svg_multiline_text(label_lines, x=x + 18, y=label_start_y + 4, anchor="start", size=13, weight=700, fill="#10172a")}'
+            f'</g>'
+        )
     return (
-        f'<g filter="url(#shadow)" data-node-id="{escape(node_id)}" data-node-kind="{escape(normalized_kind)}">'
+        f'<g filter="url(#shadow)" data-node-id="{escape(node_id)}" data-node-kind="{escape(normalized_kind)}" data-node-shape="card">'
         f'<rect x="{x:.1f}" y="{y:.1f}" width="{width}" height="{height}" rx="12" fill="#ffffff" stroke="{border_stroke}" stroke-width="{stroke_width}"/>'
         f'<rect x="{x:.1f}" y="{y:.1f}" width="6" height="{height}" rx="3" fill="{accent_color}"/>'
         f'<rect x="{x+12:.1f}" y="{y+8:.1f}" width="{badge_width:.1f}" height="{badge_height}" rx="5" fill="{bg_header}"/>'

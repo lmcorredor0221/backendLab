@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.services.diagram_center.contracts import DiagramNode, DiagramNotation
+from app.services.diagram_center.node_semantics import is_decision_gate_node, normalize_kind
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ def _clamp(value: int, *, minimum: int, maximum: int) -> int:
 
 
 def measure_generic_node(node: DiagramNode, notation: DiagramNotation) -> DiagramNodeSize:
-    kind = str(node.kind or "").lower()
+    kind = normalize_kind(node.kind)
     if notation == DiagramNotation.uml_activity and ("decision" in kind or "gateway" in kind):
         lines = wrap_label(node.label, max_chars=28, max_lines=2)
         max_line = max((len(line) for line in lines), default=10)
@@ -53,6 +54,13 @@ def measure_generic_node(node: DiagramNode, notation: DiagramNotation) -> Diagra
         lines = wrap_label(node.label, max_chars=16, max_lines=2)
         diameter = _clamp(70 + (len(lines) - 1) * 14, minimum=70, maximum=92)
         return DiagramNodeSize(width=diameter, height=diameter, label_lines=lines)
+
+    if notation == DiagramNotation.flowchart and is_decision_gate_node(node, kind=kind):
+        lines = wrap_label(node.label, max_chars=24, max_lines=2)
+        max_line = max((len(line) for line in lines), default=10)
+        width = _clamp(240 + max(0, max_line - 18) * 8, minimum=250, maximum=370)
+        height = _clamp(124 + (len(lines) - 1) * 18, minimum=132, maximum=170)
+        return DiagramNodeSize(width=width, height=height, label_lines=lines)
 
     max_chars = 34 if notation in {DiagramNotation.flowchart, DiagramNotation.capability, DiagramNotation.c4} else 30
     lines = wrap_label(node.label, max_chars=max_chars, max_lines=3)
