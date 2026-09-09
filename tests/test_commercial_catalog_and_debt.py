@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
+from app.db import get_session
+from app.main import app
 from app.models import (
     AccessRequestCreateRequest,
     AccessRequestResolveRequest,
@@ -18,6 +21,7 @@ from app.models import (
     CommercialOrderLineRecord,
     CommercialOrderRecord,
     CommercialOrderStatus,
+    CommercialPackageCatalogRecord,
     CommercialPackageCatalogUpsertRequest,
     CommercialQuotaSourceKind,
     CommercialTier,
@@ -62,6 +66,22 @@ def db_session() -> Iterator[Session]:
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         yield session
+
+
+@pytest.fixture()
+def client(db_session: Session) -> Iterator[TestClient]:
+    def override_get_session() -> Iterator[Session]:
+        try:
+            yield db_session
+        finally:
+            db_session.rollback()
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.pop(get_session, None)
 
 
 def test_package_recommendation_prefers_minimum_sufficient_offer(db_session: Session) -> None:
@@ -130,6 +150,26 @@ def test_commercial_seed_creates_rapyd_market_packages(db_session: Session) -> N
         assert package.metadata_payload["provider"] == "rapyd"
         assert package_units_for_product(package, "blueprint_pro") == blueprint_units
         assert package_units_for_product(package, "acp") == acp_units
+
+
+def test_commerce_catalog_route_persists_rapyd_market_packages(client: TestClient, db_session: Session) -> None:
+    response = client.get("/api/v1/commerce/catalog")
+
+    assert response.status_code == 200
+    expected_codes = {
+        "blueprint_pro_co",
+        "blueprint_pro_mx",
+        "blueprint_pro_ar",
+        "acp_co",
+        "acp_mx",
+        "acp_ar",
+    }
+    rows = db_session.exec(
+        select(CommercialPackageCatalogRecord.package_code).where(
+            CommercialPackageCatalogRecord.package_code.in_(expected_codes)
+        )
+    ).all()
+    assert set(rows) == expected_codes
 
 
 def test_debt_pending_resolution_opens_debt_and_blocks_next_auto_approval(db_session: Session) -> None:
