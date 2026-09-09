@@ -460,3 +460,15 @@ def test_hotmart_commercial_admin_routes_expose_quota_and_effective_config_for_p
     )
     assert legacy_response.status_code == 200
     assert legacy_response.json() == []
+
+
+def test_hotmart_commercial_bootstrap_rejects_non_quota_products_without_traceback(client: TestClient) -> None:
+    headers = _auth_headers(client)
+
+    response = client.get(
+        "/api/v1/admin/integrations/hotmart/commercial/bootstrap?product_key=blueprint",
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert "Quota product config not found for blueprint" in response.json()["detail"]

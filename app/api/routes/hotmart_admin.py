@@ -851,27 +851,30 @@ def get_commercial_bootstrap_route(
             .order_by(CommercialQuotaWorkspaceOverrideRecord.product_key.asc())
         ).all()
     ]
-    effective_config = _serialize_effective_quota(
-        workspace_id=target_workspace_id,
-        config=resolve_effective_quota_config(
-            db,
+    try:
+        effective_config = _serialize_effective_quota(
             workspace_id=target_workspace_id,
-            product_key=product_key,
-        ),
-    )
-    balance_snapshot = _serialize_balance_snapshot(
-        get_balance_snapshot(
-            db,
-            workspace_id=target_workspace_id,
-            product_key=product_key,
+            config=resolve_effective_quota_config(
+                db,
+                workspace_id=target_workspace_id,
+                product_key=product_key,
+            ),
         )
-    )
-    recommendation = recommend_package_for_product(
-        db,
-        product_key=product_key,
-        required_units=1,
-        workspace_id=target_workspace_id,
-    )
+        balance_snapshot = _serialize_balance_snapshot(
+            get_balance_snapshot(
+                db,
+                workspace_id=target_workspace_id,
+                product_key=product_key,
+            )
+        )
+        recommendation = recommend_package_for_product(
+            db,
+            product_key=product_key,
+            required_units=1,
+            workspace_id=target_workspace_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return CommercialAdminBootstrapResponse(
         workspace_id=target_workspace_id,
         product_key=product_key,
@@ -977,11 +980,14 @@ def get_commercial_effective_config_route(
 ) -> CommercialQuotaEffectiveConfigResponse:
     _ensure_platform_admin_or_403(db, current_user)
     target_workspace_id = workspace_id or workspace_context.workspace.id
-    resolved = resolve_effective_quota_config(
-        db,
-        workspace_id=target_workspace_id,
-        product_key=product_key,
-    )
+    try:
+        resolved = resolve_effective_quota_config(
+            db,
+            workspace_id=target_workspace_id,
+            product_key=product_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return _serialize_effective_quota(workspace_id=target_workspace_id, config=resolved)
 
 
