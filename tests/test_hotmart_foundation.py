@@ -404,6 +404,20 @@ def test_hotmart_admin_credentials_use_platform_scope_when_active_workspace_chan
 
 def test_hotmart_commercial_admin_routes_expose_quota_and_effective_config_for_platform_admin(client: TestClient) -> None:
     headers = _auth_headers(client)
+    customer_response = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "hotmart-commercial-customer@example.com",
+            "password": "StrongPass123!",
+            "confirm_password": "StrongPass123!",
+            "full_name": "Hotmart Commercial Customer",
+            "accept_terms": True,
+            "accept_privacy": True,
+            "accept_data_treatment": True,
+        },
+    )
+    assert customer_response.status_code == 200
+    customer_workspace_id = customer_response.json()["user"]["active_workspace_id"]
 
     list_response = client.get("/api/v1/admin/integrations/hotmart/commercial/quota-products", headers=headers)
     assert list_response.status_code == 200
@@ -452,7 +466,47 @@ def test_hotmart_commercial_admin_routes_expose_quota_and_effective_config_for_p
     assert bootstrap_payload["product_key"] == "blueprint_pro"
     assert bootstrap_payload["effective_config"]["initial_free_units"] == 2
     assert bootstrap_payload["balance_snapshot"]["product_key"] == "blueprint_pro"
+    assert bootstrap_payload["balance_snapshot"]["total_available_units"] == 2
     assert bootstrap_payload["open_debt_count"] == 0
+
+    customer_bootstrap_response = client.get(
+        f"/api/v1/admin/integrations/hotmart/commercial/bootstrap?product_key=blueprint_pro&workspace_id={customer_workspace_id}",
+        headers=headers,
+    )
+    assert customer_bootstrap_response.status_code == 200
+    assert customer_bootstrap_response.json()["balance_snapshot"]["total_available_units"] == 2
+
+    resync_response = client.post(
+        "/api/v1/admin/integrations/hotmart/commercial/quota-products",
+        headers=headers,
+        json={
+          "product_key": "blueprint_pro",
+          "display_name": "Blueprint Pro",
+          "enabled": True,
+          "initial_free_units": 4,
+          "consumption_priority": ["free", "subscription", "one_time"],
+          "checkout_required_on_zero_balance": True,
+          "fifo_auto_approval_enabled": True,
+          "default_blocked_request_ttl_hours": 72,
+          "default_checkout_ttl_minutes": 30,
+          "debt_enabled": True,
+          "allow_manual_override_without_charge": True,
+          "allow_courtesy": True,
+          "allow_debt_pending": True,
+          "catalog_priority_strategy": "minimum_sufficient",
+          "sync_retry_limit": 5,
+          "duplicate_conflict_visibility": "platform_admin_only",
+          "metadata": {},
+        },
+    )
+    assert resync_response.status_code == 200
+
+    customer_resynced_response = client.get(
+        f"/api/v1/admin/integrations/hotmart/commercial/bootstrap?product_key=blueprint_pro&workspace_id={customer_workspace_id}",
+        headers=headers,
+    )
+    assert customer_resynced_response.status_code == 200
+    assert customer_resynced_response.json()["balance_snapshot"]["total_available_units"] == 4
 
     legacy_response = client.get(
         "/api/v1/admin/integrations/hotmart/commercial/legacy-package-resolutions?status=pending&product_key=blueprint_pro",

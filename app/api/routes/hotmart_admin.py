@@ -54,6 +54,7 @@ from app.models import (
     HotmartTestConnectionResponse,
     HotmartWebhookReplayResponse,
     UserRecord,
+    WorkspaceRecord,
 )
 from app.services.auth_service import get_current_user
 from app.services.commercial_catalog_service import (
@@ -72,6 +73,7 @@ from app.services.commercial_quota_service import (
     list_balance_ledger,
     list_quota_product_configs,
     resolve_effective_quota_config,
+    sync_workspace_free_bucket,
     upsert_quota_product_config,
     upsert_workspace_quota_override,
 )
@@ -919,6 +921,16 @@ def upsert_commercial_quota_product_route(
         duplicate_conflict_visibility=payload.duplicate_conflict_visibility,
         metadata=payload.metadata,
     )
+    workspace_ids = db.exec(
+        select(WorkspaceRecord.id).where(WorkspaceRecord.is_active == True)  # noqa: E712
+    ).all()
+    for workspace_id in workspace_ids:
+        sync_workspace_free_bucket(
+            db,
+            workspace_id=workspace_id,
+            product_key=record.product_key,
+            actor_user_id=current_user.id,
+        )
     db.commit()
     return _serialize_quota_product_config(record)
 
