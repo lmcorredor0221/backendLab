@@ -36,44 +36,69 @@ class ACPPhaseDefinition:
 
 ACP_PHASES: tuple[ACPPhaseDefinition, ...] = (
     ACPPhaseDefinition(
-        key="blueprint_validation",
-        label="Validacion del Blueprint",
-        objective="Verificar que el Blueprint base sea consistente antes de construir el paquete tecnico.",
+        key="acp_input_readiness",
+        label="Readiness de insumos ACP",
+        objective="Verificar que el Blueprint congelado, discovery, memoria, tools, guardrails y evaluacion base sean insumos suficientes para construir el ACP.",
         order=1,
     ),
     ACPPhaseDefinition(
-        key="test_suite",
-        label="Diseno del Test Suite",
-        objective="Preparar escenarios, rubricas y criterios verificables para validar el agente.",
+        key="acp_questions_resolution",
+        label="Resolucion de preguntas ACP",
+        objective="Consolidar preguntas, respuestas, decisiones delegadas y descartes antes de generar entregables tecnicos.",
         order=2,
     ),
     ACPPhaseDefinition(
-        key="gap_classification",
-        label="Clasificacion de GAPs",
-        objective="Separar brechas de diseno, implementacion y dependencias externas sin bloquear indebidamente.",
+        key="acp_test_suite",
+        label="Test Suite ACP",
+        objective="Preparar escenarios, rubricas y criterios verificables para validar el agente como parte del ACP.",
         order=3,
     ),
     ACPPhaseDefinition(
-        key="implementation_questions",
-        label="Preguntas de implementacion",
-        objective="Documentar decisiones humanas inevitables con opciones, impacto y responsables.",
+        key="acp_graphic_simulation",
+        label="Simulacion grafica ACP",
+        objective="Verificar visualmente flujos, herramientas, memoria, decisiones y puntos HITL del ACP antes de empaquetar.",
         order=4,
     ),
     ACPPhaseDefinition(
-        key="package_build",
-        label="Construccion del paquete",
-        objective="Materializar prompts, contratos, herramientas, memoria, workflows y artefactos portables.",
+        key="acp_quality_gates",
+        label="Quality gates ACP",
+        objective="Clasificar gaps, warnings y criterios de calidad que condicionan la construccion o exportacion del ACP.",
         order=5,
     ),
     ACPPhaseDefinition(
-        key="conformance_export",
-        label="Conformance y exportacion",
-        objective="Comprobar readiness, conformance y preparacion del ACP para descarga controlada.",
+        key="acp_artifact_reconciliation",
+        label="Reconciliacion de artefactos ACP",
+        objective="Actualizar solo los diagramas, contratos, documentos, prompts o politicas afectados por decisiones ACP.",
         order=6,
+    ),
+    ACPPhaseDefinition(
+        key="acp_package_build",
+        label="Empaquetamiento ACP",
+        objective="Materializar prompts, contratos, herramientas, memoria, workflows y artefactos portables en el paquete final.",
+        order=7,
+    ),
+    ACPPhaseDefinition(
+        key="acp_download_ready",
+        label="Readiness de descarga ACP",
+        objective="Comprobar conformance, readiness y preparacion del ACP para descarga controlada.",
+        order=8,
     ),
 )
 
 COMPLETED_STATUSES = {ACPWorkflowRunStatus.completed, ACPWorkflowRunStatus.completed_with_observations}
+
+LEGACY_ACP_PHASE_KEY_MAP = {
+    "blueprint_validation": "acp_input_readiness",
+    "implementation_questions": "acp_questions_resolution",
+    "test_suite": "acp_test_suite",
+    "gap_classification": "acp_quality_gates",
+    "package_build": "acp_artifact_reconciliation",
+    "conformance_export": "acp_download_ready",
+}
+
+
+def canonical_acp_phase_key(phase_key: str) -> str:
+    return LEGACY_ACP_PHASE_KEY_MAP.get(str(phase_key or "").strip(), str(phase_key or "").strip())
 
 
 def phase_definition_responses() -> list[ACPPhaseDefinitionResponse]:
@@ -84,8 +109,9 @@ def phase_definition_responses() -> list[ACPPhaseDefinitionResponse]:
 
 
 def _definition_by_key(phase_key: str) -> ACPPhaseDefinition:
+    canonical_phase_key = canonical_acp_phase_key(phase_key)
     for definition in ACP_PHASES:
-        if definition.key == phase_key:
+        if definition.key == canonical_phase_key:
             return definition
     raise ValueError(f"Unknown ACP phase: {phase_key}")
 
@@ -151,17 +177,79 @@ def ensure_acp_run(
         )
         db.add(run)
         db.flush()
+    else:
+        canonical_current_phase_key = canonical_acp_phase_key(run.current_phase_key)
+        canonical_phase_order = _phase_order_keys()
+        if run.current_phase_key != canonical_current_phase_key:
+            run.current_phase_key = canonical_current_phase_key
+        if run.phase_order != canonical_phase_order:
+            run.phase_order = canonical_phase_order
+        db.add(run)
     _ensure_phase_rows(db, run)
     return run
 
 
+def _sync_phase_definition(record: ACPPhaseRunRecord, definition: ACPPhaseDefinition) -> None:
+    changed = False
+    if record.phase_label != definition.label:
+        record.phase_label = definition.label
+        changed = True
+    if record.phase_order != definition.order:
+        record.phase_order = definition.order
+        changed = True
+    if not record.idempotency_key:
+        record.idempotency_key = f"{record.run_id}:{definition.key}"
+        changed = True
+    if changed:
+        record.updated_at = utc_now()
+
+
+def _copy_phase_state(source: ACPPhaseRunRecord, target: ACPPhaseRunRecord) -> None:
+    if target.attempt_count and target.updated_at >= source.updated_at:
+        return
+    target.status = source.status
+    target.attempt_count = source.attempt_count
+    target.input_refs = source.input_refs
+    target.output_refs = source.output_refs
+    target.checkpoints = source.checkpoints
+    target.blockers = source.blockers
+    target.warnings = source.warnings
+    target.started_at = source.started_at
+    target.completed_at = source.completed_at
+    target.updated_at = source.updated_at
+
+
 def _ensure_phase_rows(db: Session, run: ACPBuildRunRecord) -> None:
-    existing = {
-        item.phase_key: item
-        for item in db.exec(select(ACPPhaseRunRecord).where(ACPPhaseRunRecord.run_id == run.id)).all()
-    }
+    definitions_by_key = {definition.key: definition for definition in ACP_PHASES}
+    active_phase_keys = set(definitions_by_key)
+    rows = db.exec(select(ACPPhaseRunRecord).where(ACPPhaseRunRecord.run_id == run.id)).all()
+    existing: dict[str, ACPPhaseRunRecord] = {}
+    legacy_rows: list[tuple[ACPPhaseRunRecord, str]] = []
+
+    for row in rows:
+        canonical_key = canonical_acp_phase_key(row.phase_key)
+        if canonical_key in active_phase_keys and row.phase_key == canonical_key:
+            existing[canonical_key] = row
+        elif canonical_key in active_phase_keys:
+            legacy_rows.append((row, canonical_key))
+
+    for row, canonical_key in legacy_rows:
+        definition = definitions_by_key[canonical_key]
+        target = existing.get(canonical_key)
+        if target is None:
+            row.phase_key = canonical_key
+            _sync_phase_definition(row, definition)
+            existing[canonical_key] = row
+            db.add(row)
+        else:
+            _copy_phase_state(row, target)
+            db.add(target)
+
     for definition in ACP_PHASES:
-        if definition.key in existing:
+        existing_record = existing.get(definition.key)
+        if existing_record is not None:
+            _sync_phase_definition(existing_record, definition)
+            db.add(existing_record)
             continue
         db.add(
             ACPPhaseRunRecord(
@@ -180,8 +268,11 @@ def _ensure_phase_rows(db: Session, run: ACPBuildRunRecord) -> None:
 
 def _phase_rows(db: Session, run: ACPBuildRunRecord) -> list[ACPPhaseRunRecord]:
     _ensure_phase_rows(db, run)
+    active_phase_keys = _phase_order_keys()
     return db.exec(
-        select(ACPPhaseRunRecord).where(ACPPhaseRunRecord.run_id == run.id).order_by(ACPPhaseRunRecord.phase_order)
+        select(ACPPhaseRunRecord)
+        .where(ACPPhaseRunRecord.run_id == run.id, ACPPhaseRunRecord.phase_key.in_(active_phase_keys))
+        .order_by(ACPPhaseRunRecord.phase_order)
     ).all()
 
 
@@ -197,31 +288,61 @@ def _preview_file_refs(preview: ACPPreview, *, domain: str | None = None, prefix
 
 
 def _input_refs(phase_key: str, preview: ACPPreview) -> list[dict[str, Any]]:
+    phase_key = canonical_acp_phase_key(phase_key)
     refs = [
         {"kind": "blueprint_version", "value": preview.blueprint_version_number},
         {"kind": "manifest", "path": preview.manifest_path},
     ]
-    if phase_key in {"gap_classification", "implementation_questions", "conformance_export"}:
+    if phase_key in {"acp_questions_resolution", "acp_quality_gates", "acp_download_ready"}:
         refs.append({"kind": "construction_readiness", "status": preview.construction_readiness.overall_status})
-    if phase_key in {"package_build", "conformance_export"}:
+    if phase_key in {"acp_artifact_reconciliation", "acp_package_build", "acp_download_ready"}:
         refs.append({"kind": "acp_files", "count": len(preview.files)})
     return refs
 
 
 def _output_refs(phase_key: str, preview: ACPPreview, readiness: ConstructionReadinessReport) -> list[dict[str, Any]]:
-    if phase_key == "blueprint_validation":
+    phase_key = canonical_acp_phase_key(phase_key)
+    if phase_key == "acp_input_readiness":
         return [
             {
-                "kind": "validation_report",
+                "kind": "acp_input_readiness",
                 "status": preview.validation.overall_status,
                 "issue_count": len(preview.validation.issues),
                 "completeness_percent": preview.validation.completeness_percent,
             }
         ]
-    if phase_key == "test_suite":
+    if phase_key == "acp_questions_resolution":
+        questions = [
+            question.model_dump(mode="json")
+            for gap in readiness.gaps
+            for question in gap.questions
+            if getattr(question, "question_key", "")
+        ]
+        return [
+            {
+                "kind": "acp_questions_resolution",
+                "open_questions": readiness.open_questions,
+                "question_count": len(questions),
+                "questions": questions[:20],
+            }
+        ]
+    if phase_key == "acp_test_suite":
         refs = _preview_file_refs(preview, domain="evaluation")
         return [{"kind": "test_suite_files", "count": len(refs), "files": refs[:12]}]
-    if phase_key == "gap_classification":
+    if phase_key == "acp_graphic_simulation":
+        refs = [
+            *_preview_file_refs(preview, domain="observability"),
+            *_preview_file_refs(preview, prefix="ACP/visualizations/"),
+        ]
+        return [
+            {
+                "kind": "graphic_simulation",
+                "validation_status": preview.validation.overall_status,
+                "file_count": len(refs),
+                "files": refs[:12],
+            }
+        ]
+    if phase_key == "acp_quality_gates":
         return [
             {
                 "kind": "classified_gaps",
@@ -230,15 +351,16 @@ def _output_refs(phase_key: str, preview: ACPPreview, readiness: ConstructionRea
                 "gaps": [item.model_dump(mode="json", exclude={"questions"}) for item in readiness.gaps[:12]],
             }
         ]
-    if phase_key == "implementation_questions":
-        questions = [
-            question.model_dump(mode="json")
-            for gap in readiness.gaps
-            for question in gap.questions
-            if getattr(question, "question_key", "")
+    if phase_key == "acp_artifact_reconciliation":
+        return [
+            {
+                "kind": "artifact_reconciliation",
+                "file_count": len(preview.files),
+                "readiness": readiness.overall_status,
+                "affected_domains": sorted({item.domain for item in preview.files if item.status != "complete"}),
+            }
         ]
-        return [{"kind": "implementation_questions", "count": len(questions), "questions": questions[:20]}]
-    if phase_key == "package_build":
+    if phase_key == "acp_package_build":
         return [
             {
                 "kind": "portable_package",
@@ -247,10 +369,10 @@ def _output_refs(phase_key: str, preview: ACPPreview, readiness: ConstructionRea
                 "launcher_files": _preview_file_refs(preview, prefix="ACP/launcher/"),
             }
         ]
-    if phase_key == "conformance_export":
+    if phase_key == "acp_download_ready":
         return [
             {
-                "kind": "conformance",
+                "kind": "download_readiness",
                 "can_export_zip": preview.validation.can_export_zip,
                 "can_start_build": readiness.can_start_build,
                 "readiness": readiness.overall_status,
@@ -260,14 +382,24 @@ def _output_refs(phase_key: str, preview: ACPPreview, readiness: ConstructionRea
 
 
 def _warnings_for_phase(phase_key: str, preview: ACPPreview, readiness: ConstructionReadinessReport) -> list[str]:
+    phase_key = canonical_acp_phase_key(phase_key)
     warnings: list[str] = []
-    if phase_key == "blueprint_validation":
+    if phase_key == "acp_input_readiness":
         warnings.extend(item.message for item in preview.validation.issues if item.severity in {"warning", "info"})
-    if phase_key == "test_suite" and not _preview_file_refs(preview, domain="evaluation"):
-        warnings.append("No se encontraron archivos de evaluacion en el ACP generado.")
-    if phase_key in {"gap_classification", "implementation_questions"} and readiness.open_questions:
+    if phase_key == "acp_questions_resolution" and readiness.open_questions:
         warnings.append(f"Hay {readiness.open_questions} pregunta(s) de implementacion abiertas.")
-    if phase_key == "package_build":
+    if phase_key == "acp_test_suite" and not _preview_file_refs(preview, domain="evaluation"):
+        warnings.append("No se encontraron archivos de evaluacion en el ACP generado.")
+    if phase_key == "acp_graphic_simulation":
+        refs = [
+            *_preview_file_refs(preview, domain="observability"),
+            *_preview_file_refs(preview, prefix="ACP/visualizations/"),
+        ]
+        if not refs:
+            warnings.append("No se encontraron artefactos visuales o de observabilidad para la simulacion ACP.")
+    if phase_key == "acp_quality_gates" and readiness.open_questions:
+        warnings.append(f"Hay {readiness.open_questions} pregunta(s) de implementacion abiertas.")
+    if phase_key in {"acp_artifact_reconciliation", "acp_package_build"}:
         incomplete_count = sum(1 for item in preview.files if item.status != "complete")
         if incomplete_count:
             warnings.append(f"{incomplete_count} archivo(s) del ACP requieren revision.")
@@ -275,13 +407,14 @@ def _warnings_for_phase(phase_key: str, preview: ACPPreview, readiness: Construc
 
 
 def _blockers_for_phase(phase_key: str, preview: ACPPreview, readiness: ConstructionReadinessReport) -> list[dict[str, Any]]:
-    if phase_key == "blueprint_validation":
+    phase_key = canonical_acp_phase_key(phase_key)
+    if phase_key == "acp_input_readiness":
         return [
             {"code": item.code, "message": item.message, "path": item.path, "remediation": item.remediation}
             for item in preview.validation.issues
             if item.blocking or item.severity == "error"
         ]
-    if phase_key == "gap_classification":
+    if phase_key == "acp_quality_gates":
         return [
             {
                 "code": item.gap_key,
@@ -292,7 +425,7 @@ def _blockers_for_phase(phase_key: str, preview: ACPPreview, readiness: Construc
             for item in readiness.gaps
             if item.severity == "blocking" and item.status == "open"
         ]
-    if phase_key == "conformance_export" and not preview.validation.can_export_zip:
+    if phase_key == "acp_download_ready" and not preview.validation.can_export_zip:
         return [{"code": "acp_zip_not_ready", "message": "El ACP aun no puede exportarse como ZIP.", "remediation": "Resolver issues de validacion."}]
     return []
 
@@ -304,11 +437,12 @@ def _phase_status(
     blockers: list[dict[str, Any]],
     warnings: list[str],
 ) -> ACPWorkflowRunStatus:
+    phase_key = canonical_acp_phase_key(phase_key)
     if blockers:
         return ACPWorkflowRunStatus.blocked
-    if phase_key == "implementation_questions" and readiness.open_questions:
+    if phase_key == "acp_questions_resolution" and readiness.open_questions:
         return ACPWorkflowRunStatus.waiting_user
-    if phase_key == "conformance_export" and not readiness.can_start_build:
+    if phase_key == "acp_download_ready" and not readiness.can_start_build:
         return ACPWorkflowRunStatus.waiting_user
     if warnings:
         return ACPWorkflowRunStatus.completed_with_observations
@@ -342,6 +476,7 @@ def run_acp_phase(
     preview: ACPPreview,
     readiness: ConstructionReadinessReport,
 ) -> ACPPhaseRunRecord:
+    phase_key = canonical_acp_phase_key(phase_key)
     definition = _definition_by_key(phase_key)
     phase = db.exec(
         select(ACPPhaseRunRecord).where(ACPPhaseRunRecord.run_id == run.id, ACPPhaseRunRecord.phase_key == phase_key)
@@ -505,7 +640,7 @@ def build_acp_workspace_response(
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
-        next_action = "Iniciar la validacion del Blueprint para crear la ejecucion ACP."
+        next_action = "Iniciar readiness de insumos ACP para crear la ejecucion tecnica."
     else:
         run_response = serialize_run(run)
         next_action = "Ejecutar la siguiente subfase ACP."

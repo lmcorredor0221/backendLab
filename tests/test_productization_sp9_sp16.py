@@ -106,7 +106,7 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
     assert workspace["run"]["id"] is None
     assert workspace["journey_state_machine"]["state_source"] == "canonical"
     assert workspace["journey_state_machine"]["current"]["state_key"] == "acp_prep"
-    assert len(workspace["phases"]) == 6
+    assert len(workspace["phases"]) == 8
 
     session_gen = app.dependency_overrides[get_session]()
     db = next(session_gen)
@@ -122,13 +122,13 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
         session_gen.close()
 
     phase_response = client.post(
-        f"/api/v1/sessions/{session_id}/acp/workspace/phases/blueprint_validation/run",
+        f"/api/v1/sessions/{session_id}/acp/workspace/phases/acp_input_readiness/run",
         headers=headers,
-        json={"idempotency_key": f"{session_id}:blueprint_validation:test"},
+        json={"idempotency_key": f"{session_id}:acp_input_readiness:test"},
     )
     assert phase_response.status_code == 200
     phase_payload = phase_response.json()
-    first_phase = next(item for item in phase_payload["phases"] if item["phase_key"] == "blueprint_validation")
+    first_phase = next(item for item in phase_payload["phases"] if item["phase_key"] == "acp_input_readiness")
     assert first_phase["attempt_count"] == 1
     assert first_phase["input_refs"]
     assert first_phase["status"] in {"completed", "completed_with_observations", "blocked"}

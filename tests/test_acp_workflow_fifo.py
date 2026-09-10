@@ -104,19 +104,19 @@ def test_acp_phase_sequence_blocks_skipping_phases(db_session: Session) -> None:
 
     run = ensure_acp_run(db_session, record=record, current_user=user, snapshot=snapshot)
 
-    # Attempting to run phase 3 (gap_classification) without running phase 1 and 2 must fail
+    # Attempting to run phase 5 without running the previous ACP phases must fail.
     with pytest.raises(ACPPhaseSequenceError) as excinfo:
         run_acp_phase(
             db_session,
             run=run,
-            phase_key="gap_classification",
+            phase_key="acp_quality_gates",
             payload=ACPPhaseCommandRequest(),
             preview=preview,
             readiness=readiness,
         )
 
-    assert excinfo.value.phase_key == "gap_classification"
-    assert excinfo.value.blocking_phase_key == "test_suite"
+    assert excinfo.value.phase_key == "acp_quality_gates"
+    assert excinfo.value.blocking_phase_key == "acp_graphic_simulation"
 
 
 def test_blocked_phase_prevents_subsequent_phases(db_session: Session) -> None:
@@ -132,7 +132,7 @@ def test_blocked_phase_prevents_subsequent_phases(db_session: Session) -> None:
     p1 = run_acp_phase(
         db_session,
         run=run,
-        phase_key="blueprint_validation",
+        phase_key="acp_input_readiness",
         payload=ACPPhaseCommandRequest(),
         preview=preview,
         readiness=readiness,
@@ -145,14 +145,14 @@ def test_blocked_phase_prevents_subsequent_phases(db_session: Session) -> None:
         run_acp_phase(
             db_session,
             run=run,
-            phase_key="test_suite",
+            phase_key="acp_questions_resolution",
             payload=ACPPhaseCommandRequest(),
             preview=preview,
             readiness=readiness,
         )
 
-    assert excinfo.value.phase_key == "test_suite"
-    assert excinfo.value.blocking_phase_key == "blueprint_validation"
+    assert excinfo.value.phase_key == "acp_questions_resolution"
+    assert excinfo.value.blocking_phase_key == "acp_input_readiness"
     assert excinfo.value.blocking_phase_status == "blocked"
 
 
@@ -165,15 +165,36 @@ def test_force_flag_allows_override_when_explicitly_requested(db_session: Sessio
 
     run = ensure_acp_run(db_session, record=record, current_user=user, snapshot=snapshot)
 
-    # Phase 2 with force=True bypasses the strict sequence block
+    # Phase 2 with force=True bypasses the strict sequence block.
     p2 = run_acp_phase(
         db_session,
         run=run,
-        phase_key="test_suite",
+        phase_key="acp_questions_resolution",
         payload=ACPPhaseCommandRequest(force=True),
         preview=preview,
         readiness=readiness,
     )
     db_session.commit()
-    assert p2.phase_key == "test_suite"
+    assert p2.phase_key == "acp_questions_resolution"
 
+
+def test_legacy_acp_phase_keys_are_canonicalized(db_session: Session) -> None:
+    user, record = _seed_user_and_session(db_session)
+    snapshot = build_snapshot(db_session, record, current_user=user)
+    preview = resolve_acp_preview(db_session, record)
+    response_records = load_construction_question_response_records(db_session, record.id)
+    readiness = build_construction_readiness_view(preview, response_records)
+
+    run = ensure_acp_run(db_session, record=record, current_user=user, snapshot=snapshot)
+
+    phase = run_acp_phase(
+        db_session,
+        run=run,
+        phase_key="blueprint_validation",
+        payload=ACPPhaseCommandRequest(force=True),
+        preview=preview,
+        readiness=readiness,
+    )
+    db_session.commit()
+
+    assert phase.phase_key == "acp_input_readiness"

@@ -257,7 +257,17 @@ MEMORY_STAGE_ALLOWED_TERMS = (
 
 LEAN_STAGE_KEYS = {"discover", "define", "design", "tools", "memory", "estimate"}
 PRODUCT_STAGE_KEYS = {"blueprint", "blueprint_free", "blueprint_pro", "validate", "package"}
-ACP_STAGE_KEYS = {"acp", "package", "implementation", "implementation_questions", "construction"}
+ACP_STAGE_KEYS = {
+    "acp",
+    "acp_questions_resolution",
+    "acp_artifact_reconciliation",
+    "acp_package_build",
+    "acp_download_ready",
+    "package",
+    "implementation",
+    "implementation_questions",
+    "construction",
+}
 CANONICAL_DELEGATION_TARGET_STAGES = LEAN_STAGE_KEYS | PRODUCT_STAGE_KEYS | ACP_STAGE_KEYS
 DELEGATION_TARGET_STAGE_ALIASES = {
     "descubrir": "discover",

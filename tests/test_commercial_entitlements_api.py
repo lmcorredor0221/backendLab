@@ -68,6 +68,7 @@ def test_acp_routes_are_backend_blocked_without_acp_entitlement(client: TestClie
         ("get", f"/api/v1/sessions/{session_id}/export/test-pack"),
         ("get", f"/api/v1/sessions/{session_id}/acp/workspace"),
         ("post", f"/api/v1/sessions/{session_id}/acp/workspace/resume"),
+        ("post", f"/api/v1/sessions/{session_id}/acp/workspace/phases/acp_input_readiness/run"),
         ("post", f"/api/v1/sessions/{session_id}/acp/workspace/phases/blueprint_validation/run"),
         ("get", f"/api/v1/sessions/{session_id}/acp/launcher"),
     ]

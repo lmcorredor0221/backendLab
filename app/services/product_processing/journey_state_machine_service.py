@@ -493,9 +493,23 @@ def _state_after_stage_approval(state_key: JourneyStateKey) -> JourneyStateKey:
 
 
 def _state_for_acp_phase(phase_key: str) -> JourneyStateKey:
-    if phase_key == "blueprint_validation":
+    if phase_key in {
+        "blueprint_validation",
+        "acp_input_readiness",
+        "test_suite",
+        "acp_test_suite",
+        "acp_graphic_simulation",
+        "gap_classification",
+        "acp_quality_gates",
+    }:
         return JourneyStateKey.validate
-    if phase_key in {"package_build", "conformance_export"}:
+    if phase_key in {
+        "package_build",
+        "acp_artifact_reconciliation",
+        "acp_package_build",
+        "conformance_export",
+        "acp_download_ready",
+    }:
         return JourneyStateKey.package
     return JourneyStateKey.acp_prep
 

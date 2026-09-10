@@ -161,7 +161,7 @@ def test_complete_saas_journey_e2e(db_session: Session) -> None:
             event_key="acp_phase_completed",
             source="acp_workflow",
             tier=CommercialTier.acp,
-            event_metadata={"phase_key": "package_build"},
+            event_metadata={"phase_key": "acp_package_build"},
         )
     )
     db_session.commit()
@@ -194,4 +194,3 @@ def test_complete_saas_journey_e2e(db_session: Session) -> None:
     assert audit_report.current_tier == CommercialTier.acp
     assert len(audit_report.funnel) > 0
     assert len(audit_report.recent_events) >= 2
-

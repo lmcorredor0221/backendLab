@@ -147,7 +147,17 @@ def _reconciliation_hint(record: UncertaintyBacklogRecord) -> str:
 
 def _resolution_moment(record: UncertaintyBacklogRecord) -> str:
     target_stage = str(record.target_stage or "").strip().lower()
-    if target_stage in {"acp", "package", "implementation", "implementation_questions", "construction"}:
+    if target_stage in {
+        "acp",
+        "acp_questions_resolution",
+        "acp_artifact_reconciliation",
+        "acp_package_build",
+        "acp_download_ready",
+        "package",
+        "implementation",
+        "implementation_questions",
+        "construction",
+    }:
         return "ACP o implementacion"
     if target_stage:
         return target_stage
@@ -168,7 +178,17 @@ def _owner_hint(record: UncertaintyBacklogRecord) -> str:
 
 def _why_later(record: UncertaintyBacklogRecord) -> str:
     target_stage = str(record.target_stage or "").strip().lower()
-    if target_stage in {"acp", "package", "implementation", "implementation_questions", "construction"}:
+    if target_stage in {
+        "acp",
+        "acp_questions_resolution",
+        "acp_artifact_reconciliation",
+        "acp_package_build",
+        "acp_download_ready",
+        "package",
+        "implementation",
+        "implementation_questions",
+        "construction",
+    }:
         return (
             "Depende de contexto operativo, credenciales, stack final, owner tecnico o decisiones "
             "que se confirman mejor durante construccion."

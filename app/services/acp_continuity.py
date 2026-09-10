@@ -31,43 +31,49 @@ CURRENT_QUESTION_STATUS_ORDER = {
 }
 
 DOMAIN_PHASE_HINTS: dict[str, tuple[str, ...]] = {
-    "deployment": ("implementation_questions", "package_build", "conformance_export"),
-    "runtime": ("implementation_questions", "package_build", "conformance_export"),
-    "knowledge": ("implementation_questions", "package_build"),
-    "memory": ("implementation_questions", "package_build"),
-    "contracts": ("implementation_questions", "package_build", "conformance_export"),
-    "integrations": ("implementation_questions", "package_build"),
-    "integration": ("implementation_questions", "package_build"),
-    "security": ("blueprint_validation", "package_build", "conformance_export"),
-    "observability": ("test_suite", "package_build", "conformance_export"),
+    "deployment": ("acp_questions_resolution", "acp_artifact_reconciliation", "acp_package_build", "acp_download_ready"),
+    "runtime": ("acp_questions_resolution", "acp_artifact_reconciliation", "acp_package_build", "acp_download_ready"),
+    "knowledge": ("acp_questions_resolution", "acp_artifact_reconciliation"),
+    "memory": ("acp_questions_resolution", "acp_artifact_reconciliation"),
+    "contracts": ("acp_questions_resolution", "acp_artifact_reconciliation", "acp_package_build", "acp_download_ready"),
+    "integrations": ("acp_questions_resolution", "acp_artifact_reconciliation"),
+    "integration": ("acp_questions_resolution", "acp_artifact_reconciliation"),
+    "security": ("acp_input_readiness", "acp_quality_gates", "acp_artifact_reconciliation", "acp_download_ready"),
+    "observability": ("acp_test_suite", "acp_graphic_simulation", "acp_quality_gates", "acp_download_ready"),
 }
 
 ARTIFACT_PREFIX_PHASE_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("ACP/deployment/", ("package_build", "conformance_export")),
-    ("ACP/runtime/", ("package_build", "conformance_export")),
-    ("ACP/observability/", ("test_suite", "package_build", "conformance_export")),
-    ("ACP/evaluation/", ("test_suite",)),
-    ("ACP/knowledge/", ("implementation_questions", "package_build")),
-    ("ACP/memory/", ("implementation_questions", "package_build")),
-    ("ACP/tools/", ("implementation_questions", "package_build")),
-    ("ACP/prompts/", ("implementation_questions", "package_build")),
-    ("ACP/conformance/", ("conformance_export",)),
-    ("ACP/manifest", ("package_build", "conformance_export")),
+    ("ACP/deployment/", ("acp_artifact_reconciliation", "acp_package_build", "acp_download_ready")),
+    ("ACP/runtime/", ("acp_artifact_reconciliation", "acp_package_build", "acp_download_ready")),
+    ("ACP/observability/", ("acp_graphic_simulation", "acp_quality_gates", "acp_download_ready")),
+    ("ACP/evaluation/", ("acp_test_suite", "acp_quality_gates")),
+    ("ACP/knowledge/", ("acp_questions_resolution", "acp_artifact_reconciliation")),
+    ("ACP/memory/", ("acp_questions_resolution", "acp_artifact_reconciliation")),
+    ("ACP/tools/", ("acp_questions_resolution", "acp_artifact_reconciliation")),
+    ("ACP/prompts/", ("acp_questions_resolution", "acp_artifact_reconciliation")),
+    ("ACP/conformance/", ("acp_download_ready",)),
+    ("ACP/manifest", ("acp_artifact_reconciliation", "acp_package_build", "acp_download_ready")),
 )
 
 PHASE_TO_STAGE_HINTS: dict[str, tuple[str, ...]] = {
-    "blueprint_validation": ("acp", "validate"),
-    "test_suite": ("acp", "validate"),
-    "gap_classification": ("acp", "validate"),
-    "implementation_questions": ("acp",),
-    "package_build": ("acp", "package"),
-    "conformance_export": ("acp", "package"),
+    "acp_input_readiness": ("acp", "validate"),
+    "acp_questions_resolution": ("acp",),
+    "acp_test_suite": ("acp", "validate"),
+    "acp_graphic_simulation": ("acp", "validate"),
+    "acp_quality_gates": ("acp", "validate"),
+    "acp_artifact_reconciliation": ("acp", "package"),
+    "acp_package_build": ("acp", "package"),
+    "acp_download_ready": ("acp", "package"),
 }
 
 UNCERTAINTY_BACKLOG_QUESTION_PREFIX = "uncertainty_backlog:"
 UNCERTAINTY_BACKLOG_CLOSED_STATUSES = {"dismissed", "superseded"}
 UNCERTAINTY_BACKLOG_IMPLEMENTATION_TARGETS = {
     "acp",
+    "acp_questions_resolution",
+    "acp_artifact_reconciliation",
+    "acp_package_build",
+    "acp_download_ready",
     "package",
     "implementation",
     "implementation_questions",
@@ -226,7 +232,7 @@ def build_construction_gaps_from_uncertainty_backlog(
                 domain=_backlog_domain(record),
                 severity="blocking" if blocking else "warning",
                 status=status,
-                blocking_stage=record.target_stage or "implementation_questions",
+                blocking_stage=record.target_stage or "acp_questions_resolution",
                 summary=record.reason or record.description or record.title or "Decision heredada del backlog LAB.",
                 remediation=record.suggested_answer or "Resolver, confirmar o delegar con trazabilidad antes de implementar.",
                 evidence_paths=impacted,
@@ -835,7 +841,7 @@ def _build_record_impact_analysis(
             material_impact=False,
             reprocess_decision="document_only",
             impact_summary=(
-                "La respuesta se conserva como contexto adicional y no justifica reconciliar Validate ni Package por si sola."
+                "La respuesta se conserva como contexto adicional y no justifica reconciliar entregables ACP por si sola."
             ),
             recommended_action="Documenta la aclaracion y continua con el ACP sin reconciliar entregables.",
             affected_phase_keys=affected_phase_keys,
@@ -869,7 +875,7 @@ def _build_record_impact_analysis(
             f"La respuesta impacta de forma localizada {len(impacted_artifacts)} artefacto(s) y puede reconciliarse solo en los entregables ACP afectados."
         ),
         recommended_action=(
-            "Mantiene la respuesta acumulada y reconcilia Validate o Package solo cuando vayas a actualizar los entregables impactados."
+            "Mantiene la respuesta acumulada y reconcilia solo los entregables ACP impactados cuando vayas a actualizarlos."
         ),
         affected_phase_keys=affected_phase_keys,
         affected_stage_keys=affected_stage_keys,
@@ -883,7 +889,7 @@ def _resolve_affected_phase_keys(
     blocking: bool,
 ) -> list[str]:
     phase_keys: list[str] = []
-    phase_keys.extend(DOMAIN_PHASE_HINTS.get(domain, ("implementation_questions",)))
+    phase_keys.extend(DOMAIN_PHASE_HINTS.get(domain, ("acp_questions_resolution",)))
     for artifact in impacted_artifacts:
         normalized = artifact.strip()
         if not normalized:
@@ -892,7 +898,7 @@ def _resolve_affected_phase_keys(
             if normalized.startswith(prefix):
                 phase_keys.extend(hinted_phases)
     if blocking:
-        phase_keys.extend(("implementation_questions", "package_build"))
+        phase_keys.extend(("acp_questions_resolution", "acp_artifact_reconciliation"))
     return _dedupe_strings(phase_keys)
 
 

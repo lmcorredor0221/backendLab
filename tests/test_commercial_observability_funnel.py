@@ -102,7 +102,7 @@ def test_commercial_funnel_reconstruction(db_session: Session) -> None:
         ("checkout_created", "commerce_checkout", {"product_key": "blueprint_pro"}),
         ("payment_confirmed", "commerce_webhook", {"product_key": "blueprint_pro"}),
         ("pro_build_completed", "product_build", {}),
-        ("acp_phase_completed", "acp_workflow", {"phase_key": "blueprint_validation"}),
+        ("acp_phase_completed", "acp_workflow", {"phase_key": "acp_input_readiness"}),
         ("export_downloaded", "export_delivery", {"artifact_kind": "acp_portable_zip"}),
     ]
 

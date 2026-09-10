@@ -148,7 +148,7 @@ def test_answered_and_deferred_questions_surface_impact_analysis() -> None:
                     domain="deployment",
                     severity="warning",
                     status="open",
-                    blocking_stage="package_build",
+                    blocking_stage="acp_artifact_reconciliation",
                     summary="Falta cerrar infraestructura objetivo.",
                     evidence_paths=["ACP/deployment/env.template", "ACP/runtime/config.yaml"],
                     questions=[
@@ -167,7 +167,7 @@ def test_answered_and_deferred_questions_surface_impact_analysis() -> None:
                     domain="knowledge",
                     severity="warning",
                     status="open",
-                    blocking_stage="implementation_questions",
+                    blocking_stage="acp_questions_resolution",
                     summary="Faltan fuentes de conocimiento.",
                     evidence_paths=["ACP/knowledge/sources.yaml"],
                     questions=[
@@ -229,7 +229,7 @@ def test_answered_and_deferred_questions_surface_impact_analysis() -> None:
     assert answered.impact_analysis.impact_kind == "localized_impact"
     assert answered.impact_analysis.reprocess_decision == "localized_reconciliation"
     assert answered.impact_analysis.reconciliation_decision == "localized_reconciliation"
-    assert "implementation_questions" in answered.impact_analysis.affected_phase_keys
+    assert "acp_questions_resolution" in answered.impact_analysis.affected_phase_keys
 
 
 def test_deferred_uncertainty_backlog_travels_to_acp_without_blocking_package() -> None:
