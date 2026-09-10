@@ -110,6 +110,17 @@ class Settings(BaseSettings):
     payu_webhook_url_secret: str = ""
     payu_request_timeout_seconds: int = 30
     payu_max_retries: int = 3
+    mercadopago_enabled: bool = False
+    mercadopago_environment: str = "sandbox"
+    mercadopago_api_base_url: str = ""
+    mercadopago_webhook_public_url: str = ""
+    mercadopago_access_token: str = ""
+    mercadopago_public_key: str = ""
+    mercadopago_webhook_signing_secret: str = ""
+    mercadopago_webhook_url_secret: str = ""
+    mercadopago_request_timeout_seconds: int = 30
+    mercadopago_webhook_timeout_seconds: int = 10
+    mercadopago_max_retries: int = 3
     rapyd_enabled: bool = False
     rapyd_environment: str = "sandbox"
     rapyd_api_base_url: str = ""

@@ -12,7 +12,7 @@ from app.models import (
     utc_now,
 )
 from app.services.commerce_provider_registry import list_commerce_provider_definitions
-from app.services.commerce_provider_secrets import build_commerce_provider_status
+from app.services.commerce_provider_secrets import build_commerce_provider_status, load_commerce_provider_secret
 from app.services.commerce_provider_utils import (
     normalize_commerce_provider_environment,
     normalize_commerce_provider_key,
@@ -58,6 +58,7 @@ def build_commerce_provider_readiness(
     required_secret_kinds = {
         "rebill": {"secret_key", "webhook_signing_secret"},
         "payu": {"secret_key", "public_key", "merchant_id", "account_id"},
+        "mercadopago": {"secret_key", "webhook_signing_secret"},
         "rapyd": {"access_key", "secret_key", "webhook_url_secret"},
     }.get(provider, set())
     configured_secret_kinds = {item.secret_kind for item in status.secret_statuses if item.configured}
@@ -68,6 +69,27 @@ def build_commerce_provider_readiness(
                 label=f"Secreto {secret_kind}",
                 status="ok" if secret_kind in configured_secret_kinds else "blocking",
                 detail="Configurado." if secret_kind in configured_secret_kinds else "Falta configurar este secreto.",
+            )
+        )
+    if provider == "mercadopago" and "secret_key" in configured_secret_kinds:
+        access_token = load_commerce_provider_secret(
+            session,
+            workspace_id=workspace_id,
+            provider_key=provider,
+            environment=env,
+            secret_kind="secret_key",
+        )
+        test_token_configured = access_token.strip().upper().startswith("TEST-")
+        checks.append(
+            CommerceProviderReadinessCheckResponse(
+                key="mercadopago_orders_access_token",
+                label="Access token Orders API",
+                status="blocking" if test_token_configured else "ok",
+                detail=(
+                    "Orders API de Mercado Pago no acepta access tokens TEST-. Usa el token APP_USR de la app y cuentas de prueba para validar."
+                    if test_token_configured
+                    else "Token compatible con Orders API."
+                ),
             )
         )
     if "webhooks" in status.capabilities:

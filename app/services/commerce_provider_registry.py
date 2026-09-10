@@ -51,6 +51,12 @@ def _payu_provider_factory() -> CommercePaymentProvider:
     return PayUPaymentProvider()
 
 
+def _mercadopago_provider_factory() -> CommercePaymentProvider:
+    from app.services.payment_providers.mercadopago import MercadoPagoPaymentProvider
+
+    return MercadoPagoPaymentProvider()
+
+
 def _rapyd_provider_factory() -> CommercePaymentProvider:
     from app.services.payment_providers.rapyd import RapydPaymentProvider
 
@@ -83,6 +89,12 @@ def get_commerce_provider_registry() -> CommerceProviderRegistry:
                 display_name="PayU Latam",
                 capabilities=("hosted_checkout", "webhooks", "refunds"),
                 create_provider=_payu_provider_factory,
+            ),
+            CommerceProviderDefinition(
+                provider_key="mercadopago",
+                display_name="Mercado Pago",
+                capabilities=("hosted_checkout", "webhooks", "refunds"),
+                create_provider=_mercadopago_provider_factory,
             ),
             CommerceProviderDefinition(
                 provider_key="rapyd",

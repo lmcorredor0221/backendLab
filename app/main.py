@@ -16,6 +16,7 @@ from app.api.routes import (
     hotmart_webhooks,
     knowledge_memory,
     llm_finops,
+    mercadopago_routes,
     platform_admin,
     platform_runtime,
     payu_routes,
@@ -77,6 +78,7 @@ app.include_router(rebill_webhooks.router, prefix=settings.api_v1_prefix)
 app.include_router(estimation_calibration.router, prefix=settings.api_v1_prefix)
 app.include_router(knowledge_memory.router, prefix=settings.api_v1_prefix)
 app.include_router(llm_finops.router, prefix=settings.api_v1_prefix)
+app.include_router(mercadopago_routes.router, prefix=settings.api_v1_prefix)
 app.include_router(platform_admin.router, prefix=settings.api_v1_prefix)
 app.include_router(sessions.router, prefix=settings.api_v1_prefix)
 app.include_router(session_operations.router, prefix=settings.api_v1_prefix)

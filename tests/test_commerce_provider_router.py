@@ -44,10 +44,15 @@ from app.services.commerce_provider_router import (
 )
 from app.services.commerce_service import complete_checkout_session, create_checkout_session
 from app.services.commerce_provider_mappings import upsert_commerce_provider_mapping
+from app.services.commerce_provider_readiness import build_commerce_provider_readiness
 from app.services.commerce_provider_secrets import upsert_commerce_provider_credentials
 from app.services.commercial_catalog_service import upsert_package_catalog_entry
 from app.services.commercial_debt_service import create_commercial_debt
 from app.services.commercial_quota_service import get_balance_snapshot
+from app.services.mercadopago.client import MercadoPagoApiResult
+from app.services.mercadopago.signatures import sign_mercadopago_webhook
+from app.services.mercadopago.webhooks import process_mercadopago_webhook
+from app.services.payment_providers.mercadopago import MercadoPagoPaymentProvider
 from app.services.payment_providers.rebill import RebillPaymentProvider
 from app.services.payment_providers.rapyd import RapydPaymentProvider
 from app.services.payu.checkout_redirect import render_payu_checkout_redirect, resolve_payu_response_redirect
@@ -130,11 +135,13 @@ def test_commerce_provider_router_normalizes_supported_providers() -> None:
     assert normalize_commerce_payment_provider("HOTMART") == "hotmart"
     assert normalize_commerce_payment_provider("REBILL") == "rebill"
     assert normalize_commerce_payment_provider("PAYU") == "payu"
+    assert normalize_commerce_payment_provider("MERCADOPAGO") == "mercadopago"
     assert normalize_commerce_payment_provider("RAPYD") == "rapyd"
     assert get_commerce_payment_provider("sandbox").provider_key == "sandbox"
     assert get_commerce_payment_provider("hotmart").provider_key == "hotmart"
     assert get_commerce_payment_provider("rebill").provider_key == "rebill"
     assert get_commerce_payment_provider("payu").provider_key == "payu"
+    assert get_commerce_payment_provider("mercadopago").provider_key == "mercadopago"
     assert get_commerce_payment_provider("rapyd").provider_key == "rapyd"
 
     with pytest.raises(ValueError, match="Unsupported commerce checkout provider"):
@@ -353,6 +360,44 @@ class FakeRapydClient:
         )
 
 
+class FakeMercadoPagoClient:
+    create_calls: list[dict[str, object]] = []
+    order_payload: dict[str, object] = {}
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    def create_order(
+        self,
+        *,
+        access_token: str,
+        payload: dict[str, object],
+        idempotency_key: str,
+    ) -> MercadoPagoApiResult:
+        self.__class__.create_calls.append(
+            {
+                "access_token": access_token,
+                "payload": payload,
+                "idempotency_key": idempotency_key,
+                "api_base_url": self.config.api_base_url,
+            }
+        )
+        response_payload = {
+            "id": "mp_order_123",
+            "checkout_url": "https://sandbox.mercadopago.com.co/checkout/v1/redirect?order_id=mp_order_123",
+        }
+        return MercadoPagoApiResult(
+            provider_ref="mp_order_123",
+            checkout_url="https://sandbox.mercadopago.com.co/checkout/v1/redirect?order_id=mp_order_123",
+            http_status=201,
+            payload=response_payload,
+            payload_redacted=response_payload,
+        )
+
+    def get_order(self, *, access_token: str, order_id: str) -> dict[str, object]:
+        return self.__class__.order_payload
+
+
 def _configure_rebill(session: Session, workspace: WorkspaceRecord, user: UserRecord) -> None:
     upsert_commerce_provider_credentials(
         session,
@@ -418,6 +463,46 @@ def _configure_payu(session: Session, workspace: WorkspaceRecord, user: UserReco
             provider_product_id="512321",
             provider_plan_id="CO",
             provider_price_id="VISA,MASTERCARD",
+        ),
+    )
+    session.flush()
+
+
+def _configure_mercadopago(session: Session, workspace: WorkspaceRecord, user: UserRecord) -> None:
+    upsert_commerce_provider_credentials(
+        session,
+        workspace_id=workspace.id,
+        provider_key="mercadopago",
+        payload=CommerceProviderCredentialUpsertRequest(
+            environment="sandbox",
+            enabled=True,
+            api_base_url="https://api.mercadopago.test",
+            webhook_public_url="https://api.lean.test/api/v1/webhooks/mercadopago/url_secret/sandbox",
+            secrets={
+                "secret_key": "TEST-mp-access-token",
+                "public_key": "TEST-mp-public-key",
+                "webhook_signing_secret": "mp_whsec_test",
+                "webhook_url_secret": "url_secret",
+            },
+        ),
+        actor_user_id=user.id,
+    )
+    upsert_commerce_provider_mapping(
+        session,
+        workspace_id=workspace.id,
+        provider_key="mercadopago",
+        payload=CommerceProviderProductMappingUpsertRequest(
+            environment="sandbox",
+            internal_product_key="blueprint_pro",
+            billing_mode="one_time",
+            currency="COP",
+            internal_unit_amount_usd_cents=19_900_000,
+            provider_product_id="services",
+            provider_plan_id="ticket",
+            provider_price_id="credit_card",
+            provider_payment_link_id="amex",
+            provider_offer_ref="LEAN AGENT BUILDER",
+            metadata={"binary_mode": True, "installments": 12, "default_installments": 1},
         ),
     )
     session.flush()
@@ -970,6 +1055,252 @@ def test_payu_confirmation_amount_formatting_matches_payu_rounding_rules() -> No
     assert format_payu_confirmation_value("150.00") == "150.0"
     assert format_payu_confirmation_value("150.25") == "150.25"
     assert format_payu_confirmation_value("150") == "150.0"
+
+
+def test_mercadopago_readiness_blocks_test_access_token_for_orders_api(db_session: Session) -> None:
+    user, workspace, _record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+
+    readiness = build_commerce_provider_readiness(
+        db_session,
+        workspace_id=workspace.id,
+        provider_key="mercadopago",
+        environment="sandbox",
+    )
+
+    checks = {check.key: check for check in readiness.checks}
+    assert readiness.ready is False
+    assert readiness.status == "blocked"
+    assert checks["mercadopago_orders_access_token"].status == "blocking"
+    assert "TEST-" in checks["mercadopago_orders_access_token"].detail
+
+
+def test_mercadopago_checkout_provider_creates_order_with_provider_record(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+    FakeMercadoPagoClient.create_calls = []
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="mercadopago",
+            idempotency_key=f"{record.id}:mercadopago-provider",
+            success_url="https://example.test/success",
+            cancel_url="https://example.test/cancel",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    order = db_session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == response.order_id)).one()
+    checkout_record = db_session.exec(
+        select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "mercadopago")
+    ).one()
+    payload = FakeMercadoPagoClient.create_calls[0]["payload"]
+    assert isinstance(payload, dict)
+    assert response.provider == "mercadopago"
+    assert response.checkout_ref.startswith("mp_")
+    assert response.checkout_url == "https://sandbox.mercadopago.com.co/checkout/v1/redirect?order_id=mp_order_123"
+    assert response.next_action == "open_checkout"
+    assert order.metadata_payload["provider_stage"] == "mercadopago_order_created"
+    assert checkout_record.provider_checkout_id == "mp_order_123"
+    assert checkout_record.amount_cents == 19_900_000
+    assert checkout_record.currency == "COP"
+    assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "TEST-mp-access-token"
+    assert FakeMercadoPagoClient.create_calls[0]["idempotency_key"] == f"mercadopago:{order.id}:order"
+    assert payload["type"] == "online"
+    assert payload["total_amount"] == "199000.00"
+    assert payload["external_reference"] == order.checkout_ref
+    assert payload["processing_mode"] == "manual"
+    assert payload["capture_mode"] == "automatic"
+    config = payload["config"]
+    assert isinstance(config, dict)
+    assert config["statement_descriptor"] == "LEAN AGENT BUILDER"
+    assert config["online"] == {
+        "success_url": "https://example.test/success",
+        "failure_url": "https://example.test/cancel",
+        "pending_url": "https://example.test/cancel",
+        "auto_return": "approved",
+    }
+    assert config["payment_method"] == {
+        "not_allowed_ids": ["amex"],
+        "not_allowed_types": ["ticket"],
+        "default_type": "credit_card",
+        "max_installments": 12,
+    }
+    items = payload["items"]
+    assert isinstance(items, list)
+    assert items[0]["external_code"] == "blueprint_pro"
+    assert items[0]["unit_price"] == "199000.00"
+    assert items[0]["category_id"] == "services"
+    assert "back_urls" not in payload
+    assert "binary_mode" not in payload
+    assert "metadata" not in payload
+    assert "notification_url" not in payload
+    assert "payment_methods" not in payload
+    assert payload["payer"] == {
+        "email": "commerce-provider@leanbuilder.local",
+        "first_name": "Commerce",
+        "last_name": "Provider Tester",
+    }
+    assert checkout_record.metadata_payload["lab_metadata"]["lab_workspace_id"] == str(workspace.id)
+
+
+def test_mercadopago_webhook_order_processed_uses_common_fulfillment_and_dedupes(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+    FakeMercadoPagoClient.create_calls = []
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="mercadopago",
+            idempotency_key=f"{record.id}:mercadopago-webhook-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    order = db_session.get(CommercialOrderRecord, response.order_id)
+    assert order is not None
+    FakeMercadoPagoClient.order_payload = {
+        "id": "mp_order_123",
+        "status": "processed",
+        "status_detail": "accredited",
+        "total_paid_amount": "199000.00",
+        "currency": "COP",
+        "external_reference": order.checkout_ref,
+        "transactions": {
+            "payments": [
+                {
+                    "id": "mp_pay_123",
+                    "amount": "199000.00",
+                    "paid_amount": "199000.00",
+                    "status": "processed",
+                    "status_detail": "accredited",
+                }
+            ]
+        },
+    }
+    payload = {"id": "evt_mp_approved_1", "type": "order", "data": {"id": "mp_order_123"}}
+    raw_body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = sign_mercadopago_webhook(
+        data_id="mp_order_123",
+        request_id="req_mp_123",
+        timestamp="1700000000",
+        signing_secret="mp_whsec_test",
+    )
+    headers = {
+        "x-request-id": "req_mp_123",
+        "x-signature": f"ts=1700000000,v1={signature}",
+    }
+
+    webhook_response = process_mercadopago_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers=headers,
+        query_params={"data.id": "mp_order_123", "type": "order"},
+        url_secret="url_secret",
+        environment="sandbox",
+        client_factory=FakeMercadoPagoClient,
+    )
+    duplicate = process_mercadopago_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers=headers,
+        query_params={"data.id": "mp_order_123", "type": "order"},
+        url_secret="url_secret",
+        environment="sandbox",
+        client_factory=FakeMercadoPagoClient,
+    )
+    with pytest.raises(PermissionError, match="Invalid Mercado Pago webhook signature"):
+        process_mercadopago_webhook(
+            db_session,
+            raw_body=raw_body,
+            request_headers={"x-request-id": "req_mp_123", "x-signature": "ts=1700000000,v1=bad-signature"},
+            query_params={"data.id": "mp_order_123", "type": "order"},
+            url_secret="url_secret",
+            environment="sandbox",
+            client_factory=FakeMercadoPagoClient,
+        )
+    db_session.commit()
+
+    db_session.refresh(order)
+    payments = db_session.exec(select(CommercialPaymentRecord).where(CommercialPaymentRecord.order_id == order.id)).all()
+    entitlements = db_session.exec(
+        select(CommercialEntitlementRecord).where(CommercialEntitlementRecord.order_id == order.id)
+    ).all()
+    webhook_event = db_session.exec(
+        select(CommerceProviderWebhookEventRecord).where(CommerceProviderWebhookEventRecord.provider_key == "mercadopago")
+    ).one()
+    assert webhook_response.processing_status == "processed"
+    assert duplicate.duplicate is True
+    assert order.status == CommercialOrderStatus.paid
+    assert len(payments) == 1
+    assert payments[0].provider == "mercadopago"
+    assert payments[0].provider_payment_id == "mp_pay_123"
+    assert payments[0].amount_cents == 19_900_000
+    assert payments[0].currency == "COP"
+    assert len(entitlements) == 1
+    assert webhook_event.signature_validated is True
+    assert webhook_event.processing_status == "processed"
+    assert webhook_event.retries == 2
+
+
+def test_mercadopago_webhook_rejects_invalid_signature(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="mercadopago",
+            idempotency_key=f"{record.id}:mercadopago-invalid-signature",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    order = db_session.get(CommercialOrderRecord, response.order_id)
+    assert order is not None
+    payload = {"id": "evt_mp_invalid_sig", "type": "order", "data": {"id": "mp_order_invalid"}}
+    raw_body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(PermissionError, match="Invalid Mercado Pago webhook signature"):
+        process_mercadopago_webhook(
+            db_session,
+            raw_body=raw_body,
+            request_headers={"x-request-id": "req_mp_bad", "x-signature": "ts=1700000000,v1=bad-signature"},
+            query_params={"data.id": "mp_order_invalid", "type": "order"},
+            url_secret="url_secret",
+            environment="sandbox",
+            client_factory=FakeMercadoPagoClient,
+        )
+
+    webhook_event = db_session.exec(
+        select(CommerceProviderWebhookEventRecord).where(CommerceProviderWebhookEventRecord.provider_key == "mercadopago")
+    ).one()
+    assert order.status == CommercialOrderStatus.pending
+    assert webhook_event.processing_status == "rejected"
+    assert webhook_event.signature_validated is False
 
 
 def test_rapyd_webhook_payment_succeeded_uses_common_fulfillment_and_dedupes(

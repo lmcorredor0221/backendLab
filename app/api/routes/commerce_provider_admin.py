@@ -40,6 +40,7 @@ from app.services.commerce_provider_secrets import (
 )
 from app.services.commerce_provider_utils import normalize_commerce_provider_environment
 from app.services.hotmart.secrets import test_hotmart_connection
+from app.services.mercadopago.client import MercadoPagoClient, MercadoPagoClientConfig
 from app.services.payu.client import PayUClient, PayUClientConfig
 from app.services.rapyd.client import RapydClient, RapydClientConfig
 from app.services.rebill.client import RebillClient, RebillClientConfig
@@ -141,6 +142,14 @@ def test_commerce_provider_connection_route(
         )
     if provider_key.strip().lower() == "payu":
         return _test_payu_connection(
+            db,
+            workspace_id=workspace_id,
+            provider_key=provider_key,
+            environment=env,
+            checked_at=checked_at,
+        )
+    if provider_key.strip().lower() == "mercadopago":
+        return _test_mercadopago_connection(
             db,
             workspace_id=workspace_id,
             provider_key=provider_key,
@@ -274,6 +283,89 @@ def _test_payu_connection(
     return CommerceProviderTestConnectionResponse(
         workspace_id=workspace_id,
         provider_key="payu",
+        environment=environment,  # type: ignore[arg-type]
+        reachable=reachable,
+        status="connected" if reachable else "connection_failed",
+        message=message,
+        http_status=http_status,
+        checked_at=checked_at,
+    )
+
+
+def _test_mercadopago_connection(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    provider_key: str,
+    environment: str,
+    checked_at,
+) -> CommerceProviderTestConnectionResponse:
+    status_response = build_commerce_provider_status(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+    )
+    access_token = load_commerce_provider_secret(
+        db,
+        workspace_id=workspace_id,
+        provider_key=provider_key,
+        environment=environment,
+        secret_kind="secret_key",
+    )
+    if not access_token:
+        return CommerceProviderTestConnectionResponse(
+            workspace_id=workspace_id,
+            provider_key="mercadopago",
+            environment=environment,  # type: ignore[arg-type]
+            reachable=False,
+            status="missing_credentials",
+            message="Mercado Pago access token is required to validate the provider connection.",
+            checked_at=checked_at,
+        )
+    if access_token.strip().upper().startswith("TEST-"):
+        message = (
+            "Mercado Pago Orders API does not accept TEST access tokens. "
+            "Use the app APP_USR access token with Mercado Pago test users."
+        )
+        _update_provider_connection_status(
+            db,
+            workspace_id=workspace_id,
+            provider_key="mercadopago",
+            environment=environment,
+            checked_at=checked_at,
+            reachable=False,
+            message=message,
+        )
+        return CommerceProviderTestConnectionResponse(
+            workspace_id=workspace_id,
+            provider_key="mercadopago",
+            environment=environment,  # type: ignore[arg-type]
+            reachable=False,
+            status="unsupported_test_credentials",
+            message=message,
+            checked_at=checked_at,
+        )
+    client = MercadoPagoClient(
+        MercadoPagoClientConfig(
+            api_base_url=status_response.api_base_url,
+            timeout_seconds=get_settings().mercadopago_request_timeout_seconds,
+            environment=environment,
+        )
+    )
+    reachable, message, http_status = client.test_connection(access_token=access_token)
+    _update_provider_connection_status(
+        db,
+        workspace_id=workspace_id,
+        provider_key="mercadopago",
+        environment=environment,
+        checked_at=checked_at,
+        reachable=reachable,
+        message=message,
+    )
+    return CommerceProviderTestConnectionResponse(
+        workspace_id=workspace_id,
+        provider_key="mercadopago",
         environment=environment,  # type: ignore[arg-type]
         reachable=reachable,
         status="connected" if reachable else "connection_failed",

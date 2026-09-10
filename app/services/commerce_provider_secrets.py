@@ -36,6 +36,7 @@ COMMERCE_PROVIDER_SECRET_KINDS: dict[str, tuple[str, ...]] = {
         "webhook_signing_secret",
         "webhook_url_secret",
     ),
+    "mercadopago": ("secret_key", "public_key", "webhook_signing_secret", "webhook_url_secret"),
     "rapyd": ("access_key", "secret_key", "webhook_url_secret"),
 }
 
@@ -142,6 +143,15 @@ def _settings_secret_value(provider_key: str, environment: str, secret_kind: str
             "webhook_signing_secret": settings.payu_webhook_signing_secret,
             "webhook_url_secret": settings.payu_webhook_url_secret,
         }
+    elif provider_key == "mercadopago":
+        if normalize_commerce_provider_environment(settings.mercadopago_environment) != environment:
+            return ""
+        mapping = {
+            "secret_key": settings.mercadopago_access_token,
+            "public_key": settings.mercadopago_public_key,
+            "webhook_signing_secret": settings.mercadopago_webhook_signing_secret,
+            "webhook_url_secret": settings.mercadopago_webhook_url_secret,
+        }
     elif provider_key == "rapyd":
         if normalize_commerce_provider_environment(settings.rapyd_environment) != environment:
             return ""
@@ -161,6 +171,8 @@ def _settings_enabled(provider_key: str, environment: str) -> bool:
         return bool(settings.rebill_enabled)
     if provider_key == "payu" and normalize_commerce_provider_environment(settings.payu_environment) == environment:
         return bool(settings.payu_enabled)
+    if provider_key == "mercadopago" and normalize_commerce_provider_environment(settings.mercadopago_environment) == environment:
+        return bool(settings.mercadopago_enabled)
     if provider_key == "rapyd" and normalize_commerce_provider_environment(settings.rapyd_environment) == environment:
         return bool(settings.rapyd_enabled)
     return False
@@ -176,6 +188,10 @@ def _settings_api_base_url(provider_key: str, environment: str = "sandbox") -> s
         if environment == "production":
             return "https://api.payulatam.com/payments-api/4.0/service.cgi"
         return "https://sandbox.api.payulatam.com/payments-api/4.0/service.cgi"
+    if provider_key == "mercadopago":
+        if settings.mercadopago_api_base_url.strip():
+            return settings.mercadopago_api_base_url.rstrip("/")
+        return "https://api.mercadopago.com"
     if provider_key == "rapyd":
         if settings.rapyd_api_base_url.strip():
             return settings.rapyd_api_base_url.rstrip("/")
@@ -191,6 +207,8 @@ def _settings_webhook_public_url(provider_key: str, environment: str = "sandbox"
         return settings.rebill_webhook_public_url
     if provider_key == "payu" and normalize_commerce_provider_environment(settings.payu_environment) == environment:
         return settings.payu_webhook_public_url
+    if provider_key == "mercadopago" and normalize_commerce_provider_environment(settings.mercadopago_environment) == environment:
+        return settings.mercadopago_webhook_public_url
     if provider_key == "rapyd" and normalize_commerce_provider_environment(settings.rapyd_environment) == environment:
         return settings.rapyd_webhook_public_url
     return ""
@@ -263,6 +281,7 @@ def _computed_status(secret_statuses: list[CommerceProviderSecretStatusResponse]
     required = {
         "rebill": {"secret_key"},
         "payu": {"secret_key", "public_key", "merchant_id", "account_id"},
+        "mercadopago": {"secret_key", "webhook_signing_secret"},
         "rapyd": {"access_key", "secret_key"},
     }.get(provider_key, set())
     if not required:
