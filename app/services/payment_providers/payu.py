@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.services.commerce_provider_mappings import find_commerce_provider_mapping
 from app.services.commerce_provider_redaction import redact_payload
+from app.services.commerce_provider_scope import resolve_commerce_provider_configuration_workspace_id
 from app.services.commerce_provider_secrets import build_commerce_provider_status, load_commerce_provider_secret
 from app.services.commerce_provider_utils import normalize_commerce_provider_environment
 from app.services.payment_providers.base import CheckoutProviderContext, CheckoutProviderDraft
@@ -59,9 +60,13 @@ class PayUPaymentProvider(TemplateCommercePaymentProvider):
     ) -> CheckoutProviderFinalizeResult:
         settings = get_settings()
         environment = normalize_commerce_provider_environment(settings.payu_environment)
-        status = build_commerce_provider_status(
+        configuration_workspace_id = resolve_commerce_provider_configuration_workspace_id(
             session,
             workspace_id=order.workspace_id,
+        )
+        status = build_commerce_provider_status(
+            session,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
         )
@@ -69,21 +74,21 @@ class PayUPaymentProvider(TemplateCommercePaymentProvider):
             raise ValueError("PayU provider is disabled for this workspace.")
         api_key = load_commerce_provider_secret(
             session,
-            workspace_id=order.workspace_id,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
             secret_kind="secret_key",
         )
         merchant_id = load_commerce_provider_secret(
             session,
-            workspace_id=order.workspace_id,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
             secret_kind="merchant_id",
         )
         fallback_account_id = load_commerce_provider_secret(
             session,
-            workspace_id=order.workspace_id,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
             secret_kind="account_id",
@@ -97,7 +102,7 @@ class PayUPaymentProvider(TemplateCommercePaymentProvider):
         package_code = str(order.metadata_payload.get("package_code") or "")
         mapping = find_commerce_provider_mapping(
             session,
-            workspace_id=order.workspace_id,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
             internal_product_key=context.product.product_key,
@@ -149,6 +154,7 @@ class PayUPaymentProvider(TemplateCommercePaymentProvider):
         checkout_record.response_payload_redacted = {"checkout_url": checkout_url}
         checkout_record.metadata_payload = {
             "mapping_id": str(mapping.id),
+            "configuration_workspace_id": str(configuration_workspace_id),
             "provider_stage": "payu_webcheckout_form_created",
             "payu_reference_code": str(form_fields["referenceCode"]),
             "payu_checkout_gateway_url": checkout_gateway_url,
@@ -162,6 +168,7 @@ class PayUPaymentProvider(TemplateCommercePaymentProvider):
             provider_checkout_id=str(form_fields["referenceCode"]),
             metadata={
                 "provider_stage": "payu_webcheckout_form_created",
+                "commerce_provider_configuration_workspace_id": str(configuration_workspace_id),
                 "payu_environment": environment,
                 "payu_reference_code": str(form_fields["referenceCode"]),
                 "commerce_provider_checkout_record_id": str(checkout_record.id),

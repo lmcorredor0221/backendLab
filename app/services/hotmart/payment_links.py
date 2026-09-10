@@ -98,8 +98,19 @@ class HotmartPaymentLinkApiClient:
             "payload_redacted": redact_payload(payload),
         }
         LOGGER.info("hotmart.payment_link.provider_request %s", json.dumps(request_diagnostics, ensure_ascii=False, default=str))
-        with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
-            response = client.post(url, headers=headers, json=payload)
+        try:
+            with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
+                response = client.post(url, headers=headers, json=payload)
+        except httpx.HTTPError as exc:
+            LOGGER.warning(
+                "hotmart.payment_link.provider_network_error %s",
+                json.dumps(request_diagnostics, ensure_ascii=False, default=str),
+            )
+            raise HotmartPaymentLinkError(
+                "payment_link_network_error",
+                "Hotmart payment link request failed before a response was received.",
+                payload={"_lab_payment_link_http_diagnostics": {"request": request_diagnostics}},
+            ) from exc
 
         try:
             response_payload = response.json() if response.text else {}
@@ -159,8 +170,27 @@ class HotmartPaymentLinkApiClient:
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
         }
-        with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
-            response = client.get(self._url(self.list_path), headers=headers)
+        url = self._url(self.list_path)
+        request_diagnostics = {
+            "method": "GET",
+            "url": url,
+            "path": self.list_path,
+            "timeout_seconds": self.timeout_seconds,
+            "headers_redacted": redact_payload(headers),
+        }
+        try:
+            with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
+                response = client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            LOGGER.warning(
+                "hotmart.payment_link.refresh_network_error %s",
+                json.dumps(request_diagnostics, ensure_ascii=False, default=str),
+            )
+            raise HotmartPaymentLinkError(
+                "payment_link_refresh_network_error",
+                "Hotmart payment link refresh request failed before a response was received.",
+                payload={"_lab_payment_link_http_diagnostics": {"request": request_diagnostics}},
+            ) from exc
         try:
             payload = response.json() if response.text else {}
         except ValueError:
@@ -433,6 +463,30 @@ def _existing_payment_link(
         )
         .order_by(HotmartPaymentLinkRecord.created_at.desc())
     ).first()
+
+
+def _persisted_payment_link_id(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    environment: str,
+    provider_ref: str,
+    checkout_ref: str,
+) -> str:
+    provider_id = provider_ref.strip()
+    if not provider_id:
+        return provider_id
+    existing = session.exec(
+        select(HotmartPaymentLinkRecord.id).where(
+            HotmartPaymentLinkRecord.workspace_id == workspace_id,
+            HotmartPaymentLinkRecord.hotmart_payment_link_id == provider_id,
+        )
+    ).first()
+    if existing is None or environment != "sandbox":
+        return provider_id
+    return f"{provider_id}:{checkout_ref.strip()}"
+
+
 def _resolve_checkout_value(
     *,
     snapshot: dict[str, Any],
@@ -715,13 +769,28 @@ def create_hotmart_payment_link_for_order(
             payload=exc.payload,
         ) from exc
 
+    persisted_payment_link_id = _persisted_payment_link_id(
+        session,
+        workspace_id=workspace_id,
+        environment=env,
+        provider_ref=api_result.provider_ref,
+        checkout_ref=order.checkout_ref,
+    )
+    if persisted_payment_link_id != api_result.provider_ref:
+        _trace_step(
+            trace,
+            "provider_payment_link_id.sandbox_deduplicated",
+            provider_ref=api_result.provider_ref,
+            persisted_payment_link_id=persisted_payment_link_id,
+        )
+
     link = HotmartPaymentLinkRecord(
         workspace_id=workspace_id,
         order_id=order.id,
         created_by_user_id=order.buyer_user_id,
         environment=env,
         internal_product_key=product_key,
-        hotmart_payment_link_id=api_result.provider_ref,
+        hotmart_payment_link_id=persisted_payment_link_id,
         provider_ref=api_result.provider_ref,
         checkout_url=api_result.checkout_url,
         activation_status="pending_activation",
@@ -756,7 +825,8 @@ def create_hotmart_payment_link_for_order(
     order.checkout_url = api_result.checkout_url
     order.metadata_payload = {
         **order.metadata_payload,
-        "hotmart_payment_link_id": api_result.provider_ref,
+        "hotmart_payment_link_id": persisted_payment_link_id,
+        "hotmart_provider_ref": api_result.provider_ref,
         "hotmart_payment_link_activation_status": "pending_activation",
         "hotmart_payment_link_http_status": api_result.http_status,
         "hotmart_checkout_currency": target_currency,

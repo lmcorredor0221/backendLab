@@ -196,6 +196,46 @@ def test_hotmart_manual_sync_releases_db_connection_before_provider_calls(tmp_pa
     assert "checkout" in lifecycle[first_http_index + 1 :]
 
 
+def test_hotmart_offer_and_plan_sync_use_mapping_ucode_for_product_path(db_session: Session) -> None:
+    user, workspace = _seed_workspace(db_session)
+    _configure_credentials(db_session, workspace)
+    upsert_hotmart_product_mapping(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartProductMappingUpsertRequest(
+            environment="sandbox",
+            internal_product_key="blueprint_pro",
+            hotmart_product_id="1234567",
+            hotmart_product_ucode="product-ucode-123",
+            billing_mode="one_time",
+            currency="USD",
+        ),
+    )
+    db_session.commit()
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/oauth/token":
+            return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
+        paths.append(request.url.path)
+        return httpx.Response(200, json={"items": [], "page_info": {}})
+
+    for resource in ("offers", "plans"):
+        run_hotmart_manual_sync(
+            db_session,
+            workspace_id=workspace.id,
+            payload=HotmartSyncRequest(environment="sandbox", resource=resource),
+            actor_user_id=user.id,
+            transport=httpx.MockTransport(handler),
+        )
+        db_session.commit()
+
+    assert paths == [
+        "/products/api/v1/products/product-ucode-123/offers",
+        "/products/api/v1/products/product-ucode-123/plans",
+    ]
+
+
 def test_hotmart_webhook_replay_opens_review_issue(db_session: Session) -> None:
     user, workspace = _seed_workspace(db_session)
     webhook = HotmartWebhookEventRecord(

@@ -123,7 +123,7 @@ def test_create_hotmart_payment_link_from_mapped_pending_order(db_session: Sessi
         calls.append(request.url.path)
         if request.url.path == "/security/oauth/token":
             return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
-        assert request.url.path == "/payments/api/v1/payment-links"
+        assert request.url.path == "/payments/api/v1/link"
         assert request.headers["Authorization"] == "Bearer access-token-value"
         payload = json.loads(request.content.decode("utf-8"))
         assert payload["name"] == f"blueprint_pro-{order.checkout_ref}"
@@ -162,7 +162,7 @@ def test_create_hotmart_payment_link_from_mapped_pending_order(db_session: Sessi
     assert refreshed_order.status == CommercialOrderStatus.pending
     assert refreshed_order.checkout_url == "https://pay.hotmart.test/pl-ucode-123"
     assert refreshed_order.metadata_payload["hotmart_payment_link_activation_status"] == "pending_activation"
-    assert calls == ["/security/oauth/token", "/payments/api/v1/payment-links"]
+    assert calls == ["/security/oauth/token", "/payments/api/v1/link"]
 
     stored = db_session.exec(select(HotmartPaymentLinkRecord)).one()
     serialized = str(stored.request_payload_redacted) + str(stored.response_payload_redacted)
@@ -212,6 +212,51 @@ def test_create_hotmart_payment_link_uses_platform_integration_scope(db_session:
 
     assert response.workspace_id == customer_workspace.id
     assert response.checkout_url == "https://pay.hotmart.test/platform-link-1"
+
+
+def test_sandbox_payment_link_duplicate_provider_ref_gets_local_unique_id(db_session: Session) -> None:
+    user, workspace, first_record = _seed_checkout_context(db_session)
+    _configure_hotmart(db_session, workspace)
+    first_order = _create_hotmart_order(db_session, first_record, user)
+    second_record = SessionRecord(user_id=user.id, workspace_id=workspace.id, title="Second Hotmart Links Project")
+    db_session.add(second_record)
+    db_session.commit()
+    db_session.refresh(second_record)
+    second_order = _create_hotmart_order(db_session, second_record, user)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/oauth/token":
+            return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
+        return httpx.Response(201, json={"ucode": "shared-sandbox-link", "url": "https://pay.hotmart.test/shared"})
+
+    first = create_hotmart_payment_link_for_order(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartPaymentLinkCreateRequest(
+            order_id=first_order.id,
+            environment="sandbox",
+            callback_url="https://example.test/hotmart/webhook",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    second = create_hotmart_payment_link_for_order(
+        db_session,
+        workspace_id=workspace.id,
+        payload=HotmartPaymentLinkCreateRequest(
+            order_id=second_order.id,
+            environment="sandbox",
+            callback_url="https://example.test/hotmart/webhook",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    db_session.commit()
+
+    links = db_session.exec(select(HotmartPaymentLinkRecord)).all()
+    assert len(links) == 2
+    assert first.provider_ref == "shared-sandbox-link"
+    assert first.hotmart_payment_link_id == "shared-sandbox-link"
+    assert second.provider_ref == "shared-sandbox-link"
+    assert second.hotmart_payment_link_id == f"shared-sandbox-link:{second_order.checkout_ref}"
 
 
 def test_create_hotmart_payment_link_includes_product_offer_and_environment(db_session: Session) -> None:
@@ -304,6 +349,46 @@ def test_hotmart_payment_link_error_keeps_order_pending_and_records_failed_attem
     assert "failed_attempt.persisted" in trace_steps
     assert "access-token-value" not in str(failed.request_payload_redacted)
     assert "must-redact" not in str(failed.response_payload_redacted)
+
+
+def test_hotmart_payment_link_network_error_keeps_order_pending_and_records_failed_attempt(db_session: Session) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_hotmart(db_session, workspace)
+    order = _create_hotmart_order(db_session, record, user)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/oauth/token":
+            return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
+        raise httpx.ConnectError("DNS resolution failed", request=request)
+
+    with pytest.raises(HotmartPaymentLinkError) as exc_info:
+        create_hotmart_payment_link_for_order(
+            db_session,
+            workspace_id=workspace.id,
+            payload=HotmartPaymentLinkCreateRequest(
+                order_id=order.id,
+                environment="sandbox",
+                callback_url="https://example.test/hotmart/webhook",
+            ),
+            transport=httpx.MockTransport(handler),
+        )
+    db_session.commit()
+
+    refreshed_order = db_session.get(CommercialOrderRecord, order.id)
+    failed = db_session.exec(select(HotmartPaymentLinkRecord)).one()
+    assert exc_info.value.code == "payment_link_network_error"
+    assert refreshed_order is not None
+    assert refreshed_order.status == CommercialOrderStatus.pending
+    assert refreshed_order.checkout_url == ""
+    assert failed.activation_status == "failed"
+    assert failed.response_payload_redacted["_lab_payment_link_error"]["error_code"] == "payment_link_network_error"
+    assert "_lab_payment_link_http_diagnostics" in failed.response_payload_redacted
+    trace_steps = [entry["step"] for entry in failed.request_payload_redacted["_lab_payment_link_trace"]]
+    assert "oauth.succeeded" in trace_steps
+    assert "provider_payment_link.failed" in trace_steps
+    assert "failed_attempt.persisted" in trace_steps
+    serialized = str(failed.request_payload_redacted) + str(failed.response_payload_redacted)
+    assert "access-token-value" not in serialized
 
 
 def test_hotmart_oauth_error_keeps_order_pending_and_records_failed_attempt(db_session: Session) -> None:

@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
+from app.core.config import get_settings
 from app.models import (
     CommerceProviderCheckoutRecord,
     CommerceProviderCredentialUpsertRequest,
@@ -25,6 +26,8 @@ from app.models import (
     CommercialOrderStatus,
     CommercialPaymentRecord,
     HotmartPaymentLinkRecord,
+    PlatformRole,
+    PlatformRoleAssignmentRecord,
     SessionRecord,
     UserRecord,
     WorkspaceMembershipRecord,
@@ -92,6 +95,30 @@ def _seed_checkout_context(session: Session) -> tuple[UserRecord, WorkspaceRecor
     session.refresh(workspace)
     session.refresh(record)
     return user, workspace, record
+
+
+def _seed_platform_admin_workspace(session: Session) -> tuple[UserRecord, WorkspaceRecord]:
+    settings = get_settings()
+    admin = UserRecord(
+        email=settings.local_admin_email,
+        full_name="Platform Commerce Admin",
+        password_hash=hash_password("Secret123!"),
+    )
+    session.add(admin)
+    session.flush()
+    workspace = WorkspaceRecord(
+        name="Platform Commerce Workspace",
+        slug=f"platform-commerce-{str(admin.id)[:8]}",
+        created_by_user_id=admin.id,
+    )
+    session.add(workspace)
+    session.flush()
+    session.add(WorkspaceMembershipRecord(workspace_id=workspace.id, user_id=admin.id, role=WorkspaceRole.owner))
+    session.add(PlatformRoleAssignmentRecord(user_id=admin.id, role=PlatformRole.platform_admin))
+    session.commit()
+    session.refresh(admin)
+    session.refresh(workspace)
+    return admin, workspace
 
 
 def test_commerce_provider_router_normalizes_supported_providers() -> None:
@@ -406,6 +433,40 @@ def test_rebill_checkout_provider_creates_hosted_checkout_with_provider_record(
     assert "plan" not in payload
 
 
+def test_rebill_checkout_uses_platform_scope_for_transversal_configuration(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+    _configure_rebill(db_session, platform_workspace, platform_admin)
+    FakeRebillClient.create_calls = []
+    monkeypatch.setattr(RebillPaymentProvider, "client_factory", FakeRebillClient)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="rebill",
+            idempotency_key=f"{record.id}:rebill-platform-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    checkout_record = db_session.exec(select(CommerceProviderCheckoutRecord)).one()
+    payload = FakeRebillClient.create_calls[0]["payload"]
+    assert response.next_action == "open_checkout"
+    assert checkout_record.workspace_id == customer_workspace.id
+    assert checkout_record.metadata_payload["configuration_workspace_id"] == str(platform_workspace.id)
+    assert FakeRebillClient.create_calls[0]["secret_key"] == "sk_rebill_test"
+    assert payload["metadata"]["lab_workspace_id"] == str(customer_workspace.id)
+    assert payload["metadata"]["lab_configuration_workspace_id"] == str(platform_workspace.id)
+
+
 def test_payu_checkout_provider_creates_signed_webcheckout_redirect(
     db_session: Session,
 ) -> None:
@@ -468,6 +529,34 @@ def test_payu_checkout_provider_creates_signed_webcheckout_redirect(
     assert f'name="referenceCode" value="{fields["referenceCode"]}"' in html
 
 
+def test_payu_checkout_uses_platform_scope_for_transversal_configuration(db_session: Session) -> None:
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+    _configure_payu(db_session, platform_workspace, platform_admin)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="payu",
+            idempotency_key=f"{record.id}:payu-platform-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    checkout_record = db_session.exec(select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "payu")).one()
+    fields = checkout_record.metadata_payload["payu_form_fields"]
+    assert response.next_action == "open_checkout"
+    assert checkout_record.workspace_id == customer_workspace.id
+    assert checkout_record.metadata_payload["configuration_workspace_id"] == str(platform_workspace.id)
+    assert fields["merchantId"] == "508029"
+    assert fields["accountId"] == "512321"
+
+
 def test_rapyd_checkout_provider_creates_hosted_checkout_with_provider_record(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -523,6 +612,42 @@ def test_rapyd_checkout_provider_creates_hosted_checkout_with_provider_record(
     assert payload["metadata"]["lab_order_id"] == str(order.id)
     assert payload["metadata"]["lab_checkout_ref"] == response.checkout_ref
     assert checkout_record.request_payload_redacted["metadata"]["lab_provider"] == "rapyd"
+
+
+def test_rapyd_checkout_uses_platform_scope_for_transversal_configuration(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+    _configure_rapyd(db_session, platform_workspace, platform_admin)
+    FakeRapydClient.create_calls = []
+    monkeypatch.setattr(RapydPaymentProvider, "client_factory", FakeRapydClient)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="rapyd",
+            idempotency_key=f"{record.id}:rapyd-platform-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    checkout_record = db_session.exec(
+        select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "rapyd")
+    ).one()
+    payload = FakeRapydClient.create_calls[0]["payload"]
+    assert response.next_action == "open_checkout"
+    assert checkout_record.workspace_id == customer_workspace.id
+    assert checkout_record.metadata_payload["configuration_workspace_id"] == str(platform_workspace.id)
+    assert FakeRapydClient.create_calls[0]["access_key"] == "access_rapyd_test"
+    assert payload["metadata"]["lab_workspace_id"] == str(customer_workspace.id)
+    assert payload["metadata"]["lab_configuration_workspace_id"] == str(platform_workspace.id)
 
 
 def test_rapyd_checkout_uses_market_mapping_amount_and_currency(

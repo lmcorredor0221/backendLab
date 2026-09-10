@@ -32,6 +32,7 @@ from app.services.commerce_provider_readiness import (
     build_commerce_provider_readiness,
     list_commerce_providers,
 )
+from app.services.commerce_provider_scope import resolve_commerce_provider_configuration_workspace_id
 from app.services.commerce_provider_secrets import (
     build_commerce_provider_status,
     load_commerce_provider_secret,
@@ -44,7 +45,7 @@ from app.services.rapyd.client import RapydClient, RapydClientConfig
 from app.services.rebill.client import RebillClient, RebillClientConfig
 from app.services.runtime_access_control import ensure_platform_admin
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
-from app.services.workspace_bootstrap import apply_workspace_bootstrap, resolve_platform_admin_template_workspace_id
+from app.services.workspace_bootstrap import apply_workspace_bootstrap
 
 
 router = APIRouter(prefix="/admin/commerce/providers", tags=["commerce-provider-admin"])
@@ -498,12 +499,9 @@ def _commerce_platform_workspace_id(
     current_user: UserRecord,
     workspace_context: WorkspaceAccessContext,
 ) -> UUID:
-    platform_workspace_id = resolve_platform_admin_template_workspace_id(db)
-    if platform_workspace_id is not None:
-        return platform_workspace_id
     if current_user.default_workspace_id is not None:
-        return current_user.default_workspace_id
-    return workspace_context.workspace.id
+        return resolve_commerce_provider_configuration_workspace_id(db, workspace_id=current_user.default_workspace_id)
+    return resolve_commerce_provider_configuration_workspace_id(db, workspace_id=workspace_context.workspace.id)
 
 
 def _serialize_checkout_record(record: CommerceProviderCheckoutRecord) -> CommerceProviderCheckoutRecordResponse:

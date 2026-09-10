@@ -348,7 +348,10 @@ def _resource_paths(
     product_refs = [product_id.strip()] if product_id.strip() else []
     if not product_refs:
         for mapping in mappings:
-            ref = mapping.hotmart_product_id.strip() or mapping.hotmart_product_ucode.strip()
+            if resource in {"offers", "plans"}:
+                ref = mapping.hotmart_product_ucode.strip() or mapping.hotmart_product_id.strip()
+            else:
+                ref = mapping.hotmart_product_id.strip() or mapping.hotmart_product_ucode.strip()
             if ref and ref not in product_refs:
                 product_refs.append(ref)
     if resource == "coupons":

@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     hotmart_request_timeout_seconds: int = 30
     hotmart_max_retries: int = 3
     hotmart_sync_page_size: int = 50
-    hotmart_payment_link_create_path: str = "/payments/api/v1/payment-links"
-    hotmart_payment_link_list_path: str = "/payments/api/v1/payment-links"
+    hotmart_payment_link_create_path: str = "/payments/api/v1/link"
+    hotmart_payment_link_list_path: str = "/payments/api/v1/link"
     hotmart_coupon_create_path_template: str = "/products/api/v1/product/{product_id}/coupon"
     hotmart_coupon_list_path_template: str = "/products/api/v1/coupon/product/{product_id}"
     hotmart_coupon_delete_path_template: str = "/products/api/v1/coupon/{coupon_id}"

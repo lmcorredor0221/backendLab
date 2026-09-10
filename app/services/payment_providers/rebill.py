@@ -13,6 +13,7 @@ from app.models import (
 )
 from app.services.commerce_provider_mappings import find_commerce_provider_mapping
 from app.services.commerce_provider_redaction import redact_payload
+from app.services.commerce_provider_scope import resolve_commerce_provider_configuration_workspace_id
 from app.services.commerce_provider_secrets import build_commerce_provider_status, load_commerce_provider_secret
 from app.services.commerce_provider_utils import normalize_commerce_provider_environment
 from app.services.payment_providers.base import CheckoutProviderContext, CheckoutProviderDraft
@@ -51,9 +52,13 @@ class RebillPaymentProvider(TemplateCommercePaymentProvider):
     ) -> CheckoutProviderFinalizeResult:
         settings = get_settings()
         environment = normalize_commerce_provider_environment(settings.rebill_environment)
-        status = build_commerce_provider_status(
+        configuration_workspace_id = resolve_commerce_provider_configuration_workspace_id(
             session,
             workspace_id=order.workspace_id,
+        )
+        status = build_commerce_provider_status(
+            session,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
         )
@@ -61,7 +66,7 @@ class RebillPaymentProvider(TemplateCommercePaymentProvider):
             raise ValueError("Rebill provider is disabled for this workspace.")
         secret_key = load_commerce_provider_secret(
             session,
-            workspace_id=order.workspace_id,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
             secret_kind="secret_key",
@@ -71,7 +76,7 @@ class RebillPaymentProvider(TemplateCommercePaymentProvider):
         package_code = str(order.metadata_payload.get("package_code") or "")
         mapping = find_commerce_provider_mapping(
             session,
-            workspace_id=order.workspace_id,
+            workspace_id=configuration_workspace_id,
             provider_key=self.provider_key,
             environment=environment,
             internal_product_key=context.product.product_key,
@@ -88,6 +93,7 @@ class RebillPaymentProvider(TemplateCommercePaymentProvider):
             "lab_order_id": str(order.id),
             "lab_checkout_ref": order.checkout_ref,
             "lab_workspace_id": str(order.workspace_id),
+            "lab_configuration_workspace_id": str(configuration_workspace_id),
             "lab_session_id": str(order.session_id or ""),
             "lab_product_key": context.product.product_key,
             "lab_price_code": context.price.price_code,
@@ -136,6 +142,7 @@ class RebillPaymentProvider(TemplateCommercePaymentProvider):
         checkout_record.metadata_payload = {
             "idempotency_key": idempotency_key,
             "mapping_id": str(mapping.id),
+            "configuration_workspace_id": str(configuration_workspace_id),
             "provider_stage": "rebill_payment_link_created",
         }
         session.add(checkout_record)
@@ -146,6 +153,7 @@ class RebillPaymentProvider(TemplateCommercePaymentProvider):
             provider_payment_link_id=result.provider_ref,
             metadata={
                 "provider_stage": "rebill_payment_link_created",
+                "commerce_provider_configuration_workspace_id": str(configuration_workspace_id),
                 "rebill_environment": environment,
                 "rebill_payment_link_id": result.provider_ref,
                 "commerce_provider_checkout_record_id": str(checkout_record.id),
