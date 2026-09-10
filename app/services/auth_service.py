@@ -97,9 +97,16 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
 
     if token_record.last_used_at <= now - TOKEN_LAST_USED_WRITE_INTERVAL:
-        token_record.last_used_at = now
-        db.add(token_record)
-        db.commit()
+        # Use a dedicated short-lived session so we don't hold the request
+        # connection open during the commit (the primary cause of pool exhaustion
+        # under concurrent traffic).
+        token_id = token_record.id
+        with Session(engine) as _ts:
+            _rec = _ts.get(AuthTokenRecord, token_id)
+            if _rec is not None:
+                _rec.last_used_at = now
+                _ts.add(_rec)
+                _ts.commit()
     return user
 
 

@@ -29,8 +29,10 @@ def _build_engine_kwargs():
             {
                 # Shared remote databases need modest headroom because the browser
                 # routinely fans out auth, snapshot, attention, and export calls.
-                "pool_size": settings.database_pool_size if settings.database_pool_size is not None else 5,
-                "max_overflow": settings.database_max_overflow if settings.database_max_overflow is not None else 5,
+                # Defaults raised to 10+20 to handle concurrent request fans.
+                # Override via DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW env vars.
+                "pool_size": settings.database_pool_size if settings.database_pool_size is not None else 10,
+                "max_overflow": settings.database_max_overflow if settings.database_max_overflow is not None else 20,
                 "pool_timeout": settings.database_pool_timeout_seconds,
                 "pool_recycle": settings.database_pool_recycle_seconds,
                 "pool_use_lifo": True,
