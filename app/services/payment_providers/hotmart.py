@@ -100,4 +100,6 @@ def _hotmart_callback_url(base_url: str) -> str:
     normalized_base = base_url.strip().rstrip("/")
     if not normalized_base:
         return ""
+    if normalized_base.startswith(("http://localhost", "http://127.0.0.1")):
+        return ""
     return f"{normalized_base}/api/v1/webhooks/hotmart"
