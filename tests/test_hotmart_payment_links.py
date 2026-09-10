@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import json
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -9,8 +10,8 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
-    CommercialCheckoutSessionRequest,
     CommercialEventRecord,
+    CommercialOrderLineRecord,
     CommercialOrderRecord,
     CommercialOrderStatus,
     HotmartCredentialUpsertRequest,
@@ -24,7 +25,6 @@ from app.models import (
     WorkspaceRole,
 )
 from app.services.auth_service import hash_password
-from app.services.commerce_service import create_checkout_session
 from app.services.hotmart.payment_links import (
     HotmartPaymentLinkError,
     create_hotmart_payment_link_for_order,
@@ -97,20 +97,67 @@ def _configure_hotmart(session: Session, workspace: WorkspaceRecord) -> None:
 
 
 def _create_hotmart_order(session: Session, record: SessionRecord, user: UserRecord) -> CommercialOrderRecord:
-    checkout = create_checkout_session(
-        session,
-        payload=CommercialCheckoutSessionRequest(
-            session_id=record.id,
+    order = CommercialOrderRecord(
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        buyer_user_id=user.id,
+        status=CommercialOrderStatus.pending,
+        currency="USD",
+        subtotal_cents=4900,
+        total_cents=4900,
+        provider="hotmart",
+        checkout_ref=f"hotmart_{uuid4().hex}",
+        checkout_url="",
+        idempotency_key=f"{record.id}:hotmart-link-order:{uuid4().hex}",
+        metadata_payload={
+            "product_key": "blueprint_pro",
+            "price_code": "",
+            "provider": "hotmart",
+            "success_url": "",
+            "cancel_url": "",
+            "commercial_snapshot": {
+                "contract_version": "commercial-order-snapshot.v1",
+                "product_key": "blueprint_pro",
+                "product_version": "",
+                "price_code": "",
+                "price_version": "",
+                "provider": "hotmart",
+                "subtotal_cents": 4900,
+                "discount_cents": 0,
+                "total_cents": 4900,
+                "checkout_amount_cents": 4900,
+                "checkout_currency": "USD",
+                "amount_usd_base_cents": 4900,
+                "discount_usd_cents": 0,
+                "net_amount_usd_cents": 4900,
+                "trm_cop_frozen": 4000.0,
+                "trm_effective_date": "",
+                "is_upgrade": False,
+                "success_url": "",
+                "cancel_url": "",
+                "pricing_source": "test_fixture",
+            },
+            "provider_stage": "hotmart_order_pending_payment_link",
+            "requires_payment_link": True,
+            "payment_link_stage": "stage_3",
+        },
+    )
+    session.add(order)
+    session.flush()
+    session.add(
+        CommercialOrderLineRecord(
+            order_id=order.id,
             product_key="blueprint_pro",
-            provider="hotmart",
-            idempotency_key=f"{record.id}:hotmart-link-order",
-        ),
-        record=record,
-        current_user=user,
-        base_url="http://localhost:3200",
+            price_code="",
+            quantity=1,
+            unit_amount_cents=4900,
+            total_amount_cents=4900,
+            metadata_payload={},
+        )
     )
     session.commit()
-    return session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == checkout.order_id)).one()
+    session.refresh(order)
+    return order
 
 
 def test_create_hotmart_payment_link_from_mapped_pending_order(db_session: Session) -> None:

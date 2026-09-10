@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 from urllib.parse import urlencode
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -26,6 +27,7 @@ from app.models import (
     CommercialOrderStatus,
     CommercialPaymentRecord,
     HotmartPaymentLinkRecord,
+    HotmartPaymentLinkResponse,
     PlatformRole,
     PlatformRoleAssignmentRecord,
     SessionRecord,
@@ -33,6 +35,7 @@ from app.models import (
     WorkspaceMembershipRecord,
     WorkspaceRecord,
     WorkspaceRole,
+    utc_now,
 )
 from app.services.auth_service import hash_password
 from app.services.commerce_provider_router import (
@@ -197,6 +200,89 @@ def test_hotmart_checkout_provider_creates_pending_order_without_payment_link(db
     assert order.metadata_payload["requires_payment_link"] is True
     assert order.metadata_payload["payment_link_stage"] == "stage_3"
     assert payment_links == []
+
+
+def test_hotmart_checkout_auto_creates_payment_link_from_platform_scope(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+    calls: list[dict[str, object]] = []
+
+    def fake_create_payment_link_for_order(
+        session: Session,
+        *,
+        workspace_id,
+        payload,
+        integration_workspace_id=None,
+        transport=None,
+    ) -> HotmartPaymentLinkResponse:
+        del session, transport
+        calls.append(
+            {
+                "workspace_id": workspace_id,
+                "integration_workspace_id": integration_workspace_id,
+                "callback_url": payload.callback_url,
+                "environment": payload.environment,
+                "order_id": payload.order_id,
+            }
+        )
+        return HotmartPaymentLinkResponse(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            order_id=payload.order_id,
+            internal_product_key="blueprint_pro",
+            hotmart_payment_link_id="hm-local-link-1",
+            provider_ref="hm-provider-link-1",
+            checkout_url="https://pay.hotmart.test/auto-link",
+            activation_status="pending_activation",
+            gross_amount_cents=4900,
+            discount_amount_cents=0,
+            net_amount_cents=4900,
+            currency="USD",
+            discount_origin="none",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+
+    monkeypatch.setattr(
+        "app.services.hotmart.payment_links.create_hotmart_payment_link_for_order",
+        fake_create_payment_link_for_order,
+    )
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="hotmart",
+            idempotency_key=f"{record.id}:hotmart-platform-auto-link",
+        ),
+        record=record,
+        current_user=user,
+        base_url="https://www.leanagentbuilder.com",
+    )
+    db_session.commit()
+
+    order = db_session.exec(select(CommercialOrderRecord).where(CommercialOrderRecord.id == response.order_id)).one()
+    assert response.provider == "hotmart"
+    assert response.checkout_url == "https://pay.hotmart.test/auto-link"
+    assert response.next_action == "open_checkout"
+    assert order.workspace_id == customer_workspace.id
+    assert order.checkout_url == "https://pay.hotmart.test/auto-link"
+    assert order.metadata_payload["provider_stage"] == "hotmart_payment_link_created"
+    assert order.metadata_payload["commerce_provider_configuration_workspace_id"] == str(platform_workspace.id)
+    assert order.metadata_payload["hotmart_provider_ref"] == "hm-provider-link-1"
+    assert calls == [
+        {
+            "workspace_id": customer_workspace.id,
+            "integration_workspace_id": platform_workspace.id,
+            "callback_url": "https://www.leanagentbuilder.com/api/v1/webhooks/hotmart",
+            "environment": "sandbox",
+            "order_id": order.id,
+        }
+    ]
 
 
 class FakeRebillClient:
