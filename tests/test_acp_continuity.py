@@ -104,6 +104,90 @@ def test_overlay_construction_readiness_preserves_validation_block_even_after_an
     assert readiness.next_recommended_action == "resolve_blocking_construction_gaps"
 
 
+def test_construction_questions_deduplicate_same_text_across_keys() -> None:
+    session_id = uuid4()
+    preview = ACPPreview(
+        session_id=session_id,
+        validation=ACPValidationReport(overall_status="complete", can_export_zip=True),
+        construction_readiness=ConstructionReadinessReport(
+            overall_status="blocked",
+            can_start_build=False,
+            blocking_gaps=2,
+            open_questions=2,
+            assumptions_count=0,
+            gaps=[
+                ConstructionGapEntry(
+                    gap_key="deployment_target_unknown",
+                    title="Falta despliegue",
+                    domain="deployment",
+                    severity="blocking",
+                    status="open",
+                    evidence_paths=["ACP/deployment/env.template"],
+                    questions=[
+                        ConstructionQuestionEntry(
+                            question_key="deployment_target_a",
+                            question_text="Define la infraestructura objetivo.",
+                            rationale="Necesario para empaquetar.",
+                            target_owner="platform_owner",
+                            blocking=True,
+                        )
+                    ],
+                ),
+                ConstructionGapEntry(
+                    gap_key="runtime_target_unknown",
+                    title="Falta runtime",
+                    domain="runtime",
+                    severity="blocking",
+                    status="open",
+                    evidence_paths=["ACP/runtime/config.yaml"],
+                    questions=[
+                        ConstructionQuestionEntry(
+                            question_key="deployment_target_b",
+                            question_text="Define la infraestructura objetivo",
+                            rationale="Necesario para ejecutar.",
+                            target_owner="implementation_owner",
+                            blocking=True,
+                        )
+                    ],
+                ),
+            ],
+            next_recommended_action="answer_open_questions",
+        ),
+    )
+    records = [
+        ConstructionQuestionResponseRecord(
+            session_id=session_id,
+            question_key="deployment_target_b",
+            gap_key="runtime_target_unknown",
+            gap_title="Falta runtime",
+            domain="runtime",
+            question_text="Define la infraestructura objetivo.",
+            rationale="Necesario para ejecutar.",
+            target_owner="implementation_owner",
+            blocking=True,
+            status="answered",
+            answer_text="Usar Render para backend y Vercel para frontend.",
+            impacted_artifacts=["ACP/runtime/config.yaml"],
+        )
+    ]
+
+    questions = build_construction_question_views(preview, records)
+    readiness = overlay_construction_readiness(preview, records)
+
+    assert len(questions) == 1
+    assert questions[0].question_key == "deployment_target_b"
+    assert questions[0].status == "answered"
+    assert questions[0].blocking is False
+    assert questions[0].answer_text.startswith("Usar Render")
+    assert questions[0].impacted_artifacts == [
+        "ACP/deployment/env.template",
+        "ACP/runtime/config.yaml",
+    ]
+    assert readiness.open_questions == 0
+    assert readiness.blocking_gaps == 0
+    assert readiness.can_start_build is True
+
+
 def test_build_continuity_answer_map_excludes_deferred_answers() -> None:
     session_id = uuid4()
     records = [
@@ -290,6 +374,48 @@ def test_deferred_uncertainty_backlog_travels_to_acp_without_blocking_package() 
     assert questions[0].answer_text.startswith("Documentos aprobados")
     assert deferred[0]["question_key"] == backlog_question_key
     assert continuity_answers == {}
+
+
+def test_uncertainty_backlog_gaps_deduplicate_same_question_text() -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    first = UncertaintyBacklogRecord(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        uncertainty_key="runtime_credentials_define",
+        product_mode="acp_implementation",
+        source_stage="runtime",
+        target_stage="acp",
+        kind="question",
+        disposition="block",
+        status="open",
+        title="Definir credenciales runtime",
+        description="Que credenciales se usaran para el runtime de produccion?",
+        reason="Bloquea configuracion.",
+        affected_deliverable_keys=["ACP/runtime/config.yaml"],
+    )
+    second = UncertaintyBacklogRecord(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        uncertainty_key="deployment_credentials_define",
+        product_mode="acp_implementation",
+        source_stage="deployment",
+        target_stage="acp",
+        kind="question",
+        disposition="block",
+        status="open",
+        title="Confirmar credenciales",
+        description="Que credenciales se usaran para el runtime de produccion?",
+        reason="Bloquea despliegue.",
+        dependency_keys=["deployment.secrets"],
+    )
+
+    gaps = build_construction_gaps_from_uncertainty_backlog([first, second])
+
+    assert len(gaps) == 1
+    assert len(gaps[0].questions) == 1
+    assert gaps[0].questions[0].question_text == "Que credenciales se usaran para el runtime de produccion?"
+    assert gaps[0].evidence_paths == ["ACP/runtime/config.yaml", "deployment.secrets"]
 
 
 def test_blocking_uncertainty_backlog_blocks_acp_until_answer_updates_original_record() -> None:

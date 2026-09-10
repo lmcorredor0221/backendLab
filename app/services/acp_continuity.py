@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Iterable
 from uuid import UUID
 
 from sqlmodel import Session, select
@@ -12,6 +12,7 @@ from app.models import (
     ConstructionQuestionEntry,
     ConstructionQuestionAnswerRequest,
     ConstructionQuestionImpactAnalysis,
+    ConstructionQuestionOption,
     ConstructionQuestionResponseRecord,
     ConstructionQuestionViewEntry,
     ConstructionReadinessReport,
@@ -20,6 +21,7 @@ from app.models import (
 )
 from app.services.acp_paths import slugify_acp_token
 from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.question_identity import merge_unique_strings, question_dedupe_signature
 
 
 CURRENT_QUESTION_STATUS_ORDER = {
@@ -28,6 +30,23 @@ CURRENT_QUESTION_STATUS_ORDER = {
     "deferred": 2,
     "resolved": 3,
     "dismissed": 4,
+}
+
+QUESTION_RESOLUTION_PRIORITY = {
+    "open": 0,
+    "deferred": 1,
+    "dismissed": 2,
+    "answered": 3,
+    "resolved": 3,
+}
+
+BACKLOG_RESOLUTION_PRIORITY = {
+    "open": 0,
+    "in_progress": 0,
+    "deferred": 1,
+    "dismissed": 2,
+    "superseded": 2,
+    "resolved": 3,
 }
 
 DOMAIN_PHASE_HINTS: dict[str, tuple[str, ...]] = {
@@ -82,15 +101,200 @@ UNCERTAINTY_BACKLOG_IMPLEMENTATION_TARGETS = {
 
 
 def _dedupe_strings(values: Iterable[str]) -> list[str]:
+    return merge_unique_strings(values)
+
+
+def _strongest_question_status(statuses: Iterable[str]) -> str:
+    strongest = "open"
+    for status in statuses:
+        normalized = str(status or "open").strip().lower()
+        if QUESTION_RESOLUTION_PRIORITY.get(normalized, 0) > QUESTION_RESOLUTION_PRIORITY.get(strongest, 0):
+            strongest = normalized
+    return strongest
+
+
+def _record_question_signature(record: ConstructionQuestionResponseRecord) -> str:
+    return question_dedupe_signature(record.question_text, fallback_key=record.question_key)
+
+
+def _question_entry_signature(gap: ConstructionGapEntry, question: ConstructionQuestionEntry) -> str:
+    return question_dedupe_signature(question.question_text, fallback_key=f"{gap.gap_key}:{question.question_key}")
+
+
+def _backlog_question_signature(record: UncertaintyBacklogRecord) -> str:
+    return question_dedupe_signature(
+        record.description or record.title,
+        fallback_key=record.uncertainty_key,
+    )
+
+
+def _backlog_record_rank(record: UncertaintyBacklogRecord) -> tuple[int, int, int, float, object]:
+    status = str(record.status or "open").strip().lower()
+    answer_text = record.assumed_answer or record.suggested_answer
+    impacted_count = len(record.affected_deliverable_keys or []) + len(record.dependency_keys or [])
+    return (
+        BACKLOG_RESOLUTION_PRIORITY.get(status, 0),
+        1 if str(answer_text or "").strip() else 0,
+        impacted_count,
+        float(record.confidence or 0),
+        record.updated_at or record.created_at,
+    )
+
+
+def _merge_backlog_answer_options(records: list[UncertaintyBacklogRecord]) -> list[dict[str, Any]]:
     seen: set[str] = set()
-    ordered: list[str] = []
+    merged: list[dict[str, Any]] = []
+    for record in records:
+        for option in record.answer_options or []:
+            if not isinstance(option, dict):
+                continue
+            key = question_dedupe_signature(option.get("label"), fallback_key=option.get("key"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(option))
+    return merged
+
+
+def _merge_backlog_record_group(records: list[UncertaintyBacklogRecord]) -> UncertaintyBacklogRecord:
+    if len(records) == 1:
+        return records[0]
+    winner = max(records, key=_backlog_record_rank)
+    signature = _backlog_question_signature(winner)
+    payload = dict(winner.payload or {})
+    payload["dedupe_signature"] = signature
+    payload["merged_uncertainty_ids"] = [
+        str(record.id)
+        for record in records
+        if record.id != winner.id
+    ]
+    return winner.model_copy(
+        update={
+            "source_refs": merge_unique_strings(
+                source_ref
+                for record in records
+                for source_ref in record.source_refs or []
+            ),
+            "affected_deliverable_keys": merge_unique_strings(
+                deliverable_key
+                for record in records
+                for deliverable_key in record.affected_deliverable_keys or []
+            ),
+            "dependency_keys": merge_unique_strings(
+                dependency_key
+                for record in records
+                for dependency_key in record.dependency_keys or []
+            ),
+            "answer_options": _merge_backlog_answer_options(records),
+            "payload": payload,
+        }
+    )
+
+
+def dedupe_uncertainty_backlog_records(
+    records: list[UncertaintyBacklogRecord],
+) -> list[UncertaintyBacklogRecord]:
+    grouped: dict[str, list[UncertaintyBacklogRecord]] = {}
+    for record in records:
+        grouped.setdefault(_backlog_question_signature(record), []).append(record)
+    return [_merge_backlog_record_group(group) for group in grouped.values()]
+
+
+def _merge_question_options(items: list[ConstructionQuestionViewEntry]) -> list[ConstructionQuestionOption]:
+    seen: set[str] = set()
+    merged: list[ConstructionQuestionOption] = []
+    for item in items:
+        for option in item.options or []:
+            key = question_dedupe_signature(option.label, fallback_key=option.key)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(option)
+    return merged
+
+
+def _question_view_signature(item: ConstructionQuestionViewEntry) -> str:
+    return question_dedupe_signature(item.question_text, fallback_key=item.question_key)
+
+
+def _question_view_rank(item: ConstructionQuestionViewEntry) -> tuple[int, int, int, int]:
+    return (
+        QUESTION_RESOLUTION_PRIORITY.get(item.status, 0),
+        1 if item.answer_text.strip() else 0,
+        len(item.impacted_artifacts or []),
+        len(item.options or []),
+    )
+
+
+def _first_non_empty(values: Iterable[str]) -> str:
     for value in values:
         normalized = str(value or "").strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        ordered.append(normalized)
-    return ordered
+        if normalized:
+            return normalized
+    return ""
+
+
+def _first_non_none(values: Iterable[Any]) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _merge_question_view_group(items: list[ConstructionQuestionViewEntry]) -> ConstructionQuestionViewEntry:
+    if len(items) == 1:
+        return items[0]
+    ranked = sorted(items, key=_question_view_rank, reverse=True)
+    primary = ranked[0]
+    status = _strongest_question_status(item.status for item in items)
+    return primary.model_copy(
+        update={
+            "status": status,
+            "blocking": any(item.blocking for item in items) if status == "open" else False,
+            "answer_text": primary.answer_text.strip() or _first_non_empty(item.answer_text for item in ranked),
+            "owner_role": primary.owner_role.strip() or _first_non_empty(item.owner_role for item in ranked),
+            "answered_by_display": primary.answered_by_display.strip()
+            or _first_non_empty(item.answered_by_display for item in ranked),
+            "answered_at": primary.answered_at or _first_non_none(item.answered_at for item in ranked),
+            "resolved_at": primary.resolved_at or _first_non_none(item.resolved_at for item in ranked),
+            "impacted_artifacts": merge_unique_strings(
+                artifact
+                for item in items
+                for artifact in item.impacted_artifacts or []
+            ),
+            "options": _merge_question_options(items),
+            "impact_analysis": primary.impact_analysis or _first_non_none(item.impact_analysis for item in ranked),
+        }
+    )
+
+
+def dedupe_construction_question_views(
+    items: list[ConstructionQuestionViewEntry],
+) -> list[ConstructionQuestionViewEntry]:
+    grouped: dict[str, list[ConstructionQuestionViewEntry]] = {}
+    for item in items:
+        grouped.setdefault(_question_view_signature(item), []).append(item)
+    return [_merge_question_view_group(group) for group in grouped.values()]
+
+
+def _question_status_by_signature(
+    preview: ACPPreview,
+    records: list[ConstructionQuestionResponseRecord],
+) -> dict[str, str]:
+    indexed = index_construction_question_responses(records)
+    statuses: dict[str, str] = {}
+    for record in records:
+        signature = _record_question_signature(record)
+        status = _current_question_status(record.question_key, record)
+        statuses[signature] = _strongest_question_status([statuses.get(signature, "open"), status])
+    for gap in preview.construction_readiness.gaps:
+        for question in gap.questions:
+            signature = _question_entry_signature(gap, question)
+            status = _current_question_status(question.question_key, indexed.get(question.question_key))
+            if status == "open" and signature in statuses:
+                status = statuses[signature]
+            statuses[signature] = _strongest_question_status([statuses.get(signature, "open"), status])
+    return statuses
 
 
 def load_construction_question_response_records(
@@ -211,7 +415,7 @@ def build_construction_gaps_from_uncertainty_backlog(
     records: list[UncertaintyBacklogRecord],
 ) -> list[ConstructionGapEntry]:
     gaps: list[ConstructionGapEntry] = []
-    for record in records:
+    for record in dedupe_uncertainty_backlog_records(records):
         status = _backlog_gap_status(record)
         blocking = _backlog_is_blocking(record)
         gap_key = f"uncertainty_backlog:{record.product_mode}:{slugify_acp_token(record.uncertainty_key, default='item')}"
@@ -259,10 +463,12 @@ def build_construction_question_response_records_from_uncertainty_backlog(
     existing_records: list[ConstructionQuestionResponseRecord] | None = None,
 ) -> list[ConstructionQuestionResponseRecord]:
     existing_keys = {record.question_key for record in existing_records or []}
+    existing_signatures = {_record_question_signature(record) for record in existing_records or []}
     synthetic: list[ConstructionQuestionResponseRecord] = []
-    for record in records:
+    for record in dedupe_uncertainty_backlog_records(records):
         question_key = uncertainty_backlog_question_key(record)
-        if question_key in existing_keys:
+        signature = _backlog_question_signature(record)
+        if question_key in existing_keys or signature in existing_signatures:
             continue
         status = _backlog_response_status(record)
         if status == "open":
@@ -490,7 +696,7 @@ def build_construction_question_views(
         items.append(_build_question_view_from_record(record, status_override=status_override))
 
     return sorted(
-        items,
+        dedupe_construction_question_views(items),
         key=lambda item: (
             CURRENT_QUESTION_STATUS_ORDER.get(item.status, 99),
             item.domain,
@@ -505,6 +711,7 @@ def build_construction_gap_entries(
     records: list[ConstructionQuestionResponseRecord],
 ) -> list[ConstructionGapEntry]:
     indexed = index_construction_question_responses(records)
+    status_by_signature = _question_status_by_signature(preview, records)
     gaps: list[ConstructionGapEntry] = []
     for gap in preview.construction_readiness.gaps:
         if not gap.questions:
@@ -512,7 +719,10 @@ def build_construction_gap_entries(
             continue
 
         question_statuses = [
-            _current_question_status(question.question_key, indexed.get(question.question_key))
+            status_by_signature.get(
+                _question_entry_signature(gap, question),
+                _current_question_status(question.question_key, indexed.get(question.question_key)),
+            )
             for question in gap.questions
         ]
         gap_status = "answered" if question_statuses and all(status != "open" for status in question_statuses) else "open"
@@ -528,14 +738,9 @@ def overlay_construction_readiness(
     if not base.gaps:
         return base
 
-    indexed = index_construction_question_responses(records)
     gaps = build_construction_gap_entries(preview, records)
-    open_questions = sum(
-        1
-        for gap in preview.construction_readiness.gaps
-        for question in gap.questions
-        if _current_question_status(question.question_key, indexed.get(question.question_key)) == "open"
-    )
+    question_views = build_construction_question_views(preview, records)
+    open_questions = sum(1 for item in question_views if item.status == "open")
     blocking_gaps = sum(1 for gap in gaps if gap.severity == "blocking" and gap.status not in {"answered", "resolved"})
     has_answered_gap = any(gap.status == "answered" for gap in gaps)
     validation_allows_build = bool(preview.validation.can_export_zip)

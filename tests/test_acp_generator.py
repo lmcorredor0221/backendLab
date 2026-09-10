@@ -370,7 +370,7 @@ def test_generate_acp_preview_publishes_deferred_decisions_without_using_them_as
     assert "delegated_to_implementation" in deferred_file.content_text
     assert "reconciliation_decision: delegated_to_implementation" in impact_log_file.content_text
     assert "reprocess_decision: delegated_to_implementation" in impact_log_file.content_text
-    assert "deployment_target" in open_questions_file.content_text
+    assert "question_key: deployment_target" not in open_questions_file.content_text
 
 
 def test_generate_acp_preview_accepts_extra_backlog_readiness_gaps() -> None:

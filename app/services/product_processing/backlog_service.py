@@ -15,6 +15,7 @@ from app.services.product_processing.contracts import (
     UncertaintyOption,
 )
 from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.question_identity import merge_unique_strings, question_dedupe_signature
 
 
 def _status_for_classification(classification: UncertaintyClassification) -> str:
@@ -25,6 +26,43 @@ def _status_for_classification(classification: UncertaintyClassification) -> str
 
 def _option_payload(options: list[UncertaintyOption]) -> list[dict[str, object]]:
     return [option.model_dump(mode="json") for option in options]
+
+
+def _uncertainty_signature(classification: UncertaintyClassification) -> str:
+    uncertainty = classification.uncertainty
+    return question_dedupe_signature(
+        uncertainty.description or uncertainty.title,
+        fallback_key=uncertainty.key,
+    )
+
+
+def _record_signature(record: UncertaintyBacklogRecord) -> str:
+    return question_dedupe_signature(
+        record.description or record.title,
+        fallback_key=record.uncertainty_key,
+    )
+
+
+def _find_existing_by_signature(
+    db: Session,
+    *,
+    session_id: UUID,
+    classification: UncertaintyClassification,
+) -> UncertaintyBacklogRecord | None:
+    signature = _uncertainty_signature(classification)
+    rows = db.exec(
+        select(UncertaintyBacklogRecord)
+        .where(
+            UncertaintyBacklogRecord.session_id == session_id,
+            UncertaintyBacklogRecord.product_mode == classification.profile_mode.value,
+            UncertaintyBacklogRecord.status != UncertaintyBacklogStatus.superseded.value,
+        )
+        .order_by(UncertaintyBacklogRecord.updated_at.desc())
+    ).all()
+    for row in rows:
+        if _record_signature(row) == signature:
+            return row
+    return None
 
 
 def backlog_entry_from_record(record: UncertaintyBacklogRecord) -> UncertaintyBacklogEntry:
@@ -71,6 +109,12 @@ def upsert_uncertainty_backlog(
             UncertaintyBacklogRecord.product_mode == classification.profile_mode.value,
         )
     ).first()
+    if existing is None:
+        existing = _find_existing_by_signature(
+            db,
+            session_id=session_id,
+            classification=classification,
+        )
     record = existing or UncertaintyBacklogRecord(
         workspace_id=workspace_id,
         session_id=session_id,
@@ -101,10 +145,16 @@ def upsert_uncertainty_backlog(
     record.assumed_answer = uncertainty.assumed_answer
     record.suggested_answer = uncertainty.suggested_answer
     record.answer_options = _option_payload(uncertainty.answer_options)
-    record.source_refs = list(uncertainty.source_refs)
-    record.affected_deliverable_keys = list(uncertainty.affected_deliverable_keys)
-    record.dependency_keys = list(dependency_keys or [])
-    record.payload = classification.model_dump(mode="json")
+    record.source_refs = merge_unique_strings([*(record.source_refs or []), *uncertainty.source_refs])
+    record.affected_deliverable_keys = merge_unique_strings(
+        [*(record.affected_deliverable_keys or []), *uncertainty.affected_deliverable_keys]
+    )
+    record.dependency_keys = merge_unique_strings([*(record.dependency_keys or []), *(dependency_keys or [])])
+    payload = classification.model_dump(mode="json")
+    payload["dedupe_signature"] = _uncertainty_signature(classification)
+    if existing is not None and record.uncertainty_key != uncertainty.key:
+        payload["merged_uncertainty_key"] = uncertainty.key
+    record.payload = payload
     record.created_from = created_from
     record.updated_at = utc_now()
     record.resolved_at = None

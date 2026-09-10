@@ -422,6 +422,66 @@ def test_uncertainty_backlog_persists_and_prioritizes_items() -> None:
         assert resolved.status == UncertaintyBacklogStatus.resolved
 
 
+def test_uncertainty_backlog_upsert_deduplicates_same_question_text_across_keys() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+
+    with Session(engine) as db:
+        first = classify_uncertainty_for_profile(
+            "runtime",
+            {
+                "key": "runtime_credentials_define",
+                "question": "Que credenciales se usaran para el runtime de produccion?",
+                "blocking": True,
+                "required_for_implementation": True,
+                "source_refs": ["runtime.contract"],
+                "affected_deliverable_keys": ["ACP/runtime/config.yaml"],
+            },
+            ProductProcessingMode.acp_implementation,
+        )
+        second = classify_uncertainty_for_profile(
+            "deployment",
+            {
+                "key": "deployment_credentials_define",
+                "question": "Que credenciales se usaran para el runtime de produccion?",
+                "blocking": True,
+                "required_for_implementation": True,
+                "source_refs": ["deployment.env"],
+                "affected_deliverable_keys": ["ACP/deployment/env.template"],
+            },
+            ProductProcessingMode.acp_implementation,
+        )
+
+        first_entry = upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=first,
+            dependency_keys=["runtime.secrets"],
+        )
+        second_entry = upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=second,
+            dependency_keys=["deployment.secrets"],
+        )
+        rows = db.exec(select(UncertaintyBacklogRecord)).all()
+
+    assert len(rows) == 1
+    assert second_entry.id == first_entry.id
+    assert rows[0].uncertainty_key == "runtime_credentials_define"
+    assert rows[0].source_refs == ["runtime.contract", "deployment.env"]
+    assert rows[0].affected_deliverable_keys == [
+        "ACP/runtime/config.yaml",
+        "ACP/deployment/env.template",
+    ]
+    assert rows[0].dependency_keys == ["runtime.secrets", "deployment.secrets"]
+    assert rows[0].payload["merged_uncertainty_key"] == "deployment_credentials_define"
+
+
 def test_premium_enrichment_resolves_with_impact_analysis_before_reconciliation() -> None:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)

@@ -16,6 +16,7 @@ from app.services.acp_continuity import (
     append_construction_readiness_gaps,
     build_construction_decision_log,
     build_deferred_construction_decision_backlog,
+    build_construction_question_views,
     is_no_applicable_answer,
     parse_answer_list,
     parse_answer_pairs,
@@ -2124,44 +2125,48 @@ def _suggested_owners(gap: ConstructionGapEntry) -> list[str]:
     return owners
 
 
-def _flatten_open_questions(preview: ACPPreview) -> list[dict[str, Any]]:
+def _flatten_open_questions(
+    preview: ACPPreview,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
-    for gap in preview.construction_readiness.gaps:
-        for question in gap.questions:
-            options_list: list[dict[str, Any]] = []
-            suggested_answer = ""
-            if question.options:
-                for opt in question.options:
-                    if opt.recommended and not suggested_answer:
-                        suggested_answer = opt.label
-                    options_list.append(
-                        {
-                            "key": opt.key,
-                            "label": opt.label,
-                            "description": opt.description,
-                            "impact": opt.impact,
-                            "example": opt.example,
-                            "recommended": opt.recommended,
-                            "confidence": opt.confidence,
-                            "source_refs": list(opt.source_refs),
-                        }
-                    )
-            questions.append(
-                {
-                    "question_key": question.question_key,
-                    "gap_key": gap.gap_key,
-                    "domain": gap.domain,
-                    "question_text": question.question_text,
-                    "rationale": question.rationale,
-                    "purpose": question.purpose,
-                    "suggested_answer": suggested_answer,
-                    "target_owner": question.target_owner,
-                    "expected_answer_format": question.expected_answer_format,
-                    "blocking": question.blocking,
-                    "impacted_artifacts": gap.evidence_paths,
-                    "options": options_list,
-                }
-            )
+    for question in build_construction_question_views(preview, response_records or []):
+        if question.status != "open":
+            continue
+        options_list: list[dict[str, Any]] = []
+        suggested_answer = ""
+        if question.options:
+            for opt in question.options:
+                if opt.recommended and not suggested_answer:
+                    suggested_answer = opt.label
+                options_list.append(
+                    {
+                        "key": opt.key,
+                        "label": opt.label,
+                        "description": opt.description,
+                        "impact": opt.impact,
+                        "example": opt.example,
+                        "recommended": opt.recommended,
+                        "confidence": opt.confidence,
+                        "source_refs": list(opt.source_refs),
+                    }
+                )
+        questions.append(
+            {
+                "question_key": question.question_key,
+                "gap_key": question.gap_key,
+                "domain": question.domain,
+                "question_text": question.question_text,
+                "rationale": question.rationale,
+                "purpose": question.purpose,
+                "suggested_answer": suggested_answer,
+                "target_owner": question.target_owner,
+                "expected_answer_format": question.expected_answer_format,
+                "blocking": question.blocking,
+                "impacted_artifacts": question.impacted_artifacts,
+                "options": options_list,
+            }
+        )
     return questions
 
 
@@ -2236,7 +2241,7 @@ def _build_construction_readiness_files(
     validation = preview.validation
     response_records = response_records or []
     blocking_gaps = [gap for gap in readiness.gaps if gap.severity == "blocking"]
-    open_questions = _flatten_open_questions(preview)
+    open_questions = _flatten_open_questions(preview, response_records)
     assumptions = _flatten_assumption_entries(preview)
     external_dependencies = _external_dependency_entries(preview)
     decision_log = build_construction_decision_log(preview, response_records)
@@ -2399,6 +2404,7 @@ def _build_construction_readiness_files(
                 "domain": domain,
                 "gap_key": item.get("gap_key"),
                 "status": "deferred_to_implementation",
+                "impact_analysis": item.get("impact_analysis"),
                 "question_text": question_text,
                 "rationale": item.get("rationale") or "",
                 "target_owner": item.get("target_owner") or "developer",
