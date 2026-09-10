@@ -13,10 +13,13 @@ from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.core.config import get_settings
 from app.models import (
+    AccessRequestCreateRequest,
     CommerceProviderCheckoutRecord,
     CommerceProviderCredentialUpsertRequest,
     CommerceProviderProductMappingUpsertRequest,
     CommerceProviderWebhookEventRecord,
+    CommercialAccessRequestRecord,
+    CommercialAccessRequestStatus,
     CommercialCheckoutCompletionRequest,
     CommercialCheckoutSessionRequest,
     CommercialDebtRecord,
@@ -26,6 +29,7 @@ from app.models import (
     CommercialOrderRecord,
     CommercialOrderStatus,
     CommercialPaymentRecord,
+    CommercialTier,
     HotmartPaymentLinkRecord,
     HotmartPaymentLinkResponse,
     PlatformRole,
@@ -42,10 +46,16 @@ from app.services.commerce_provider_router import (
     get_commerce_payment_provider,
     normalize_commerce_payment_provider,
 )
-from app.services.commerce_service import complete_checkout_session, create_checkout_session
+from app.services.commerce_service import (
+    CheckoutAvailableForAccessRequestError,
+    complete_checkout_session,
+    create_checkout_session,
+    request_access,
+)
 from app.services.commerce_provider_mappings import upsert_commerce_provider_mapping
 from app.services.commerce_provider_readiness import build_commerce_provider_readiness
 from app.services.commerce_provider_secrets import upsert_commerce_provider_credentials
+from app.services.commercial_access import build_commercial_access_snapshot_v2
 from app.services.commercial_catalog_service import upsert_package_catalog_entry
 from app.services.commercial_debt_service import create_commercial_debt
 from app.services.commercial_quota_service import get_balance_snapshot
@@ -494,6 +504,53 @@ def _configure_mercadopago(session: Session, workspace: WorkspaceRecord, user: U
         payload=CommerceProviderProductMappingUpsertRequest(
             environment="sandbox",
             internal_product_key="blueprint_pro",
+            billing_mode="one_time",
+            currency="COP",
+            internal_unit_amount_usd_cents=19_900_000,
+            provider_product_id="services",
+            provider_plan_id="ticket",
+            provider_price_id="credit_card",
+            provider_payment_link_id="amex",
+            provider_offer_ref="LEAN AGENT BUILDER",
+            metadata={"binary_mode": True, "installments": 12, "default_installments": 1},
+        ),
+    )
+    session.flush()
+
+
+def _configure_mercadopago_orders_ready(
+    session: Session,
+    workspace: WorkspaceRecord,
+    user: UserRecord,
+    *,
+    package_code: str = "blueprint_pro_co",
+) -> None:
+    upsert_commerce_provider_credentials(
+        session,
+        workspace_id=workspace.id,
+        provider_key="mercadopago",
+        payload=CommerceProviderCredentialUpsertRequest(
+            environment="sandbox",
+            enabled=True,
+            api_base_url="https://api.mercadopago.test",
+            webhook_public_url="https://api.lean.test/api/v1/webhooks/mercadopago/url_secret/sandbox",
+            secrets={
+                "secret_key": "APP_USR-mp-access-token",
+                "public_key": "TEST-mp-public-key",
+                "webhook_signing_secret": "mp_whsec_test",
+                "webhook_url_secret": "url_secret",
+            },
+        ),
+        actor_user_id=user.id,
+    )
+    upsert_commerce_provider_mapping(
+        session,
+        workspace_id=workspace.id,
+        provider_key="mercadopago",
+        payload=CommerceProviderProductMappingUpsertRequest(
+            environment="sandbox",
+            internal_product_key="blueprint_pro",
+            package_code=package_code,
             billing_mode="one_time",
             currency="COP",
             internal_unit_amount_usd_cents=19_900_000,
@@ -1075,6 +1132,85 @@ def test_mercadopago_readiness_blocks_test_access_token_for_orders_api(db_sessio
     assert "TEST-" in checks["mercadopago_orders_access_token"].detail
 
 
+def test_blueprint_pro_access_snapshot_routes_to_checkout_when_external_payment_flow_is_active(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "commerce_checkout_provider", "sandbox")
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, _customer_workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago_orders_ready(db_session, platform_workspace, platform_admin)
+
+    access = build_commercial_access_snapshot_v2(db_session, record, current_user=user)
+
+    assert access.tier == CommercialTier.blueprint
+    assert access.checkout_state == "available"
+    assert db_session.exec(select(CommercialAccessRequestRecord)).all() == []
+
+
+def test_access_request_is_not_created_when_external_payment_flow_is_active(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "commerce_checkout_provider", "sandbox")
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, _customer_workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago_orders_ready(db_session, platform_workspace, platform_admin)
+
+    with pytest.raises(CheckoutAvailableForAccessRequestError, match="checkout"):
+        request_access(
+            db_session,
+            payload=AccessRequestCreateRequest(
+                session_id=record.id,
+                capability="blueprint.download",
+                reason="Quiero Blueprint Pro",
+            ),
+            record=record,
+            current_user=user,
+            product_key="blueprint_pro",
+            target_tier=CommercialTier.blueprint_pro,
+        )
+
+    assert db_session.exec(select(CommercialAccessRequestRecord)).all() == []
+
+
+def test_checkout_without_provider_prefers_ready_platform_mercadopago_configuration(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "commerce_checkout_provider", "sandbox")
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago_orders_ready(db_session, platform_workspace, platform_admin)
+    FakeMercadoPagoClient.create_calls = []
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            package_code="blueprint_pro_co",
+            idempotency_key=f"{record.id}:auto-mercadopago-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    checkout_record = db_session.exec(select(CommerceProviderCheckoutRecord)).one()
+    assert response.provider == "mercadopago"
+    assert response.checkout_ref.startswith("mp_")
+    assert response.checkout_url == "https://sandbox.mercadopago.com.co/checkout/v1/redirect?order_id=mp_order_123"
+    assert checkout_record.workspace_id == customer_workspace.id
+    assert checkout_record.metadata_payload["configuration_workspace_id"] == str(platform_workspace.id)
+    assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "APP_USR-mp-access-token"
+
+
 def test_mercadopago_checkout_provider_creates_order_with_provider_record(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -1176,6 +1312,18 @@ def test_mercadopago_webhook_order_processed_uses_common_fulfillment_and_dedupes
     )
     order = db_session.get(CommercialOrderRecord, response.order_id)
     assert order is not None
+    stale_access_request = CommercialAccessRequestRecord(
+        workspace_id=workspace.id,
+        session_id=record.id,
+        requester_user_id=user.id,
+        capability="blueprint.download",
+        product_key="blueprint_pro",
+        target_tier=CommercialTier.blueprint_pro,
+        reason="Solicitud creada antes de activar checkout",
+        status=CommercialAccessRequestStatus.pending,
+    )
+    db_session.add(stale_access_request)
+    db_session.flush()
     FakeMercadoPagoClient.order_payload = {
         "id": "mp_order_123",
         "status": "processed",
@@ -1255,6 +1403,9 @@ def test_mercadopago_webhook_order_processed_uses_common_fulfillment_and_dedupes
     assert payments[0].amount_cents == 19_900_000
     assert payments[0].currency == "COP"
     assert len(entitlements) == 1
+    db_session.refresh(stale_access_request)
+    assert stale_access_request.status == CommercialAccessRequestStatus.approved
+    assert stale_access_request.resolution_note == "Aprobada automaticamente por pago confirmado."
     assert webhook_event.signature_validated is True
     assert webhook_event.processing_status == "processed"
     assert webhook_event.retries == 2

@@ -41,6 +41,7 @@ from app.models import (
 from app.services.acp_generator import generate_acp_preview
 from app.services.auth_service import get_current_user
 from app.services.commerce_service import (
+    CheckoutAvailableForAccessRequestError,
     TRM_SOURCE_LABEL,
     build_access_request_response,
     build_order_response,
@@ -652,14 +653,17 @@ def create_access_request_route(
     record = _get_record_or_404(db, session_id, current_user.id)
     target_tier = CommercialTier.acp if payload.capability.startswith("acp") else CommercialTier.blueprint_pro
     product_key = "acp" if target_tier == CommercialTier.acp else "blueprint_pro"
-    response = request_access(
-        db,
-        payload=payload,
-        record=record,
-        current_user=current_user,
-        product_key=product_key,
-        target_tier=target_tier,
-    )
+    try:
+        response = request_access(
+            db,
+            payload=payload,
+            record=record,
+            current_user=current_user,
+            product_key=product_key,
+            target_tier=target_tier,
+        )
+    except CheckoutAvailableForAccessRequestError as exc:
+        raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     db.commit()
     return response
 

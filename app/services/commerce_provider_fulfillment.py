@@ -48,6 +48,7 @@ def apply_provider_payment_success(
 ) -> ProviderFulfillmentResult:
     from app.services.commerce_service import (
         apply_package_credits_from_paid_order,
+        close_pending_access_requests_after_checkout,
         get_product,
         record_commercial_event,
         settle_open_debts_from_paid_order,
@@ -94,6 +95,12 @@ def apply_provider_payment_success(
         order=order,
         payment=payment,
         actor_user_id=actor_user_id,
+    )
+    close_pending_access_requests_after_checkout(
+        session,
+        order=order,
+        product_key=product.product_key,
+        actor_user_id=actor_user_id or order.buyer_user_id,
     )
     apply_package_credits_from_paid_order(
         session,

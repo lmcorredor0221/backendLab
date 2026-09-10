@@ -15,6 +15,7 @@ from app.models import (
     WorkspaceRole,
 )
 from app.services.commerce_service import (
+    resolve_checkout_state_for_access,
     resolve_effective_entitlement_state,
     role_for_user,
 )
@@ -467,6 +468,12 @@ def build_commercial_access_snapshot_v2(
         purchase_refs=effective.purchase_refs,
     )
     decisions = build_entitlement_matrix(context, tuple(CAPABILITY_POLICIES.keys()))
+    checkout_state = resolve_checkout_state_for_access(
+        db,
+        record,
+        current_user=current_user,
+        effective_tier=effective.tier,
+    )
     return CommercialAccessSnapshotV2(
         workspace_id=record.workspace_id,
         session_id=record.id,
@@ -475,7 +482,7 @@ def build_commercial_access_snapshot_v2(
         tier=effective.tier,
         tier_label=TIER_LABELS[effective.tier],
         reason_code=effective.reason_code,
-        checkout_state=effective.checkout_state,
+        checkout_state=checkout_state,
         purchase_refs=list(effective.purchase_refs),
         entitlements=list(effective.entitlements),
         capabilities=[

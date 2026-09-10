@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
+from app.core.config import get_settings
 from app.models import (
     AccessRequestCreateRequest,
     AccessRequestResponse,
@@ -20,6 +21,8 @@ from app.models import (
     CommercialCheckoutCompletionRequest,
     CommercialCheckoutSessionRequest,
     CommercialCheckoutSessionResponse,
+    CommerceProviderConfigRecord,
+    CommerceProviderProductMappingRecord,
     CommercialEntitlementRecord,
     CommercialEntitlementSource,
     CommercialEntitlementStatus,
@@ -49,7 +52,10 @@ from app.models import (
     utc_now,
 )
 from app.services.workspace_membership_service import get_effective_workspace_membership
-from app.services.commerce_provider_router import get_commerce_payment_provider
+from app.services.commerce_provider_readiness import build_commerce_provider_readiness
+from app.services.commerce_provider_registry import list_commerce_provider_definitions
+from app.services.commerce_provider_router import get_commerce_payment_provider, normalize_commerce_payment_provider
+from app.services.commerce_provider_utils import normalize_commerce_provider_environment
 from app.services.commercial_event_catalog import enrich_commercial_event_metadata
 from app.services.commercial_debt_service import (
     create_commercial_debt,
@@ -66,6 +72,7 @@ from app.services.commercial_quota_service import (
     ensure_quota_seed,
     get_balance_snapshot,
     initialize_workspace_commercial_quota,
+    resolve_effective_quota_config,
 )
 from app.services.payment_providers.base import CheckoutProviderContext
 
@@ -84,6 +91,24 @@ TIER_RANKS: dict[CommercialTier, int] = {
     CommercialTier.blueprint_pro: 2,
     CommercialTier.acp: 3,
 }
+
+EXTERNAL_CHECKOUT_PROVIDER_PRIORITY: tuple[str, ...] = (
+    "mercadopago",
+    "payu",
+    "rebill",
+    "rapyd",
+    "hotmart",
+)
+
+
+class CheckoutAvailableForAccessRequestError(ValueError):
+    def __init__(self, *, product_key: str, provider_key: str) -> None:
+        super().__init__(
+            f"El checkout para {product_key} esta disponible con {provider_key}; "
+            "usa el flujo de pago en lugar de crear una solicitud administrativa."
+        )
+        self.product_key = product_key
+        self.provider_key = provider_key
 
 
 def tier_rank(tier: CommercialTier) -> int:
@@ -688,6 +713,12 @@ def build_commercial_access_v2(
         )
 
     reason_code = "allowed" if all(item.allowed for item in decisions) else (capability_reason_codes[0] if capability_reason_codes else "free_access")
+    checkout_state = resolve_checkout_state_for_access(
+        db,
+        session_record,
+        current_user=current_user,
+        effective_tier=effective_tier,
+    )
     return CommercialAccessSnapshotV2(
         workspace_id=session_record.workspace_id,
         session_id=session_record.id,
@@ -696,7 +727,7 @@ def build_commercial_access_v2(
         tier=effective_tier,
         tier_label=TIER_LABELS[effective_tier],
         reason_code=reason_code,
-        checkout_state=resolve_checkout_state(db, session_record),
+        checkout_state=checkout_state,
         purchase_refs=purchase_refs,
         entitlements=[serialize_entitlement(item) for item in entitlements],
         capabilities=decisions,
@@ -716,6 +747,225 @@ def resolve_checkout_state(db: Session, session_record: SessionRecord) -> str:
     if latest_order.status == CommercialOrderStatus.pending:
         return "pending"
     return latest_order.status.value
+
+
+def _configured_environment_for_provider(provider_key: str) -> str:
+    settings = get_settings()
+    raw_environment = getattr(settings, f"{provider_key}_environment", None)
+    if raw_environment is not None:
+        return normalize_commerce_provider_environment(str(raw_environment))
+    definitions = {definition.provider_key: definition for definition in list_commerce_provider_definitions()}
+    definition = definitions.get(provider_key)
+    return normalize_commerce_provider_environment(definition.default_environment if definition else "sandbox")
+
+
+def _external_checkout_provider_candidates(
+    db: Session,
+    *,
+    configuration_workspace_id: UUID,
+) -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    configured_records = db.exec(
+        select(CommerceProviderConfigRecord)
+        .where(
+            CommerceProviderConfigRecord.workspace_id == configuration_workspace_id,
+            CommerceProviderConfigRecord.enabled == True,  # noqa: E712
+            CommerceProviderConfigRecord.provider_key != "sandbox",
+        )
+        .order_by(CommerceProviderConfigRecord.updated_at.desc(), CommerceProviderConfigRecord.provider_key.asc())
+    ).all()
+    for record in configured_records:
+        try:
+            provider_key = normalize_commerce_payment_provider(record.provider_key)
+            environment = normalize_commerce_provider_environment(record.environment)
+        except ValueError:
+            continue
+        if provider_key == "sandbox":
+            continue
+        key = (provider_key, environment)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(key)
+
+    supported = {definition.provider_key for definition in list_commerce_provider_definitions()}
+    priority = list(EXTERNAL_CHECKOUT_PROVIDER_PRIORITY)
+    priority.extend(sorted(supported - {"sandbox", *EXTERNAL_CHECKOUT_PROVIDER_PRIORITY}))
+    for provider_key in priority:
+        if provider_key not in supported:
+            continue
+        key = (provider_key, _configured_environment_for_provider(provider_key))
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(key)
+    return candidates
+
+
+def _provider_has_checkout_mapping(
+    db: Session,
+    *,
+    configuration_workspace_id: UUID,
+    provider_key: str,
+    environment: str,
+    product_key: str = "",
+    package_code: str = "",
+) -> bool:
+    product = product_key.strip()
+    if not product:
+        return True
+    statement = select(CommerceProviderProductMappingRecord).where(
+        CommerceProviderProductMappingRecord.workspace_id == configuration_workspace_id,
+        CommerceProviderProductMappingRecord.provider_key == provider_key,
+        CommerceProviderProductMappingRecord.environment == environment,
+        CommerceProviderProductMappingRecord.internal_product_key == product,
+        CommerceProviderProductMappingRecord.is_active == True,  # noqa: E712
+    )
+    package = package_code.strip()
+    if package:
+        exact = db.exec(statement.where(CommerceProviderProductMappingRecord.package_code == package)).first()
+        if exact is not None:
+            return True
+        return db.exec(statement.where(CommerceProviderProductMappingRecord.package_code == "")).first() is not None
+    return db.exec(statement).first() is not None
+
+
+def resolve_ready_external_checkout_provider_key(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    product_key: str = "",
+    package_code: str = "",
+) -> str:
+    from app.services.commerce_provider_scope import resolve_commerce_provider_configuration_workspace_id
+
+    configuration_workspace_id = resolve_commerce_provider_configuration_workspace_id(
+        db,
+        workspace_id=workspace_id,
+    )
+    for provider_key, environment in _external_checkout_provider_candidates(
+        db,
+        configuration_workspace_id=configuration_workspace_id,
+    ):
+        if not _provider_has_checkout_mapping(
+            db,
+            configuration_workspace_id=configuration_workspace_id,
+            provider_key=provider_key,
+            environment=environment,
+            product_key=product_key,
+            package_code=package_code,
+        ):
+            continue
+        try:
+            readiness = build_commerce_provider_readiness(
+                db,
+                workspace_id=configuration_workspace_id,
+                provider_key=provider_key,
+                environment=environment,
+            )
+        except ValueError:
+            continue
+        if readiness.ready:
+            return provider_key
+    return ""
+
+
+def resolve_checkout_provider_key_for_workspace(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    requested_provider: str | None = None,
+    product_key: str = "",
+    package_code: str = "",
+) -> str:
+    if requested_provider is not None and requested_provider.strip():
+        return normalize_commerce_payment_provider(requested_provider)
+    configured_provider = normalize_commerce_payment_provider(None)
+    if configured_provider != "sandbox":
+        return configured_provider
+    ready_provider = resolve_ready_external_checkout_provider_key(
+        db,
+        workspace_id=workspace_id,
+        product_key=product_key,
+        package_code=package_code,
+    )
+    return ready_provider or configured_provider
+
+
+def _next_paid_product_key_for_tier(tier: CommercialTier) -> str:
+    if tier_rank(tier) < tier_rank(CommercialTier.blueprint_pro):
+        return "blueprint_pro"
+    if tier_rank(tier) < tier_rank(CommercialTier.acp):
+        return "acp"
+    return ""
+
+
+def _workspace_has_available_product_balance(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    product_key: str,
+) -> bool:
+    try:
+        config = resolve_effective_quota_config(db, workspace_id=workspace_id, product_key=product_key)
+    except ValueError:
+        return False
+    if not config.enabled:
+        return False
+    snapshot = get_balance_snapshot(db, workspace_id=workspace_id, product_key=product_key)
+    if snapshot.total_available_units > 0:
+        return True
+    return not snapshot.buckets and config.initial_free_units > 0
+
+
+def _checkout_provider_for_access_request(
+    db: Session,
+    *,
+    record: SessionRecord,
+    current_user: UserRecord,
+    product_key: str,
+) -> str:
+    membership = get_membership(db, record, current_user)
+    if membership is None or membership.role not in {WorkspaceRole.owner, WorkspaceRole.admin}:
+        return ""
+    try:
+        config = resolve_effective_quota_config(db, workspace_id=record.workspace_id, product_key=product_key)
+    except ValueError:
+        return ""
+    if not config.enabled or not config.checkout_required_on_zero_balance:
+        return ""
+    if _workspace_has_available_product_balance(db, workspace_id=record.workspace_id, product_key=product_key):
+        return ""
+    return resolve_ready_external_checkout_provider_key(
+        db,
+        workspace_id=record.workspace_id,
+        product_key=product_key,
+    )
+
+
+def resolve_checkout_state_for_access(
+    db: Session,
+    session_record: SessionRecord,
+    *,
+    current_user: UserRecord | None = None,
+    effective_tier: CommercialTier | None = None,
+) -> str:
+    order_state = resolve_checkout_state(db, session_record)
+    if order_state in {"confirmed", "pending"}:
+        return order_state
+    if current_user is None:
+        return order_state
+    target_product_key = _next_paid_product_key_for_tier(effective_tier or session_record.commercial_tier)
+    if not target_product_key:
+        return order_state
+    provider_key = _checkout_provider_for_access_request(
+        db,
+        record=session_record,
+        current_user=current_user,
+        product_key=target_product_key,
+    )
+    return "available" if provider_key else order_state
 
 
 def create_legacy_entitlement_if_needed(
@@ -1112,7 +1362,14 @@ def create_checkout_session(
     if existing is not None:
         return serialize_checkout_response(db, existing)
 
-    provider = get_commerce_payment_provider(resolved_request.provider)
+    provider_key = resolve_checkout_provider_key_for_workspace(
+        db,
+        workspace_id=resolved_record.workspace_id,
+        requested_provider=resolved_request.provider,
+        product_key=product.product_key,
+        package_code=resolved_package_code,
+    )
+    provider = get_commerce_payment_provider(provider_key)
     provider_context = CheckoutProviderContext(
         workspace_id=resolved_record.workspace_id,
         session_record=resolved_record,
@@ -1464,6 +1721,14 @@ def create_access_request(
     membership = get_membership(db, session_record, current_user)
     if membership is None:
         raise PermissionError("Workspace membership is required.")
+    provider_key = _checkout_provider_for_access_request(
+        db,
+        record=session_record,
+        current_user=current_user,
+        product_key=policy.product,
+    )
+    if provider_key:
+        raise CheckoutAvailableForAccessRequestError(product_key=policy.product, provider_key=provider_key)
     existing = db.exec(
         select(CommercialAccessRequestRecord).where(
             CommercialAccessRequestRecord.workspace_id == workspace_id,
@@ -1537,6 +1802,14 @@ def request_access(
     product_key: str,
     target_tier: CommercialTier,
 ) -> AccessRequestResponse:
+    provider_key = _checkout_provider_for_access_request(
+        db,
+        record=record,
+        current_user=current_user,
+        product_key=product_key,
+    )
+    if provider_key:
+        raise CheckoutAvailableForAccessRequestError(product_key=product_key, provider_key=provider_key)
     existing = db.exec(
         select(CommercialAccessRequestRecord).where(
             CommercialAccessRequestRecord.workspace_id == record.workspace_id,
@@ -1880,6 +2153,58 @@ def process_pending_access_requests_fifo(
         ):
             approved.append(access_request)
     return approved
+
+
+def close_pending_access_requests_after_checkout(
+    db: Session,
+    *,
+    order: CommercialOrderRecord,
+    product_key: str,
+    actor_user_id: UUID | None = None,
+) -> list[CommercialAccessRequestRecord]:
+    if order.session_id is None or not product_key.strip():
+        return []
+    pending_requests = db.exec(
+        select(CommercialAccessRequestRecord)
+        .where(
+            CommercialAccessRequestRecord.workspace_id == order.workspace_id,
+            CommercialAccessRequestRecord.session_id == order.session_id,
+            CommercialAccessRequestRecord.product_key == product_key.strip(),
+            CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.pending,
+        )
+        .order_by(CommercialAccessRequestRecord.created_at.asc(), CommercialAccessRequestRecord.id.asc())
+    ).all()
+    resolved: list[CommercialAccessRequestRecord] = []
+    resolver_user_id = actor_user_id or order.buyer_user_id
+    for access_request in pending_requests:
+        access_request.status = CommercialAccessRequestStatus.approved
+        access_request.resolver_user_id = resolver_user_id
+        access_request.resolution_note = "Aprobada automaticamente por pago confirmado."
+        access_request.resolved_at = utc_now()
+        access_request.updated_at = utc_now()
+        db.add(access_request)
+        record_commercial_event(
+            db,
+            workspace_id=access_request.workspace_id,
+            session_id=access_request.session_id,
+            user_id=resolver_user_id,
+            event_key="access_request_approved",
+            product_key=access_request.product_key,
+            source="commerce_checkout",
+            metadata={
+                "capability": access_request.capability,
+                "request_id": str(access_request.id),
+                "order_id": str(order.id),
+                "checkout_ref": order.checkout_ref,
+                "provider": order.provider,
+                "approval_mode": "payment_confirmed",
+            },
+            correlation_id=order.checkout_ref,
+        )
+        resolved.append(access_request)
+    if resolved:
+        db.flush()
+    return resolved
 
 
 def resolve_access_request_by_id(
