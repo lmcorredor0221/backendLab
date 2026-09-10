@@ -98,6 +98,10 @@ def ensure_runtime_schema() -> None:
             "delivery_package": f"JSON NOT NULL DEFAULT {json_default}",
             "knowledge_profile": f"JSON NOT NULL DEFAULT {json_default}",
         },
+        "product_build_runs_v1": {
+            # Prevents re-generation of LEAN work stages after Blueprint Pro approval.
+            "is_sealed": "BOOLEAN NOT NULL DEFAULT FALSE",
+        },
     }
 
     with engine.begin() as connection:

@@ -331,8 +331,33 @@ def post_product_build_action_route(
         reconcile_product_build_run,
         run_product_build_processing,
     )
+    from app.services.product_processing.product_build_run_service import list_product_build_runs
 
     record = get_or_404(db, session_id, current_user.id)
+
+    # Block any mutation action on a sealed blueprint_pro run.
+    # The run is sealed after the first successful generation triggered by the
+    # Blueprint Pro access approval. Re-generation of LEAN work stages is not allowed.
+    if (
+        product_key == ProductBuildProductKey.blueprint_pro
+        and payload.action in {"start", "resume", "retry", "process_pending", "retry_failed"}
+        and record.workspace_id is not None
+    ):
+        existing_runs = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=product_key,
+        )
+        if existing_runs and getattr(existing_runs[0], "is_sealed", False):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "El Blueprint Pro ya fue generado y aprobado. "
+                    "Las etapas de Trabajo LEAN no pueden regenerarse."
+                ),
+            )
+
     if payload.action in {"process_pending", "retry_failed"}:
         run, status, queued_now = enqueue_product_build_processing(
             db,

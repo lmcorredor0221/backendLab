@@ -72,6 +72,19 @@ class ProductBuildOrchestrationOptions:
     job_runner: JobRunner | None = None
 
 
+
+def seal_product_build_run(db: Session, *, run: ProductBuildRunRecord) -> None:
+    """Mark a blueprint_pro ProductBuildRun as sealed.
+
+    A sealed run prevents further user-triggered regeneration of LEAN work
+    stages (start / resume / process_pending / retry_failed actions). The seal
+    is set automatically once all steps complete without errors.
+    """
+    run.is_sealed = True
+    run.updated_at = utc_now()
+    db.add(run)
+
+
 def ensure_product_build_orchestration(
     db: Session,
     *,
@@ -150,6 +163,16 @@ def ensure_product_build_orchestration(
     )
 
     if resolved_options.execute_jobs:
+        # If the run is sealed (all steps completed successfully after Blueprint Pro
+        # approval), block user-triggered job execution to prevent regeneration.
+        if getattr(run, "is_sealed", False):
+            return build_product_build_status(
+                db,
+                record=record,
+                product_key=normalized_product_key,
+                current_user=current_user,
+                catalog_stage_override=catalog_stage_override,
+            )
         if resolved_options.job_runner is not None:
             _execute_expected_jobs(
                 db,
@@ -288,6 +311,28 @@ def enqueue_product_build_processing(
 ) -> tuple[ProductBuildRunRecord | None, ProductBuildStatus, bool]:
     normalized_product_key = _normalize_product_key(product_key)
     resolved_mode = _normalize_queue_mode(mode)
+
+    # Block re-enqueuing if the blueprint_pro run is already sealed.
+    # The seal is set after first successful completion (post access-approval generation).
+    if normalized_product_key == ProductBuildProductKey.blueprint_pro and record.workspace_id is not None:
+        existing_runs = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=normalized_product_key,
+        )
+        if existing_runs and getattr(existing_runs[0], "is_sealed", False):
+            return (
+                existing_runs[0],
+                build_product_build_status(
+                    db,
+                    record=record,
+                    product_key=normalized_product_key,
+                    current_user=current_user,
+                    catalog_stage_override=catalog_stage_override,
+                ),
+                False,
+            )
 
     if normalized_product_key == ProductBuildProductKey.acp:
         from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
@@ -904,6 +949,16 @@ def _finalize_run_from_steps(db: Session, *, run: ProductBuildRunRecord, expecte
             ],
         },
     )
+
+    # Seal blueprint_pro runs once fully completed (no blocked/failed steps).
+    # A sealed run blocks further user-triggered regenerations of LEAN work stages.
+    if (
+        lifecycle == ProductBuildLifecycle.completed
+        and blocked_units == 0
+        and run.product_key == ProductBuildProductKey.blueprint_pro.value
+        and not getattr(run, "is_sealed", False)
+    ):
+        seal_product_build_run(db, run=run)
 
 
 def _refresh_status_for_product(

@@ -78,6 +78,9 @@ class ProductBuildRunRecord(SQLModel, table=True):
     completed_at: datetime | None = Field(default=None, nullable=True)
     requires_attention_at: datetime | None = Field(default=None, nullable=True)
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+    # When True, no further regeneration of LEAN work stages is allowed for
+    # blueprint_pro runs. Set automatically once all steps complete successfully.
+    is_sealed: bool = Field(default=False, nullable=False)
 
 
 class ProductBuildStepRecord(SQLModel, table=True):
