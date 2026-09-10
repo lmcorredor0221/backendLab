@@ -12,6 +12,7 @@ from app.services.product_processing.product_build_orchestrator import (
     ensure_product_build_orchestration,
 )
 from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
+from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff
 
 
 ORDER_PRODUCT_TO_BUILD_PRODUCT: dict[str, ProductBuildProductKey] = {
@@ -51,6 +52,13 @@ def activate_product_builds_for_paid_order(
         )
         activation_payload = _activation_payload(order=order, product_key=product_key, source=source)
         if product_key == ProductBuildProductKey.acp:
+            finalize_blueprint_for_acp_handoff(
+                db,
+                session_record=record,
+                actor_user_id=current_user.id if current_user is not None else order.buyer_user_id,
+                source=f"paid_product_activation:{source}",
+                correlation_id=f"paid-order:{order.id}:acp-handoff",
+            )
             statuses.append(
                 ensure_acp_product_orchestration(
                     db,

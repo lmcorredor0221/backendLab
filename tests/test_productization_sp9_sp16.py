@@ -4,7 +4,8 @@ from uuid import UUID
 
 from app.db import get_session
 from app.main import app
-from app.models import ACPBuildRunRecord, ExportJobRecord, JourneyStateRecord
+from app.models import ACPBuildRunRecord, CommercialEventRecord, ExportJobRecord, JourneyStateRecord
+from app.services.acp_handoff_service import BLUEPRINT_ACP_HANDOFF_EVENT_KEY
 from app.services import export_delivery_service
 from fastapi.testclient import TestClient
 import pytest
@@ -57,6 +58,9 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
     blocked_workspace = client.get(f"/api/v1/sessions/{session_id}/acp/workspace", headers=headers)
     assert blocked_workspace.status_code == 403
 
+    blocked_questions = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
+    assert blocked_questions.status_code == 403
+
     attention_response = client.get(f"/api/v1/sessions/{session_id}/attention", headers=headers)
     assert attention_response.status_code == 200
     assert attention_response.json()["contract_version"] == "attention.v1"
@@ -84,6 +88,13 @@ def test_sp9_sp16_productization_surfaces_are_gated_and_operational(client: Test
         assert db.exec(
             select(ACPBuildRunRecord).where(ACPBuildRunRecord.session_id == UUID(session_id))
         ).all() == []
+        assert db.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == UUID(session_id),
+                CommercialEventRecord.product_key == "acp",
+                CommercialEventRecord.event_key == BLUEPRINT_ACP_HANDOFF_EVENT_KEY,
+            )
+        ).first() is not None
     finally:
         session_gen.close()
 

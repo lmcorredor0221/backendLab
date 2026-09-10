@@ -143,7 +143,7 @@ def test_product_journey_overview_exposes_validate_state_for_acp() -> None:
 
     assert overview.journey_state_machine is not None
     assert overview.journey_state_machine.current.state_key.value == "validate"
-    assert overview.journey_state_machine.current.href.endswith("/acp?acp_tab=validate")
+    assert overview.journey_state_machine.current.href.endswith("/acp?step=validate")
 
 
 def test_product_journey_overview_prioritizes_blocking_attention_over_upsell() -> None:

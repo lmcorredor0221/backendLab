@@ -6,6 +6,7 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from app.models import (
     AccessRequestCreateRequest,
     CommercialAccessRequestRecord,
+    CommercialEventRecord,
     CommercialOrderRecord,
     CommercialOrderStatus,
     CommercialTier,
@@ -14,6 +15,7 @@ from app.models import (
     UserRecord,
 )
 from app.services.auth_service import hash_password
+from app.services.acp_handoff_service import BLUEPRINT_ACP_HANDOFF_EVENT_KEY
 from app.services.commerce_service import request_access
 from app.services.commercial_rollout_service import (
     MIGRATION_KEY_COMMERCIAL_QUOTA_ROLLOUT,
@@ -143,3 +145,77 @@ def test_apply_commercial_quota_rollout_is_idempotent_after_migration_record_exi
 
         assert summary.already_recorded is True
         assert summary.workspaces_scanned == 0
+
+
+def test_acp_handoff_is_not_finalized_while_access_request_is_pending() -> None:
+    with _db_session() as session:
+        upsert_quota_product_config(
+            session,
+            product_key="acp",
+            display_name="ACP",
+            initial_free_units=0,
+        )
+        session.commit()
+        user, record = _seed_project_context(session, email="acp-pending@leanbuilder.local")
+
+        pending_request = request_access(
+            session,
+            payload=AccessRequestCreateRequest(
+                session_id=record.id,
+                capability="acp.build",
+                reason="Necesito continuar con ACP",
+            ),
+            record=record,
+            current_user=user,
+            product_key="acp",
+            target_tier=CommercialTier.acp,
+        )
+        session.commit()
+
+        event = session.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == record.id,
+                CommercialEventRecord.product_key == "acp",
+                CommercialEventRecord.event_key == BLUEPRINT_ACP_HANDOFF_EVENT_KEY,
+            )
+        ).first()
+
+        assert pending_request.status == "pending"
+        assert event is None
+
+
+def test_acp_handoff_is_finalized_when_access_request_consumes_free_balance() -> None:
+    with _db_session() as session:
+        upsert_quota_product_config(
+            session,
+            product_key="acp",
+            display_name="ACP",
+            initial_free_units=1,
+        )
+        session.commit()
+        user, record = _seed_project_context(session, email="acp-auto@leanbuilder.local")
+
+        approved_request = request_access(
+            session,
+            payload=AccessRequestCreateRequest(
+                session_id=record.id,
+                capability="acp.build",
+                reason="Usar saldo ACP",
+            ),
+            record=record,
+            current_user=user,
+            product_key="acp",
+            target_tier=CommercialTier.acp,
+        )
+        session.commit()
+
+        event = session.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == record.id,
+                CommercialEventRecord.product_key == "acp",
+                CommercialEventRecord.event_key == BLUEPRINT_ACP_HANDOFF_EVENT_KEY,
+            )
+        ).first()
+
+        assert approved_request.status == "approved"
+        assert event is not None

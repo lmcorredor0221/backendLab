@@ -369,14 +369,14 @@ def record_acp_invitation_event_route(
     )
 
 
-@router.get("/{session_id}/acp/direct-resolution", response_model=AcpDirectRouteResolution)
+@router.get("/{session_id}/acp/direct-resolution", response_model=AcpDirectRouteResolution, deprecated=True)
 def get_acp_direct_resolution_route(
     session_id: UUID,
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
 ) -> AcpDirectRouteResolution:
     record = get_or_404(db, session_id, current_user.id)
-    ensure_commercial_capability(record, "acp.invite", db=db, current_user=current_user)
+    ensure_acp_build_access(record, db=db, current_user=current_user)
     snapshot, _ = ensure_acp_evaluation_seed_snapshot(
         db,
         record,
@@ -390,7 +390,7 @@ def get_acp_direct_resolution_route(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.post("/{session_id}/acp/generate", response_model=ACPPreview)
+@router.post("/{session_id}/acp/generate", response_model=ACPPreview, deprecated=True)
 def generate_acp_route(
     session_id: UUID,
     profile: str = "extended",
@@ -544,6 +544,7 @@ def get_acp_questions_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> list[ConstructionQuestionViewEntry]:
     record = get_or_404(db, session_id, current_user.id)
+    ensure_acp_build_access(record, db=db, current_user=current_user)
     preview = resolve_profiled_preview(db, record, profile=resolve_acp_profile(profile))
     response_records = load_construction_question_response_records_for_preview(db, session_id)
     return build_construction_question_views(preview, response_records)
@@ -558,6 +559,7 @@ def answer_acp_question_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> ConstructionQuestionViewEntry:
     record = get_or_404(db, session_id, current_user.id)
+    ensure_acp_build_access(record, db=db, current_user=current_user)
     ensure_acp_evaluation_seed_snapshot(
         db,
         record,
@@ -674,7 +676,7 @@ def get_acp_file_route(
     return get_acp_file_entry(preview, file_path)
 
 
-@router.get("/{session_id}/acp/export.zip")
+@router.get("/{session_id}/acp/export.zip", deprecated=True)
 def export_acp_zip_route(
     session_id: UUID,
     profile: str | None = None,

@@ -886,7 +886,7 @@ def _href_for_state(*, record_id: str, state_key: JourneyStateKey) -> str:
     }:
         return f"/projects/{record_id}/acp/overview"
     if state_key == JourneyStateKey.validate:
-        return f"/projects/{record_id}/acp?acp_tab=validate"
+        return f"/projects/{record_id}/acp?step=validate"
     if state_key in {JourneyStateKey.package, JourneyStateKey.completed}:
-        return f"/projects/{record_id}/acp?acp_tab=package"
+        return f"/projects/{record_id}/acp?step=package"
     return f"/projects/{record_id}/acp"
