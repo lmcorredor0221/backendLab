@@ -59,7 +59,12 @@ from app.services.attention_service import (
 from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
 from app.services.auth_service import get_current_user
 from app.services.product_processing.journey_state_machine_service import transition_for_acp_workspace_phase
-from app.services.commerce_service import list_active_products, serialize_access_request
+from app.services.commerce_service import (
+    close_pending_access_requests_after_authorization,
+    list_active_products,
+    resolve_effective_entitlement_state,
+    serialize_access_request,
+)
 from app.services.commercial_access import build_commercial_access_snapshot_v2, resolve_session_entitlement_context
 from app.services.commercial_observability_service import build_commercial_audit_report
 from app.services.diagram_catalog_service import build_diagram_catalog
@@ -90,11 +95,30 @@ router = APIRouter(prefix="/sessions", tags=["productization"])
 PRODUCT_SURFACE_STAGE = "package"
 
 
+def _sync_authorized_access_requests(
+    db: Session,
+    record: SessionRecord,
+    current_user: UserRecord,
+) -> None:
+    effective = resolve_effective_entitlement_state(db, record)
+    resolved = close_pending_access_requests_after_authorization(
+        db,
+        record=record,
+        effective_tier=effective.tier,
+        actor_user_id=current_user.id,
+        source="product_experience",
+    )
+    if resolved:
+        db.commit()
+        db.refresh(record)
+
+
 def _context(
     db: Session,
     record: SessionRecord,
     current_user: UserRecord,
 ):
+    _sync_authorized_access_requests(db, record, current_user)
     snapshot = build_snapshot(db, record, current_user=current_user)
     preview = resolve_acp_preview(db, record, allow_auto_bootstrap=False)
     response_records = load_construction_question_response_records_for_preview(db, record.id)
@@ -822,6 +846,7 @@ def get_plan_access_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> PlanAccessResponse:
     record = get_or_404(db, session_id, current_user.id)
+    _sync_authorized_access_requests(db, record, current_user)
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     pending_requests = db.exec(
         select(CommercialAccessRequestRecord).where(

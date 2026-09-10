@@ -234,6 +234,8 @@ def build_attention_response(
         )
     ).all()
     for request in pending_requests:
+        if _access_request_is_already_authorized(access, request):
+            continue
         items.append(
             _attention_item(
                 key=f"access-request:{request.id}",
@@ -297,6 +299,17 @@ def _pending_access_requests(db: Session, record: SessionRecord) -> list[Commerc
             CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.pending,
         )
     ).all()
+
+
+def _access_request_is_already_authorized(
+    access: CommercialAccessSnapshotV2,
+    request: CommercialAccessRequestRecord,
+) -> bool:
+    if request.product_key == "blueprint_pro":
+        return access.tier in {CommercialTier.blueprint_pro, CommercialTier.acp}
+    if request.product_key == "acp":
+        return access.tier == CommercialTier.acp
+    return False
 
 
 def _answered_construction_question_keys(db: Session, record: SessionRecord) -> set[str]:

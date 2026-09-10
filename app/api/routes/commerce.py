@@ -46,6 +46,7 @@ from app.services.commerce_service import (
     build_access_request_response,
     build_order_response,
     build_product_response,
+    close_pending_access_requests_after_authorization,
     complete_sandbox_checkout,
     create_checkout_session,
     get_access_requests_count,
@@ -249,7 +250,22 @@ def _legacy_attention(overview: ProductJourneyOverview) -> list[ProductAttention
     return attention
 
 
+def _sync_authorized_access_requests(db: Session, record: SessionRecord, current_user: UserRecord) -> None:
+    effective = resolve_effective_entitlement_state(db, record)
+    resolved = close_pending_access_requests_after_authorization(
+        db,
+        record=record,
+        effective_tier=effective.tier,
+        actor_user_id=current_user.id,
+        source="commerce_access",
+    )
+    if resolved:
+        db.commit()
+        db.refresh(record)
+
+
 def _product_overview(db: Session, record: SessionRecord, current_user: UserRecord) -> ProductOverviewResponse:
+    _sync_authorized_access_requests(db, record, current_user)
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     overview = build_product_journey_overview(db, record=record, current_user=current_user)
     base = f"/projects/{record.id}"
@@ -503,6 +519,7 @@ def get_commercial_access_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> CommercialAccessSnapshotV2:
     record = _get_record_or_404(db, session_id, current_user.id)
+    _sync_authorized_access_requests(db, record, current_user)
     return build_commercial_access_snapshot_v2(db, record, current_user=current_user)
 
 
@@ -513,6 +530,7 @@ def get_blueprint_result_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> BlueprintResultResponse:
     record = _get_record_or_404(db, session_id, current_user.id)
+    _sync_authorized_access_requests(db, record, current_user)
     snapshot = build_snapshot(db, record, include_short_term=False, current_user=current_user)
     preview = generate_acp_preview(snapshot)
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
@@ -565,6 +583,7 @@ def get_blueprint_offer_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> ProductOfferResponse:
     record = _get_record_or_404(db, session_id, current_user.id)
+    _sync_authorized_access_requests(db, record, current_user)
     product = get_active_product(db, "blueprint_pro")
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     role = role_for_user(db, workspace_id=record.workspace_id, user_id=current_user.id)
@@ -590,6 +609,7 @@ def get_acp_invitation_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> AcpInvitationResponse:
     record = _get_record_or_404(db, session_id, current_user.id)
+    _sync_authorized_access_requests(db, record, current_user)
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     product = get_active_product(db, "acp")
     state = "active" if access.tier == CommercialTier.acp else access.checkout_state

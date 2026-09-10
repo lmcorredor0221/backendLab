@@ -16,6 +16,9 @@ from app.models import (
     CommercialAccessRequestRecord,
     CommercialAccessRequestStatus,
     CommercialAccessSnapshotV2,
+    CommercialEntitlementRecord,
+    CommercialEntitlementSource,
+    CommercialEntitlementStatus,
     CommercialEventRecord,
     CommercialTier,
     ConstructionGapEntry,
@@ -1408,6 +1411,56 @@ def test_uxa2_access_request_approval_does_not_leave_success_attention_noise(cli
     commercial_attention = client.get(f"/api/v1/sessions/{session_id}/attention-v2?product=commercial", headers=headers)
     assert commercial_attention.status_code == 200
     assert commercial_attention.json()["total_count"] == 0
+
+
+def test_uxa2_active_entitlement_closes_stale_access_request_attention(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    session_data = client.post("/api/v1/sessions", headers=headers).json()
+    session_id = session_data["id"]
+
+    db_session = _db_session_from_client(client)
+    try:
+        record = db_session.get(SessionRecord, UUID(session_id))
+        user = db_session.exec(select(UserRecord).where(UserRecord.email == TEST_EMAIL)).first()
+        assert record is not None
+        assert user is not None
+        access_request = CommercialAccessRequestRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            requester_user_id=user.id,
+            capability="blueprint.download",
+            product_key="blueprint_pro",
+            status=CommercialAccessRequestStatus.pending,
+            reason="Solicitud anterior al entitlement.",
+        )
+        entitlement = CommercialEntitlementRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key="blueprint_pro",
+            tier=CommercialTier.blueprint_pro,
+            status=CommercialEntitlementStatus.active,
+            source=CommercialEntitlementSource.admin_grant,
+            granted_by_user_id=user.id,
+        )
+        db_session.add(access_request)
+        db_session.add(entitlement)
+        db_session.commit()
+        access_request_id = access_request.id
+    finally:
+        db_session.close()
+
+    response = client.get(f"/api/v1/sessions/{session_id}/attention-v2?type=access_request", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["total_count"] == 0
+
+    db_session = _db_session_from_client(client)
+    try:
+        access_request = db_session.get(CommercialAccessRequestRecord, access_request_id)
+        assert access_request is not None
+        assert access_request.status == CommercialAccessRequestStatus.approved
+        assert access_request.resolution_note == "Aprobada automaticamente porque el acceso ya estaba autorizado."
+    finally:
+        db_session.close()
 
 
 def test_attention_v2_retry_restarts_memory_checkpoint_when_resume_is_eligible(

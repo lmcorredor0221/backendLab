@@ -9,6 +9,8 @@ from app.models import (
     CommercialEventRecord,
     CommercialAccessRequestStatus,
     CommercialEntitlementRecord,
+    CommercialEntitlementSource,
+    CommercialEntitlementStatus,
     CommercialQuotaSourceKind,
     CommercialTier,
     JourneyArtifactState,
@@ -19,7 +21,7 @@ from app.models import (
     UserRecord,
 )
 from app.services.auth_service import hash_password
-from app.services.commerce_service import request_access
+from app.services.commerce_service import close_pending_access_requests_after_authorization, request_access
 from app.services.commercial_quota_service import get_balance_snapshot, grant_balance_units, upsert_quota_product_config
 from app.services.workspace_access import ensure_personal_workspace
 
@@ -148,6 +150,57 @@ def test_request_access_stays_pending_when_workspace_has_no_available_balance() 
         assert entitlements == []
         assert snapshot.total_available_units == 0
         assert journey_state.state_key == "blueprint_pro_access_requested"
+
+
+def test_authorized_entitlement_closes_stale_pending_access_request() -> None:
+    with _db_session() as session:
+        user, record = _seed_project_context(session, email="quota-stale-request@leanbuilder.local")
+        access_request = CommercialAccessRequestRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            requester_user_id=user.id,
+            capability="blueprint.download",
+            product_key="blueprint_pro",
+            status=CommercialAccessRequestStatus.pending,
+            reason="Solicitud creada antes de activar checkout.",
+        )
+        entitlement = CommercialEntitlementRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key="blueprint_pro",
+            tier=CommercialTier.blueprint_pro,
+            status=CommercialEntitlementStatus.active,
+            source=CommercialEntitlementSource.admin_grant,
+            granted_by_user_id=user.id,
+        )
+        session.add(access_request)
+        session.add(entitlement)
+        session.commit()
+
+        resolved = close_pending_access_requests_after_authorization(
+            session,
+            record=record,
+            effective_tier=CommercialTier.blueprint_pro,
+            actor_user_id=user.id,
+            source="test_authorized_access",
+        )
+
+        session.refresh(access_request)
+        event = session.exec(
+            select(CommercialEventRecord).where(
+                CommercialEventRecord.session_id == record.id,
+                CommercialEventRecord.event_key == "access_request_approved",
+            )
+        ).one()
+        entitlements = session.exec(select(CommercialEntitlementRecord)).all()
+
+        assert resolved == [access_request]
+        assert access_request.status == CommercialAccessRequestStatus.approved
+        assert access_request.resolution_note == "Aprobada automaticamente porque el acceso ya estaba autorizado."
+        assert event.source == "test_authorized_access"
+        assert event.metadata_payload["approval_mode"] == "entitlement_already_authorized"
+        assert event.metadata_payload["effective_tier"] == "blueprint_pro"
+        assert len(entitlements) == 1
 
 
 def test_grant_balance_auto_approves_oldest_pending_requests_in_fifo_order() -> None:

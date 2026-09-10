@@ -5,9 +5,25 @@ from typing import Any
 from app.models import AttentionItemV2
 from app.services.attention.contract import create_attention_item_v2
 
+TIER_RANKS: dict[str, int] = {
+    "blueprint": 1,
+    "blueprint_pro": 2,
+    "acp": 3,
+}
+
 
 def _value(value: Any) -> str:
     return str(getattr(value, "value", value) or "").strip()
+
+
+def _request_is_already_authorized(access: Any, request: Any) -> bool:
+    product_key = _value(getattr(request, "product_key", ""))
+    tier_rank = TIER_RANKS.get(_value(getattr(access, "tier", "")), 0)
+    if product_key == "blueprint_pro":
+        return tier_rank >= TIER_RANKS["blueprint_pro"]
+    if product_key == "acp":
+        return tier_rank >= TIER_RANKS["acp"]
+    return False
 
 
 def items_from_commercial_access(
@@ -40,6 +56,8 @@ def items_from_commercial_access(
             )
         )
     for request in pending_requests or []:
+        if _request_is_already_authorized(access, request):
+            continue
         request_id = _value(getattr(request, "id", ""))
         product_key = _value(getattr(request, "product_key", "")) or "producto premium"
         items.append(

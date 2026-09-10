@@ -185,7 +185,11 @@ from app.services.commercial_access import (
     resolve_session_entitlement_context,
     validate_capability,
 )
-from app.services.commerce_service import record_commercial_event as record_dedicated_commercial_event
+from app.services.commerce_service import (
+    close_pending_access_requests_after_authorization,
+    record_commercial_event as record_dedicated_commercial_event,
+    resolve_effective_entitlement_state,
+)
 from app.services.operations_service import (
     build_alert_event_entry,
     build_artifact_record_entry,
@@ -3784,6 +3788,14 @@ def get_session_snapshot(
 ) -> SessionSnapshot:
     record = get_or_404(db, session_id, current_user.id)
     apply_workspace_bootstrap(db, record.workspace_id)
+    effective = resolve_effective_entitlement_state(db, record)
+    resolved_access_requests = close_pending_access_requests_after_authorization(
+        db,
+        record=record,
+        effective_tier=effective.tier,
+        actor_user_id=current_user.id,
+        source="session_snapshot",
+    )
     has_metrics = db.exec(
         select(MetricSnapshotRecord).where(MetricSnapshotRecord.session_id == session_id)
     ).first()
@@ -3792,7 +3804,9 @@ def get_session_snapshot(
     ).first()
     if has_metrics is None or has_integrations is None:
         capture_operational_state(db, session_id=session_id, source_action="load_session_snapshot")
+    if resolved_access_requests or has_metrics is None or has_integrations is None:
         db.commit()
+        db.refresh(record)
     return build_snapshot(db, record, current_user=current_user)
 
 

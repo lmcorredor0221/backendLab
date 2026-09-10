@@ -2155,6 +2155,81 @@ def process_pending_access_requests_fifo(
     return approved
 
 
+def _product_is_authorized_by_tier(*, product_key: str, tier: CommercialTier) -> bool:
+    normalized_product_key = product_key.strip()
+    if normalized_product_key == "blueprint_pro":
+        return tier_rank(tier) >= tier_rank(CommercialTier.blueprint_pro)
+    if normalized_product_key == "acp":
+        return tier_rank(tier) >= tier_rank(CommercialTier.acp)
+    return False
+
+
+def close_pending_access_requests_after_authorization(
+    db: Session,
+    *,
+    record: SessionRecord,
+    effective_tier: CommercialTier,
+    actor_user_id: UUID | None = None,
+    source: str = "commercial_access",
+) -> list[CommercialAccessRequestRecord]:
+    if effective_tier == CommercialTier.blueprint:
+        return []
+    pending_requests = db.exec(
+        select(CommercialAccessRequestRecord)
+        .where(
+            CommercialAccessRequestRecord.workspace_id == record.workspace_id,
+            CommercialAccessRequestRecord.session_id == record.id,
+            CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.pending,
+        )
+        .order_by(CommercialAccessRequestRecord.created_at.asc(), CommercialAccessRequestRecord.id.asc())
+    ).all()
+    resolved: list[CommercialAccessRequestRecord] = []
+    for access_request in pending_requests:
+        if not _product_is_authorized_by_tier(product_key=access_request.product_key, tier=effective_tier):
+            continue
+        resolver_user_id = actor_user_id or access_request.requester_user_id
+        access_request.status = CommercialAccessRequestStatus.approved
+        access_request.resolver_user_id = resolver_user_id
+        access_request.resolution_note = "Aprobada automaticamente porque el acceso ya estaba autorizado."
+        access_request.resolved_at = utc_now()
+        access_request.updated_at = utc_now()
+        db.add(access_request)
+        record_commercial_event(
+            db,
+            workspace_id=access_request.workspace_id,
+            session_id=access_request.session_id,
+            user_id=resolver_user_id,
+            event_key="access_request_approved",
+            product_key=access_request.product_key,
+            source=source,
+            metadata={
+                "capability": access_request.capability,
+                "request_id": str(access_request.id),
+                "approval_mode": "entitlement_already_authorized",
+                "effective_tier": effective_tier.value,
+            },
+            correlation_id=f"access_request:{access_request.id}:authorized",
+        )
+        _record_access_request_journey_transition(
+            db,
+            session_record=record,
+            access_request=access_request,
+            event_key=f"approve_{access_request.product_key}_access",
+            actor_user_id=resolver_user_id,
+            reason=access_request.resolution_note,
+        )
+        _sync_blueprint_pro_build_after_access_approval(
+            db,
+            session_record=record,
+            access_request=access_request,
+            source="access_request_auto_approved:entitlement_already_authorized",
+        )
+        resolved.append(access_request)
+    if resolved:
+        db.flush()
+    return resolved
+
+
 def close_pending_access_requests_after_checkout(
     db: Session,
     *,
