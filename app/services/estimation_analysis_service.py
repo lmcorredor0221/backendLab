@@ -277,8 +277,14 @@ def _build_validation_summary(snapshot: SessionSnapshot) -> list[str]:
             f"Evaluation run: status={latest_evaluation_run.status} score={latest_evaluation_run.overall_score}"
         )
     if latest_simulation_run is not None:
+        simulation_status = getattr(latest_simulation_run.status, "value", latest_simulation_run.status)
+        simulation_assessment = (
+            latest_simulation_run.final_status
+            or latest_simulation_run.hard_gate_status
+            or latest_simulation_run.execution_state
+        )
         summary.append(
-            f"Simulation run: status={latest_simulation_run.status} overall={latest_simulation_run.overall_assessment}"
+            f"Simulation run: status={simulation_status} overall={simulation_assessment}"
         )
     if not summary:
         summary.append("No existe una aprobacion Validate vigente; la estimacion debe tratarse como preliminar.")

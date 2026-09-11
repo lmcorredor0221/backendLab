@@ -4283,6 +4283,45 @@ def test_generate_estimation_report_persists_snapshot_and_artifact_registry(clie
     assert any(item["artifact_kind"] == "estimation_report" for item in snapshot["artifact_records"])
 
 
+def test_generate_estimation_report_supports_react_runtime_mode(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+    headers, session_id = build_session_flow(client)
+    enable_react_runtime_for_session(client, headers, session_id)
+    inference_response = client.patch(
+        f"/api/v1/sessions/{session_id}/feature-flags/stage_answer_inference_v1",
+        headers=headers,
+        json={"enabled": True},
+    )
+    assert inference_response.status_code == 200
+    captured: dict[str, object] = {}
+
+    def fake_run_callable_react(**kwargs):  # noqa: ANN003, ANN202
+        captured["answer_inference_enabled"] = kwargs["answer_inference_enabled"]
+        captured["product_mode"] = kwargs["product_mode"]
+        output = kwargs["runner"]()
+        return SimpleNamespace(value=output.value, traces=output.traces, react_run=None)
+
+    monkeypatch.setattr("app.api.routes.sessions.run_callable_react", fake_run_callable_react)
+
+    response = client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert captured == {
+        "answer_inference_enabled": True,
+        "product_mode": "basic_free",
+    }
+    assert payload["data"]["analysis"] is not None
+    assert payload["data"]["agentic"]["estimated_hours_total"] > 0
+    assert payload["data"]["deterministic_inputs"]["pricing_catalog_signature"]
+
+
 def test_generate_estimation_report_advances_ready_sessions_to_ready_for_export_and_uses_background_tasks(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

@@ -28,6 +28,7 @@ from app.models import (
     SessionCreateResponse,
     SessionSnapshot,
     SessionStage,
+    SimulationRunRecord,
     SkillDefinition,
     WorkflowProfile,
     WorkflowStep,
@@ -37,8 +38,38 @@ from app.models import (
     ArtifactStatus,
     utc_now,
 )
+from app.services.estimation_analysis_service import _build_validation_summary
 from app.services.estimation_service import build_estimation_report
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
+
+
+def test_build_validation_summary_uses_existing_simulation_status_fields() -> None:
+    now = utc_now()
+    snapshot = SessionSnapshot(
+        session=SessionCreateResponse(
+            id=uuid4(),
+            title="Proyecto con simulacion",
+            status=ArtifactStatus.ready,
+            current_stage=SessionStage.post_validation,
+            created_at=now,
+            updated_at=now,
+        ),
+        simulation_runs=[
+            SimulationRunRecord(
+                id=uuid4(),
+                status=ArtifactStatus.ready,
+                execution_state="completed",
+                hard_gate_status="pass",
+                final_status="pass",
+                created_at=now,
+                updated_at=now,
+            )
+        ],
+    )
+
+    summary = _build_validation_summary(snapshot)
+
+    assert "Simulation run: status=ready overall=pass" in summary
 
 
 def test_build_estimation_report_returns_deterministic_comparative_projection() -> None:

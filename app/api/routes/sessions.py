@@ -9698,6 +9698,10 @@ def generate_estimation_report_route(
         allow_second_page=True,
     )
     react_run = None
+    product_mode = resolve_product_processing_mode(
+        record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
+    )
+    answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
     if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
         def run_estimation_capability() -> ReactCapabilityOutput:
             analysis_value, trace_value = run_estimation_analysis(
