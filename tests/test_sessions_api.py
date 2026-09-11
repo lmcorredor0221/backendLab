@@ -4386,6 +4386,54 @@ def test_generate_estimation_report_advances_ready_sessions_to_ready_for_export_
     assert snapshot_response.json()["session"]["current_stage"] == "ready_for_export"
     assert snapshot_response.json()["session"]["status"] == "ready"
 
+    overview_response = client.get(f"/api/v1/sessions/{session_id}/product-journey-overview", headers=headers)
+    assert overview_response.status_code == 200
+    journey_current = overview_response.json()["journey_state_machine"]["current"]
+    assert journey_current["state_key"] == "blueprint_free_ready"
+    assert journey_current["substate"] == "completed"
+    assert journey_current["progress_percent"] == 100
+
+
+def test_generate_estimation_report_marks_journey_waiting_review_when_estimate_needs_review(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    approve_tools_for_session(client, headers, session_id)
+    approve_memory_for_session(client, headers, session_id)
+    approve_validate_for_session(client, headers, session_id)
+
+    def force_needs_review(report, *, analysis, decision=None):
+        del decision
+        return report.model_copy(
+            update={
+                "analysis": analysis,
+                "package_policy": EstimationPackagePolicyState(
+                    preliminary=False,
+                    can_continue_to_package=False,
+                    package_block_reasons=["manual_review_required"],
+                    commercial_blocked=False,
+                ),
+            }
+        )
+
+    monkeypatch.setattr("app.api.routes.sessions.apply_estimation_analysis", force_needs_review)
+
+    response = client.post(f"/api/v1/sessions/{session_id}/estimate", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["status"] == "needs_review"
+    assert payload["stage"] == "post_validation"
+
+    overview_response = client.get(f"/api/v1/sessions/{session_id}/product-journey-overview", headers=headers)
+    assert overview_response.status_code == 200
+    journey_current = overview_response.json()["journey_state_machine"]["current"]
+    assert journey_current["state_key"] == "estimate"
+    assert journey_current["substate"] == "waiting_user"
+    assert journey_current["progress_percent"] == 100
+
 
 def test_estimation_analysis_decision_persists_without_mutating_historical_run(
     client: TestClient,

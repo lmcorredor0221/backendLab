@@ -295,7 +295,8 @@ from app.services.product_processing import (
     UncertaintyDisposition,
     upsert_uncertainty_backlog,
 )
-from app.services.product_processing.journey_state_machine_service import initialize_journey_state
+from app.services.product_processing.contracts import JourneyStateKey, JourneyStateSubstate
+from app.services.product_processing.journey_state_machine_service import initialize_journey_state, transition_journey_state
 from app.services.rules import derive_knowledge_profile, find_missing_discovery_fields
 from app.services.short_term_memory import MAIN_BRANCH_KEY, ShortTermMemoryService
 from app.services.knowledge_tool_policy import build_memory_tool_dependencies
@@ -1039,6 +1040,45 @@ def _ensure_validate_evidence_exists(
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail="Validate requires at least one persisted evaluation or simulation run before approval",
+    )
+
+
+def _sync_estimate_journey_after_generation(
+    db: Session,
+    *,
+    record: SessionRecord,
+    status_value: ArtifactStatus,
+    next_action: str,
+    actor_user_id: UUID | None,
+    blueprint_version_number: int | None,
+) -> None:
+    is_ready = status_value == ArtifactStatus.ready
+    target_state = JourneyStateKey.blueprint_free_ready if is_ready else JourneyStateKey.estimate
+    target_substate = JourneyStateSubstate.completed if is_ready else JourneyStateSubstate.waiting_user
+    transition_journey_state(
+        db,
+        record=record,
+        event_key="estimate_generated_ready" if is_ready else "estimate_generated_needs_review",
+        target_state_key=target_state,
+        target_substate=target_substate,
+        actor_type="user" if actor_user_id is not None else "system",
+        actor_user_id=actor_user_id,
+        reason=(
+            "Estimate genero el Blueprint Free listo para revision comercial."
+            if is_ready
+            else "Estimate fue generado y requiere revision antes de cerrar Blueprint Free."
+        ),
+        correlation_id=(
+            f"estimate-generation:{record.id}:{blueprint_version_number or 'unknown'}:"
+            f"{status_value.value}:{record.updated_at.isoformat()}"
+        ),
+        metadata={
+            "blueprint_version_number": blueprint_version_number,
+            "next_action": next_action,
+            "status": status_value.value,
+        },
+        initial_state_key=JourneyStateKey.estimate,
+        progress_percent=100,
     )
 
 
@@ -9842,6 +9882,14 @@ def generate_estimation_report_route(
     next_stage = SessionStage.ready_for_export if status_value == ArtifactStatus.ready else SessionStage.post_validation
     touch_session(record, next_stage, status_value)
     db.add(record)
+    _sync_estimate_journey_after_generation(
+        db,
+        record=record,
+        status_value=status_value,
+        next_action=next_action,
+        actor_user_id=current_user.id,
+        blueprint_version_number=blueprint_version_number,
+    )
     write_log(
         db,
         session_id=session_id,
@@ -9920,6 +9968,14 @@ def apply_estimation_analysis_decision_route(
     next_stage = SessionStage.ready_for_export if status_value == ArtifactStatus.ready else SessionStage.post_validation
     touch_session(record, next_stage, status_value)
     db.add(record)
+    _sync_estimate_journey_after_generation(
+        db,
+        record=record,
+        status_value=status_value,
+        next_action="review_estimation_report",
+        actor_user_id=current_user.id,
+        blueprint_version_number=blueprint_version_number,
+    )
     write_validation(
         db,
         session_id=session_id,
