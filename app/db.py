@@ -177,6 +177,7 @@ def create_db_and_tables() -> None:
         ensure_runtime_schema()
     else:
         assert_alembic_head_applied(engine)
+        ensure_runtime_schema()
     if not runtime_bootstrap_enabled(settings):
         return
     with Session(engine) as session:
