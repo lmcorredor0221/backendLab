@@ -1696,6 +1696,7 @@ def _sync_blueprint_pro_build_after_access_approval(
         options=ProductBuildOrchestrationOptions(
             current_stage=stage_val,
             execute_jobs=True,
+            allow_llm=True,
             activation_payload={
                 "source": source,
                 "access_request_id": str(access_request.id),

@@ -64,6 +64,8 @@ def activate_product_builds_for_paid_order(
                     db,
                     record=record,
                     current_user=current_user,
+                    execute_jobs=True,
+                    allow_llm=True,
                     activation_payload=activation_payload,
                 )
             )
@@ -76,6 +78,8 @@ def activate_product_builds_for_paid_order(
                 current_user=current_user,
                 options=ProductBuildOrchestrationOptions(
                     current_stage=getattr(record.current_stage, "value", str(record.current_stage or "discover")),
+                    execute_jobs=True,
+                    allow_llm=True,
                     activation_payload=activation_payload,
                 ),
             )
