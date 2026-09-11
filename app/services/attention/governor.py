@@ -197,7 +197,10 @@ def _is_actionable_blueprint_blocker(item: AttentionItemV2) -> bool:
     return item.product == "blueprint" and item.severity == "blocking" and item.source != "governance_policy"
 
 
-def _suppress_derived_promotion_blockers(items: list[AttentionItemV2]) -> list[AttentionItemV2]:
+def _suppress_derived_promotion_blockers(items: list[AttentionItemV2], *, is_pro_or_higher: bool = False) -> list[AttentionItemV2]:
+    if is_pro_or_higher:
+        # En Blueprint Pro o ACP, la promoción técnica ya fue concedida comercialmente: suprimir promotion_blockers siempre
+        return [item for item in items if not _is_derived_promotion_blocker(item)]
     if not any(_is_derived_promotion_blocker(item) for item in items):
         return items
     if not any(_is_actionable_blueprint_blocker(item) for item in items):
@@ -216,11 +219,11 @@ def _is_lab_operational_debt(item: AttentionItemV2) -> bool:
     # 3. Politicas de gobernanza de Blueprint promotion
     if item.source == "governance_policy" or item.product == "blueprint":
         return True
-    # 4. Gaps generados por pasos tecnicos internos de product build
-    if item.source == "product_build_step":
+    # 4. Gaps generados por pasos tecnicos internos de product build de Blueprint
+    if item.source == "product_build_step" and item.product != "acp":
         return True
     # 5. Errores tecnicos internos o inconsistencias residuales de LAB
-    if item.type in {"inconsistency", "runtime_error", "validation"} and item.source != "acp_questions":
+    if item.type in {"inconsistency", "runtime_error", "validation"} and item.source not in {"acp_questions", "product_build_step"}:
         return True
     return False
 
@@ -246,7 +249,14 @@ def govern_attention_items(
     is_acp_tier = tier_str.lower() == "acp" or tier_str == str(CommercialTier.acp)
     capabilities = getattr(access, "capabilities", []) or []
     has_acp_cap = any(getattr(c, "capability", "") == "acp.build" and getattr(c, "allowed", False) for c in capabilities)
-    is_in_acp_flow = is_acp_tier or has_acp_cap or current_stage in {"validate", "package", "acp", "acp_prep"}
+    is_in_acp_flow = is_acp_tier or has_acp_cap or current_stage in {"package", "acp", "acp_prep"}
+
+    is_pro_or_higher = (
+        is_in_acp_flow
+        or tier_str.lower() in {"blueprint_pro", "acp"}
+        or tier_str in {str(CommercialTier.blueprint_pro), str(CommercialTier.acp)}
+        or current_stage in {"blueprint_pro", "acp", "package"}
+    )
 
     if is_in_acp_flow:
         # Regla obligatoria: en ACP toda la deuda operativa de LAB queda cerrada.
@@ -263,4 +273,4 @@ def govern_attention_items(
         return visible
 
     visible = _group_validation_noise(visible)
-    return _suppress_derived_promotion_blockers(visible)
+    return _suppress_derived_promotion_blockers(visible, is_pro_or_higher=is_pro_or_higher)

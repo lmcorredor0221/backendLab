@@ -30,6 +30,14 @@ def items_from_construction_readiness(
     for gap in getattr(readiness, "gaps", []) or []:
         if _value(getattr(gap, "status", "open")) not in {"", "open"}:
             continue
+        gap_questions = list(getattr(gap, "questions", []) or [])
+        all_questions_answered = bool(gap_questions) and all(
+            _value(getattr(q, "question_key", "")) in answered_keys
+            for q in gap_questions
+            if _value(getattr(q, "question_key", ""))
+        )
+        if all_questions_answered:
+            continue
         gap_key = _value(getattr(gap, "gap_key", ""))
         stage = _value(getattr(gap, "blocking_stage", "")) or "package"
         severity = "blocking" if _value(getattr(gap, "severity", "")) == "blocking" else "warning"

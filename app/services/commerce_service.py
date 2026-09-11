@@ -1695,6 +1695,7 @@ def _sync_blueprint_pro_build_after_access_approval(
         current_user=None,
         options=ProductBuildOrchestrationOptions(
             current_stage=stage_val,
+            execute_jobs=True,
             activation_payload={
                 "source": source,
                 "access_request_id": str(access_request.id),
@@ -1729,14 +1730,37 @@ def create_access_request(
     )
     if provider_key:
         raise CheckoutAvailableForAccessRequestError(product_key=policy.product, provider_key=provider_key)
+    active_entitlement = db.exec(
+        select(CommercialEntitlementRecord).where(
+            CommercialEntitlementRecord.workspace_id == workspace_id,
+            CommercialEntitlementRecord.session_id == request.session_id,
+            CommercialEntitlementRecord.product_key == policy.product,
+            CommercialEntitlementRecord.status == CommercialEntitlementStatus.active,
+        )
+    ).first()
+    if active_entitlement is not None:
+        latest_approved = db.exec(
+            select(CommercialAccessRequestRecord).where(
+                CommercialAccessRequestRecord.workspace_id == workspace_id,
+                CommercialAccessRequestRecord.session_id == request.session_id,
+                CommercialAccessRequestRecord.capability == request.capability,
+                CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.approved,
+            ).order_by(CommercialAccessRequestRecord.created_at.desc())
+        ).first()
+        if latest_approved is not None:
+            return serialize_access_request(latest_approved)
+
     existing = db.exec(
         select(CommercialAccessRequestRecord).where(
             CommercialAccessRequestRecord.workspace_id == workspace_id,
             CommercialAccessRequestRecord.session_id == request.session_id,
             CommercialAccessRequestRecord.requester_user_id == current_user.id,
             CommercialAccessRequestRecord.capability == request.capability,
-            CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.pending,
-        )
+            CommercialAccessRequestRecord.status.in_([
+                CommercialAccessRequestStatus.pending,
+                CommercialAccessRequestStatus.approved,
+            ]),
+        ).order_by(CommercialAccessRequestRecord.created_at.desc())
     ).first()
     if existing is not None:
         return serialize_access_request(existing)
@@ -1810,14 +1834,37 @@ def request_access(
     )
     if provider_key:
         raise CheckoutAvailableForAccessRequestError(product_key=product_key, provider_key=provider_key)
+    active_entitlement = db.exec(
+        select(CommercialEntitlementRecord).where(
+            CommercialEntitlementRecord.workspace_id == record.workspace_id,
+            CommercialEntitlementRecord.session_id == record.id,
+            CommercialEntitlementRecord.product_key == product_key,
+            CommercialEntitlementRecord.status == CommercialEntitlementStatus.active,
+        )
+    ).first()
+    if active_entitlement is not None:
+        latest_approved = db.exec(
+            select(CommercialAccessRequestRecord).where(
+                CommercialAccessRequestRecord.workspace_id == record.workspace_id,
+                CommercialAccessRequestRecord.session_id == record.id,
+                CommercialAccessRequestRecord.capability == payload.capability,
+                CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.approved,
+            ).order_by(CommercialAccessRequestRecord.created_at.desc())
+        ).first()
+        if latest_approved is not None:
+            return serialize_access_request(latest_approved)
+
     existing = db.exec(
         select(CommercialAccessRequestRecord).where(
             CommercialAccessRequestRecord.workspace_id == record.workspace_id,
             CommercialAccessRequestRecord.session_id == record.id,
             CommercialAccessRequestRecord.requester_user_id == current_user.id,
             CommercialAccessRequestRecord.capability == payload.capability,
-            CommercialAccessRequestRecord.status == CommercialAccessRequestStatus.pending,
-        )
+            CommercialAccessRequestRecord.status.in_([
+                CommercialAccessRequestStatus.pending,
+                CommercialAccessRequestStatus.approved,
+            ]),
+        ).order_by(CommercialAccessRequestRecord.created_at.desc())
     ).first()
     if existing is not None:
         return serialize_access_request(existing)
@@ -1927,6 +1974,34 @@ def _auto_approve_access_request_from_workspace_balance(
     access_request.resolved_at = utc_now()
     access_request.updated_at = utc_now()
     db.add(access_request)
+
+    # P-10: Liquidar deudas comerciales abiertas del workspace para este producto
+    from app.models import CommercialDebtRecord, CommercialDebtSettlementRequest, CommercialDebtStatus
+    from app.services.commercial_debt_service import settle_commercial_debt
+
+    open_debts = db.exec(
+        select(CommercialDebtRecord).where(
+            CommercialDebtRecord.workspace_id == access_request.workspace_id,
+            CommercialDebtRecord.product_key == access_request.product_key,
+            CommercialDebtRecord.status == CommercialDebtStatus.open,
+        )
+    ).all()
+    for open_debt in open_debts:
+        rem_cents = max(0, open_debt.amount_cents - open_debt.settled_amount_cents)
+        if rem_cents > 0:
+            settle_commercial_debt(
+                db,
+                workspace_id=access_request.workspace_id,
+                debt_id=open_debt.id,
+                payload=CommercialDebtSettlementRequest(
+                    amount_cents=rem_cents,
+                    currency=open_debt.currency,
+                    settlement_kind="workspace_balance",
+                    resolution_note=f"Liquidada automaticamente por consumo de saldo en solicitud {access_request.id}",
+                ),
+                actor_user_id=actor_user.id if actor_user is not None else None,
+                metadata={"access_request_id": str(access_request.id)},
+            )
 
     target_tier = access_request.target_tier or (
         CommercialTier.acp if access_request.product_key == "acp" else CommercialTier.blueprint_pro
