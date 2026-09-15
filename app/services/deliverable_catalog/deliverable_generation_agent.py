@@ -47,6 +47,7 @@ def _deterministic_payload(
     primary_risk = str(ctx.get("primary_risk") or "Riesgo de desvío operativo").strip()
     architecture = str(ctx.get("architecture") or "supervisor_with_subagents").strip()
     reasoning_pattern = str(ctx.get("reasoning_pattern") or "Plan-and-Execute").strip()
+    autonomy_level = str(ctx.get("autonomy_level") or ctx.get("desired_autonomy") or "Supervisada").strip()
     memory_strategy = str(ctx.get("memory_strategy") or "session_and_checkpoints").strip()
     guardrails = ctx.get("guardrails") if isinstance(ctx.get("guardrails"), list) else []
     tools = ctx.get("tools") if isinstance(ctx.get("tools"), list) else []
@@ -81,19 +82,19 @@ def _deterministic_payload(
     key = entry.deliverable_key.lower()
     sections: list[dict[str, str]] = []
 
-    if "problem" in key or "discovery" in key:
+    if key in {"discovery.analysis", "discovery.problem_context_brief"}:
         sections = [
             {
-                "title": "Diagnóstico y Contexto del Problema",
-                "content": f"- **Problema Central:** {problem or 'Problema identificado en el flujo operativo.'}\n- **Proceso Actual:** {current_proc or 'Proceso manual o semi-automatizado susceptible a demoras.'}\n- **Tiempo Operativo Actual:** {time_spent}\n- **Costo Operativo Estimado:** {cost_spent}",
+                "title": "Canvas Ejecutivo del Agente (Lean Canvas)",
+                "content": f"- **Problema Central:** {problem or 'Problema identificado en el flujo operativo.'}\n- **Proceso Actual:** {current_proc or 'Proceso manual o semi-automatizado susceptible a demoras.'}\n- **Friccion y Tiempo Perdido:** {time_spent}\n- **Costo Operativo Estimado:** {cost_spent}",
             },
             {
-                "title": "Impacto y Fricciones Operativas",
-                "content": "\n".join([f"- **Fricción / Error Frecuente:** {err}" for err in frequent_errors]) if frequent_errors else "- Fricciones operativas por reconciliaciones manuales y tiempos de espera prolongados.",
+                "title": "Perfil y Mision del Agente",
+                "content": f"- **Usuario Primario:** {user}\n- **Mision del Agente:** {desired or goal}\n- **Nivel de Autonomia:** {autonomy_level}\n- **Metrica North Star:** {north_star}",
             },
             {
-                "title": "Usuario Objetivo y Resultado Deseado",
-                "content": f"- **Usuario Principal:** {user}\n- **Resultado Deseado:** {desired or goal}\n- **Métrica North Star:** {north_star}",
+                "title": "Oportunidad de Automatizacion",
+                "content": "\n".join([f"- **Friccion Identificada:** {err}" for err in frequent_errors]) if frequent_errors else "- Automatizacion de flujos operativos manuales.",
             },
             {
                 "title": "Evidencia y Trazabilidad",
@@ -119,19 +120,19 @@ def _deterministic_payload(
                 "content": f"Mapeo de actores derivado de Discovery y Canvas. Referencias: {', '.join(task.approved_context_refs)}.",
             },
         ]
-    elif "requirement" in key or "definition" in key or "brief" in key:
+    elif key in {"definition.requirements", "definition.requirements_brief"}:
         sections = [
             {
-                "title": "Requerimientos Funcionales (En Alcance MVP)",
-                "content": "\n".join([f"- **FR-{i+1}:** El agente debe {item.lower()}." for i, item in enumerate(mvp_scope)]) if mvp_scope else "- **FR-1:** El agente debe resolver las solicitudes operativas dentro del alcance acordado.",
+                "title": "Historias de Usuario del MVP (Agile User Stories)",
+                "content": "\n".join([f"- **US-{i+1}:** Como **{user}**, quiero que el agente **{item.lower()}** para lograr el objetivo en produccion." for i, item in enumerate(mvp_scope)]) if mvp_scope else f"- **US-1:** Como {user}, quiero resolver solicitudes operativas sin intervencion manual.",
             },
             {
-                "title": "Exclusiones Explícitas (Fuera de Alcance)",
-                "content": "\n".join([f"- **NFR-OUT-{i+1}:** {item}" for i, item in enumerate(out_of_scope)]) if out_of_scope else "- Exclusiones operativas y flujos no contemplados en el MVP inicial.",
+                "title": "Exclusiones Explicitas (Out of Scope)",
+                "content": "\n".join([f"- **FUERA DE ALCANCE:** {item}" for item in out_of_scope]) if out_of_scope else "- Exclusiones operativas estandar para el MVP.",
             },
             {
-                "title": "Reglas de Negocio y Restricciones No Delegables",
-                "content": "\n".join([f"- **Regla Crítica:** {item} (Requiere validación humana obligatoria)." for item in non_delegable]) if non_delegable else "- **Regla General:** Operar con validación estricta de precondiciones y sin efectos colaterales no autorizados.",
+                "title": "Reglas de Control y Puntos de Aprobacion Humana (HITL)",
+                "content": "\n".join([f"- **Punto de Control:** {item} (Requiere autorizacion explicita)." for item in non_delegable]) if non_delegable else "- Operar bajo gobernanza y auditoria estricta.",
             },
             {
                 "title": "Criterios de Aceptación y North Star",
@@ -140,6 +141,47 @@ def _deterministic_payload(
             {
                 "title": "Evidencia Aprobada",
                 "content": f"Consolidado de requerimientos gobernados. Referencias: {', '.join(task.approved_context_refs)}.",
+            },
+        ]
+    elif key == "blueprint.architecture_spec":
+        sections = [
+            {
+                "title": "Arquitectura propuesta",
+                "content": (
+                    f"- **Topologia:** {architecture}\n"
+                    f"- **Nivel de autonomia:** {autonomy_level}\n"
+                    f"- **Memoria:** {memory_strategy}\n"
+                    f"- **Herramientas disponibles:** {tool_count} ({tool_names})"
+                ),
+            },
+            {
+                "title": "Patrones cognitivos de razonamiento y coordinacion",
+                "content": (
+                    f"- **Patron principal:** {reasoning_pattern}\n"
+                    "- **Coordinacion:** Supervisor con rutas explicitas, handoffs trazables y validacion antes de side effects.\n"
+                    "- **Verificacion:** Comparacion contra requerimientos aprobados, restricciones y metrica North Star."
+                ),
+            },
+            {
+                "title": "Fronteras y responsabilidades",
+                "content": (
+                    f"- **Usuario principal:** {user}\n"
+                    f"- **Gateway humano:** {', '.join(non_delegable) if non_delegable else 'Decisiones sensibles y acciones no delegables.'}\n"
+                    f"- **Sistemas/herramientas:** {tool_names}\n"
+                    f"- **Restricciones:** {', '.join(constraints) if constraints else 'Sin restricciones bloqueantes adicionales.'}"
+                ),
+            },
+            {
+                "title": "Decisiones de diseño",
+                "content": (
+                    f"- Priorizar cumplimiento medible de {north_star}.\n"
+                    f"- Mitigar el riesgo principal: {primary_risk}.\n"
+                    "- Mantener checkpoints auditables para regeneracion, descarga Blueprint Pro y ensamblaje ACP."
+                ),
+            },
+            {
+                "title": "Evidencia",
+                "content": f"Especificacion arquitectonica y patrones consolidados desde snapshots aprobados. Referencias: {', '.join(task.approved_context_refs)}.",
             },
         ]
     elif "architecture" in key or "spec" in key or "design" in key:

@@ -1,5 +1,5 @@
 from app.services.artifact_diagram_taxonomy import get_artifact_taxonomy_entries, get_diagram_taxonomy_entries
-from app.services.deliverable_catalog import get_registry_entry, load_deliverable_registry
+from app.services.deliverable_catalog import get_registry_entry, list_registry_entries, load_deliverable_registry
 from app.services.diagram_center.registry_service import load_diagram_registry
 
 
@@ -35,3 +35,31 @@ def test_existing_diagram_center_registry_remains_unchanged() -> None:
 
     assert diagram_registry.schema_version == "diagram-registry.v1"
     assert len(diagram_registry.entries) == 33
+
+
+def test_blueprint_free_active_registry_surface_includes_curated_deliverables() -> None:
+    free_keys = {
+        entry.deliverable_key
+        for entry in list_registry_entries()
+        if "blueprint" in entry.product_scope and entry.required_tier.value == "blueprint"
+    }
+
+    assert free_keys == {
+        "discovery.analysis",
+        "definition.requirements",
+        "discovery.stakeholder_inventory",
+        "diagram.architecture_overview",
+        "diagram.agent_orchestration",
+        "diagram.current_process_map",
+        "diagram.user_journey",
+    }
+
+    active_keys = {entry.deliverable_key for entry in list_registry_entries()}
+    assert {
+        "discovery.problem_context_brief",
+        "definition.requirements_brief",
+        "blueprint.patterns",
+        "diagrams.blueprint_bundle",
+        "diagram.traceability_matrix",
+        "diagram.integration_boundaries",
+    }.isdisjoint(active_keys)

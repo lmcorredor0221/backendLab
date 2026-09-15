@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, deque
+from typing import Any
 
 from app.services.diagram_center.contracts import DiagramModel, DiagramNotation, DiagramQualityReport
 from app.services.diagram_center.layout_analysis import analyze_diagram_complexity
@@ -17,6 +18,124 @@ def _kind(value: str) -> str:
 
 def _has_kind(model: DiagramModel, *tokens: str) -> bool:
     return any(any(token in _kind(node.kind) for token in tokens) for node in model.nodes)
+
+
+def _metadata_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(f"{key} {_metadata_text(child)}" for key, child in value.items())
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_metadata_text(child) for child in value)
+    return str(value or "")
+
+
+def _node_text(node) -> str:
+    return _kind(
+        " ".join(
+            [
+                node.kind,
+                node.label,
+                node.description,
+                str(node.agent_kind or ""),
+                str(node.memory_kind or ""),
+                str(node.tool_kind or ""),
+                _metadata_text(node.metadata),
+            ]
+        )
+    )
+
+
+def _edge_text(edge) -> str:
+    return _kind(" ".join([edge.kind, edge.label, _metadata_text(edge.metadata)]))
+
+
+def _contains_any(values: list[str], *tokens: str) -> bool:
+    normalized_tokens = [_kind(token) for token in tokens]
+    return any(token in value for value in values for token in normalized_tokens)
+
+
+def _agent_orchestration_checks(
+    model: DiagramModel,
+    checks: dict[str, bool],
+    warnings: list[str],
+    errors: list[str],
+) -> None:
+    if _kind(model.diagram_key) != "agent_orchestration":
+        return
+
+    node_texts = [_node_text(node) for node in model.nodes]
+    edge_texts = [_edge_text(edge) for edge in model.edges]
+    all_texts = [*node_texts, *edge_texts, _kind(model.description), _kind(_metadata_text(model.metadata))]
+    worker_texts = [
+        text
+        for text in node_texts
+        if not _contains_any([text], "orchestrator", "orquestador", "supervisor")
+        and _contains_any(
+            [text],
+            "agent",
+            "agente",
+            "worker",
+            "subagent",
+            "subagente",
+            "evaluator",
+            "evaluador",
+            "capability",
+            "capacidad",
+            "planner",
+            "analyst",
+            "designer",
+        )
+    ]
+
+    required_checks = {
+        "agent_orchestration_has_orchestrator": (
+            _contains_any(node_texts, "orchestrator", "orquestador", "supervisor", "coordinator", "coordinador"),
+            "orquestador/supervisor",
+        ),
+        "agent_orchestration_has_multiple_agents": (len(worker_texts) >= 2, "al menos dos agentes o capacidades"),
+        "agent_orchestration_has_handoffs": (
+            _contains_any(edge_texts, "handoff", "handover", "delegate", "delegacion", "delega", "route", "enruta"),
+            "handoffs explicitos",
+        ),
+        "agent_orchestration_has_tools": (
+            _contains_any(all_texts, "tool", "tools", "tool_call", "herramienta", "mcp", "api", "connector", "conector"),
+            "herramientas o conectores",
+        ),
+        "agent_orchestration_has_memory": (
+            _contains_any(all_texts, "memory", "memoria", "rag", "vector", "checkpoint", "context", "contexto", "shared_state"),
+            "memoria, contexto o checkpoints",
+        ),
+        "agent_orchestration_has_guardrails": (
+            _contains_any(all_texts, "guardrail", "guardrails", "policy", "security", "seguridad", "boundary", "limite", "control"),
+            "guardrails o limites de seguridad",
+        ),
+        "agent_orchestration_has_hitl": (
+            _contains_any(all_texts, "hitl", "human", "humano", "approval", "aprobacion", "gate", "human_gate"),
+            "punto HITL/aprobacion humana",
+        ),
+        "agent_orchestration_has_output": (
+            _contains_any(all_texts, "output", "resultado", "deliverable", "entregable", "dossier", "document", "documento"),
+            "salida o entregable",
+        ),
+        "agent_orchestration_has_fallback": (
+            _contains_any(all_texts, "fallback", "retry", "reintento", "escalation", "escalamiento", "error"),
+            "fallback, reintento o escalamiento",
+        ),
+        "agent_orchestration_has_source_refs": (
+            bool(model.source_refs or any(node.source_refs for node in model.nodes) or any(edge.source_refs for edge in model.edges)),
+            "referencias de origen",
+        ),
+    }
+
+    missing: list[str] = []
+    for check_key, (passed, label) in required_checks.items():
+        checks[check_key] = passed
+        if not passed:
+            missing.append(label)
+
+    if missing:
+        errors.append("Orquestacion agentiva incompleta: falta " + ", ".join(missing) + ".")
+    elif len(model.nodes) < 6:
+        warnings.append("La orquestacion agentiva esta completa, pero podria ganar claridad con mas detalle visual.")
 
 
 def _semantic_checks(model: DiagramModel, checks: dict[str, bool], warnings: list[str]) -> None:
@@ -167,6 +286,10 @@ def evaluate_diagram_quality(model: DiagramModel) -> DiagramQualityReport:
         warnings.append(f"El diagrama deberia dividirse en vistas por nivel o responsabilidad.{suffix}")
 
     _semantic_checks(model, checks, warnings)
+    _agent_orchestration_checks(model, checks, warnings, errors)
 
     score = 100 - (30 * len(errors)) - (8 * len(warnings))
+    if _kind(model.diagram_key) == "agent_orchestration" and not errors and score < 90:
+        errors.append("Orquestacion agentiva no alcanzo el score minimo 90 para visualizacion principal.")
+        score = 100 - (30 * len(errors)) - (8 * len(warnings))
     return DiagramQualityReport(valid=not errors, score=max(0, score), errors=errors, warnings=warnings, checks=checks)

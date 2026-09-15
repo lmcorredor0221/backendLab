@@ -296,7 +296,7 @@ def test_openai_builder_compacts_diagram_payload_to_resolved_inputs() -> None:
         title="Arquitectura propuesta",
         objective="Mostrar la arquitectura aprobada.",
         notation=DiagramNotation.flowchart,
-        required_inputs=["blueprint.architecture_spec", "blueprint.patterns"],
+        required_inputs=["blueprint.architecture_spec"],
         resolved_inputs=[
             {
                 "input_key": "blueprint.architecture_spec",
@@ -317,14 +317,14 @@ def test_openai_builder_compacts_diagram_payload_to_resolved_inputs() -> None:
         ],
         source_context={
             "project": {"id": "session-1", "title": "Architecture project"},
-            "coverage_summary": {"required_input_count": 2, "resolved_input_count": 1, "missing_input_count": 1},
+            "coverage_summary": {"required_input_count": 1, "resolved_input_count": 1, "missing_input_count": 0},
             "resolved_inputs": [
                 {
                     "input_key": "blueprint.architecture_spec",
                     "status": "resolved",
                 }
             ],
-            "missing_required_inputs": ["blueprint.patterns"],
+            "missing_required_inputs": [],
             "approved_artifact_keys": ["design_recommendation_artifact"],
             "approved_artifacts": [
                 {

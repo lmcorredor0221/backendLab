@@ -17,6 +17,39 @@ from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
 def _fake_generate_diagram_model(self, payload, context_bundle=None) -> LLMArtifactResult:
+    if payload.diagram_key == "agent_orchestration":
+        model = DiagramModel(
+            diagram_key=payload.diagram_key,
+            title=payload.title or "Orquestacion agentiva",
+            notation=payload.notation.value if hasattr(payload.notation, "value") else str(payload.notation),
+            nodes=[
+                DiagramNode(id="orchestrator", label="Orquestador principal", kind="orchestrator", agent_kind="orchestrator", source_refs=["session.baseline"]),
+                DiagramNode(id="analysis_agent", label="Agente de analisis", kind="agent", agent_kind="worker", source_refs=["session.baseline"]),
+                DiagramNode(id="design_agent", label="Agente de diseno", kind="agent", agent_kind="worker", source_refs=["session.baseline"]),
+                DiagramNode(id="memory", label="Memoria RAG y checkpoints", kind="memory", memory_kind="vector_store", source_refs=["session.baseline"]),
+                DiagramNode(id="tools", label="Herramientas MCP y APIs", kind="tool", tool_kind="mcp_server", source_refs=["session.baseline"]),
+                DiagramNode(id="guardrail", label="Guardrails y aprobacion HITL", kind="guardrail_gate", tool_kind="guardrail_gate", source_refs=["session.baseline"]),
+                DiagramNode(id="fallback", label="Fallback y escalamiento", kind="fallback", source_refs=["session.baseline"]),
+                DiagramNode(id="output", label="Resultado entregable", kind="output", source_refs=["session.baseline"]),
+            ],
+            edges=[
+                DiagramEdge(id="e1", source="orchestrator", target="analysis_agent", kind="handoff", label="delega analisis", order=1, source_refs=["session.baseline"]),
+                DiagramEdge(id="e2", source="analysis_agent", target="design_agent", kind="handoff", label="transfiere contexto", order=2, source_refs=["session.baseline"]),
+                DiagramEdge(id="e3", source="design_agent", target="memory", kind="checkpoint_resume", label="actualiza memoria", order=3, source_refs=["session.baseline"]),
+                DiagramEdge(id="e4", source="design_agent", target="tools", kind="tool_call", label="usa herramientas", order=4, source_refs=["session.baseline"]),
+                DiagramEdge(id="e5", source="tools", target="guardrail", kind="decision", label="control HITL", order=5, source_refs=["session.baseline"]),
+                DiagramEdge(id="e6", source="guardrail", target="fallback", kind="escalation", label="escala error", order=6, source_refs=["session.baseline"]),
+                DiagramEdge(id="e7", source="fallback", target="output", kind="retry", label="reintento controlado", order=7, source_refs=["session.baseline"]),
+            ],
+            source_refs=["session.baseline"],
+        )
+        return LLMArtifactResult(
+            artifact=model,
+            provider_key="mock",
+            model_name="mock-model",
+            prompt_version="1.0.0",
+        )
+
     model = DiagramModel(
         diagram_key=payload.diagram_key,
         title=payload.title or "Diagrama",
@@ -73,9 +106,17 @@ def test_blueprint_basic_preparation_and_actions_close_deterministically(client:
     snapshot = prep_response.json()
     assert snapshot["session"]["id"] == session_id
 
-    # 2) Complete any queued diagram jobs synchronously
+    # 2) agent_orchestration must be the first automatic diagram job in Blueprint Free.
     db = _db_session_from_client(client)
     try:
+        all_diagram_jobs = db.exec(
+            select(DiagramGenerationJobRecord)
+            .where(DiagramGenerationJobRecord.session_id == UUID(session_id))
+            .order_by(DiagramGenerationJobRecord.requested_at.asc())
+        ).all()
+        assert all_diagram_jobs
+        assert all_diagram_jobs[0].diagram_key == "agent_orchestration"
+
         diagram_jobs = db.exec(
             select(DiagramGenerationJobRecord).where(
                 DiagramGenerationJobRecord.session_id == UUID(session_id),

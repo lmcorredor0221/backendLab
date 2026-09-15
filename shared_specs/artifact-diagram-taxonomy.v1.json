@@ -89,12 +89,12 @@
     },
     {
       "artifact_key": "blueprint.architecture_spec",
-      "title": "Especificacion de arquitectura",
-      "description": "Arquitectura propuesta, topologia agentica, limites, responsabilidades y decisiones de diseno.",
+      "title": "Especificacion de Arquitectura y Patrones",
+      "description": "Arquitectura propuesta, topologia agentica, limites, responsabilidades, decisiones de diseno y patrones cognitivos de razonamiento y coordinacion.",
       "category": "technical",
       "product_owner": "blueprint",
       "stage_owner": "design",
-      "access_level": "view_only",
+      "access_level": "premium",
       "formats": [
         "json",
         "markdown",
@@ -140,7 +140,7 @@
       "category": "tool",
       "product_owner": "blueprint",
       "stage_owner": "tools",
-      "access_level": "view_only",
+      "access_level": "premium",
       "formats": [
         "json",
         "markdown",
@@ -185,7 +185,7 @@
       "category": "memory",
       "product_owner": "blueprint",
       "stage_owner": "memory",
-      "access_level": "view_only",
+      "access_level": "premium",
       "formats": [
         "json",
         "markdown",
@@ -253,7 +253,7 @@
       "category": "estimation",
       "product_owner": "blueprint",
       "stage_owner": "estimate",
-      "access_level": "view_only",
+      "access_level": "premium",
       "formats": [
         "json",
         "markdown"
@@ -510,8 +510,7 @@
         ]
       },
       "source_artifact_keys": [
-        "blueprint.architecture_spec",
-        "blueprint.patterns"
+        "blueprint.architecture_spec"
       ],
       "portable_paths": [
         "Blueprint/diagrams/architecture-overview.svg"
@@ -616,8 +615,7 @@
         ]
       },
       "source_artifact_keys": [
-        "blueprint.architecture_spec",
-        "blueprint.patterns"
+        "blueprint.architecture_spec"
       ],
       "portable_paths": [
         "Blueprint/diagrams/agent-orchestration.svg",
@@ -691,7 +689,7 @@
       },
       "source_artifact_keys": [
         "definition.requirements",
-        "blueprint.patterns"
+        "blueprint.architecture_spec"
       ],
       "portable_paths": [
         "Blueprint/diagrams/decision-model.mmd",
@@ -890,8 +888,8 @@
         "blueprint",
         "acp"
       ],
-      "required_tier": "blueprint",
-      "access_level": "sample",
+      "required_tier": "blueprint_pro",
+      "access_level": "downloadable",
       "enabled_from_stage": "tools",
       "default_generation_state": "generated",
       "formats": {
@@ -905,7 +903,7 @@
       "source_artifact_keys": [
         "definition.requirements",
         "tools.minimum_set",
-        "blueprint.patterns"
+        "blueprint.architecture_spec"
       ],
       "portable_paths": [
         "Blueprint/diagrams/security-guardrails.svg",
@@ -953,7 +951,7 @@
       "contains_internal_lean_model": false,
       "upsell": {},
       "sort_order": 13,
-      "is_active": true
+      "is_active": false
     },
     {
       "diagram_key": "deployment_decision_matrix",
@@ -1083,7 +1081,7 @@
       },
       "source_artifact_keys": [
         "acp.prompt_pack",
-        "blueprint.patterns"
+        "blueprint.architecture_spec"
       ],
       "portable_paths": [
         "ACP/diagrams/implementation/prompt-reasoning-playbook.mmd",
@@ -1121,7 +1119,7 @@
       "source_artifact_keys": [
         "acp.implementation_questions",
         "acp.gap_register",
-        "blueprint.patterns"
+        "blueprint.architecture_spec"
       ],
       "portable_paths": [
         "Blueprint/diagrams/human-intervention-flow.mmd",

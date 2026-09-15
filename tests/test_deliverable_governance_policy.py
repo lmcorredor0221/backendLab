@@ -36,7 +36,7 @@ def _session() -> Session:
 
 
 def _entry():
-    entry = get_registry_entry("discovery.problem_context_brief")
+    entry = get_registry_entry("discovery.analysis")
     assert entry is not None
     return entry
 
@@ -64,7 +64,7 @@ def test_policy_stage_locks_deliverable_before_enabled_stage() -> None:
 
 def test_policy_normalizes_legacy_session_stages_for_catalog_access() -> None:
     with _session() as db:
-        entry = get_registry_entry("definition.requirements_brief")
+        entry = get_registry_entry("definition.requirements")
         assert entry is not None
 
         decision = resolve_deliverable_policy(
@@ -83,7 +83,8 @@ def test_policy_normalizes_legacy_session_stages_for_catalog_access() -> None:
 
 def test_policy_exposes_preview_when_tier_is_below_required_product() -> None:
     with _session() as db:
-        entry = _entry()
+        entry = get_registry_entry("diagram.architecture_overview")
+        assert entry is not None
         upsert_deliverable_governance(
             db,
             entry,
@@ -97,7 +98,7 @@ def test_policy_exposes_preview_when_tier_is_below_required_product() -> None:
             DeliverablePolicyContext(
                 role=WorkspaceRole.editor,
                 tier=CommercialTier.blueprint,
-                current_stage="discover",
+                current_stage="design",
                 has_current_version=True,
                 quality_state="passed",
             ),

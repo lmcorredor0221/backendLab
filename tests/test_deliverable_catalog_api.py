@@ -50,7 +50,7 @@ def test_deliverable_catalog_api_lists_entries_with_policy_decisions(client: Tes
     assert payload["contract_version"] == "deliverable-catalog-response.v1"
     assert payload["entries"]
     keys = {item["key"] for item in payload["entries"]}
-    assert "discovery.problem_context_brief" in keys
+    assert "discovery.analysis" in keys
     assert "diagram.architecture_overview" in keys
     assert all("access" in item for item in payload["entries"])
 
@@ -92,7 +92,7 @@ def test_blueprint_commercial_result_generates_governed_artifacts(client: TestCl
     assert product_run is not None
     assert product_steps
     assert any(
-        artifact.artifact_metadata.get("deliverable_key") == "discovery.problem_context_brief"
+        artifact.artifact_metadata.get("deliverable_key") == "discovery.analysis"
         for artifact in generated_artifacts
     )
 
@@ -173,7 +173,7 @@ def test_deliverable_governance_admin_api_requires_platform_role_and_audits_chan
     assert overview.json()["total_entries"] >= 44
 
     update = client.patch(
-        "/api/v3/admin/deliverable-governance/discovery.problem_context_brief",
+        "/api/v3/admin/deliverable-governance/discovery.analysis",
         headers=headers,
         json={
             "enabled": False,
@@ -189,7 +189,7 @@ def test_deliverable_governance_admin_api_requires_platform_role_and_audits_chan
     assert update.json()["enabled"] is False
 
     detail = client.get(
-        "/api/v3/deliverables/discovery.problem_context_brief",
+        "/api/v3/deliverables/discovery.analysis",
         params={"tier": "acp", "current_stage": "discover"},
         headers=headers,
     )
@@ -219,7 +219,7 @@ def test_deliverable_governance_overview_includes_quality_summary_filters(client
             DeliverableQualitySnapshotRecord(
                 workspace_id=session_record.workspace_id,
                 session_id=session_uuid,
-                deliverable_key="discovery.problem_context_brief",
+                deliverable_key="discovery.analysis",
                 version_ref="quality-test-v1",
                 state="passed",
                 score=96,
@@ -258,7 +258,7 @@ def test_deliverable_governance_overview_includes_quality_summary_filters(client
     assert quality_summary["total_snapshots"] == 1
     assert quality_summary["average_score"] == 96
     assert quality_summary["by_state"] == {"passed": 1}
-    assert quality_summary["recent_snapshots"][0]["deliverable_key"] == "discovery.problem_context_brief"
+    assert quality_summary["recent_snapshots"][0]["deliverable_key"] == "discovery.analysis"
     assert quality_summary["recent_snapshots"][0]["stage"] == "discover"
     assert quality_summary["recent_snapshots"][0]["warnings_count"] == 1
 
@@ -275,14 +275,14 @@ def test_deliverable_prompt_governance_versions_validates_and_scopes_overrides(c
     workspace_b_headers = {**headers, "x-workspace-id": workspace_b_id}
 
     prompt = client.get(
-        "/api/v3/admin/deliverable-governance/discovery.problem_context_brief/prompt",
+        "/api/v3/admin/deliverable-governance/discovery.stakeholder_inventory/prompt",
         headers=headers,
     )
     assert prompt.status_code == 200
     assert prompt.json()["prompt_status"] == "active"
 
     invalid = client.post(
-        "/api/v3/admin/deliverable-governance/discovery.problem_context_brief/prompt/validate",
+        "/api/v3/admin/deliverable-governance/discovery.stakeholder_inventory/prompt/validate",
         headers=headers,
         json={
             "prompt_body": "Genera un texto libre sin contrato.",
@@ -296,13 +296,13 @@ def test_deliverable_prompt_governance_versions_validates_and_scopes_overrides(c
     assert "schema_contract_mismatch" in invalid.json()["errors"]
 
     updated = client.patch(
-        "/api/v3/admin/deliverable-governance/discovery.problem_context_brief/prompt",
+        "/api/v3/admin/deliverable-governance/discovery.stakeholder_inventory/prompt",
         params={"scope": "workspace"},
         headers=headers,
         json={
             "prompt_status": "paused",
             "prompt_body": (
-                "Genera evidencia trazable para discovery.problem_context_brief "
+                "Genera evidencia trazable para discovery.stakeholder_inventory "
                 "usando el schema_contract deliverable-artifact.v1."
             ),
             "schema_contract": "deliverable-artifact.v1",
@@ -318,12 +318,12 @@ def test_deliverable_prompt_governance_versions_validates_and_scopes_overrides(c
     assert updated.json()["versions"][0]["version"] == "bdg7-test"
 
     scoped_detail = client.get(
-        "/api/v3/deliverables/discovery.problem_context_brief",
+        "/api/v3/deliverables/discovery.stakeholder_inventory",
         params={"tier": "acp", "current_stage": "discover"},
         headers=headers,
     )
     other_workspace_detail = client.get(
-        "/api/v3/deliverables/discovery.problem_context_brief",
+        "/api/v3/deliverables/discovery.stakeholder_inventory",
         params={"tier": "acp", "current_stage": "discover"},
         headers=workspace_b_headers,
     )

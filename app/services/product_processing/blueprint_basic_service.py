@@ -47,6 +47,7 @@ from app.services.blueprint_commercial_result_service import (
 
 
 BLUEPRINT_COMMERCIAL_RESULT_ACTION = "prepare_blueprint_commercial_result"
+BLUEPRINT_BASIC_DIAGRAM_QUEUE_PRIORITY = ("agent_orchestration",)
 
 
 def _is_blueprint_basic_auto_deliverable(entry) -> bool:
@@ -209,6 +210,25 @@ def _generate_blueprint_basic_deliverables(
     return generated_keys, skipped
 
 
+def _blueprint_basic_diagram_queue(entries):
+    priority = {key: index for index, key in enumerate(BLUEPRINT_BASIC_DIAGRAM_QUEUE_PRIORITY)}
+    eligible = [
+        (index, item)
+        for index, item in enumerate(entries)
+        if "blueprint" in item.products and item.required_tier == "blueprint" and item.current_version is None
+    ]
+    ordered = sorted(
+        eligible,
+        key=lambda indexed_item: (
+            0 if indexed_item[1].key in priority else 1,
+            priority.get(indexed_item[1].key, indexed_item[0]),
+            indexed_item[0],
+            indexed_item[1].key,
+        ),
+    )
+    return [item for _, item in ordered]
+
+
 def prepare_blueprint_basic_commercial_result(
     db: Session,
     *,
@@ -236,11 +256,7 @@ def prepare_blueprint_basic_commercial_result(
     )
     diagram_jobs = []
     catalog = build_catalog_v3(db, record=record, role=None)
-    for item in catalog.entries:
-        if "blueprint" not in item.products or item.required_tier != "blueprint":
-            continue
-        if item.current_version is not None:
-            continue
+    for item in _blueprint_basic_diagram_queue(catalog.entries):
         job = create_generation_job(
             db,
             record=record,

@@ -30,6 +30,7 @@ from app.services.diagram_center.contracts import (
 from app.services.diagram_center.catalog_service import _renderings_need_refresh, build_catalog_v3, build_diagram_detail_v3
 from app.services.diagram_center.generation_service import run_generation_job
 from app.services.diagram_center.persistence import DiagramGovernanceRecord, DiagramVersionRecord
+from app.services.diagram_center.policy_service import resolve_diagram_policy
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
 from app.services.diagram_center.registry_service import build_prompt_spec, get_registry_entry, list_registry_entries, load_diagram_registry
 from app.services.diagram_center.renderer_service import RENDERER_REVISION, render_diagram
@@ -85,7 +86,8 @@ def test_registry_covers_standardized_diagram_families_and_prompt_specs() -> Non
     effective_keys = {entry.key for entry in list_registry_entries()}
 
     assert len(keys) == 33
-    assert {"problem_context_map", "stakeholder_map", "current_process_map", "traceability_matrix"} <= effective_keys
+    assert {"problem_context_map", "stakeholder_map", "current_process_map"} <= effective_keys
+    assert "traceability_matrix" not in effective_keys
     assert {
         "solution_architecture",
         "logical_architecture",
@@ -122,10 +124,14 @@ def test_registry_covers_standardized_diagram_families_and_prompt_specs() -> Non
         "mermaid-source.v1",
     }
     effective_entries = list_registry_entries()
-    use_case_prompt = build_prompt_spec(next(entry for entry in effective_entries if entry.key == "use_case_diagram"))
-    activity_prompt = build_prompt_spec(next(entry for entry in effective_entries if entry.key == "activity_diagram"))
-    bpmn_prompt = build_prompt_spec(next(entry for entry in effective_entries if entry.key == "bpmn_process"))
+    all_entries = list_registry_entries(include_inactive=True)
+    use_case_prompt = build_prompt_spec(next(entry for entry in all_entries if entry.key == "use_case_diagram"))
+    activity_prompt = build_prompt_spec(next(entry for entry in all_entries if entry.key == "activity_diagram"))
+    bpmn_prompt = build_prompt_spec(next(entry for entry in all_entries if entry.key == "bpmn_process"))
     current_process_prompt = build_prompt_spec(next(entry for entry in effective_entries if entry.key == "current_process_map"))
+    assert {"activity_diagram", "bpmn_process", "use_case_diagram"}.isdisjoint(
+        {entry.key for entry in effective_entries}
+    )
     assert use_case_prompt["standard"] == "UML Use Case Diagram"
     assert use_case_prompt["notation"] == "uml_use_case"
     assert activity_prompt["standard"] == "UML Activity Diagram"
@@ -152,6 +158,39 @@ def test_registry_covers_standardized_diagram_families_and_prompt_specs() -> Non
         assert governed_prompt["validator_key"]
         assert governed_prompt["layout_guidance"]["schema_version"] == "diagram-layout-guidance.v1"
         assert governed_prompt["layout_guidance"]["preferred_strategy"]
+
+
+def test_agent_orchestration_is_free_to_view_without_download() -> None:
+    entry = get_registry_entry("agent_orchestration")
+    assert entry is not None
+    assert entry.required_tier == "blueprint"
+
+    free_access = resolve_diagram_policy(
+        entry=entry,
+        project_stage="estimate",
+        current_tier="blueprint",
+        role=WorkspaceRole.owner,
+        enabled=True,
+        generation_enabled=True,
+        required_tier=entry.required_tier,
+        preview_mode=entry.preview_mode,
+    )
+    pro_access = resolve_diagram_policy(
+        entry=entry,
+        project_stage="estimate",
+        current_tier="blueprint_pro",
+        role=WorkspaceRole.owner,
+        enabled=True,
+        generation_enabled=True,
+        required_tier=entry.required_tier,
+        preview_mode=entry.preview_mode,
+    )
+
+    assert free_access.access_state == "available"
+    assert free_access.can_view is True
+    assert free_access.can_generate is True
+    assert free_access.can_download is False
+    assert pro_access.can_download is True
 
 
 def test_structured_diagram_output_model_is_openai_compatible() -> None:
@@ -894,14 +933,13 @@ def test_run_generation_job_resolves_required_inputs_for_architecture_diagram(
 
     payload = captured.get("payload")
     assert isinstance(payload, DiagramGenerationInput)
-    assert payload.required_inputs == ["blueprint.architecture_spec", "blueprint.patterns"]
+    assert payload.required_inputs == ["blueprint.architecture_spec"]
     assert payload.missing_required_inputs == []
     assert {item["input_key"] for item in payload.resolved_inputs} == {
         "blueprint.architecture_spec",
-        "blueprint.patterns",
     }
     assert "pattern=supervisor_with_specialists" in payload.context_brief
-    assert payload.source_context["coverage_summary"]["resolved_input_count"] == 2
+    assert payload.source_context["coverage_summary"]["resolved_input_count"] == 1
     assert payload.source_context["coverage_summary"]["missing_input_count"] == 0
     assert payload.source_context["approved_artifact_keys"][0] == "design_recommendation_artifact"
     assert payload.resolved_inputs[0]["matched_artifact_keys"] == ["design_recommendation_artifact"]

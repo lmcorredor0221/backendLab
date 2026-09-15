@@ -30,6 +30,16 @@ _TYPE_BY_ARTIFACT_CATEGORY = {
     "lineage": DeliverableType.lineage,
 }
 
+_CURATED_INACTIVE_ARTIFACT_KEYS = {
+    "discovery.problem_context_brief",
+    "definition.requirements_brief",
+    "blueprint.patterns",
+    "diagrams.blueprint_bundle",
+    "acp.implementation_questions",
+    "acp.package_manifest",
+    "provenance.producer_trace",
+}
+
 
 def _required_tier(product_owner: str, access_level: str, required_tier: str = "") -> CommercialTier:
     if required_tier:
@@ -148,7 +158,7 @@ def adapt_artifact_entry(item: dict[str, Any], *, sort_offset: int = 1000) -> De
         blueprint_download=blueprint_download,
         acp_download=acp_download,
         sort_order=sort_offset,
-        active=True,
+        active=artifact_key not in _CURATED_INACTIVE_ARTIFACT_KEYS,
     )
 
 

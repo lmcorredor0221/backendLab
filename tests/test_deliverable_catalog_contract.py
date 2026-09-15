@@ -17,6 +17,11 @@ def test_seed_deliverable_catalog_loads_and_contains_artifact_and_diagram_exampl
     assert any(entry.deliverable_type == "artifact" for entry in catalog.entries)
     assert any(entry.deliverable_type == "diagram" for entry in catalog.entries)
 
+    by_key = {entry.deliverable_key: entry for entry in catalog.entries}
+    assert by_key["discovery.problem_context_brief"].active is False
+    assert by_key["definition.requirements_brief"].active is False
+    assert by_key["diagram.traceability_matrix"].active is False
+
 
 def test_deliverable_catalog_rejects_duplicate_keys() -> None:
     payload = load_seed_deliverable_catalog().model_dump(mode="json")

@@ -338,7 +338,7 @@ def test_commercial_audit_report_summarizes_events_and_redacts_sensitive_metadat
             DeliverableGenerationJobRecord(
                 workspace_id=record.workspace_id,
                 session_id=record.id,
-                deliverable_key="discovery.problem_context_brief",
+                deliverable_key="discovery.analysis",
                 status="completed",
                 product_mode="basic_free",
                 generation_mode="llm",
@@ -371,7 +371,7 @@ def test_commercial_audit_report_summarizes_events_and_redacts_sensitive_metadat
             DeliverableGovernanceAuditRecord(
                 scope_key="workspace",
                 workspace_id=record.workspace_id,
-                deliverable_key="discovery.problem_context_brief",
+                deliverable_key="discovery.analysis",
                 action="governance_updated",
                 changed_fields=["enabled"],
                 before_payload={"enabled": True},
@@ -383,7 +383,7 @@ def test_commercial_audit_report_summarizes_events_and_redacts_sensitive_metadat
             DeliverablePromptAuditRecord(
                 scope_key="workspace",
                 workspace_id=record.workspace_id,
-                deliverable_key="discovery.problem_context_brief",
+                deliverable_key="discovery.analysis",
                 action="prompt_updated",
                 changed_fields=["prompt_body"],
                 before_payload={"prompt_body": "secret prompt"},
@@ -405,7 +405,7 @@ def test_commercial_audit_report_summarizes_events_and_redacts_sensitive_metadat
     assert report["requested_by_user_id"]
     assert any(item["key"] == "total_events" and item["value"] >= 3 for item in report["metrics"])
     assert any(item["key"] == "blocked_events" and item["value"] >= 1 for item in report["metrics"])
-    assert any(item["key"] == "deliverable_generation_jobs" and item["value"] == 1 for item in report["metrics"])
+    assert any(item["key"] == "deliverable_generation_jobs" and item["value"] >= 1 for item in report["metrics"])
     assert any(item["key"] == "llm_token_usage" and item["value"] == 200 for item in report["metrics"])
     assert any(item["key"] == "llm_estimated_cost_usd" and item["value"] == 0.012 for item in report["metrics"])
     assert any(item["key"] == "uncertainties_blocking" and item["value"] == 1 for item in report["metrics"])

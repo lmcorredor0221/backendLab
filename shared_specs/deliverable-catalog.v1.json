@@ -116,7 +116,7 @@
       "blueprint_download": true,
       "acp_download": true,
       "sort_order": 10,
-      "active": true
+      "active": false
     },
     {
       "deliverable_key": "diagram.problem_context_map",
@@ -353,7 +353,7 @@
       "blueprint_download": true,
       "acp_download": true,
       "sort_order": 40,
-      "active": true
+      "active": false
     },
     {
       "deliverable_key": "definition.acceptance_trace",
@@ -662,7 +662,7 @@
       "blueprint_download": true,
       "acp_download": true,
       "sort_order": 80,
-      "active": true
+      "active": false
     },
     {
       "deliverable_key": "diagram.target_capabilities_map",

@@ -40,7 +40,7 @@
         "No modelar el proceso LEAN como runtime"
       ],
       "sort_order": 10,
-      "active": true
+      "active": false
     },
     {
       "key": "logical_architecture",
@@ -80,7 +80,7 @@
         "No mezclar despliegue"
       ],
       "sort_order": 20,
-      "active": true
+      "active": false
     },
     {
       "key": "physical_architecture",
@@ -198,7 +198,7 @@
         "No inventar contratos"
       ],
       "sort_order": 50,
-      "active": true
+      "active": false
     },
     {
       "key": "application_architecture",
@@ -238,7 +238,7 @@
         "No fijar despliegue"
       ],
       "sort_order": 60,
-      "active": true
+      "active": false
     },
     {
       "key": "component_diagram",
@@ -434,7 +434,7 @@
         "No inventar tablas"
       ],
       "sort_order": 110,
-      "active": true
+      "active": false
     },
     {
       "key": "logical_data_model",
@@ -475,7 +475,7 @@
         "No asumir vendor"
       ],
       "sort_order": 120,
-      "active": true
+      "active": false
     },
     {
       "key": "physical_data_model",
@@ -555,7 +555,7 @@
         "No ocultar rutas alternas"
       ],
       "sort_order": 140,
-      "active": true
+      "active": false
     },
     {
       "key": "bpmn_process",
@@ -595,7 +595,7 @@
         "No inventar participantes"
       ],
       "sort_order": 150,
-      "active": true
+      "active": false
     },
     {
       "key": "sequence_diagram",
@@ -656,7 +656,7 @@
       ],
       "required_inputs": [
         "definition.requirements",
-        "blueprint.patterns"
+        "blueprint.architecture_spec"
       ],
       "actions": [
         "view",
@@ -675,7 +675,7 @@
         "No ocultar error"
       ],
       "sort_order": 170,
-      "active": true
+      "active": false
     },
     {
       "key": "use_case_diagram",
@@ -688,7 +688,7 @@
       "notation": "uml_use_case",
       "complexity": "basic",
       "stage": "define",
-      "required_tier": "blueprint",
+      "required_tier": "blueprint_pro",
       "preview_mode": "full",
       "products": [
         "blueprint",
@@ -715,7 +715,7 @@
         "No inventar actores"
       ],
       "sort_order": 180,
-      "active": true
+      "active": false
     },
     {
       "key": "ux_navigation_flow",
@@ -755,7 +755,7 @@
         "No inventar funcionalidades"
       ],
       "sort_order": 190,
-      "active": true
+      "active": false
     },
     {
       "key": "user_journey",
@@ -835,7 +835,7 @@
         "No modelar aplicaciones como capacidades"
       ],
       "sort_order": 210,
-      "active": true
+      "active": false
     },
     {
       "key": "context_map",
@@ -875,7 +875,7 @@
         "No inventar dominios"
       ],
       "sort_order": 220,
-      "active": true
+      "active": false
     },
     {
       "key": "c4_context",
@@ -1048,14 +1048,13 @@
       "complexity": "advanced",
       "stage": "design",
       "required_tier": "blueprint",
-      "preview_mode": "limited",
+      "preview_mode": "full",
       "products": [
         "blueprint",
         "acp"
       ],
       "required_inputs": [
         "blueprint.architecture_spec",
-        "blueprint.patterns",
         "tools.minimum_set"
       ],
       "actions": [
@@ -1066,8 +1065,13 @@
       ],
       "objective": "Modelar agentes, responsabilidades, handoffs y guardrails del runtime objetivo.",
       "semantic_rules": [
-        "Un owner por decisión",
-        "Mostrar human-in-the-loop",
+        "Mostrar un orquestador o supervisor principal",
+        "Mostrar al menos dos agentes, subagentes o capacidades ejecutoras",
+        "Mostrar handoffs explicitos entre agentes",
+        "Mostrar herramientas, conectores o tool calls",
+        "Mostrar memoria, contexto, RAG o checkpoints",
+        "Mostrar guardrails y human-in-the-loop cuando exista impacto operativo",
+        "Mostrar fallback, reintento o escalamiento",
         "Evitar loops sin salida"
       ],
       "exclusions": [
@@ -1115,7 +1119,7 @@
         "No inventar tools"
       ],
       "sort_order": 280,
-      "active": true
+      "active": false
     },
     {
       "key": "memory_rag_architecture",
@@ -1280,7 +1284,7 @@
         "No inventar fuentes"
       ],
       "sort_order": 320,
-      "active": true
+      "active": false
     },
     {
       "key": "commercial_value_flow",

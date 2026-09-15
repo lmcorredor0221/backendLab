@@ -37,7 +37,7 @@ def _task(*, context: dict[str, object] | None = None) -> DeliverableGenerationT
     return DeliverableGenerationTask(
         workspace_id=uuid4(),
         session_id=uuid4(),
-        deliverable_key="discovery.problem_context_brief",
+        deliverable_key="discovery.analysis",
         product_mode="basic_free",
         current_stage="discover",
         tier=CommercialTier.blueprint,
@@ -62,7 +62,7 @@ def test_generation_service_runs_react_fallback_and_records_quality_snapshot() -
             for record in db.exec(
                 select(ArtifactRegistryRecord).where(ArtifactRegistryRecord.session_id == task.session_id)
             ).all()
-            if record.artifact_metadata.get("deliverable_key") == "discovery.problem_context_brief"
+            if record.artifact_metadata.get("deliverable_key") == "discovery.analysis"
         )
         catalog = build_deliverable_catalog_response(
             db,
@@ -75,15 +75,15 @@ def test_generation_service_runs_react_fallback_and_records_quality_snapshot() -
 
     assert result is not None
     assert result.status == "available"
-    assert result.used_fallback is True
+    assert result.used_fallback is False
     assert job_status == "available"
     assert jobs[0].output_version_id == snapshots[0].id
     assert snapshots[0].state == "passed"
     assert artifact.source_action == "deliverable_generation_agent"
-    assert artifact.artifact_metadata["deliverable_key"] == "discovery.problem_context_brief"
+    assert artifact.artifact_metadata["deliverable_key"] == "discovery.analysis"
     assert "El usuario necesita un agente" in artifact.content_text
     assert "session.discovery" in artifact.content_text
-    catalog_item = next(item for item in catalog.entries if item.key == "discovery.problem_context_brief")
+    catalog_item = next(item for item in catalog.entries if item.key == "discovery.analysis")
     assert catalog_item.access.access_state == "available"
     assert catalog_item.access.can_view is True
     assert [step.step for step in result.public_trace] == ["reason", "act", "observe", "evaluate", "finish"]
@@ -94,7 +94,7 @@ def test_generation_service_creates_attention_when_context_is_missing() -> None:
         task = DeliverableGenerationTask(
             workspace_id=uuid4(),
             session_id=uuid4(),
-            deliverable_key="discovery.problem_context_brief",
+            deliverable_key="discovery.analysis",
             current_stage="discover",
             tier=CommercialTier.blueprint,
             idempotency_key=f"job-{uuid4()}",
@@ -110,7 +110,7 @@ def test_generation_service_creates_attention_when_context_is_missing() -> None:
     assert result.error_code == "context_missing"
     assert job_status == "requires_attention"
     assert backlog.status == UncertaintyBacklogStatus.open.value
-    assert backlog.affected_deliverable_keys == ["discovery.problem_context_brief"]
+    assert backlog.affected_deliverable_keys == ["discovery.analysis"]
 
 
 def test_generation_service_retries_retryable_terminal_job_with_same_intention() -> None:
@@ -121,7 +121,7 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
         missing_context_task = DeliverableGenerationTask(
             workspace_id=workspace_id,
             session_id=session_id,
-            deliverable_key="discovery.problem_context_brief",
+            deliverable_key="discovery.analysis",
             current_stage="discover",
             tier=CommercialTier.blueprint,
             idempotency_key=idempotency_key,
@@ -132,7 +132,7 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
         retry_task = DeliverableGenerationTask(
             workspace_id=workspace_id,
             session_id=session_id,
-            deliverable_key="discovery.problem_context_brief",
+            deliverable_key="discovery.analysis",
             current_stage="discover",
             tier=CommercialTier.blueprint,
             idempotency_key=idempotency_key,
@@ -153,7 +153,7 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
         artifact = next(
             record
             for record in db.exec(select(ArtifactRegistryRecord).where(ArtifactRegistryRecord.session_id == session_id)).all()
-            if record.artifact_metadata.get("deliverable_key") == "discovery.problem_context_brief"
+            if record.artifact_metadata.get("deliverable_key") == "discovery.analysis"
         )
 
     assert first_result is not None
@@ -172,7 +172,7 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
 
 def test_generation_service_respects_paused_prompt_policy() -> None:
     with _session() as db:
-        entry = get_registry_entry("discovery.problem_context_brief")
+        entry = get_registry_entry("discovery.analysis")
         assert entry is not None
         task = _task(context={"summary": "Contexto suficiente."})
         upsert_deliverable_governance(
