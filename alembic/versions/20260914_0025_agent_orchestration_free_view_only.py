@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 
 revision = "20260914_0025"
@@ -28,19 +29,39 @@ def _now() -> datetime:
     return datetime.utcnow()
 
 
+def _json_type() -> sa.types.TypeEngine:
+    if op.get_bind().dialect.name == "postgresql":
+        return postgresql.JSONB()
+    return sa.JSON()
+
+
+def _uuid_type() -> sa.types.TypeEngine:
+    if op.get_bind().dialect.name == "postgresql":
+        return postgresql.UUID(as_uuid=True)
+    return sa.String(length=36)
+
+
+def _uuid_value():
+    value = uuid4()
+    if op.get_bind().dialect.name == "postgresql":
+        return value
+    return str(value)
+
+
 def _diagram_table() -> sa.Table:
+    uuid = _uuid_type()
     return sa.table(
         "diagram_governance_v3",
-        sa.column("id", sa.String()),
+        sa.column("id", uuid),
         sa.column("diagram_key", sa.String()),
         sa.column("enabled", sa.Boolean()),
         sa.column("generation_enabled", sa.Boolean()),
         sa.column("required_tier_override", sa.String()),
         sa.column("preview_mode_override", sa.String()),
         sa.column("prompt_status", sa.String()),
-        sa.column("prompt_override", sa.JSON()),
+        sa.column("prompt_override", _json_type()),
         sa.column("notes", sa.String()),
-        sa.column("updated_by_user_id", sa.String()),
+        sa.column("updated_by_user_id", uuid),
         sa.column("created_at", sa.DateTime()),
         sa.column("updated_at", sa.DateTime()),
     )
@@ -70,7 +91,7 @@ def upgrade() -> None:
 
     bind.execute(
         table.insert().values(
-            id=str(uuid4()),
+            id=_uuid_value(),
             diagram_key="agent_orchestration",
             prompt_override={},
             updated_by_user_id=None,
