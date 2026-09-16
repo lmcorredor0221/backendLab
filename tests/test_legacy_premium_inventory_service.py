@@ -170,6 +170,15 @@ def test_legacy_premium_inventory_classifies_records_collisions_and_usage() -> N
                     step_key="premium_backlog:mixed",
                     status="requires_attention",
                 ),
+                ProductBuildStepRecord(
+                    run_id=technical_run.id,
+                    workspace_id=workspace.id,
+                    session_id=project.id,
+                    step_key="deliverable:diagram.agent_orchestration",
+                    deliverable_key="diagram.agent_orchestration",
+                    status="error",
+                    error_payload={"code": "provider_timeout", "message": "El proveedor no respondio."},
+                ),
             ]
         )
         record_legacy_premium_endpoint_invocation(
@@ -203,6 +212,13 @@ def test_legacy_premium_inventory_classifies_records_collisions_and_usage() -> N
     assert report.build_health.business_backlog_attention_count == 1
     assert report.build_health.technical_attention_count == 2
     assert report.build_health.unattributed_attention_count == 0
+    assert {item.error_code for item in report.build_health.technical_attention_runs} == {
+        "provider_timeout",
+        "deliverable_provider_timeout",
+    }
+    detailed_run = next(item for item in report.build_health.technical_attention_runs if item.error_code == "provider_timeout")
+    assert detailed_run.failed_steps[0].deliverable_key == "diagram.agent_orchestration"
+    assert detailed_run.failed_steps[0].error_message == "El proveedor no respondio."
     assert report.endpoint_usage[0].operation == "resolve"
     assert report.endpoint_usage[0].invocation_count == 2
     assert report.migration_ready is False

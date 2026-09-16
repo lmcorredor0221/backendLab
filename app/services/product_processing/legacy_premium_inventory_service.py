@@ -13,10 +13,13 @@ from app.services.product_processing.contracts import (
     LegacyPremiumInventoryGroup,
     LegacyPremiumInventoryReport,
     LegacyPremiumInventoryRow,
+    LegacyPremiumTechnicalAttention,
+    LegacyPremiumTechnicalFailureStep,
     ProductBuildLifecycle,
     ProductBuildProductKey,
     ProductProcessingMode,
 )
+from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
 from app.services.product_processing.persistence import (
     ProductBuildRunRecord,
     ProductBuildStepRecord,
@@ -179,6 +182,13 @@ def _build_health(db: Session, *, workspace_id: UUID | None) -> LegacyPremiumBui
     steps = []
     if run_ids:
         steps = list(db.exec(select(ProductBuildStepRecord).where(ProductBuildStepRecord.run_id.in_(run_ids))).all())
+    job_ids = [step.job_id for step in steps if step.job_id is not None]
+    jobs_by_id = {}
+    if job_ids:
+        jobs_by_id = {
+            job.id: job
+            for job in db.exec(select(DeliverableGenerationJobRecord).where(DeliverableGenerationJobRecord.id.in_(job_ids))).all()
+        }
     steps_by_run: dict[UUID, list[ProductBuildStepRecord]] = {}
     for step in steps:
         steps_by_run.setdefault(step.run_id, []).append(step)
@@ -186,6 +196,7 @@ def _build_health(db: Session, *, workspace_id: UUID | None) -> LegacyPremiumBui
     business_attention = 0
     technical_attention = 0
     unattributed_attention = 0
+    technical_attention_runs: list[LegacyPremiumTechnicalAttention] = []
     for run in runs:
         if run.lifecycle != ProductBuildLifecycle.requires_attention.value:
             continue
@@ -197,6 +208,9 @@ def _build_health(db: Session, *, workspace_id: UUID | None) -> LegacyPremiumBui
         )
         if has_technical_failure:
             technical_attention += 1
+            technical_attention_runs.append(
+                _technical_attention_detail(run, run_steps=run_steps, jobs_by_id=jobs_by_id)
+            )
         elif legacy_steps:
             business_attention += 1
         else:
@@ -207,6 +221,50 @@ def _build_health(db: Session, *, workspace_id: UUID | None) -> LegacyPremiumBui
         business_backlog_attention_count=business_attention,
         technical_attention_count=technical_attention,
         unattributed_attention_count=unattributed_attention,
+        technical_attention_runs=sorted(technical_attention_runs, key=lambda item: item.updated_at, reverse=True),
+    )
+
+
+def _technical_attention_detail(
+    run: ProductBuildRunRecord,
+    *,
+    run_steps: list[ProductBuildStepRecord],
+    jobs_by_id: dict[UUID, DeliverableGenerationJobRecord],
+) -> LegacyPremiumTechnicalAttention:
+    error_payload = run.error_payload if isinstance(run.error_payload, dict) else {}
+    failed_steps = [
+        _technical_failure_step(step, jobs_by_id=jobs_by_id)
+        for step in run_steps
+        if not step.step_key.startswith("premium_backlog:")
+        and step.status in {"error", "failed", "requires_attention"}
+    ]
+    return LegacyPremiumTechnicalAttention(
+        run_id=run.id,
+        session_id=run.session_id,
+        lifecycle=run.lifecycle,
+        error_code=str(error_payload.get("code") or ""),
+        error_title=str(error_payload.get("title") or ""),
+        error_message=str(error_payload.get("message") or ""),
+        failed_steps=failed_steps[:25],
+        updated_at=run.updated_at.isoformat(),
+    )
+
+
+def _technical_failure_step(
+    step: ProductBuildStepRecord,
+    *,
+    jobs_by_id: dict[UUID, DeliverableGenerationJobRecord],
+) -> LegacyPremiumTechnicalFailureStep:
+    error_payload = step.error_payload if isinstance(step.error_payload, dict) else {}
+    job = jobs_by_id.get(step.job_id) if step.job_id is not None else None
+    return LegacyPremiumTechnicalFailureStep(
+        step_id=step.id,
+        step_key=step.step_key,
+        deliverable_key=step.deliverable_key,
+        status=step.status,
+        error_code=str(error_payload.get("code") or getattr(job, "error_code", "") or ""),
+        error_message=str(error_payload.get("message") or getattr(job, "error_message", "") or ""),
+        updated_at=step.updated_at.isoformat(),
     )
 
 

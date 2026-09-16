@@ -497,12 +497,34 @@ class LegacyPremiumInventoryGroup(ContractModel):
     count: int = 0
 
 
+class LegacyPremiumTechnicalFailureStep(ContractModel):
+    step_id: UUID
+    step_key: str = ""
+    deliverable_key: str = ""
+    status: str = ""
+    error_code: str = ""
+    error_message: str = ""
+    updated_at: str = ""
+
+
+class LegacyPremiumTechnicalAttention(ContractModel):
+    run_id: UUID
+    session_id: UUID
+    lifecycle: str = ""
+    error_code: str = ""
+    error_title: str = ""
+    error_message: str = ""
+    failed_steps: list[LegacyPremiumTechnicalFailureStep] = PydanticField(default_factory=list)
+    updated_at: str = ""
+
+
 class LegacyPremiumBuildHealth(ContractModel):
     legacy_run_count: int = 0
     requires_attention_count: int = 0
     business_backlog_attention_count: int = 0
     technical_attention_count: int = 0
     unattributed_attention_count: int = 0
+    technical_attention_runs: list[LegacyPremiumTechnicalAttention] = PydanticField(default_factory=list)
 
 
 class LegacyPremiumEndpointUsage(ContractModel):
