@@ -365,7 +365,24 @@ def _backlog_domain(record: UncertaintyBacklogRecord) -> str:
     return "implementation"
 
 
+def _backlog_requires_acp_confirmation(record: UncertaintyBacklogRecord) -> bool:
+    payload = record.payload if isinstance(record.payload, dict) else {}
+    return (
+        str(record.target_stage or "").strip().lower() == "acp"
+        and str(record.status or "").strip().lower() in {"open", "deferred"}
+        and str(record.disposition or "").strip().lower() in {"infer", "defer"}
+        and not isinstance(payload.get("acp_resolution"), dict)
+    )
+
+
+def _backlog_origin(record: UncertaintyBacklogRecord) -> str:
+    payload = record.payload if isinstance(record.payload, dict) else {}
+    return str(payload.get("source_tier") or record.product_mode or "blueprint").strip()
+
+
 def _backlog_gap_status(record: UncertaintyBacklogRecord) -> str:
+    if _backlog_requires_acp_confirmation(record):
+        return "open"
     status = str(record.status or "").strip().lower()
     disposition = str(record.disposition or "").strip().lower()
     if status == "resolved" or disposition in {"defer", "infer"} or status == "deferred":
@@ -402,6 +419,8 @@ def _backlog_answer_text(record: UncertaintyBacklogRecord) -> str:
 
 
 def _backlog_response_status(record: UncertaintyBacklogRecord) -> str:
+    if _backlog_requires_acp_confirmation(record):
+        return "open"
     status = str(record.status or "").strip().lower()
     disposition = str(record.disposition or "").strip().lower()
     if status == "resolved" or disposition == "infer":
@@ -443,10 +462,11 @@ def build_construction_gaps_from_uncertainty_backlog(
                 source_sections=_dedupe_strings(
                     [
                         f"uncertainty_backlog.{record.product_mode}",
+                        f"product.{_backlog_origin(record)}",
                         f"journey.{record.source_stage}" if record.source_stage else "",
                     ]
                 ),
-                current_assumptions=_dedupe_strings([record.assumed_answer]),
+                current_assumptions=_dedupe_strings([record.assumed_answer or record.suggested_answer]),
                 closure_criteria=[
                     "Registrar respuesta, owner o delegacion explicita.",
                     "Conservar trazabilidad hacia el backlog LAB original.",
@@ -471,7 +491,7 @@ def build_construction_question_response_records_from_uncertainty_backlog(
         if question_key in existing_keys or signature in existing_signatures:
             continue
         status = _backlog_response_status(record)
-        if status == "open":
+        if status == "open" and not _backlog_requires_acp_confirmation(record):
             continue
         synthetic.append(
             ConstructionQuestionResponseRecord(
@@ -898,6 +918,8 @@ def _current_question_status(
     record: ConstructionQuestionResponseRecord | None,
 ) -> str:
     if record is None:
+        return "open"
+    if record.status == "open":
         return "open"
     if record.status == "deferred":
         return "deferred"

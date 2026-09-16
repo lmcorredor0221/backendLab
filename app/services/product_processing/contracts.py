@@ -466,6 +466,120 @@ class ProductBuildTelemetryReport(ContractModel):
     source_contracts: list[str] = PydanticField(default_factory=list)
 
 
+class LegacyPremiumInventoryRow(ContractModel):
+    record_id: UUID
+    workspace_id: UUID
+    session_id: UUID
+    uncertainty_key: str
+    source_stage: str = ""
+    target_stage: str = ""
+    kind: str = ""
+    disposition: str = ""
+    status: str = ""
+    source_tier: str = ""
+    classification: Literal["business_pre_acp", "technical_pro", "closed", "acp_managed", "ambiguous"]
+    migration_action: Literal[
+        "defer_to_acp",
+        "preserve_historical_response",
+        "retain_technical_pro",
+        "merge_acp_metadata",
+        "retain_audit_only",
+        "manual_review",
+    ]
+    collides_with_basic: bool = False
+
+
+class LegacyPremiumInventoryGroup(ContractModel):
+    workspace_id: UUID
+    session_id: UUID
+    classification: Literal["business_pre_acp", "technical_pro", "closed", "acp_managed", "ambiguous"]
+    status: str = ""
+    count: int = 0
+
+
+class LegacyPremiumBuildHealth(ContractModel):
+    legacy_run_count: int = 0
+    requires_attention_count: int = 0
+    business_backlog_attention_count: int = 0
+    technical_attention_count: int = 0
+    unattributed_attention_count: int = 0
+
+
+class LegacyPremiumEndpointUsage(ContractModel):
+    operation: str
+    invocation_count: int = 0
+    last_invoked_at: str = ""
+
+
+class LegacyPremiumInventoryReport(ContractModel):
+    contract_version: Literal["legacy-premium-inventory.v1"] = "legacy-premium-inventory.v1"
+    generated_at: str
+    workspace_id: UUID | None = None
+    total_records: int = 0
+    business_pre_acp_count: int = 0
+    technical_pro_count: int = 0
+    closed_count: int = 0
+    acp_managed_count: int = 0
+    ambiguous_count: int = 0
+    collision_count: int = 0
+    build_health: LegacyPremiumBuildHealth = PydanticField(default_factory=LegacyPremiumBuildHealth)
+    endpoint_usage: list[LegacyPremiumEndpointUsage] = PydanticField(default_factory=list)
+    groups: list[LegacyPremiumInventoryGroup] = PydanticField(default_factory=list)
+    records: list[LegacyPremiumInventoryRow] = PydanticField(default_factory=list)
+    migration_ready: bool = False
+    warnings: list[str] = PydanticField(default_factory=list)
+
+
+class LegacyPremiumMigrationDryRunAction(ContractModel):
+    source_record_id: UUID
+    session_id: UUID
+    uncertainty_key: str
+    classification: Literal["business_pre_acp", "technical_pro", "closed", "acp_managed", "ambiguous"]
+    proposed_action: Literal[
+        "create_basic_defer_to_acp",
+        "merge_into_basic",
+        "preserve_historical_response",
+        "retain_audit_only",
+        "retain_technical_pro",
+        "manual_review",
+    ]
+    target_record_id: UUID | None = None
+    reason: str = ""
+
+
+class LegacyPremiumMigrationDryRunReport(ContractModel):
+    contract_version: Literal["legacy-premium-migration-dry-run.v1"] = "legacy-premium-migration-dry-run.v1"
+    generated_at: str
+    workspace_id: UUID | None = None
+    batch_size: int = 0
+    total_candidates: int = 0
+    proposed_create_count: int = 0
+    proposed_merge_count: int = 0
+    preserved_history_count: int = 0
+    retained_technical_count: int = 0
+    manual_review_count: int = 0
+    migration_ready: bool = False
+    blocking_reasons: list[str] = PydanticField(default_factory=list)
+    actions: list[LegacyPremiumMigrationDryRunAction] = PydanticField(default_factory=list)
+
+
+class LegacyPremiumMigrationBatchResult(ContractModel):
+    contract_version: Literal["legacy-premium-migration.v1"] = "legacy-premium-migration.v1"
+    migration_id: UUID
+    workspace_id: UUID
+    batch_size: int = 0
+    scanned_count: int = 0
+    migrated_count: int = 0
+    created_basic_count: int = 0
+    merged_basic_count: int = 0
+    preserved_historical_response_count: int = 0
+    retained_technical_count: int = 0
+    retained_audit_count: int = 0
+    normalized_business_attention_run_count: int = 0
+    skipped_already_migrated_count: int = 0
+    source_record_ids: list[UUID] = PydanticField(default_factory=list)
+
+
 class QuestionPolicyMode(StrEnum):
     infer_defer = "infer_defer"
     prioritized_enrichment = "prioritized_enrichment"

@@ -316,7 +316,7 @@ def test_answered_and_deferred_questions_surface_impact_analysis() -> None:
     assert "acp_questions_resolution" in answered.impact_analysis.affected_phase_keys
 
 
-def test_deferred_uncertainty_backlog_travels_to_acp_without_blocking_package() -> None:
+def test_deferred_uncertainty_backlog_reaches_acp_as_a_ratifiable_assumption() -> None:
     workspace_id = uuid4()
     session_id = uuid4()
     with _memory_db() as db:
@@ -338,6 +338,7 @@ def test_deferred_uncertainty_backlog_travels_to_acp_without_blocking_package() 
             suggested_answer="Usar repositorio documental centralizado con permisos por rol.",
             affected_deliverable_keys=["ACP/knowledge/sources.yaml", "ACP/memory/strategy.yaml"],
             dependency_keys=["memory.knowledge_sources"],
+            payload={"source_tier": "blueprint_pro"},
         )
         db.add(backlog)
         backlog_question_key = uncertainty_backlog_question_key(backlog)
@@ -364,16 +365,15 @@ def test_deferred_uncertainty_backlog_travels_to_acp_without_blocking_package() 
         )
 
         questions = build_construction_question_views(preview, preview_records)
-        deferred = build_deferred_construction_decision_backlog(preview, preview_records)
         continuity_answers = build_continuity_answer_map(preview_records)
 
-    assert preview.construction_readiness.can_start_build is True
-    assert preview.construction_readiness.open_questions == 0
+    assert preview.construction_readiness.can_start_build is False
+    assert preview.construction_readiness.open_questions == 1
     assert questions[0].question_key == backlog_question_key
-    assert questions[0].status == "deferred"
+    assert questions[0].status == "open"
     assert questions[0].answer_text.startswith("Documentos aprobados")
-    assert deferred[0]["question_key"] == backlog_question_key
-    assert continuity_answers == {}
+    assert "product.blueprint_pro" in preview.construction_readiness.gaps[0].source_sections
+    assert continuity_answers == {backlog_question_key: "Documentos aprobados disponibles por API o export controlado."}
 
 
 def test_uncertainty_backlog_gaps_deduplicate_same_question_text() -> None:

@@ -29,13 +29,13 @@ def test_basic_blueprint_defers_define_quality_blockers_at_approval() -> None:
     assert _definition_approval_blocking_issues(definition, CommercialTier.blueprint) == []
 
 
-def test_premium_blueprint_keeps_define_quality_blockers_at_approval() -> None:
+def test_blueprint_pro_defers_define_quality_blockers_at_approval() -> None:
     issues = ["untraced_item:NFR-001", "vague_nfr:NFR-002"]
     definition = RequirementsDefinitionOutput(
         validation=DefinitionValidationSummary(blocking_issues=issues)
     )
 
-    assert _definition_approval_blocking_issues(definition, CommercialTier.blueprint_pro) == issues
+    assert _definition_approval_blocking_issues(definition, CommercialTier.blueprint_pro) == []
 
 
 def test_acp_keeps_define_quality_blockers_at_approval() -> None:
@@ -64,7 +64,7 @@ def test_basic_blueprint_defers_design_open_questions_at_approval() -> None:
     assert _design_approval_blocking_issues(design, CommercialTier.blueprint) == []
 
 
-def test_premium_blueprint_keeps_design_questions_as_approval_blockers() -> None:
+def test_blueprint_pro_defers_design_questions_at_approval() -> None:
     design = DesignRecommendationArtifact(
         critic_findings=[
             DesignCritiqueFinding(
@@ -78,12 +78,7 @@ def test_premium_blueprint_keeps_design_questions_as_approval_blockers() -> None
         review_state=ReviewState.blocked,
     )
 
-    issues = _design_approval_blocking_issues(design, CommercialTier.blueprint_pro)
-
-    assert "design_review_state:blocked" in issues
-    assert "blocking_finding:DMC-001" in issues
-    assert "missing_information:Owner tecnico del flujo" in issues
-    assert "open_question:Que meta numerica debe usarse para evaluar disminucion de tiempo?" in issues
+    assert _design_approval_blocking_issues(design, CommercialTier.blueprint_pro) == []
 
 
 def test_basic_blueprint_defers_memory_quality_blockers_at_approval() -> None:
@@ -107,7 +102,7 @@ def test_basic_blueprint_defers_memory_quality_blockers_at_approval() -> None:
     assert _memory_approval_blocking_issues(memory, CommercialTier.blueprint) == []
 
 
-def test_premium_blueprint_keeps_memory_quality_blockers_at_approval() -> None:
+def test_blueprint_pro_defers_memory_quality_blockers_at_approval() -> None:
     memory = MemoryRecommendationArtifact(
         critic_findings=[
             MemoryRecommendationFinding(
@@ -121,12 +116,7 @@ def test_premium_blueprint_keeps_memory_quality_blockers_at_approval() -> None:
         review_state=ReviewState.blocked,
     )
 
-    issues = _memory_approval_blocking_issues(memory, CommercialTier.blueprint_pro)
-
-    assert "memory_review_state:blocked" in issues
-    assert "blocking_finding:MEM-001" in issues
-    assert "missing_information:Owner de knowledge base" in issues
-    assert "open_question:Que proveedor de embeddings se usara en implementacion?" in issues
+    assert _memory_approval_blocking_issues(memory, CommercialTier.blueprint_pro) == []
 
 
 def test_basic_blueprint_still_blocks_memory_when_required_tool_is_missing() -> None:

@@ -5,7 +5,7 @@ from app.services.commerce_service import tier_rank
 from app.services.product_processing.acp_product_orchestration_service import ensure_acp_product_orchestration
 from app.services.product_processing.contracts import ProductBuildProductKey, ProductBuildStatus
 from app.services.product_processing.journey_state_machine_service import transition_for_stage_approval
-from app.services.product_processing.premium_enrichment_service import sync_premium_enrichment_product_run
+from app.services.product_processing.blueprint_pro_build_service import sync_blueprint_pro_product_run
 from app.services.product_processing.product_build_orchestrator import (
     ProductBuildOrchestrationOptions,
     ensure_product_build_orchestration,
@@ -67,7 +67,7 @@ def sync_product_builds_for_stage_progress(
     current_tier = record.commercial_tier
 
     if tier_rank(current_tier) >= tier_rank(CommercialTier.blueprint_pro):
-        premium_status = sync_premium_enrichment_product_run(
+        premium_status = sync_blueprint_pro_product_run(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,

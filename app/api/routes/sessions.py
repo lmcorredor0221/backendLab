@@ -296,6 +296,7 @@ from app.services.product_processing import (
     upsert_uncertainty_backlog,
 )
 from app.services.product_processing.contracts import JourneyStateKey, JourneyStateSubstate
+from app.services.product_processing.legacy_premium_inventory_service import record_legacy_premium_endpoint_invocation
 from app.services.product_processing.journey_state_machine_service import initialize_journey_state, transition_journey_state
 from app.services.rules import derive_knowledge_profile, find_missing_discovery_fields
 from app.services.short_term_memory import MAIN_BRANCH_KEY, ShortTermMemoryService
@@ -4150,6 +4151,13 @@ def resolve_premium_enrichment_item_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> PremiumSelectiveReprocessResult:
     record = get_or_404(db, session_id, current_user.id)
+    record_legacy_premium_endpoint_invocation(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        user_id=current_user.id,
+        operation="resolve",
+    )
     membership = get_workspace_membership_for_record(db, record=record, user_id=current_user.id)
     ensure_project_role(membership, PROJECT_WRITE_ROLES, "resolver enriquecimiento Premium")
     if record.commercial_tier == CommercialTier.blueprint:
@@ -4184,6 +4192,13 @@ def defer_premium_enrichment_item_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> dict[str, str]:
     record = get_or_404(db, session_id, current_user.id)
+    record_legacy_premium_endpoint_invocation(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        user_id=current_user.id,
+        operation="defer_to_acp",
+    )
     membership = get_workspace_membership_for_record(db, record=record, user_id=current_user.id)
     ensure_project_role(membership, PROJECT_WRITE_ROLES, "diferir enriquecimiento a ACP")
     try:
@@ -4212,6 +4227,13 @@ def dismiss_premium_enrichment_item_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> dict[str, str]:
     record = get_or_404(db, session_id, current_user.id)
+    record_legacy_premium_endpoint_invocation(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        user_id=current_user.id,
+        operation="dismiss",
+    )
     membership = get_workspace_membership_for_record(db, record=record, user_id=current_user.id)
     ensure_project_role(membership, PROJECT_WRITE_ROLES, "descartar enriquecimiento")
     try:

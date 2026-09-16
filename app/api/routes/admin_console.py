@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -23,6 +23,17 @@ from app.services.admin_console_analytics import (
 )
 from app.services.auth_service import get_current_user
 from app.services.runtime_access_control import ensure_platform_admin
+from app.services.product_processing.contracts import (
+    LegacyPremiumInventoryReport,
+    LegacyPremiumMigrationBatchResult,
+    LegacyPremiumMigrationDryRunReport,
+)
+from app.services.product_processing.legacy_premium_inventory_service import build_legacy_premium_inventory_report
+from app.services.product_processing.legacy_premium_migration_service import (
+    build_legacy_premium_migration_dry_run,
+    execute_legacy_premium_migration_batch,
+)
+from app.services.stage5_service import FEATURE_FLAG_LEGACY_PREMIUM_MIGRATION, is_feature_flag_enabled
 from app.services.workspace_access import WorkspaceAccessContext, get_current_workspace_context
 
 
@@ -43,6 +54,12 @@ class AdminUserInvitationCreateRequest(BaseModel):
     expires_at: datetime | None = None
     message: str = ""
     metadata: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class LegacyPremiumMigrationExecuteRequest(BaseModel):
+    workspace_id: UUID
+    batch_size: int = PydanticField(default=200, ge=1, le=1_000)
+    confirmation: Literal["migrate_legacy_premium_v1"]
 
 
 @router.get("/overview")
@@ -326,6 +343,82 @@ def get_admin_activity_route(
         ),
         limit=limit,
     )
+
+
+@router.get("/legacy-premium/inventory", response_model=LegacyPremiumInventoryReport)
+def get_legacy_premium_inventory_route(
+    workspace_id: UUID | None = None,
+    sample_limit: int = Query(default=200, ge=1, le=1_000),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> LegacyPremiumInventoryReport:
+    _ensure_admin(db, current_user=current_user, workspace_context=workspace_context)
+    return build_legacy_premium_inventory_report(
+        db,
+        workspace_id=workspace_id,
+        sample_limit=sample_limit,
+    )
+
+
+@router.get("/legacy-premium/migration-dry-run", response_model=LegacyPremiumMigrationDryRunReport)
+def get_legacy_premium_migration_dry_run_route(
+    workspace_id: UUID | None = None,
+    batch_size: int = Query(default=200, ge=1, le=1_000),
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> LegacyPremiumMigrationDryRunReport:
+    _ensure_admin(db, current_user=current_user, workspace_context=workspace_context)
+    return build_legacy_premium_migration_dry_run(
+        db,
+        workspace_id=workspace_id,
+        batch_size=batch_size,
+    )
+
+
+@router.post("/legacy-premium/migration", response_model=LegacyPremiumMigrationBatchResult)
+def execute_legacy_premium_migration_route(
+    payload: LegacyPremiumMigrationExecuteRequest,
+    db: Session = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+    workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
+) -> LegacyPremiumMigrationBatchResult:
+    _ensure_admin(db, current_user=current_user, workspace_context=workspace_context)
+    if not is_feature_flag_enabled(
+        db,
+        FEATURE_FLAG_LEGACY_PREMIUM_MIGRATION,
+        workspace_id=payload.workspace_id,
+        default_if_missing=False,
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La migracion Premium heredada esta desactivada.")
+    try:
+        result = execute_legacy_premium_migration_batch(
+            db,
+            workspace_id=payload.workspace_id,
+            batch_size=payload.batch_size,
+        )
+        audit_admin_change(
+            db,
+            workspace_id=payload.workspace_id,
+            actor=current_user,
+            change_type="legacy_premium_migration_batch",
+            before={"contract_version": "legacy-premium-migration.v1", "migration_id": str(result.migration_id)},
+            after={
+                "migrated_count": result.migrated_count,
+                "created_basic_count": result.created_basic_count,
+                "merged_basic_count": result.merged_basic_count,
+                "normalized_business_attention_run_count": result.normalized_business_attention_run_count,
+            },
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return result
 
 
 def _ensure_admin(

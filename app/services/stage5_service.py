@@ -48,6 +48,8 @@ FEATURE_FLAG_DESIGN_INTELLIGENCE = "design_intelligence_v2"
 FEATURE_FLAG_BLUEPRINT_TIER_POLICY = "blueprint_tier_policy_enabled"
 FEATURE_FLAG_DELIVERABLE_CATALOG = "deliverable_catalog_enabled"
 FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN = "deliverable_governance_admin_enabled"
+FEATURE_FLAG_ACP_INHERITED_UNCERTAINTY = "acp_inherited_uncertainty_v1"
+FEATURE_FLAG_LEGACY_PREMIUM_MIGRATION = "legacy_premium_migration_v1"
 
 SPECIALIST_RUN_KINDS = ("evaluation_specialist", "risk_specialist", "artifact_specialist")
 

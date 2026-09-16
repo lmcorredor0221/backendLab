@@ -2,7 +2,7 @@ from collections.abc import Generator
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.core.config import (
     get_settings,
@@ -144,12 +144,14 @@ def ensure_runtime_schema() -> None:
 
 
 def bootstrap_application_data(session: Session) -> None:
+    from app.models import WorkspaceRecord
     from app.services.deliverable_catalog import persistence as _deliverable_catalog_persistence  # noqa: F401
     from app.services.product_processing import persistence as _product_processing_persistence  # noqa: F401
     from app.services.journey_stage_migration import JourneyStageMigrationService
     from app.services.llm_runtime.settings_migration import apply_runtime_llm_multitenant_migration
     from app.services.runtime_governance_bootstrap import backfill_platform_runtime_governance
     from app.services.workspace_access import backfill_user_default_workspaces
+    from app.services.workspace_bootstrap import seed_runtime_feature_flags
     from app.services.workspace_schema_migration import (
         apply_workspace_scoped_legacy_backfill,
         apply_workspace_uuid_column_migration,
@@ -158,6 +160,8 @@ def bootstrap_application_data(session: Session) -> None:
     apply_workspace_uuid_column_migration(session)
     backfill_user_default_workspaces(session)
     apply_workspace_scoped_legacy_backfill(session)
+    for workspace_id in session.exec(select(WorkspaceRecord.id)).all():
+        seed_runtime_feature_flags(session, workspace_id=workspace_id)
     backfill_platform_runtime_governance(session)
     apply_runtime_llm_multitenant_migration(session)
     apply_session_contract_migration(session)

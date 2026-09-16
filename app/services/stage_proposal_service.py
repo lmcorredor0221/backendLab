@@ -205,16 +205,10 @@ def _definition_approval_blocking_issues(
     definition: RequirementsDefinitionOutput,
     commercial_tier: CommercialTier | str,
 ) -> list[str]:
-    """Apply product-tier approval semantics to Define validation findings.
-
-    Blueprint Basico is intentionally an infer/defer/continue product. Quality
-    gaps detected during Define remain traceable in the artifact and can feed
-    Premium enrichment, but they must not block the first-value funnel unless
-    the artifact itself is invalid, which is handled before this function.
-    """
+    """Apply approval semantics without turning pre-ACP gaps into user blockers."""
     issues = list(definition.validation.blocking_issues)
     mode = resolve_product_processing_mode(commercial_tier)
-    if mode == ProductProcessingMode.basic_free:
+    if mode != ProductProcessingMode.acp_implementation:
         return []
     return issues
 
@@ -275,7 +269,7 @@ def _design_approval_blocking_issues(
     commercial_tier: CommercialTier | str,
 ) -> list[str]:
     mode = resolve_product_processing_mode(commercial_tier)
-    if mode == ProductProcessingMode.basic_free:
+    if mode != ProductProcessingMode.acp_implementation:
         return []
 
     issues: list[str] = []
@@ -307,7 +301,7 @@ def _memory_approval_blocking_issues(
     )
 
     mode = resolve_product_processing_mode(commercial_tier)
-    if mode == ProductProcessingMode.basic_free:
+    if mode != ProductProcessingMode.acp_implementation:
         return issues
 
     if artifact.review_state == ReviewState.blocked:

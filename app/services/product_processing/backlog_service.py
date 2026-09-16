@@ -43,6 +43,16 @@ def _record_signature(record: UncertaintyBacklogRecord) -> str:
     )
 
 
+def _source_tier(classification: UncertaintyClassification) -> str:
+    """Preserve the commercial origin when Pro writes into the ACP backlog."""
+    targets = {target.value for target in classification.uncertainty.product_targets}
+    if ProductProcessingMode.premium_enrichment.value in targets:
+        return "blueprint_pro"
+    if ProductProcessingMode.basic_free.value in targets:
+        return "blueprint_free"
+    return ""
+
+
 def _find_existing_by_signature(
     db: Session,
     *,
@@ -152,6 +162,9 @@ def upsert_uncertainty_backlog(
     record.dependency_keys = merge_unique_strings([*(record.dependency_keys or []), *(dependency_keys or [])])
     payload = classification.model_dump(mode="json")
     payload["dedupe_signature"] = _uncertainty_signature(classification)
+    source_tier = _source_tier(classification)
+    if source_tier:
+        payload["source_tier"] = source_tier
     if existing is not None and record.uncertainty_key != uncertainty.key:
         payload["merged_uncertainty_key"] = uncertainty.key
     record.payload = payload

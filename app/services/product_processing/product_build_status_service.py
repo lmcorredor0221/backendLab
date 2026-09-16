@@ -349,14 +349,16 @@ def _build_attention_items(
 ) -> list[ProductBuildAttentionItem]:
     items: list[ProductBuildAttentionItem] = []
     steps_by_key = _steps_by_key(db, run)
-    backlog = db.exec(
-        select(UncertaintyBacklogRecord).where(
-            UncertaintyBacklogRecord.workspace_id == record.workspace_id,
-            UncertaintyBacklogRecord.session_id == record.id,
-            UncertaintyBacklogRecord.product_mode.in_(_attention_product_modes(meta)),
-            UncertaintyBacklogRecord.status.notin_(list(CLOSED_UNCERTAINTY_STATUSES)),
-        )
-    ).all()
+    backlog = []
+    if meta.product_key != ProductBuildProductKey.blueprint_pro:
+        backlog = db.exec(
+            select(UncertaintyBacklogRecord).where(
+                UncertaintyBacklogRecord.workspace_id == record.workspace_id,
+                UncertaintyBacklogRecord.session_id == record.id,
+                UncertaintyBacklogRecord.product_mode.in_(_attention_product_modes(meta)),
+                UncertaintyBacklogRecord.status.notin_(list(CLOSED_UNCERTAINTY_STATUSES)),
+            )
+        ).all()
     for row in backlog:
         blocking = _uncertainty_blocks_product(row, meta)
         linked_step = _step_for_uncertainty(row, steps_by_key)

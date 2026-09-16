@@ -162,6 +162,7 @@ __all__ = [
     "dismiss_premium_uncertainty",
     "resolve_premium_uncertainty",
     "resolve_product_processing_mode",
+    "sync_blueprint_pro_product_run",
     "sync_premium_enrichment_product_run",
     "sync_product_builds_after_attention_action",
     "sync_product_builds_after_stage_approval",
@@ -185,6 +186,10 @@ def __getattr__(name: str):
         from app.services.product_processing import acp_product_orchestration_service
 
         return getattr(acp_product_orchestration_service, name)
+    if name == "sync_blueprint_pro_product_run":
+        from app.services.product_processing import blueprint_pro_build_service
+
+        return getattr(blueprint_pro_build_service, name)
     if name in {
         "build_premium_enrichment_workspace",
         "defer_premium_uncertainty_to_acp",

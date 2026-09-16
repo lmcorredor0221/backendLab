@@ -22,6 +22,9 @@ from app.models import (
     WorkspaceRole,
 )
 from app.services.auth_service import hash_password
+from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.stage5_service import FEATURE_FLAG_LEGACY_PREMIUM_MIGRATION, update_feature_flag
+from app.services.workspace_bootstrap import seed_runtime_feature_flags
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
@@ -327,6 +330,114 @@ def test_admin_routes_forbid_workspace_owner_without_platform_admin(client: Test
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Solo un platform admin puede ejecutar esta accion."
+
+
+def test_platform_admin_can_read_legacy_premium_inventory(client: TestClient) -> None:
+    headers = auth_headers(client)
+
+    response = client.get("/api/v1/admin/legacy-premium/inventory?sample_limit=10", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contract_version"] == "legacy-premium-inventory.v1"
+    assert len(payload["records"]) <= min(payload["total_records"], 10)
+
+
+def test_platform_admin_can_read_legacy_premium_migration_dry_run(client: TestClient) -> None:
+    headers = auth_headers(client)
+
+    response = client.get("/api/v1/admin/legacy-premium/migration-dry-run?batch_size=10", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contract_version"] == "legacy-premium-migration-dry-run.v1"
+    assert payload["total_candidates"] <= 10
+
+
+def test_legacy_premium_migration_requires_explicit_feature_flag(client: TestClient) -> None:
+    headers = auth_headers(client)
+    workspace_id = active_workspace_id(client, headers)
+
+    response = client.post(
+        "/api/v1/admin/legacy-premium/migration",
+        headers=headers,
+        json={
+            "workspace_id": str(workspace_id),
+            "batch_size": 1,
+            "confirmation": "migrate_legacy_premium_v1",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "La migracion Premium heredada esta desactivada."
+
+
+def test_platform_admin_can_execute_enabled_legacy_premium_migration(client: TestClient) -> None:
+    headers = auth_headers(client)
+    workspace_id = active_workspace_id(client, headers)
+    with db_session_from_client(client) as session:
+        admin = session.exec(select(UserRecord).where(UserRecord.email == TEST_EMAIL)).one()
+        project = SessionRecord(user_id=admin.id, workspace_id=workspace_id, title="Migracion Premium")
+        session.add(project)
+        session.flush()
+        session.add(
+            UncertaintyBacklogRecord(
+                workspace_id=workspace_id,
+                session_id=project.id,
+                uncertainty_key="legacy_gap",
+                product_mode="premium_enrichment",
+                source_stage="design",
+                kind="gap",
+                status="deferred",
+                disposition="infer",
+                source_refs=["design:legacy_gap"],
+            )
+        )
+        seed_runtime_feature_flags(session, workspace_id=workspace_id)
+        update_feature_flag(
+            session,
+            workspace_id=workspace_id,
+            flag_key=FEATURE_FLAG_LEGACY_PREMIUM_MIGRATION,
+            enabled=True,
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/admin/legacy-premium/migration",
+        headers=headers,
+        json={
+            "workspace_id": str(workspace_id),
+            "batch_size": 10,
+            "confirmation": "migrate_legacy_premium_v1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["migrated_count"] == 1
+    with db_session_from_client(client) as session:
+        migrated_source = session.exec(
+            select(UncertaintyBacklogRecord).where(
+                UncertaintyBacklogRecord.workspace_id == workspace_id,
+                UncertaintyBacklogRecord.uncertainty_key == "legacy_gap",
+                UncertaintyBacklogRecord.product_mode == "premium_enrichment",
+            )
+        ).one()
+        target = session.exec(
+            select(UncertaintyBacklogRecord).where(
+                UncertaintyBacklogRecord.workspace_id == workspace_id,
+                UncertaintyBacklogRecord.uncertainty_key == "legacy_gap",
+                UncertaintyBacklogRecord.product_mode == "basic_free",
+            )
+        ).one()
+        audit = session.exec(
+            select(RuntimeSettingsAuditRecord).where(
+                RuntimeSettingsAuditRecord.change_type == "legacy_premium_migration_batch"
+            )
+        ).one()
+
+    assert migrated_source.status == "superseded"
+    assert target.target_stage == "acp"
+    assert audit.after_payload_redacted["migrated_count"] == 1
 
 
 def test_commerce_access_requests_forbid_workspace_owner_without_traceback(client: TestClient) -> None:

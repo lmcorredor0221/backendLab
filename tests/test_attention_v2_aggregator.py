@@ -256,7 +256,7 @@ def test_stage_payload_maps_guided_questions_to_attention_options() -> None:
     assert items[0].source_ref.entity_id == "owner_policy"
 
 
-def test_inline_attention_resolution_removes_validation_missing_information() -> None:
+def test_blueprint_pro_hides_validation_missing_information_until_acp() -> None:
     session = _create_memory_engine_session()
     try:
         user, workspace, record = _seed_minimal_records(session)
@@ -305,37 +305,12 @@ def test_inline_attention_resolution_removes_validation_missing_information() ->
             readiness=ConstructionReadinessReport(),
             access=access,
         )
-        item = next(item for item in response.items if item.source_ref.entity_id == "untraced_item:FR-001")
-
-        result = apply_attention_action_v2(
-            session,
-            record=record,
-            snapshot=snapshot,
-            readiness=ConstructionReadinessReport(),
-            access=access,
-            current_user=user,
-            item_key=item.key,
-            payload=AttentionActionRequestV2(
-                action_kind="answer",
-                idempotency_key="resolve-untraced-fr-001",
-                selected_option_key="link_existing_evidence",
-                answer_text="Vincular FR-001 con el canvas aprobado.",
-                source_artifact_version=1,
-            ),
-        )
-        session.commit()
-        refreshed = session.get(JourneyStageArtifactRecord, artifact.id)
-
-        assert result.status == "applied"
-        assert refreshed is not None
-        assert refreshed.missing_information == []
-        assert item.key in refreshed.user_patch["attention_resolutions"]
-        assert refreshed.user_patch["attention_resolutions"][item.key]["selected_option_key"] == "link_existing_evidence"
+        assert not any(item.source_ref.entity_id == "untraced_item:FR-001" for item in response.items)
     finally:
         session.close()
 
 
-def test_persisted_attention_resolution_hides_journey_item_after_snapshot_reload() -> None:
+def test_blueprint_pro_hides_persisted_journey_missing_information() -> None:
     session = _create_memory_engine_session()
     try:
         _, workspace, record = _seed_minimal_records(session)
@@ -362,35 +337,14 @@ def test_persisted_attention_resolution_hides_journey_item_after_snapshot_reload
             tier=CommercialTier.blueprint_pro,
         )
 
-        before = build_attention_response_v2(
+        response = build_attention_response_v2(
             session,
             record=record,
             snapshot=snapshot,
             readiness=ConstructionReadinessReport(),
             access=access,
         )
-        item = next(entry for entry in before.items if entry.source_ref.entity_id == "untraced_item:FR-001")
-        artifact.user_patch = {
-            "attention_resolutions": {
-                item.key: {
-                    "action_kind": "answer",
-                    "answer_text": "Vincular FR-001 con el canvas aprobado.",
-                    "source_ref": {
-                        "entity_id": "untraced_item:FR-001",
-                    },
-                }
-            }
-        }
-
-        after = build_attention_response_v2(
-            session,
-            record=record,
-            snapshot=snapshot,
-            readiness=ConstructionReadinessReport(),
-            access=access,
-        )
-
-        assert item.key not in {entry.key for entry in after.items}
+        assert not any(entry.source_ref.entity_id == "untraced_item:FR-001" for entry in response.items)
     finally:
         session.close()
 
@@ -444,7 +398,7 @@ def test_approved_journey_artifact_stops_publishing_payload_attention_items() ->
         session.close()
 
 
-def test_attention_keeps_define_question_when_impacted_sections_are_artifact_sections() -> None:
+def test_blueprint_pro_hides_define_question_until_acp() -> None:
     session = _create_memory_engine_session()
     try:
         user, workspace, record = _seed_minimal_records(session)
@@ -497,14 +451,7 @@ def test_attention_keeps_define_question_when_impacted_sections_are_artifact_sec
             current_stage="define",
         )
 
-        item = next(
-            entry
-            for entry in response.items
-            if entry.source_ref.entity_id == "question:error-scenarios"
-        )
-        assert item.stage == "define"
-        assert item.type == "question"
-        assert item.title == "Que errores o excepciones criticas debe contemplar el flujo objetivo?"
+        assert not any(entry.source_ref.entity_id == "question:error-scenarios" for entry in response.items)
     finally:
         session.close()
 
@@ -702,7 +649,7 @@ def test_attention_does_not_surface_payload_items_from_stale_artifacts() -> None
         session.close()
 
 
-def test_generic_attention_answer_is_traced_and_hidden_after_refresh() -> None:
+def test_acp_does_not_publish_raw_journey_questions_without_backlog() -> None:
     session = _create_memory_engine_session()
     try:
         user, workspace, record = _seed_minimal_records(session)
@@ -742,48 +689,17 @@ def test_generic_attention_answer_is_traced_and_hidden_after_refresh() -> None:
             workspace_id=record.workspace_id,
             session_id=record.id,
             user_id=user.id,
-            tier=CommercialTier.blueprint_pro,
+            tier=CommercialTier.acp,
         )
-        before = build_attention_response_v2(session, record=record, snapshot=snapshot, readiness=ConstructionReadinessReport(), access=access)
-        item = next(entry for entry in before.items if entry.source.startswith("journey."))
-
-        result = apply_attention_action_v2(
+        response = build_attention_response_v2(
             session,
             record=record,
             snapshot=snapshot,
             readiness=ConstructionReadinessReport(),
             access=access,
-            current_user=user,
-            item_key=item.key,
-            payload=AttentionActionRequestV2(
-                action_kind="answer",
-                answer_text="Lider de soporte",
-                selected_option_key="support_lead",
-                was_suggested_answer_used=True,
-                idempotency_key="answer-owner-policy",
-                source_artifact_version=2,
-            ),
         )
-        session.commit()
-        after = build_attention_response_v2(session, record=record, snapshot=snapshot, readiness=ConstructionReadinessReport(), access=access)
-        metrics = build_attention_metrics_v2(
-            session,
-            record=record,
-            snapshot=snapshot,
-            readiness=ConstructionReadinessReport(),
-            access=access,
-            current_stage="define",
-        )
-        event = session.exec(select(CommercialEventRecord).where(CommercialEventRecord.event_key == "attention_action_v2")).first()
 
-        assert result.status == "applied"
-        assert item.key not in {entry.key for entry in after.items}
-        assert metrics["answered_questions"] == 1
-        assert metrics["suggested_answer_acceptances"] == 1
-        assert metrics["selected_option_answers"] == 1
-        assert event is not None
-        assert event.metadata_payload["selected_option_key"] == "support_lead"
-        assert event.metadata_payload["was_suggested_answer_used"] is True
+        assert not any(entry.source.startswith("journey.") for entry in response.items)
     finally:
         session.close()
 
@@ -1585,7 +1501,7 @@ def test_uxa2_attention_v2_respects_workspace_isolation(client: TestClient) -> N
     assert second_attention.json()["total_count"] == 0
 
 
-def test_premium_enrichment_resolution_removes_item_from_attention(client: TestClient) -> None:
+def test_legacy_premium_resolution_remains_compatible_without_publishing_pro_attention(client: TestClient) -> None:
     headers = _auth_headers(client)
     session_data = client.post("/api/v1/sessions", headers=headers).json()
     session_id = session_data["id"]
@@ -1667,26 +1583,22 @@ def test_premium_enrichment_resolution_removes_item_from_attention(client: TestC
     finally:
         db_session.close()
 
-    # 1. Verificar que inicialmente aparece en attention
+    # 1. El backlog legado no se publica como una decision de Blueprint Pro.
     attention_before = client.get(f"/api/v1/sessions/{session_id}/attention-v2", headers=headers)
     assert attention_before.status_code == 200
     before_items = attention_before.json()["items"]
-    assert any(
-        "ca-999" in str(item.get("title") or "").lower()
-        or "ca-999" in str(item.get("reason") or "").lower()
-        or "premium_backlog:" in str((item.get("source_ref") or {}).get("field_path") or "").lower()
-        for item in before_items
-    )
+    assert not any("ca-999" in str(item.get("title") or "").lower() for item in before_items)
 
-    # 2. Resolver el ítem mediante el endpoint de enriquecimiento premium
+    # 2. El endpoint legado sigue siendo compatible durante el periodo de retiro.
     resolve_resp = client.post(
         f"/api/v1/sessions/{session_id}/premium-enrichment/{backlog_id}/resolve",
         headers=headers,
         json={"answer": "Requerimiento trazado con exito", "regenerate": False},
     )
     assert resolve_resp.status_code == 200
+    assert resolve_resp.json()["resolved_entry"]["status"] == "resolved"
 
-    # 3. Verificar que ahora sale completamente del panel de atencion
+    # 3. La operacion no reintroduce el backlog en Atencion Pro.
     attention_after = client.get(f"/api/v1/sessions/{session_id}/attention-v2", headers=headers)
     assert attention_after.status_code == 200
     after_items = attention_after.json()["items"]

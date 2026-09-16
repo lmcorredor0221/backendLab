@@ -53,9 +53,9 @@ BLUEPRINT_TIER_POLICY = BlueprintTierPolicy(
         ProductProcessingMode.premium_enrichment: ProductProcessingProfile(
             mode=ProductProcessingMode.premium_enrichment,
             commercial_tier=CommercialTier.blueprint_pro,
-            label="Blueprint Premium",
-            question_policy=QuestionPolicyMode.prioritized_enrichment,
-            default_disposition=UncertaintyDisposition.resolve_now,
+            label="Blueprint Pro",
+            question_policy=QuestionPolicyMode.infer_defer,
+            default_disposition=UncertaintyDisposition.defer,
             max_questions_per_stage=6,
             max_llm_iterations_per_stage=5,
             max_llm_calls_per_stage=4,
@@ -65,9 +65,9 @@ BLUEPRINT_TIER_POLICY = BlueprintTierPolicy(
             allow_inferred_assumptions=True,
             allow_nonblocking_continuation=True,
             require_stage_readiness=False,
-            surface_deferred_questions=True,
+            surface_deferred_questions=False,
             surface_technical_questions=False,
-            create_attention_for_nonblocking=True,
+            create_attention_for_nonblocking=False,
         ),
         ProductProcessingMode.acp_implementation: ProductProcessingProfile(
             mode=ProductProcessingMode.acp_implementation,
@@ -239,26 +239,21 @@ def classify_uncertainty_for_profile(
         )
 
     if resolved_profile.mode == ProductProcessingMode.premium_enrichment:
-        if stage_decision.status == "defer_to_acp":
-            disposition = UncertaintyDisposition.defer
-            reason = stage_decision.reason or "Premium conserva la decision para ACP si es tecnica de implementacion."
-            surface = resolved_profile.surface_deferred_questions
-        elif uncertainty.confidence >= policy.premium_priority_threshold or uncertainty.blocking:
-            disposition = UncertaintyDisposition.resolve_now
-            reason = "Premium prioriza resolver la incertidumbre para enriquecer entregables afectados."
-            surface = True
-        else:
+        target_stage = "acp"
+        if uncertainty.confidence >= policy.infer_confidence_threshold or uncertainty.assumed_answer:
             disposition = UncertaintyDisposition.infer
-            reason = "Premium conserva inferencia cuando el valor de preguntar es bajo."
-            surface = False
+            reason = "Blueprint Pro conserva el supuesto y continua; ACP permite ratificarlo o modificarlo."
+        else:
+            disposition = UncertaintyDisposition.defer
+            reason = stage_decision.reason or "Blueprint Pro difiere la incertidumbre a ACP sin detener la generacion."
         return UncertaintyClassification(
             uncertainty=uncertainty.model_copy(update={"disposition": disposition, "deferral_target_stage": target_stage}),
-            profile_mode=resolved_profile.mode,
+            profile_mode=ProductProcessingMode.basic_free,
             disposition=disposition,
             reason=reason,
             target_stage=target_stage,
-            should_surface_to_user=surface,
-            should_create_attention=surface and resolved_profile.create_attention_for_nonblocking,
+            should_surface_to_user=False,
+            should_create_attention=False,
             should_continue_processing=True,
         )
 
@@ -315,6 +310,8 @@ def classify_inference_permission(
     if classification.disposition == UncertaintyDisposition.block:
         return "requires_human"
     if not answer:
+        if resolved_profile.mode == ProductProcessingMode.premium_enrichment:
+            return "defer_to_acp"
         if stage_decision.status == "defer_to_acp":
             return "defer_to_acp"
         if stage_decision.status == "defer_to_next_stage":
@@ -334,13 +331,13 @@ def classify_inference_permission(
         return "not_inferable"
 
     if resolved_profile.mode == ProductProcessingMode.premium_enrichment:
-        if stage_decision.status == "defer_to_next_stage" and classification.target_stage:
-            return "defer_to_blueprint_pro" if classification.target_stage != "acp" else "defer_to_acp"
+        if classification.target_stage == "acp":
+            return "defer_to_acp"
         if high_confidence:
             return "apply_now"
         if tentative:
             return "record_as_hypothesis"
-        return "not_inferable"
+        return "defer_to_acp"
 
     if high_confidence or tentative:
         return "apply_now"

@@ -6,8 +6,6 @@ from typing import Any
 
 from app.models import AttentionItemV2, AttentionOptionV2, CommercialAccessSnapshotV2, CommercialTier, SessionRecord
 from app.services.attention.contract import create_attention_item_v2
-from app.services.product_processing.contracts import ProductProcessingMode
-from app.services.product_processing.policy import resolve_product_processing_mode
 
 
 _BASIC_SURFACED_TYPES = {"access_request", "runtime_error", "stale"}
@@ -21,11 +19,6 @@ _GENERIC_VALIDATION_WARNING_MARKERS = (
 
 def _value(value: Any) -> str:
     return str(getattr(value, "value", value) or "").strip()
-
-
-def _mode_for_session(record: SessionRecord, access: CommercialAccessSnapshotV2) -> ProductProcessingMode:
-    tier = getattr(access, "tier", None) or getattr(record, "commercial_tier", None) or CommercialTier.blueprint
-    return resolve_product_processing_mode(tier)
 
 
 def _is_basic_blueprint_noise(item: AttentionItemV2) -> bool:
@@ -242,7 +235,6 @@ def govern_attention_items(
     leaking into the active user inbox while preserving runtime recovery items.
     """
 
-    mode = _mode_for_session(record, access)
     visible = list(items)
 
     tier_str = str(getattr(access, "tier", None) or getattr(record, "commercial_tier", None) or "")
@@ -268,7 +260,7 @@ def govern_attention_items(
             and item.type in {"question", "gap", "decision"}
         ]
 
-    if mode == ProductProcessingMode.basic_free:
+    if not is_in_acp_flow:
         visible = [item for item in visible if not _is_basic_blueprint_noise(item)]
         return visible
 

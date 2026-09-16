@@ -17,12 +17,7 @@ from app.services.attention.validation_issue_normalizer import (
     split_validation_issue_codes,
 )
 from app.services.commerce_service import record_commercial_event
-from app.services.deliverable_catalog.contracts import DeliverableGenerationTask
-from app.services.deliverable_catalog.dependency_service import (
-    invalidate_deliverables_for_change,
-    resolve_regeneration_scope,
-)
-from app.services.deliverable_catalog.generation_service import run_deliverable_generation_task
+from app.services.deliverable_catalog.dependency_service import resolve_regeneration_scope
 from app.services.product_processing.backlog_service import (
     backlog_entry_from_record,
     prioritize_uncertainty_backlog,
@@ -47,6 +42,11 @@ from app.services.product_processing.persistence import UncertaintyBacklogRecord
 from app.services.product_processing.product_build_orchestrator import (
     ProductBuildOrchestrationOptions,
     ensure_product_build_orchestration,
+)
+from app.services.product_processing.blueprint_pro_build_service import sync_blueprint_pro_product_run
+from app.services.product_processing.uncertainty_reconciliation_service import (
+    build_uncertainty_reconciliation_plan,
+    execute_uncertainty_reconciliation,
 )
 from app.services.product_processing.product_build_run_service import (
     list_product_build_runs,
@@ -535,87 +535,17 @@ def sync_premium_enrichment_product_run(
     auto_execute_when_ready: bool = False,
     allow_llm: bool = False,
 ) -> ProductBuildStatus | None:
-    if _tier_rank(current_tier) < _tier_rank(CommercialTier.blueprint_pro):
-        return None
-    record = db.get(SessionRecord, session_id)
-    if record is None or record.workspace_id != workspace_id:
-        return None
-
-    effective_stage = str(current_stage or getattr(record.current_stage, "value", str(record.current_stage or "discover")))
-
-    status = ensure_product_build_orchestration(
-        db,
-        record=record,
-        product_key=ProductBuildProductKey.blueprint_pro,
-        current_user=current_user,
-        options=ProductBuildOrchestrationOptions(
-            current_stage=effective_stage,
-            activation_payload={
-                "source": source,
-                "workspace_id": str(workspace_id),
-                "session_id": str(session_id),
-            },
-        ),
-    )
-    if auto_execute_when_ready and _should_auto_execute_premium_build(status, effective_stage):
-        status = ensure_product_build_orchestration(
-            db,
-            record=record,
-            product_key=ProductBuildProductKey.blueprint_pro,
-            current_user=current_user,
-            options=ProductBuildOrchestrationOptions(
-                current_stage=effective_stage,
-                execute_jobs=True,
-                allow_llm=allow_llm,
-                activation_payload={
-                    "source": source,
-                    "workspace_id": str(workspace_id),
-                    "session_id": str(session_id),
-                    "auto_execute": True,
-                },
-            ),
-            catalog_stage_override=effective_stage,
-        )
-    runs = list_product_build_runs(
+    """Legacy adapter retained while Premium endpoints and historical data exist."""
+    return sync_blueprint_pro_product_run(
         db,
         workspace_id=workspace_id,
         session_id=session_id,
-        product_key=ProductBuildProductKey.blueprint_pro,
-    )
-    if not runs:
-        return
-    run = runs[0]
-    records = _premium_backlog_records(db, workspace_id=workspace_id, session_id=session_id)
-    for index, backlog_record in enumerate(records, start=10_000):
-        step_status = _premium_backlog_step_status(backlog_record)
-        upsert_product_build_step(
-            db,
-            run=run,
-            step_key=f"premium_backlog:{backlog_record.id}",
-            status=step_status,
-            stage_key=backlog_record.source_stage,
-            dependency_key=",".join(_dependency_keys_for_entry(backlog_record)),
-            sequence=index,
-            progress_percent=_premium_backlog_progress(step_status),
-            checkpoint_payload={
-                "title": backlog_record.title,
-                "uncertainty_key": backlog_record.uncertainty_key,
-                "product_mode": backlog_record.product_mode,
-                "disposition": backlog_record.disposition,
-                "status": backlog_record.status,
-                "target_stage": backlog_record.target_stage,
-                "affected_deliverable_keys": list(backlog_record.affected_deliverable_keys or []),
-                "source": source,
-            },
-            error_payload=_premium_backlog_error_payload(backlog_record, step_status),
-    )
-    _finalize_premium_run_from_all_steps(db, run=run, backlog_records=records)
-    return build_product_build_status(
-        db,
-        record=record,
-        product_key=ProductBuildProductKey.blueprint_pro,
+        current_tier=current_tier,
         current_user=current_user,
-        catalog_stage_override=effective_stage,
+        source=source,
+        current_stage=current_stage,
+        auto_execute_when_ready=auto_execute_when_ready,
+        allow_llm=allow_llm,
     )
 
 
@@ -694,26 +624,11 @@ def resolve_premium_uncertainty(
         raise LookupError("Premium enrichment item not found")
 
     execution_mode, legacy_execution_mode = _normalize_resolution_execution_mode(payload)
-    changed_dependency_keys = _dependency_keys_for_entry(record)
-    source_key = (record.affected_deliverable_keys or [""])[0]
-    scope = resolve_regeneration_scope(
-        changed_dependency_keys=changed_dependency_keys,
-        source_deliverable_key=source_key,
-    )
-    reconciliation_decision, material_impact, recommended_action, impact_summary = _resolve_reconciliation_decision(
-        scope.ordered_regeneration_keys
-    )
     answer = _resolved_answer(record, payload)
-    fifo_queue = scope.ordered_regeneration_keys[: payload.max_deliverables]
-    execute_reconciliation = _should_execute_reconciliation(payload, material_impact=material_impact)
-    queue_total = len(fifo_queue) if (execute_reconciliation or material_impact) else 0
-    queue_completed = 0
-    reconciliation_status = (
-        "queued"
-        if execute_reconciliation and fifo_queue
-        else "pending_user_confirmation"
-        if material_impact
-        else "not_required"
+    preliminary_plan = build_uncertainty_reconciliation_plan(record)
+    execute_reconciliation = _should_execute_reconciliation(
+        payload,
+        material_impact=preliminary_plan.material_impact,
     )
     record.status = UncertaintyBacklogStatus.resolved.value
     record.assumed_answer = answer
@@ -725,85 +640,32 @@ def resolve_premium_uncertainty(
             "answer": answer,
             "selected_option_key": payload.selected_option_key,
             "actor_user_id": str(actor_user_id),
-            "changed_dependency_keys": changed_dependency_keys,
-            "affected_deliverable_keys": scope.affected_deliverable_keys,
-            "ordered_regeneration_keys": scope.ordered_regeneration_keys,
-            "reconciliation_decision": reconciliation_decision,
-            "reconciliation_status": reconciliation_status,
-            "material_impact": material_impact,
-            "queue_total": queue_total,
-            "queue_completed": queue_completed,
-            "queue_pending_keys": fifo_queue,
             "execution_mode": execution_mode,
             "legacy_execution_mode": legacy_execution_mode,
-            "reprocess_decision": _legacy_reprocess_decision(reconciliation_decision),
-            "recommended_action": recommended_action,
-            "impact_summary": impact_summary,
         },
     }
     db.add(record)
     db.flush()
-
-    regenerated: list[str] = []
-    job_ids: list[str] = []
-    status_by_key_map: dict[str, str] = {}
-    stale_keys: list[str] = []
-    superseded_uncertainty_count = 0
-
-    if execute_reconciliation:
-        stale_report = invalidate_deliverables_for_change(
-            db,
-            workspace_id=workspace_id,
-            session_id=session_id,
-            changed_dependency_keys=changed_dependency_keys,
-            source_deliverable_key=source_key,
-        )
-        stale_keys = stale_report.stale_deliverable_keys
-        superseded_uncertainty_count = stale_report.superseded_uncertainty_count
-        # Procesamiento secuencial garantizado en cola FIFO de entregables.
-        for deliverable_key in fifo_queue:
-            try:
-                job, _ = run_deliverable_generation_task(
-                    db,
-                    DeliverableGenerationTask(
-                        workspace_id=workspace_id,
-                        session_id=session_id,
-                        deliverable_key=deliverable_key,
-                        product_mode=ProductProcessingMode.premium_enrichment.value,
-                        current_stage=record.source_stage,
-                        tier=CommercialTier.blueprint_pro,
-                        idempotency_key=f"premium:{session_id}:{backlog_id}:{deliverable_key}",
-                        requested_by_user_id=actor_user_id,
-                        context_payload={
-                            "summary": record.title,
-                            "resolved_answer": answer,
-                            "reason": record.reason,
-                            "impact": record.impact,
-                        },
-                        approved_context_refs=changed_dependency_keys,
-                        allow_llm=True,
-                        max_iterations=5,
-                    ),
-                )
-                regenerated.append(deliverable_key)
-                job_ids.append(str(job.id))
-                status_by_key_map[deliverable_key] = job.status
-                queue_completed += 1
-            except (LookupError, PermissionError, ValueError) as exc:
-                status_by_key_map[deliverable_key] = f"skipped:{exc}"
-        reconciliation_status = "completed" if queue_completed == queue_total else "completed_with_errors"
-
+    reconciliation = execute_uncertainty_reconciliation(
+        db,
+        record=record,
+        actor_user_id=actor_user_id,
+        answer=answer,
+        resolution_key="premium_resolution",
+        product_mode=ProductProcessingMode.premium_enrichment.value,
+        tier=CommercialTier.blueprint_pro,
+        idempotency_prefix=f"premium:{session_id}",
+        max_deliverables=payload.max_deliverables,
+        execute=execute_reconciliation,
+    )
     record.payload = {
         **(record.payload or {}),
         "premium_resolution": {
             **((record.payload or {}).get("premium_resolution") or {}),
-            "reconciliation_status": reconciliation_status,
-            "reconciled_deliverable_keys": regenerated,
-            "generation_job_ids": job_ids,
-            "generation_status_by_deliverable": status_by_key_map,
-            "queue_total": queue_total,
-            "queue_completed": queue_completed,
-            "queue_pending_keys": [key for key in fifo_queue if key not in set(regenerated)],
+            "selected_option_key": payload.selected_option_key,
+            "execution_mode": execution_mode,
+            "legacy_execution_mode": legacy_execution_mode,
+            "reprocess_decision": _legacy_reprocess_decision(reconciliation.plan.reconciliation_decision),
         },
     }
     db.add(record)
@@ -828,40 +690,38 @@ def resolve_premium_uncertainty(
     )
     return PremiumSelectiveReprocessResult(
         resolved_entry=resolved_entry,
-        changed_dependency_keys=changed_dependency_keys,
-        affected_deliverable_keys=scope.affected_deliverable_keys,
-        stale_deliverable_keys=stale_keys,
-        ordered_regeneration_keys=scope.ordered_regeneration_keys,
-        reconciled_deliverable_keys=regenerated,
-        regenerated_deliverable_keys=regenerated,
-        preserved_deliverable_keys=scope.unaffected_deliverable_keys,
-        material_impact=material_impact,
-        reconciliation_decision=reconciliation_decision,
-        reconciliation_status=reconciliation_status,
+        changed_dependency_keys=reconciliation.plan.changed_dependency_keys,
+        affected_deliverable_keys=reconciliation.plan.scope.affected_deliverable_keys,
+        stale_deliverable_keys=reconciliation.stale_deliverable_keys,
+        ordered_regeneration_keys=reconciliation.plan.scope.ordered_regeneration_keys,
+        reconciled_deliverable_keys=reconciliation.reconciled_deliverable_keys,
+        regenerated_deliverable_keys=reconciliation.reconciled_deliverable_keys,
+        preserved_deliverable_keys=reconciliation.plan.scope.unaffected_deliverable_keys,
+        material_impact=reconciliation.plan.material_impact,
+        reconciliation_decision=reconciliation.plan.reconciliation_decision,
+        reconciliation_status=reconciliation.reconciliation_status,
         execution_mode=execution_mode,
         legacy_execution_mode=legacy_execution_mode,
-        reprocess_decision=_legacy_reprocess_decision(reconciliation_decision),
-        recommended_action=recommended_action,
-        impact_summary=impact_summary,
-        reconciliation_job_ids=job_ids,
-        generation_job_ids=job_ids,
-        generation_status_by_deliverable=status_by_key_map,
-        superseded_uncertainty_count=superseded_uncertainty_count,
+        reprocess_decision=_legacy_reprocess_decision(reconciliation.plan.reconciliation_decision),
+        recommended_action=reconciliation.plan.recommended_action,
+        impact_summary=reconciliation.plan.impact_summary,
+        reconciliation_job_ids=reconciliation.generation_job_ids,
+        generation_job_ids=reconciliation.generation_job_ids,
+        generation_status_by_deliverable=reconciliation.generation_status_by_deliverable,
+        superseded_uncertainty_count=reconciliation.superseded_uncertainty_count,
         comparison_summary=(
             f"Se resolvio '{resolved_entry.title}'. "
             + (
-                f"{len(regenerated)} entregable(s) fueron reconciliados en cola FIFO y "
-                f"{len(scope.unaffected_deliverable_keys)} conservaron su version."
-                if regenerated
-                else impact_summary
+                f"{len(reconciliation.reconciled_deliverable_keys)} entregable(s) fueron reconciliados en cola FIFO y "
+                f"{len(reconciliation.plan.scope.unaffected_deliverable_keys)} conservaron su version."
+                if reconciliation.reconciled_deliverable_keys
+                else reconciliation.plan.impact_summary
             )
         ),
-        queue_total=queue_total,
-        queue_completed=queue_completed,
-        queue_status=(
-            reconciliation_status
-        ),
-        queue_processed_keys=regenerated,
+        queue_total=reconciliation.queue_total,
+        queue_completed=reconciliation.queue_completed,
+        queue_status=reconciliation.reconciliation_status,
+        queue_processed_keys=reconciliation.reconciled_deliverable_keys,
     )
 
 

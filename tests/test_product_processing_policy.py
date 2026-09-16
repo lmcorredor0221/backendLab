@@ -21,6 +21,7 @@ from app.services.product_processing import (
     resolve_premium_uncertainty,
     resolve_uncertainty,
     resolve_product_processing_mode,
+    sync_premium_enrichment_product_run,
     upsert_uncertainty_backlog,
 )
 from app.services.deliverable_catalog.persistence import (  # noqa: F401
@@ -169,7 +170,7 @@ def test_basic_free_delegation_does_not_touch_build_state_or_stale_artifacts() -
         assert artifact.stale_reasons == []
 
 
-def test_premium_prioritizes_high_value_business_questions() -> None:
+def test_blueprint_pro_defers_high_value_business_questions_to_acp() -> None:
     profile = get_product_processing_profile(ProductProcessingMode.premium_enrichment)
     classification = classify_uncertainty_for_profile(
         "define",
@@ -184,9 +185,43 @@ def test_premium_prioritizes_high_value_business_questions() -> None:
         profile,
     )
 
-    assert classification.disposition == UncertaintyDisposition.resolve_now
-    assert classification.should_surface_to_user is True
-    assert classification.should_create_attention is True
+    assert classification.disposition == UncertaintyDisposition.infer
+    assert classification.target_stage == "acp"
+    assert classification.should_continue_processing is True
+    assert classification.should_surface_to_user is False
+    assert classification.should_create_attention is False
+
+
+def test_blueprint_pro_persists_uncertainty_in_the_acp_backlog_with_its_origin() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+
+    with Session(engine) as db:
+        classification = classify_uncertainty_for_profile(
+            "design",
+            {
+                "key": "pro_runtime_boundary",
+                "question": "Que limites de runtime y despliegue aplican al agente?",
+                "confidence": 0.3,
+                "priority": "high",
+            },
+            ProductProcessingMode.premium_enrichment,
+        )
+        entry = upsert_uncertainty_backlog(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            classification=classification,
+            created_from="test",
+        )
+        record = db.exec(select(UncertaintyBacklogRecord)).one()
+
+        assert entry.product_mode == ProductProcessingMode.basic_free
+        assert entry.status == UncertaintyBacklogStatus.deferred
+        assert entry.target_stage == "acp"
+        assert record.payload["source_tier"] == "blueprint_pro"
 
 
 def test_opening_premium_workspace_does_not_create_hidden_generation_jobs() -> None:
@@ -257,6 +292,52 @@ def test_opening_premium_workspace_does_not_create_hidden_generation_jobs() -> N
         assert active_steps == []
         assert artifact.state == JourneyArtifactState.approved
         assert artifact.stale_reasons == []
+
+
+def test_legacy_premium_backlog_does_not_become_a_blueprint_pro_build_step() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    workspace_id = uuid4()
+    session_id = uuid4()
+    actor_id = uuid4()
+
+    with Session(engine) as db:
+        db.add(
+            SessionRecord(
+                id=session_id,
+                user_id=actor_id,
+                workspace_id=workspace_id,
+                title="Backlog Premium legado no bloquea Pro",
+                commercial_tier=CommercialTier.blueprint_pro,
+            )
+        )
+        db.add(
+            UncertaintyBacklogRecord(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                uncertainty_key="legacy_premium_question",
+                product_mode=ProductProcessingMode.premium_enrichment.value,
+                source_stage="design",
+                target_stage="acp",
+                kind="question",
+                disposition=UncertaintyDisposition.resolve_now.value,
+                status=UncertaintyBacklogStatus.open.value,
+                title="Decision historica de arquitectura",
+            )
+        )
+        db.commit()
+
+        sync_premium_enrichment_product_run(
+            db,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            current_tier=CommercialTier.blueprint_pro,
+            current_stage="design",
+        )
+
+        steps = db.exec(select(ProductBuildStepRecord)).all()
+
+    assert not any(step.step_key.startswith("premium_backlog:") for step in steps)
 
 
 def test_acp_implementation_does_not_silence_required_questions() -> None:
@@ -482,7 +563,7 @@ def test_uncertainty_backlog_upsert_deduplicates_same_question_text_across_keys(
     assert rows[0].payload["merged_uncertainty_key"] == "deployment_credentials_define"
 
 
-def test_premium_enrichment_resolves_with_impact_analysis_before_reconciliation() -> None:
+def test_legacy_premium_resolution_keeps_blueprint_pro_nonblocking() -> None:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
     workspace_id = uuid4()
@@ -561,8 +642,8 @@ def test_premium_enrichment_resolves_with_impact_analysis_before_reconciliation(
 
     assert workspace.items
     assert workspace.items[0].ordered_regeneration_keys
-    assert lifecycle_before == ProductBuildLifecycle.requires_attention.value
-    assert any(key.startswith("premium_backlog:") and status == "requires_attention" for key, status in step_statuses_before)
+    assert lifecycle_before == ProductBuildLifecycle.ready_to_start.value
+    assert not any(key.startswith("premium_backlog:") for key, _ in step_statuses_before)
     assert "diagram.c4_context" in result.affected_deliverable_keys
     assert result.stale_deliverable_keys == []
     assert result.material_impact is True
@@ -586,7 +667,7 @@ def test_premium_enrichment_resolves_with_impact_analysis_before_reconciliation(
     assert event_metadata["reconciliation_status"] == "pending_user_confirmation"
     assert event_metadata["execution_mode"] == "analyze_only"
     assert event_metadata["automatic_job_creation"] is False
-    assert any(step.step_key.startswith("premium_backlog:") and step.status == "completed" for step in steps_after)
+    assert not any(step.step_key.startswith("premium_backlog:") for step in steps_after)
     assert runs_after[0].lifecycle != ProductBuildLifecycle.requires_attention.value
 
 

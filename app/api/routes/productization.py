@@ -49,7 +49,12 @@ from app.models import (
 from app.services.initiative_evaluator import evaluate_initiative_service
 from app.services.acp_continuity import load_construction_question_response_records_for_preview
 from app.services.acp_launcher_service import build_launcher_metadata, submit_launcher_report
-from app.services.acp_workflow_service import build_acp_workspace_response, ensure_acp_run, run_acp_phase
+from app.services.acp_workflow_service import (
+    build_acp_workspace_response,
+    canonical_acp_phase_key,
+    ensure_acp_run,
+    run_acp_phase,
+)
 from app.services.attention_service import build_attention_response
 from app.services.attention_service import (
     apply_attention_action_v2,
@@ -59,6 +64,11 @@ from app.services.attention_service import (
 from app.services.agentic_runtime.state_store import BuilderReActCheckpointStore
 from app.services.auth_service import get_current_user
 from app.services.product_processing.journey_state_machine_service import transition_for_acp_workspace_phase
+from app.services.product_processing.uncertainty_reconciliation_service import (
+    reconcile_confirmed_acp_uncertainties,
+)
+from app.services.stage5_service import FEATURE_FLAG_ACP_INHERITED_UNCERTAINTY, is_feature_flag_enabled
+from app.services.workspace_bootstrap import apply_workspace_bootstrap
 from app.services.commerce_service import (
     close_pending_access_requests_after_authorization,
     list_active_products,
@@ -207,6 +217,47 @@ def run_acp_workspace_phase_route(
             preview=preview,
             readiness=readiness,
         )
+        if (
+            canonical_acp_phase_key(phase_key) == "acp_artifact_reconciliation"
+            and phase.status.value in {"completed", "completed_with_observations"}
+        ):
+            apply_workspace_bootstrap(db, record.workspace_id)
+            if is_feature_flag_enabled(
+                db,
+                FEATURE_FLAG_ACP_INHERITED_UNCERTAINTY,
+                workspace_id=record.workspace_id,
+            ):
+                reconciliation = reconcile_confirmed_acp_uncertainties(
+                    db,
+                    workspace_id=record.workspace_id,
+                    session_id=record.id,
+                    actor_user_id=current_user.id,
+                )
+                phase.checkpoints = {
+                    **(phase.checkpoints or {}),
+                    "inherited_uncertainty_reconciliation": reconciliation.as_checkpoint(),
+                }
+                phase.output_refs = [
+                    *(phase.output_refs or []),
+                    {
+                        "kind": "inherited_uncertainty_reconciliation",
+                        "reviewed_count": len(reconciliation.reviewed_backlog_ids),
+                        "reconciled_count": len(reconciliation.reconciled_backlog_ids),
+                        "queue_completed": reconciliation.queue_completed,
+                    },
+                ]
+                if reconciliation.failed_backlog_ids:
+                    phase.warnings = [
+                        *(phase.warnings or []),
+                        f"{len(reconciliation.failed_backlog_ids)} decision(es) ACP no pudieron reconciliarse.",
+                    ]
+            else:
+                phase.checkpoints = {
+                    **(phase.checkpoints or {}),
+                    "inherited_uncertainty_reconciliation": {"status": "disabled_by_feature_flag"},
+                }
+            db.add(phase)
+            db.flush()
         transition_for_acp_workspace_phase(
             db,
             record=record,
