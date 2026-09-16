@@ -217,6 +217,7 @@ def test_legacy_premium_inventory_classifies_records_collisions_and_usage() -> N
         "deliverable_provider_timeout",
     }
     detailed_run = next(item for item in report.build_health.technical_attention_runs if item.error_code == "provider_timeout")
+    assert detailed_run.workspace_id == workspace.id
     assert detailed_run.failed_steps[0].deliverable_key == "diagram.agent_orchestration"
     assert detailed_run.failed_steps[0].error_message == "El proveedor no respondio."
     assert report.endpoint_usage[0].operation == "resolve"

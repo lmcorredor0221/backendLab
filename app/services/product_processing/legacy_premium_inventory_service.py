@@ -240,6 +240,7 @@ def _technical_attention_detail(
     ]
     return LegacyPremiumTechnicalAttention(
         run_id=run.id,
+        workspace_id=run.workspace_id,
         session_id=run.session_id,
         lifecycle=run.lifecycle,
         error_code=str(error_payload.get("code") or ""),

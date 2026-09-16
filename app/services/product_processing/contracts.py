@@ -509,6 +509,7 @@ class LegacyPremiumTechnicalFailureStep(ContractModel):
 
 class LegacyPremiumTechnicalAttention(ContractModel):
     run_id: UUID
+    workspace_id: UUID
     session_id: UUID
     lifecycle: str = ""
     error_code: str = ""
