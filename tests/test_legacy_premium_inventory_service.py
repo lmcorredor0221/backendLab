@@ -335,6 +335,7 @@ def test_legacy_premium_migration_dry_run_is_read_only_and_classifies_actions() 
         ).one()
         second_result = execute_legacy_premium_migration_batch(db, workspace_id=workspace.id)
         db.commit()
+        completed_inventory = build_legacy_premium_inventory_report(db, workspace_id=workspace.id)
         normalized_run = db.get(ProductBuildRunRecord, business_run.id)
         normalized_step = db.exec(
             select(ProductBuildStepRecord).where(ProductBuildStepRecord.run_id == business_run.id)
@@ -376,3 +377,5 @@ def test_legacy_premium_migration_dry_run_is_read_only_and_classifies_actions() 
     assert normalized_run_lifecycle == "ready_to_start"
     assert normalized_step_status == "skipped"
     assert second_result.migrated_count == 0
+    assert completed_inventory.collision_count == 0
+    assert not any("colisiones" in warning.lower() for warning in completed_inventory.warnings)

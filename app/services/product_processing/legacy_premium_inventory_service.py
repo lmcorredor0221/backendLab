@@ -83,7 +83,7 @@ def build_legacy_premium_inventory_report(
         closed_count=classification_counts["closed"],
         acp_managed_count=classification_counts["acp_managed"],
         ambiguous_count=classification_counts["ambiguous"],
-        collision_count=sum(1 for row in rows if row.collides_with_basic),
+        collision_count=sum(1 for row in rows if _is_actionable_collision(row)),
         build_health=build_health,
         endpoint_usage=endpoint_usage,
         groups=groups,
@@ -124,6 +124,11 @@ def _inventory_row(
         migration_action=migration_action,
         collides_with_basic=(record.session_id, record.uncertainty_key) in basic_keys,
     )
+
+
+def _is_actionable_collision(row: LegacyPremiumInventoryRow) -> bool:
+    """Closed Premium sources may share a Basic key as preserved audit history."""
+    return row.collides_with_basic and row.classification != "closed"
 
 
 def _classify_record(record: UncertaintyBacklogRecord) -> tuple[str, str]:
@@ -227,7 +232,7 @@ def _warnings(
     endpoint_usage: list[LegacyPremiumEndpointUsage],
 ) -> list[str]:
     warnings: list[str] = []
-    if any(row.collides_with_basic for row in rows):
+    if any(_is_actionable_collision(row) for row in rows):
         warnings.append("Existen colisiones Basic/Premium; la migracion requiere fusion por sesion y clave.")
     if any(row.classification == "ambiguous" for row in rows):
         warnings.append("Existen registros Premium ambiguos que requieren regla de negocio antes de migrar.")
