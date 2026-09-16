@@ -190,10 +190,15 @@ def _build_health(db: Session, *, workspace_id: UUID | None) -> LegacyPremiumBui
         if run.lifecycle != ProductBuildLifecycle.requires_attention.value:
             continue
         run_steps = steps_by_run.get(run.id, [])
-        if any(step.step_key.startswith("premium_backlog:") for step in run_steps):
-            business_attention += 1
-        elif run.error_payload or any(step.status in {"error", "failed", "requires_attention"} for step in run_steps):
+        legacy_steps = [step for step in run_steps if step.step_key.startswith("premium_backlog:")]
+        has_technical_failure = bool(run.error_payload) or any(
+            step not in legacy_steps and step.status in {"error", "failed", "requires_attention"}
+            for step in run_steps
+        )
+        if has_technical_failure:
             technical_attention += 1
+        elif legacy_steps:
+            business_attention += 1
         else:
             unattributed_attention += 1
     return LegacyPremiumBuildHealth(

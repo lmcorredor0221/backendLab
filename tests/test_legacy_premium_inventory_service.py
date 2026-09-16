@@ -139,17 +139,38 @@ def test_legacy_premium_inventory_classifies_records_collisions_and_usage() -> N
             idempotency_key=f"legacy-technical:{project.id}",
             error_payload={"code": "provider_timeout"},
         )
+        mixed_attention_run = ProductBuildRunRecord(
+            workspace_id=workspace.id,
+            session_id=project.id,
+            product_key="blueprint_pro",
+            product_mode="premium_enrichment",
+            entitlement_tier="blueprint_pro",
+            access_state="allowed",
+            lifecycle="requires_attention",
+            idempotency_key=f"legacy-mixed:{project.id}",
+            error_payload={"code": "deliverable_provider_timeout"},
+        )
         db.add(business_run)
         db.add(technical_run)
+        db.add(mixed_attention_run)
         db.flush()
-        db.add(
-            ProductBuildStepRecord(
-                run_id=business_run.id,
-                workspace_id=workspace.id,
-                session_id=project.id,
-                step_key="premium_backlog:legacy",
-                status="requires_attention",
-            )
+        db.add_all(
+            [
+                ProductBuildStepRecord(
+                    run_id=business_run.id,
+                    workspace_id=workspace.id,
+                    session_id=project.id,
+                    step_key="premium_backlog:legacy",
+                    status="requires_attention",
+                ),
+                ProductBuildStepRecord(
+                    run_id=mixed_attention_run.id,
+                    workspace_id=workspace.id,
+                    session_id=project.id,
+                    step_key="premium_backlog:mixed",
+                    status="requires_attention",
+                ),
+            ]
         )
         record_legacy_premium_endpoint_invocation(
             db,
@@ -180,7 +201,7 @@ def test_legacy_premium_inventory_classifies_records_collisions_and_usage() -> N
     assert report.ambiguous_count == 1
     assert report.collision_count == 1
     assert report.build_health.business_backlog_attention_count == 1
-    assert report.build_health.technical_attention_count == 1
+    assert report.build_health.technical_attention_count == 2
     assert report.build_health.unattributed_attention_count == 0
     assert report.endpoint_usage[0].operation == "resolve"
     assert report.endpoint_usage[0].invocation_count == 2
