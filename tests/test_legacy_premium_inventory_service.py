@@ -318,6 +318,7 @@ def test_legacy_premium_migration_dry_run_is_read_only_and_classifies_actions() 
         db.flush()
         result = execute_legacy_premium_migration_batch(db, workspace_id=workspace.id)
         db.commit()
+        next_dry_run = build_legacy_premium_migration_dry_run(db, workspace_id=workspace.id)
         migrated_source = db.exec(
             select(UncertaintyBacklogRecord).where(
                 UncertaintyBacklogRecord.workspace_id == workspace.id,
@@ -364,6 +365,10 @@ def test_legacy_premium_migration_dry_run_is_read_only_and_classifies_actions() 
     assert result.merged_basic_count == 1
     assert result.preserved_historical_response_count == 1
     assert result.normalized_business_attention_run_count == 1
+    assert next_dry_run.total_candidates == 1
+    assert next_dry_run.retained_technical_count == 1
+    assert next_dry_run.actions[0].uncertainty_key == "technical_error"
+    assert next_dry_run.actions[0].source_record_id not in result.source_record_ids
     assert migrated_source_status == "superseded"
     assert merged_target_stage == "acp"
     assert merged_target_disposition == "defer"

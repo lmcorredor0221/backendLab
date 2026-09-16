@@ -45,9 +45,10 @@ def build_legacy_premium_migration_dry_run(
         sample_limit=normalized_batch_size,
     )
     basic_records = _basic_records_by_key(db, workspace_id=workspace_id)
+    sources = _eligible_sources(db, workspace_id=workspace_id, limit=normalized_batch_size)
     actions = [
-        _dry_run_action(row, basic_records=basic_records)
-        for row in inventory.records
+        _dry_run_action(source, basic_records=basic_records)
+        for source in sources
     ]
     action_counts = Counter(action.proposed_action for action in actions)
 
@@ -202,17 +203,18 @@ def _eligible_sources(
 
 
 def _dry_run_action(
-    row,
+    source: UncertaintyBacklogRecord,
     *,
     basic_records: dict[tuple[UUID, str], UncertaintyBacklogRecord],
 ) -> LegacyPremiumMigrationDryRunAction:
-    target = basic_records.get((row.session_id, row.uncertainty_key))
-    proposed_action, reason = _proposed_action(row.classification, row.migration_action, target is not None)
+    classification, migration_action = _classify_source(source)
+    target = basic_records.get((source.session_id, source.uncertainty_key))
+    proposed_action, reason = _proposed_action(classification, migration_action, target is not None)
     return LegacyPremiumMigrationDryRunAction(
-        source_record_id=row.record_id,
-        session_id=row.session_id,
-        uncertainty_key=row.uncertainty_key,
-        classification=row.classification,
+        source_record_id=source.id,
+        session_id=source.session_id,
+        uncertainty_key=source.uncertainty_key,
+        classification=classification,
         proposed_action=proposed_action,
         target_record_id=target.id if target is not None else None,
         reason=reason,
