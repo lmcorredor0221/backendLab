@@ -102,6 +102,9 @@ def upgrade() -> None:
         op.create_index("ix_marketing_analytics_outbox_user_id", "marketing_analytics_outbox", ["user_id"])
         op.create_index("ix_marketing_analytics_outbox_workspace_id", "marketing_analytics_outbox", ["workspace_id"])
 
+    if op.get_bind().dialect.name == "postgresql" and _has_table("marketing_analytics_outbox"):
+        op.execute("ALTER TABLE marketing_analytics_outbox ENABLE ROW LEVEL SECURITY")
+
 
 def downgrade() -> None:
     if _has_table("marketing_analytics_outbox"):
