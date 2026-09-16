@@ -67,7 +67,7 @@ def resolve_paid_order_package(
     product_key = _order_product_key(order, order_line)
     if not product_key:
         return None, "missing_product_key"
-    candidates = list_enabled_packages_for_product(session, product_key=product_key)
+    candidates = _candidate_packages_for_order(session, order, order_line=order_line)
     if len(candidates) == 1:
         return candidates[0], "unique_product_fallback"
     if not candidates:
@@ -479,7 +479,38 @@ def _candidate_packages_for_order(
     product_key = _order_product_key(order, order_line)
     if not product_key:
         return []
-    return list_enabled_packages_for_product(session, product_key=product_key)
+    exact_product_candidates = session.exec(
+        select(CommercialPackageCatalogRecord)
+        .where(
+            CommercialPackageCatalogRecord.enabled == True,  # noqa: E712
+            CommercialPackageCatalogRecord.product_key == product_key,
+        )
+        .order_by(
+            CommercialPackageCatalogRecord.recommendation_priority.asc(),
+            CommercialPackageCatalogRecord.package_code.asc(),
+        )
+    ).all()
+    exact_product_candidates = _filter_candidates_for_order_provider(order, exact_product_candidates)
+    if exact_product_candidates:
+        return exact_product_candidates
+    return _filter_candidates_for_order_provider(order, list_enabled_packages_for_product(session, product_key=product_key))
+
+
+def _filter_candidates_for_order_provider(
+    order: CommercialOrderRecord,
+    candidates: list[CommercialPackageCatalogRecord],
+) -> list[CommercialPackageCatalogRecord]:
+    provider = (order.provider or "").strip().lower()
+    if not provider:
+        return candidates
+    filtered: list[CommercialPackageCatalogRecord] = []
+    for candidate in candidates:
+        metadata = candidate.metadata_payload if isinstance(candidate.metadata_payload, dict) else {}
+        candidate_provider = str(metadata.get("provider") or "").strip().lower()
+        if candidate_provider and candidate_provider != provider:
+            continue
+        filtered.append(candidate)
+    return filtered
 
 
 def _latest_payment_for_order(session: Session, order: CommercialOrderRecord) -> CommercialPaymentRecord | None:

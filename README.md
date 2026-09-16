@@ -1,35 +1,20 @@
 # Lean Agent Builder Backend
 
-Backend FastAPI para Lean Agent Builder.
+Backend FastAPI del proyecto. La documentación funcional y técnica central está en [../Docs/README.md](../Docs/README.md), especialmente [manual-tecnico.md](../Docs/manual-tecnico.md) y [pasarela-pagos.md](../Docs/pasarela-pagos.md).
 
-## Setup local
+## Setup
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
-.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ## Tests
 
 ```powershell
-.venv\Scripts\python -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 
-## Notas
-
-- `.env`, bases locales, logs, `runtime/`, `tmp/` y `.venv/` no se versionan.
-- Las migraciones Alembic y pruebas forman parte del repositorio.
-- Para usar Supabase como Postgres de produccion, revisa [SUPABASE_DEPLOY.md](./SUPABASE_DEPLOY.md).
-- Para depurar proyectos de produccion desde local, revisa [docs/project-debug-memory.md](./docs/project-debug-memory.md).
-
-## Deploy desde GitHub
-
-La arquitectura recomendada para este backend es:
-
-- `Supabase`: base de datos PostgreSQL
-- `GitHub`: fuente del codigo
-- `Host de contenedores`: despliegue del backend FastAPI
-
-Supabase no es el host natural de este backend FastAPI largo-vivo. Lo normal es desplegar el contenedor desde GitHub en un proveedor externo y apuntar `DATABASE_URL` a Supabase.
+Las migraciones están en `alembic/versions/`; los secretos no forman parte del repositorio.

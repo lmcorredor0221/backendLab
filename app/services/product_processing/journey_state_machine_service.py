@@ -150,6 +150,8 @@ def initialize_journey_state(
     if existing is not None:
         return _serialize_persisted_state(db, record=record, current=existing)
 
+    normalized_correlation = correlation_id.strip() or f"journey-init:{record.id}"
+    previous_state_key: str | None = None
     now = utc_now()
     stage = _stage_for_persisted_values(
         record=record,
@@ -187,11 +189,23 @@ def initialize_journey_state(
             actor_type=actor_type,
             actor_user_id=actor_user_id,
             reason=reason or "Estado canonico inicializado.",
-            correlation_id=correlation_id or f"journey-init:{record.id}",
+            correlation_id=normalized_correlation,
             transition_payload=_stage_payload(stage, metadata=metadata),
             occurred_at=now,
         )
     )
+    if (
+        stage.state_key == JourneyStateKey.blueprint_free_ready
+        and previous_state_key != JourneyStateKey.blueprint_free_ready.value
+    ):
+        from app.services.marketing_analytics_service import enqueue_blueprint_completed
+
+        enqueue_blueprint_completed(
+            db,
+            record=record,
+            actor_user_id=actor_user_id,
+            correlation_id=normalized_correlation,
+        )
     db.flush()
     return _serialize_persisted_state(db, record=record, current=current)
 

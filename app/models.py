@@ -864,6 +864,7 @@ class SessionRecord(SQLModel, table=True):
     status: ArtifactStatus = Field(default=ArtifactStatus.draft)
     current_stage: SessionStage = Field(default=SessionStage.draft_capture)
     commercial_tier: CommercialTier = Field(default=CommercialTier.blueprint, nullable=False)
+    marketing_context: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     selected_workflow_template_key: str = Field(default="", nullable=False)
     archived_at: datetime | None = Field(default=None, index=True, nullable=True)
     archived_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
@@ -975,6 +976,7 @@ class CommercialOrderRecord(SQLModel, table=True):
     checkout_ref: str = Field(default="", index=True, nullable=False)
     checkout_url: str = Field(default="", nullable=False)
     idempotency_key: str = Field(default="", index=True, nullable=False)
+    marketing_context: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
@@ -1072,6 +1074,33 @@ class CommercialEventRecord(SQLModel, table=True):
     currency: str = Field(default="", nullable=False)
     metadata_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class MarketingAnalyticsOutboxRecord(SQLModel, table=True):
+    __tablename__ = "marketing_analytics_outbox"
+    __table_args__ = (
+        UniqueConstraint("business_key", name="uq_marketing_analytics_outbox_business_key"),
+        Index("ix_marketing_analytics_outbox_status_next", "status", "next_attempt_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workspace_id: UUID | None = Field(default=None, foreign_key="workspaces.id", index=True, nullable=True)
+    session_id: UUID | None = Field(default=None, foreign_key="sessions.id", index=True, nullable=True)
+    user_id: UUID | None = Field(default=None, foreign_key="users.id", index=True, nullable=True)
+    order_id: UUID | None = Field(default=None, foreign_key="commercial_orders.id", index=True, nullable=True)
+    event_name: str = Field(default="", index=True, nullable=False)
+    business_key: str = Field(default="", nullable=False)
+    source: str = Field(default="", nullable=False)
+    status: str = Field(default="pending", index=True, nullable=False)
+    attempts: int = Field(default=0, nullable=False)
+    next_attempt_at: datetime = Field(default_factory=utc_now, nullable=False, index=True)
+    last_attempt_at: datetime | None = Field(default=None, nullable=True)
+    sent_at: datetime | None = Field(default=None, nullable=True)
+    error_code: str = Field(default="", nullable=False)
+    error_message: str = Field(default="", nullable=False)
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
 class CommercialQuotaProductConfigRecord(SQLModel, table=True):
@@ -6367,6 +6396,11 @@ class CommercialCheckoutSessionRequest(ContractModel):
     success_url: str = ""
     cancel_url: str = ""
     idempotency_key: str = ""
+    marketing_context: dict[str, Any] = PydanticField(default_factory=dict)
+
+
+class SessionCreateRequest(ContractModel):
+    marketing_context: dict[str, Any] = PydanticField(default_factory=dict)
 
 
 class CommercialCheckoutSessionResponse(ContractModel):

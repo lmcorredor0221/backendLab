@@ -199,13 +199,14 @@ def process_mercadopago_webhook(
                 provider_payment_id=provider_payment_id,
                 event_id=event_id,
                 event_type=event_type,
-                amount_cents=_extract_amount_cents(confirmed_data, fallback_cents=order.total_cents),
+                amount_cents=_extract_refund_amount_cents(confirmed_data, fallback_cents=order.total_cents),
                 currency=_extract_currency(confirmed_data, fallback=order.currency),
                 metadata={
                     "mercadopago_event_type": event_type,
                     "mercadopago_order_id": provider_resource_id,
                     "mercadopago_status": order_status,
                     "mercadopago_status_detail": status_detail,
+                    "refund_amount_cents": _extract_refund_amount_cents(confirmed_data, fallback_cents=order.total_cents),
                 },
             ),
             actor_user_id=order.buyer_user_id,
@@ -415,6 +416,25 @@ def _extract_amount_cents(data: dict[str, Any], *, fallback_cents: int) -> int:
             except (InvalidOperation, ValueError):
                 pass
     return fallback_cents
+
+
+def _extract_refund_amount_cents(data: dict[str, Any], *, fallback_cents: int) -> int:
+    transactions = data.get("transactions")
+    if isinstance(transactions, dict):
+        total = 0
+        for refund in transactions.get("refunds") or []:
+            if not isinstance(refund, dict):
+                continue
+            amount = _first_string(refund, ("amount",), ("transaction_amount",), ("refunded_amount",), ("total_amount",))
+            if not amount:
+                continue
+            try:
+                total += max(0, int((Decimal(str(amount)) * Decimal(100)).quantize(Decimal("1"))))
+            except (InvalidOperation, ValueError):
+                continue
+        if total > 0:
+            return total
+    return _extract_amount_cents(data, fallback_cents=fallback_cents)
 
 
 def _extract_currency(data: dict[str, Any], *, fallback: str) -> str:

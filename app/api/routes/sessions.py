@@ -102,6 +102,7 @@ from app.models import (
     OpportunityRecord,
     ProjectTitleSource,
     SessionCapabilities,
+    SessionCreateRequest,
     SessionCreateResponse,
     SessionDeleteRequest,
     SessionListFacets,
@@ -3641,12 +3642,19 @@ def list_sessions(
 
 @router.post("", response_model=SessionCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_session(
+    payload: SessionCreateRequest | None = None,
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
     workspace_context: WorkspaceAccessContext = Depends(get_current_workspace_context),
 ) -> SessionCreateResponse:
     apply_workspace_bootstrap(db, workspace_context.workspace.id)
-    record = SessionRecord(user_id=current_user.id, workspace_id=workspace_context.workspace.id)
+    from app.services.marketing_analytics_service import sanitize_marketing_context
+
+    record = SessionRecord(
+        user_id=current_user.id,
+        workspace_id=workspace_context.workspace.id,
+        marketing_context=sanitize_marketing_context((payload.marketing_context if payload else {}) or {}),
+    )
     db.add(record)
     db.flush()
     initialize_journey_state(

@@ -121,6 +121,12 @@ class Settings(BaseSettings):
     mercadopago_request_timeout_seconds: int = 30
     mercadopago_webhook_timeout_seconds: int = 10
     mercadopago_max_retries: int = 3
+    marketing_analytics_enabled: bool = False
+    ga4_measurement_id: str = ""
+    ga4_api_secret: str = ""
+    ga4_mp_endpoint: str = "https://www.google-analytics.com/mp/collect"
+    marketing_analytics_max_attempts: int = 5
+    marketing_analytics_batch_size: int = 25
     rapyd_enabled: bool = False
     rapyd_environment: str = "sandbox"
     rapyd_api_base_url: str = ""

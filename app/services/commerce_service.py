@@ -1054,6 +1054,9 @@ def record_commercial_event(
         metadata_payload=sanitize_metadata(enrich_commercial_event_metadata(event_key, metadata or {})),
     )
     db.add(event)
+    from app.services.marketing_analytics_service import enqueue_from_commercial_event
+
+    enqueue_from_commercial_event(db, event)
     return event
 
 
@@ -1410,6 +1413,7 @@ def create_checkout_session(
         checkout_ref=provider_draft.checkout_ref,
         checkout_url=provider_draft.checkout_url,
         idempotency_key=idempotency_key,
+        marketing_context=_order_marketing_context(resolved_request.marketing_context, resolved_record.marketing_context),
         metadata_payload={
             "product_key": product.product_key,
             "price_code": price.price_code,
@@ -1483,6 +1487,15 @@ def create_checkout_session(
 def checkout_idempotency_key(session_id: UUID, product_key: str, user_id: UUID, *, package_code: str = "") -> str:
     digest = hashlib.sha256(f"{session_id}:{product_key}:{user_id}:{package_code.strip()}".encode("utf-8")).hexdigest()
     return digest[:64]
+
+
+def _order_marketing_context(request_context: dict | None, session_context: dict | None) -> dict:
+    from app.services.marketing_analytics_service import sanitize_marketing_context
+
+    sanitized_request = sanitize_marketing_context(request_context or {})
+    if sanitized_request:
+        return sanitized_request
+    return sanitize_marketing_context(session_context or {})
 
 
 def serialize_checkout_response(db: Session, order: CommercialOrderRecord) -> CommercialCheckoutSessionResponse:
