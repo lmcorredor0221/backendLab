@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     payu_webhook_url_secret: str = ""
     payu_request_timeout_seconds: int = 30
     payu_max_retries: int = 3
-    mercadopago_enabled: bool = False
+    mercadopago_enabled: bool = True
     mercadopago_environment: str = "sandbox"
     mercadopago_api_base_url: str = ""
     mercadopago_webhook_public_url: str = ""

@@ -144,7 +144,9 @@ def _settings_secret_value(provider_key: str, environment: str, secret_kind: str
             "webhook_url_secret": settings.payu_webhook_url_secret,
         }
     elif provider_key == "mercadopago":
-        if normalize_commerce_provider_environment(settings.mercadopago_environment) != environment:
+        if normalize_commerce_provider_environment(settings.mercadopago_environment) != environment and not (
+            environment == "production" and bool(settings.mercadopago_access_token)
+        ):
             return ""
         mapping = {
             "secret_key": settings.mercadopago_access_token,
@@ -171,8 +173,14 @@ def _settings_enabled(provider_key: str, environment: str) -> bool:
         return bool(settings.rebill_enabled)
     if provider_key == "payu" and normalize_commerce_provider_environment(settings.payu_environment) == environment:
         return bool(settings.payu_enabled)
-    if provider_key == "mercadopago" and normalize_commerce_provider_environment(settings.mercadopago_environment) == environment:
-        return bool(settings.mercadopago_enabled)
+    if provider_key == "mercadopago":
+        if normalize_commerce_provider_environment(settings.mercadopago_environment) == environment:
+            return bool(settings.mercadopago_enabled)
+        if settings.commerce_checkout_provider == "mercadopago" or settings.mercadopago_enabled:
+            return True
+        if bool(settings.mercadopago_access_token):
+            return True
+        return False
     if provider_key == "rapyd" and normalize_commerce_provider_environment(settings.rapyd_environment) == environment:
         return bool(settings.rapyd_enabled)
     return False

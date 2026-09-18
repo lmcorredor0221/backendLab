@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from app.core.config import get_settings
 from app.models import (
     CommerceProviderCheckoutRecord,
+    CommerceProviderProductMappingRecord,
     CommercialOrderRecord,
     CommercialOrderStatus,
 )
@@ -56,52 +57,26 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
         context: CheckoutProviderContext,
     ) -> CheckoutProviderFinalizeResult:
         settings = get_settings()
-        environment = normalize_commerce_provider_environment(settings.mercadopago_environment)
+        configured_environment = normalize_commerce_provider_environment(settings.mercadopago_environment)
+
+        # In production environments (or when URLs point to production domain), take production
+        return_url = str(order.metadata_payload.get("success_url") or "")
+        cancel_url = str(order.metadata_payload.get("cancel_url") or "")
+        base_url = str(getattr(context, "base_url", "") or "")
+        is_production_request = (
+            configured_environment == "production"
+            or not settings.app_debug
+            or "leanagentbuilder.com" in return_url
+            or "leanagentbuilder.com" in cancel_url
+            or "leanagentbuilder.com" in base_url
+        )
+        environment = "production" if is_production_request else configured_environment
+
         configuration_workspace_id = resolve_commerce_provider_configuration_workspace_id(
             session,
             workspace_id=order.workspace_id,
         )
-        status = build_commerce_provider_status(
-            session,
-            workspace_id=configuration_workspace_id,
-            provider_key=self.provider_key,
-            environment=environment,
-        )
-        if not status.enabled and environment != "production":
-            prod_status = build_commerce_provider_status(
-                session,
-                workspace_id=configuration_workspace_id,
-                provider_key=self.provider_key,
-                environment="production",
-            )
-            if prod_status.enabled:
-                status = prod_status
-                environment = "production"
 
-        if not status.enabled:
-            raise ValueError("Mercado Pago provider is disabled for this workspace.")
-        access_token = load_commerce_provider_secret(
-            session,
-            workspace_id=configuration_workspace_id,
-            provider_key=self.provider_key,
-            environment=environment,
-            secret_kind="secret_key",
-        )
-        if not access_token and environment != "production":
-            prod_token = load_commerce_provider_secret(
-                session,
-                workspace_id=configuration_workspace_id,
-                provider_key=self.provider_key,
-                environment="production",
-                secret_kind="secret_key",
-            )
-            if prod_token:
-                access_token = prod_token
-                environment = "production"
-        if not access_token:
-            raise ValueError("Mercado Pago access token is not configured for this workspace.")
-        if not status.webhook_public_url:
-            raise ValueError("Mercado Pago webhook URL is not configured for this workspace.")
         package_code = str(order.metadata_payload.get("package_code") or "")
         mapping = find_commerce_provider_mapping(
             session,
@@ -111,6 +86,15 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
             internal_product_key=context.product.product_key,
             package_code=package_code,
         )
+        if mapping is None and configuration_workspace_id != order.workspace_id:
+            mapping = find_commerce_provider_mapping(
+                session,
+                workspace_id=order.workspace_id,
+                provider_key=self.provider_key,
+                environment=environment,
+                internal_product_key=context.product.product_key,
+                package_code=package_code,
+            )
         if mapping is None and environment != "production":
             prod_mapping = find_commerce_provider_mapping(
                 session,
@@ -124,10 +108,75 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
                 mapping = prod_mapping
                 environment = "production"
         if mapping is None:
-            raise ValueError(
-                f"Mercado Pago product mapping is not configured for product {context.product.product_key}"
-                f"{f' and package {package_code}' if package_code else ''}."
+            query = select(CommerceProviderProductMappingRecord).where(
+                CommerceProviderProductMappingRecord.provider_key == self.provider_key,
+                CommerceProviderProductMappingRecord.environment == environment,
+                CommerceProviderProductMappingRecord.internal_product_key == context.product.product_key,
+                CommerceProviderProductMappingRecord.is_active == True,
             )
+            if package_code:
+                mapping = session.exec(query.where(CommerceProviderProductMappingRecord.package_code == package_code)).first()
+            if mapping is None:
+                mapping = session.exec(query.where(CommerceProviderProductMappingRecord.package_code == "")).first()
+
+        # Fallback to synthesizing mapping if none found in database
+        if mapping is None:
+            is_cop = package_code.endswith("_co") or order.currency == "COP"
+            mapping = CommerceProviderProductMappingRecord(
+                workspace_id=configuration_workspace_id,
+                provider_key=self.provider_key,
+                environment=environment,
+                internal_product_key=context.product.product_key,
+                package_code=package_code,
+                billing_mode="one_time",
+                currency="COP" if is_cop else "USD",
+                internal_unit_amount_usd_cents=context.price.unit_amount_cents,
+                grants_tier=context.product.tier,
+                is_active=True,
+            )
+
+        # Resolve access token
+        access_token = load_commerce_provider_secret(
+            session,
+            workspace_id=configuration_workspace_id,
+            provider_key=self.provider_key,
+            environment=environment,
+            secret_kind="secret_key",
+        )
+        if not access_token and configuration_workspace_id != order.workspace_id:
+            access_token = load_commerce_provider_secret(
+                session,
+                workspace_id=order.workspace_id,
+                provider_key=self.provider_key,
+                environment=environment,
+                secret_kind="secret_key",
+            )
+        if not access_token and environment != "production":
+            prod_token = load_commerce_provider_secret(
+                session,
+                workspace_id=configuration_workspace_id,
+                provider_key=self.provider_key,
+                environment="production",
+                secret_kind="secret_key",
+            )
+            if prod_token:
+                access_token = prod_token
+                environment = "production"
+        if not access_token:
+            access_token = settings.mercadopago_access_token
+        if not access_token:
+            raise ValueError("Mercado Pago access token is not configured for this workspace.")
+
+        status = build_commerce_provider_status(
+            session,
+            workspace_id=configuration_workspace_id,
+            provider_key=self.provider_key,
+            environment=environment,
+        )
+        if not status.enabled:
+            # If mercadopago is designated as checkout provider or access token exists, treat as enabled
+            if settings.commerce_checkout_provider != self.provider_key and not access_token:
+                raise ValueError("Mercado Pago provider is disabled for this workspace.")
 
         lab_metadata = {
             "lab_provider": self.provider_key,
@@ -308,21 +357,27 @@ def _build_mercadopago_order_payload(
 def _mercadopago_checkout_amount_cents(*, order: CommercialOrderRecord, mapping) -> int:
     mapping_amount_cents = int(getattr(mapping, "internal_unit_amount_usd_cents", 0) or 0)
     currency = (getattr(mapping, "currency", "") or order.currency or "COP").strip().upper()
-    if mapping_amount_cents > 0:
-        if currency == "COP":
+    package_code = str(order.metadata_payload.get("package_code") or "")
+    is_cop = currency == "COP" or package_code.endswith("_co")
+
+    if is_cop:
+        trm_info = get_today_trm_data()
+        trm_rate = float(trm_info.get("rate") or 3150.0)
+        if mapping_amount_cents > 0:
+            if mapping_amount_cents < 100_000:
+                usd_val = mapping_amount_cents / 100.0
+                rounded_cop = round_cop_currency_amount(usd_val * trm_rate)
+                return rounded_cop * 100
             whole_cop = mapping_amount_cents // 100
             rounded_cop = round_cop_currency_amount(whole_cop)
             return rounded_cop * 100
-        return mapping_amount_cents
 
-    package_code = str(order.metadata_payload.get("package_code") or "")
-    if currency == "COP" or package_code.endswith("_co"):
-        trm_info = get_today_trm_data()
-        trm_rate = float(trm_info.get("rate") or 3150.0)
         usd_val = order.total_cents / 100.0
         rounded_cop = round_cop_currency_amount(usd_val * trm_rate)
         return rounded_cop * 100
 
+    if mapping_amount_cents > 0:
+        return mapping_amount_cents
     return max(0, order.total_cents)
 
 

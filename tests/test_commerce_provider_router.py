@@ -2185,3 +2185,44 @@ def test_mercadopago_finalizes_with_production_mapping_when_sandbox_not_found(
     # El monto enviado a Mercado Pago debe estar redondeado: 120.939 -> 121000.00
     assert FakeMercadoPagoClient.create_calls[0]["payload"]["total_amount"] == "121000.00"
 
+
+def test_mercadopago_checkout_leanagentbuilder_production_auto_detects(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "mercadopago_environment", "sandbox")
+    monkeypatch.setattr(settings, "mercadopago_access_token", "APP_USR-live-token-123")
+    monkeypatch.setattr(settings, "commerce_checkout_provider", "mercadopago")
+    monkeypatch.setattr(settings, "app_debug", False)
+
+    FakeMercadoPagoClient.create_calls = []
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            package_code="blueprint_pro_co",
+            provider="mercadopago",
+            idempotency_key=f"{record.id}:leanagentbuilder-prod-autodetect",
+            success_url=f"https://www.leanagentbuilder.com/projects/{record.id}/blueprint/pro",
+            cancel_url=f"https://www.leanagentbuilder.com/projects/{record.id}/blueprint/pro",
+        ),
+        record=record,
+        current_user=user,
+        base_url="https://www.leanagentbuilder.com",
+    )
+
+    order = db_session.get(CommercialOrderRecord, checkout.order_id)
+    assert order is not None
+    assert order.status == CommercialOrderStatus.pending
+    assert order.metadata_payload["mercadopago_environment"] == "production"
+    assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "APP_USR-live-token-123"
+    amount_str = FakeMercadoPagoClient.create_calls[0]["payload"]["total_amount"]
+    assert amount_str.endswith("000.00")
+    assert float(amount_str) >= 100_000.0
+
+
