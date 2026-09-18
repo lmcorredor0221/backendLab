@@ -305,11 +305,17 @@ def resolve_session_commercial_access(
 ) -> SessionCommercialAccess:
     effective = resolve_effective_entitlement_state(db, record)
     role = role_for_user(db, workspace_id=record.workspace_id, user_id=current_user.id) if current_user is not None else None
+    checkout_state = resolve_checkout_state_for_access(
+        db,
+        record,
+        current_user=current_user,
+        effective_tier=effective.tier,
+    )
     return build_session_commercial_access(
         effective.tier,
         role=role,
         reason_code=effective.reason_code,
-        checkout_state=effective.checkout_state,
+        checkout_state=checkout_state,
         purchase_refs=list(effective.purchase_refs),
     )
 

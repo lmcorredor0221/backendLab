@@ -55,7 +55,7 @@ from app.services.commerce_service import (
 from app.services.commerce_provider_mappings import upsert_commerce_provider_mapping
 from app.services.commerce_provider_readiness import build_commerce_provider_readiness
 from app.services.commerce_provider_secrets import upsert_commerce_provider_credentials
-from app.services.commercial_access import build_commercial_access_snapshot_v2
+from app.services.commercial_access import build_commercial_access_snapshot_v2, resolve_session_commercial_access
 from app.services.commercial_catalog_service import upsert_package_catalog_entry
 from app.services.commercial_debt_service import create_commercial_debt
 from app.services.commercial_quota_service import get_balance_snapshot
@@ -1145,6 +1145,23 @@ def test_blueprint_pro_access_snapshot_routes_to_checkout_when_external_payment_
     _configure_mercadopago_orders_ready(db_session, platform_workspace, platform_admin)
 
     access = build_commercial_access_snapshot_v2(db_session, record, current_user=user)
+
+    assert access.tier == CommercialTier.blueprint
+    assert access.checkout_state == "available"
+    assert db_session.exec(select(CommercialAccessRequestRecord)).all() == []
+
+
+def test_legacy_session_commercial_access_routes_to_checkout_when_external_payment_flow_is_active(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "commerce_checkout_provider", "sandbox")
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, _customer_workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago_orders_ready(db_session, platform_workspace, platform_admin)
+
+    access = resolve_session_commercial_access(db_session, record, current_user=user)
 
     assert access.tier == CommercialTier.blueprint
     assert access.checkout_state == "available"
