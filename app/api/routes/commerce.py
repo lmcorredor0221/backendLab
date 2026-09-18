@@ -71,6 +71,7 @@ from app.services.hotmart.pending_activations import (
     list_user_pending_hotmart_activations,
 )
 from app.services.operations_service import capture_operational_state
+from app.services.payment_providers.base import CheckoutProviderFinalizeError
 from app.services.product_processing import (
     ProductBuildLifecycle,
     ProductBuildProductKey,
@@ -345,6 +346,9 @@ def create_checkout_session_route(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except CheckoutProviderFinalizeError as exc:
+        db.commit()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail or str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     db.commit()

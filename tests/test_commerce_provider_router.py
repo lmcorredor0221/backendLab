@@ -59,10 +59,11 @@ from app.services.commercial_access import build_commercial_access_snapshot_v2, 
 from app.services.commercial_catalog_service import upsert_package_catalog_entry
 from app.services.commercial_debt_service import create_commercial_debt
 from app.services.commercial_quota_service import get_balance_snapshot
-from app.services.mercadopago.client import MercadoPagoApiResult
+from app.services.mercadopago.client import MercadoPagoApiError, MercadoPagoApiResult
 from app.services.mercadopago.signatures import sign_mercadopago_webhook
 from app.services.mercadopago.webhooks import process_mercadopago_webhook
 from app.services.payment_providers.mercadopago import MercadoPagoPaymentProvider
+from app.services.payment_providers.base import CheckoutProviderFinalizeError
 from app.services.payment_providers.rebill import RebillPaymentProvider
 from app.services.payment_providers.rapyd import RapydPaymentProvider
 from app.services.payu.checkout_redirect import render_payu_checkout_redirect, resolve_payu_response_redirect
@@ -408,6 +409,30 @@ class FakeMercadoPagoClient:
 
     def get_order(self, *, access_token: str, order_id: str) -> dict[str, object]:
         return self.__class__.order_payload
+
+
+class FakeMercadoPagoRejectingClient(FakeMercadoPagoClient):
+    def create_order(
+        self,
+        *,
+        access_token: str,
+        payload: dict[str, object],
+        idempotency_key: str,
+    ) -> MercadoPagoApiResult:
+        self.__class__.create_calls.append(
+            {
+                "access_token": access_token,
+                "payload": payload,
+                "idempotency_key": idempotency_key,
+                "api_base_url": self.config.api_base_url,
+            }
+        )
+        raise MercadoPagoApiError(
+            "order_rejected",
+            "Mercado Pago rejected the order creation request.",
+            http_status=400,
+            payload={"message": "invalid_amount", "cause": [{"code": "bad_request"}]},
+        )
 
 
 def _configure_rebill(session: Session, workspace: WorkspaceRecord, user: UserRecord) -> None:
@@ -1341,6 +1366,47 @@ def test_mercadopago_checkout_provider_creates_order_with_provider_record(
         "last_name": "Provider Tester",
     }
     assert checkout_record.metadata_payload["lab_metadata"]["lab_workspace_id"] == str(workspace.id)
+
+
+def test_mercadopago_checkout_rejection_persists_diagnostic_record(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+    FakeMercadoPagoRejectingClient.create_calls = []
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoRejectingClient)
+
+    with pytest.raises(CheckoutProviderFinalizeError) as exc_info:
+        create_checkout_session(
+            db_session,
+            payload=CommercialCheckoutSessionRequest(
+                session_id=record.id,
+                product_key="blueprint_pro",
+                provider="mercadopago",
+                idempotency_key=f"{record.id}:mercadopago-provider-rejected",
+                success_url="https://example.test/success",
+                cancel_url="https://example.test/cancel",
+            ),
+            record=record,
+            current_user=user,
+            base_url="http://localhost:3200",
+        )
+
+    order = db_session.exec(select(CommercialOrderRecord)).one()
+    checkout_record = db_session.exec(
+        select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "mercadopago")
+    ).one()
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["provider_error_code"] == "order_rejected"
+    assert order.status == CommercialOrderStatus.failed
+    assert order.metadata_payload["provider_stage"] == "mercadopago_order_rejected"
+    assert checkout_record.status == "rejected"
+    assert checkout_record.amount_cents == 19_900_000
+    assert checkout_record.currency == "COP"
+    assert checkout_record.request_payload_redacted["total_amount"] == "199000.00"
+    assert checkout_record.response_payload_redacted["message"] == "invalid_amount"
+    assert checkout_record.metadata_payload["mercadopago_http_status"] == 400
 
 
 def test_mercadopago_webhook_order_processed_uses_common_fulfillment_and_dedupes(

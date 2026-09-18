@@ -40,9 +40,15 @@ class CheckoutProviderDraft:
     metadata: dict[str, object] = field(default_factory=dict)
 
 
+class CheckoutProviderFinalizeError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int = 502, detail: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail or {}
+
+
 class CommercePaymentProvider(Protocol):
     provider_key: str
 
     def create_checkout_draft(self, context: CheckoutProviderContext) -> CheckoutProviderDraft:
         """Build the provider-specific checkout draft without committing an order."""
-

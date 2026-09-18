@@ -16,8 +16,12 @@ from app.services.commerce_provider_redaction import redact_payload
 from app.services.commerce_provider_scope import resolve_commerce_provider_configuration_workspace_id
 from app.services.commerce_provider_secrets import build_commerce_provider_status, load_commerce_provider_secret
 from app.services.commerce_provider_utils import normalize_commerce_provider_environment
-from app.services.mercadopago.client import MercadoPagoClient, MercadoPagoClientConfig
-from app.services.payment_providers.base import CheckoutProviderContext, CheckoutProviderDraft
+from app.services.mercadopago.client import MercadoPagoApiError, MercadoPagoClient, MercadoPagoClientConfig
+from app.services.payment_providers.base import (
+    CheckoutProviderContext,
+    CheckoutProviderDraft,
+    CheckoutProviderFinalizeError,
+)
 from app.services.payment_providers.template import CheckoutProviderFinalizeResult, TemplateCommercePaymentProvider
 
 
@@ -115,11 +119,6 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
                 environment=environment,
             )
         )
-        result = client.create_order(
-            access_token=access_token,
-            payload=payload,
-            idempotency_key=idempotency_key,
-        )
         checkout_record = session.exec(
             select(CommerceProviderCheckoutRecord).where(
                 CommerceProviderCheckoutRecord.provider_key == self.provider_key,
@@ -135,12 +134,54 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
                 checkout_ref=order.checkout_ref,
             )
         checkout_amount_cents = _mercadopago_checkout_amount_cents(order=order, mapping=mapping)
-        checkout_record.provider_checkout_id = result.provider_ref
-        checkout_record.checkout_url = result.checkout_url
-        checkout_record.status = "created"
         checkout_record.amount_cents = checkout_amount_cents
         checkout_record.currency = (mapping.currency or order.currency or "COP").strip().upper()
         checkout_record.request_payload_redacted = redact_payload(payload)
+        try:
+            result = client.create_order(
+                access_token=access_token,
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+        except MercadoPagoApiError as exc:
+            checkout_record.status = "rejected"
+            checkout_record.response_payload_redacted = exc.payload
+            checkout_record.metadata_payload = {
+                "idempotency_key": idempotency_key,
+                "mapping_id": str(mapping.id),
+                "configuration_workspace_id": str(configuration_workspace_id),
+                "provider_stage": "mercadopago_order_rejected",
+                "mercadopago_error_code": exc.code,
+                "mercadopago_http_status": exc.http_status,
+                "lab_metadata": lab_metadata,
+            }
+            session.add(checkout_record)
+            session.flush()
+            order.status = CommercialOrderStatus.failed
+            order.metadata_payload = {
+                **dict(order.metadata_payload or {}),
+                "provider_stage": "mercadopago_order_rejected",
+                "commerce_provider_configuration_workspace_id": str(configuration_workspace_id),
+                "commerce_provider_checkout_record_id": str(checkout_record.id),
+                "mercadopago_error_code": exc.code,
+                "mercadopago_http_status": exc.http_status,
+            }
+            session.add(order)
+            session.flush()
+            raise CheckoutProviderFinalizeError(
+                "Mercado Pago rejected checkout order creation.",
+                status_code=502,
+                detail={
+                    "provider": self.provider_key,
+                    "provider_error_code": exc.code,
+                    "provider_http_status": exc.http_status,
+                    "checkout_ref": order.checkout_ref,
+                    "checkout_record_id": str(checkout_record.id),
+                },
+            ) from exc
+        checkout_record.provider_checkout_id = result.provider_ref
+        checkout_record.checkout_url = result.checkout_url
+        checkout_record.status = "created"
         checkout_record.response_payload_redacted = result.payload_redacted
         checkout_record.metadata_payload = {
             "idempotency_key": idempotency_key,
