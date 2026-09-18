@@ -6,13 +6,14 @@ from app.services.payment_providers.base import CommercePaymentProvider
 
 
 SUPPORTED_COMMERCE_PAYMENT_PROVIDERS = set(get_commerce_provider_registry().supported_provider_keys)
+DEFAULT_COMMERCE_PAYMENT_PROVIDER = "mercadopago"
 
 
 def normalize_commerce_payment_provider(provider_key: str | None = None) -> str:
     raw_value = provider_key if provider_key is not None else get_settings().commerce_checkout_provider
-    candidate = (raw_value or "sandbox").strip().lower()
+    candidate = (raw_value or DEFAULT_COMMERCE_PAYMENT_PROVIDER).strip().lower()
     if candidate in {"", "default"}:
-        return "sandbox"
+        return DEFAULT_COMMERCE_PAYMENT_PROVIDER
     return get_commerce_provider_registry().require_definition(candidate).provider_key
 
 

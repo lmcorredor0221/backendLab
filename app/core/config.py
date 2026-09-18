@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     auth_token_ttl_hours: int = 12
     allow_demo_tier_upgrade: bool | None = None
     commerce_public_base_url: str = "http://localhost:3200"
-    commerce_checkout_provider: str = "sandbox"
+    commerce_checkout_provider: str = "mercadopago"
     hotmart_enabled: bool = False
     hotmart_environment: str = "sandbox"
     hotmart_api_base_url: str = ""

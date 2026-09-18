@@ -140,8 +140,9 @@ def _seed_platform_admin_workspace(session: Session) -> tuple[UserRecord, Worksp
 
 
 def test_commerce_provider_router_normalizes_supported_providers() -> None:
-    assert normalize_commerce_payment_provider(None) == "sandbox"
-    assert normalize_commerce_payment_provider("default") == "sandbox"
+    assert normalize_commerce_payment_provider(None) == "mercadopago"
+    assert normalize_commerce_payment_provider("default") == "mercadopago"
+    assert normalize_commerce_payment_provider("sandbox") == "sandbox"
     assert normalize_commerce_payment_provider("HOTMART") == "hotmart"
     assert normalize_commerce_payment_provider("REBILL") == "rebill"
     assert normalize_commerce_payment_provider("PAYU") == "payu"
@@ -166,6 +167,7 @@ def test_sandbox_checkout_provider_preserves_existing_order_flow(db_session: Ses
         payload=CommercialCheckoutSessionRequest(
             session_id=record.id,
             product_key="blueprint_pro",
+            provider="sandbox",
             idempotency_key=f"{record.id}:sandbox-provider",
         ),
         record=record,
@@ -1211,6 +1213,40 @@ def test_checkout_without_provider_prefers_ready_platform_mercadopago_configurat
     assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "APP_USR-mp-access-token"
 
 
+def test_checkout_without_provider_uses_mercadopago_as_default(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+    FakeMercadoPagoClient.create_calls = []
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            idempotency_key=f"{record.id}:default-mercadopago-provider",
+            success_url="https://example.test/success",
+            cancel_url="https://example.test/cancel",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    db_session.commit()
+
+    checkout_record = db_session.exec(
+        select(CommerceProviderCheckoutRecord).where(CommerceProviderCheckoutRecord.provider_key == "mercadopago")
+    ).one()
+    assert response.provider == "mercadopago"
+    assert response.checkout_ref.startswith("mp_")
+    assert response.checkout_url == "https://sandbox.mercadopago.com.co/checkout/v1/redirect?order_id=mp_order_123"
+    assert checkout_record.provider_checkout_id == "mp_order_123"
+    assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "TEST-mp-access-token"
+
+
 def test_mercadopago_checkout_provider_creates_order_with_provider_record(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -1761,6 +1797,7 @@ def test_checkout_enforces_idempotency(db_session: Session) -> None:
         payload=CommercialCheckoutSessionRequest(
             session_id=record.id,
             product_key="blueprint_pro",
+            provider="sandbox",
             idempotency_key=idempotency_key,
         ),
         record=record,
@@ -1774,6 +1811,7 @@ def test_checkout_enforces_idempotency(db_session: Session) -> None:
         payload=CommercialCheckoutSessionRequest(
             session_id=record.id,
             product_key="blueprint_pro",
+            provider="sandbox",
             idempotency_key=idempotency_key,
         ),
         record=record,
@@ -1827,6 +1865,7 @@ def test_sandbox_payment_settles_open_workspace_debt(db_session: Session) -> Non
         payload=CommercialCheckoutSessionRequest(
             session_id=record.id,
             product_key="blueprint_pro",
+            provider="sandbox",
             idempotency_key=f"{record.id}:sandbox-debt-settlement",
         ),
         record=record,
@@ -1885,6 +1924,7 @@ def test_sandbox_payment_credits_workspace_balance_from_package_code(db_session:
             session_id=record.id,
             product_key="blueprint_pro",
             package_code="bp-pack-3",
+            provider="sandbox",
             idempotency_key=f"{record.id}:sandbox-package-credit",
         ),
         record=record,
