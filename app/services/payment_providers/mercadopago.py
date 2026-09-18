@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from sqlmodel import Session, select
 
@@ -228,15 +231,23 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
                 idempotency_key=idempotency_key,
             )
         except MercadoPagoApiError as exc:
+            logger.error(
+                "Mercado Pago order creation failed: http_status=%s code=%s payload=%s request_payload=%s",
+                exc.http_status,
+                exc.code,
+                exc.payload,
+                payload,
+            )
             checkout_record.status = "rejected"
             checkout_record.response_payload_redacted = exc.payload
             checkout_record.metadata_payload = {
                 "idempotency_key": idempotency_key,
-                "mapping_id": str(mapping.id),
+                "mapping_id": str(mapping.id) if mapping else "",
                 "configuration_workspace_id": str(configuration_workspace_id),
                 "provider_stage": "mercadopago_order_rejected",
                 "mercadopago_error_code": exc.code,
                 "mercadopago_http_status": exc.http_status,
+                "mercadopago_error_payload": exc.payload,
                 "lab_metadata": lab_metadata,
             }
             session.add(checkout_record)
@@ -249,16 +260,19 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
                 "commerce_provider_checkout_record_id": str(checkout_record.id),
                 "mercadopago_error_code": exc.code,
                 "mercadopago_http_status": exc.http_status,
+                "mercadopago_error_payload": exc.payload,
             }
             session.add(order)
             session.flush()
+            err_detail_msg = str((exc.payload or {}).get("message") or exc.code)
             raise CheckoutProviderFinalizeError(
-                "Mercado Pago rejected checkout order creation.",
+                f"Mercado Pago rejected checkout order creation ({exc.http_status}): {err_detail_msg}",
                 status_code=502,
                 detail={
                     "provider": self.provider_key,
                     "provider_error_code": exc.code,
                     "provider_http_status": exc.http_status,
+                    "provider_error_payload": exc.payload,
                     "checkout_ref": order.checkout_ref,
                     "checkout_record_id": str(checkout_record.id),
                 },
@@ -299,6 +313,18 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
         return super().build_next_action(order)
 
 
+VALID_MERCADOPAGO_CATEGORIES = {
+    "art", "baby", "coupons", "donations", "computing", "video_games",
+    "services", "learnings", "other_services", "fashion", "games", "home",
+    "musical", "phones", "automotive", "books", "travel", "tickets",
+}
+
+VALID_MERCADOPAGO_PAYMENT_TYPES = {
+    "credit_card", "debit_card", "ticket", "bank_transfer", "atm",
+    "digital_currency", "prepaid_card", "account_money",
+}
+
+
 def _build_mercadopago_order_payload(
     *,
     context: CheckoutProviderContext,
@@ -316,10 +342,11 @@ def _build_mercadopago_order_payload(
         "description": _safe_mercadopago_text(context.product.description),
         "quantity": 1,
         "unit_price": amount,
+        "total_amount": amount,
     }
-    category_id = _safe_mercadopago_identifier(mapping.provider_product_id)
-    if category_id:
-        item["category_id"] = category_id
+    raw_category = _safe_mercadopago_identifier(getattr(mapping, "provider_product_id", "") or "").lower()
+    if raw_category in VALID_MERCADOPAGO_CATEGORIES:
+        item["category_id"] = raw_category
     binary_mode = _metadata_bool(mapping.metadata_payload, "binary_mode")
     config: dict[str, object] = {
         "online": {
@@ -396,16 +423,19 @@ def _checkout_return_url(primary_url: str, base_url: str, fallback_path: str) ->
 
 def _build_mercadopago_payment_method_config(mapping) -> dict[str, object]:
     payment_method: dict[str, object] = {}
-    excluded_methods = _clean_mercadopago_id_list(mapping.provider_payment_link_id)
+    excluded_methods = _clean_mercadopago_id_list(getattr(mapping, "provider_payment_link_id", ""))
     if excluded_methods:
         payment_method["not_allowed_ids"] = excluded_methods
-    excluded_types = _clean_mercadopago_id_list(mapping.provider_plan_id)
+    excluded_types = [
+        t for t in _clean_mercadopago_id_list(getattr(mapping, "provider_plan_id", ""))
+        if t.lower() in VALID_MERCADOPAGO_PAYMENT_TYPES
+    ]
     if excluded_types:
         payment_method["not_allowed_types"] = excluded_types
-    default_payment_type = _safe_mercadopago_identifier(mapping.provider_price_id)
-    if default_payment_type:
+    default_payment_type = _safe_mercadopago_identifier(getattr(mapping, "provider_price_id", "")).lower()
+    if default_payment_type in VALID_MERCADOPAGO_PAYMENT_TYPES:
         payment_method["default_type"] = default_payment_type
-    installments = _metadata_int(mapping.metadata_payload, "installments", minimum=1, maximum=36)
+    installments = _metadata_int(getattr(mapping, "metadata_payload", {}), "installments", minimum=1, maximum=36)
     if installments is not None:
         payment_method["max_installments"] = installments
     return payment_method
