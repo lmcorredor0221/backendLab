@@ -1,0 +1,364 @@
+﻿{
+  "version": "1.0",
+  "description": "Catálogo de conectores tecnológicos de tendencia para el motor de recomendación de herramientas de LAB. Cada conector define señales de detección, variables de entorno requeridas y metadatos de integración que se usan para enriquecer el BlueprintTool generado.",
+  "connectors": [
+    {
+      "connector_key": "whatsapp_cloud_api",
+      "connector_label": "WhatsApp Business Cloud API (Meta)",
+      "archetype": "messaging_gateway",
+      "maps_to_capability": "outbound_notification",
+      "is_inbound_trigger": true,
+      "detection_signals": [
+        "whatsapp",
+        "whats app",
+        "mensajes de whatsapp",
+        "bot de whatsapp",
+        "canal de whatsapp",
+        "responder por whatsapp",
+        "whatsapp business"
+      ],
+      "use_case_hint": "Canal conversacional de entrada y salida para agentes que reciben y responden usuarios por WhatsApp",
+      "env_vars": [
+        "WHATSAPP_ACCESS_TOKEN",
+        "WHATSAPP_PHONE_NUMBER_ID",
+        "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+        "WHATSAPP_APP_ID"
+      ],
+      "endpoint_pattern": "https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
+      "webhook_endpoint_pattern": "POST /webhooks/whatsapp  (verificacion y recepcion de mensajes entrantes)",
+      "auth_scheme": "bearer",
+      "integration_kind": "webhook_and_rest",
+      "risk_level": "low",
+      "has_side_effects": true,
+      "docs_url": "https://developers.facebook.com/docs/whatsapp/cloud-api"
+    },
+    {
+      "connector_key": "odoo_crm_api",
+      "connector_label": "Odoo CRM / ERP — Lectura (JSON-RPC)",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "odoo",
+        "odoo crm",
+        "odoo erp",
+        "gestion en odoo",
+        "consultar odoo",
+        "datos de odoo",
+        "odoo sales",
+        "odoo contacts",
+        "sistema odoo"
+      ],
+      "use_case_hint": "Consultar clientes, leads, pedidos e inventario desde Odoo antes de tomar decisiones en el agente",
+      "env_vars": [
+        "ODOO_URL",
+        "ODOO_DATABASE",
+        "ODOO_USERNAME",
+        "ODOO_API_KEY"
+      ],
+      "endpoint_pattern": "{ODOO_URL}/jsonrpc",
+      "auth_scheme": "api_key",
+      "integration_kind": "jsonrpc",
+      "risk_level": "medium",
+      "has_side_effects": false,
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/api/external_api.html"
+    },
+    {
+      "connector_key": "odoo_write_api",
+      "connector_label": "Odoo CRM / ERP — Escritura (JSON-RPC: create, write, unlink)",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "crear en odoo",
+        "actualizar en odoo",
+        "registrar en odoo",
+        "crear cotizacion odoo",
+        "crear pedido odoo",
+        "crear contacto odoo",
+        "escribir en odoo",
+        "enviar a odoo"
+      ],
+      "use_case_hint": "Crear o actualizar registros (leads, pedidos de venta, contactos) en Odoo a partir de decisiones del agente",
+      "env_vars": [
+        "ODOO_URL",
+        "ODOO_DATABASE",
+        "ODOO_USERNAME",
+        "ODOO_API_KEY"
+      ],
+      "endpoint_pattern": "{ODOO_URL}/jsonrpc",
+      "auth_scheme": "api_key",
+      "integration_kind": "jsonrpc",
+      "risk_level": "high",
+      "has_side_effects": true,
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/api/external_api.html"
+    },
+    {
+      "connector_key": "hubspot_crm_api",
+      "connector_label": "HubSpot CRM API (Contacts, Deals, Tickets)",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "hubspot",
+        "hub spot",
+        "hubspot crm",
+        "contacto en hubspot",
+        "deal en hubspot",
+        "ticket en hubspot"
+      ],
+      "use_case_hint": "Consultar contactos, deals y tickets de soporte en HubSpot CRM para contextualizar decisiones del agente",
+      "env_vars": [
+        "HUBSPOT_ACCESS_TOKEN"
+      ],
+      "endpoint_pattern": "https://api.hubapi.com/crm/v3/objects",
+      "auth_scheme": "bearer",
+      "integration_kind": "rest_api",
+      "risk_level": "medium",
+      "has_side_effects": false,
+      "docs_url": "https://developers.hubspot.com/docs/api/overview"
+    },
+    {
+      "connector_key": "hubspot_write_api",
+      "connector_label": "HubSpot CRM API — Escritura (crear/actualizar Deals, Contacts)",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "crear deal en hubspot",
+        "actualizar contacto hubspot",
+        "registrar en hubspot",
+        "crear contacto hubspot",
+        "pipeline hubspot"
+      ],
+      "use_case_hint": "Crear o actualizar registros en HubSpot CRM: nuevos deals, contactos calificados o tickets de soporte",
+      "env_vars": [
+        "HUBSPOT_ACCESS_TOKEN"
+      ],
+      "endpoint_pattern": "https://api.hubapi.com/crm/v3/objects",
+      "auth_scheme": "bearer",
+      "integration_kind": "rest_api",
+      "risk_level": "high",
+      "has_side_effects": true,
+      "docs_url": "https://developers.hubspot.com/docs/api/overview"
+    },
+    {
+      "connector_key": "google_sheets_api",
+      "connector_label": "Google Sheets API v4",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "google sheets",
+        "hoja de calculo",
+        "excel google",
+        "spreadsheet",
+        "gsheet",
+        "planilla google",
+        "google spreadsheet"
+      ],
+      "use_case_hint": "Leer datos estructurados desde Google Sheets como fuente operativa del agente",
+      "env_vars": [
+        "GOOGLE_SERVICE_ACCOUNT_JSON",
+        "GOOGLE_SHEETS_SPREADSHEET_ID"
+      ],
+      "endpoint_pattern": "https://sheets.googleapis.com/v4/spreadsheets/{GOOGLE_SHEETS_SPREADSHEET_ID}/values/{range}",
+      "auth_scheme": "service_account",
+      "integration_kind": "rest_api",
+      "risk_level": "low",
+      "has_side_effects": false,
+      "docs_url": "https://developers.google.com/sheets/api"
+    },
+    {
+      "connector_key": "mercadopago_api",
+      "connector_label": "MercadoPago Payments API (LatAm)",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "mercadopago",
+        "mercado pago",
+        "mp checkout",
+        "pago con mercadopago",
+        "cobrar con mp",
+        "cobro mercadopago"
+      ],
+      "use_case_hint": "Procesar pagos y generar preferencias de cobro en MercadoPago (Colombia, Argentina, Mexico, Chile)",
+      "env_vars": [
+        "MP_ACCESS_TOKEN",
+        "MP_PUBLIC_KEY"
+      ],
+      "endpoint_pattern": "https://api.mercadopago.com/v1/payments",
+      "auth_scheme": "bearer",
+      "integration_kind": "rest_api",
+      "risk_level": "critical",
+      "has_side_effects": true,
+      "docs_url": "https://www.mercadopago.com.co/developers/es/docs"
+    },
+    {
+      "connector_key": "stripe_api",
+      "connector_label": "Stripe Payments and Invoicing API",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "stripe",
+        "stripe payments",
+        "cobrar con stripe",
+        "stripe invoice",
+        "stripe checkout",
+        "cobro con stripe"
+      ],
+      "use_case_hint": "Crear payment intents, facturas y cobros programaticos mediante Stripe API",
+      "env_vars": [
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET"
+      ],
+      "endpoint_pattern": "https://api.stripe.com/v1",
+      "auth_scheme": "bearer",
+      "integration_kind": "rest_api",
+      "risk_level": "critical",
+      "has_side_effects": true,
+      "docs_url": "https://stripe.com/docs/api"
+    },
+    {
+      "connector_key": "zendesk_api",
+      "connector_label": "Zendesk Support API (Tickets y Casos)",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "zendesk",
+        "crear ticket",
+        "abrir ticket",
+        "ticket de soporte",
+        "mesa de ayuda zendesk",
+        "zendesk support"
+      ],
+      "use_case_hint": "Crear, actualizar y gestionar tickets de soporte en Zendesk desde el agente",
+      "env_vars": [
+        "ZENDESK_SUBDOMAIN",
+        "ZENDESK_EMAIL",
+        "ZENDESK_API_TOKEN"
+      ],
+      "endpoint_pattern": "https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets",
+      "auth_scheme": "basic",
+      "integration_kind": "rest_api",
+      "risk_level": "medium",
+      "has_side_effects": true,
+      "docs_url": "https://developer.zendesk.com/api-reference"
+    },
+    {
+      "connector_key": "telegram_bot_api",
+      "connector_label": "Telegram Bot API",
+      "archetype": "messaging_gateway",
+      "maps_to_capability": "outbound_notification",
+      "is_inbound_trigger": true,
+      "detection_signals": [
+        "telegram",
+        "bot de telegram",
+        "canal telegram",
+        "mensajes por telegram",
+        "notificar por telegram",
+        "telegram bot"
+      ],
+      "use_case_hint": "Canal conversacional Telegram para recibir y responder mensajes de usuarios mediante un bot",
+      "env_vars": [
+        "TELEGRAM_BOT_TOKEN"
+      ],
+      "endpoint_pattern": "https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+      "webhook_endpoint_pattern": "POST /webhooks/telegram  (recepcion de updates del bot)",
+      "auth_scheme": "bot_token",
+      "integration_kind": "webhook_and_rest",
+      "risk_level": "low",
+      "has_side_effects": true,
+      "docs_url": "https://core.telegram.org/bots/api"
+    },
+    {
+      "connector_key": "slack_api",
+      "connector_label": "Slack Events API and Web API",
+      "archetype": "messaging_gateway",
+      "maps_to_capability": "outbound_notification",
+      "is_inbound_trigger": true,
+      "detection_signals": [
+        "slack",
+        "canal de slack",
+        "workspace de slack",
+        "notificar por slack",
+        "bot de slack",
+        "mensaje de slack",
+        "slack channel"
+      ],
+      "use_case_hint": "Enviar notificaciones o responder a usuarios en canales de Slack usando el Web API",
+      "env_vars": [
+        "SLACK_BOT_TOKEN",
+        "SLACK_SIGNING_SECRET",
+        "SLACK_APP_TOKEN"
+      ],
+      "endpoint_pattern": "https://slack.com/api/chat.postMessage",
+      "webhook_endpoint_pattern": "POST /webhooks/slack  (recepcion de eventos y comandos slash)",
+      "auth_scheme": "bearer",
+      "integration_kind": "webhook_and_rest",
+      "risk_level": "low",
+      "has_side_effects": true,
+      "docs_url": "https://api.slack.com/events"
+    },
+    {
+      "connector_key": "jira_api",
+      "connector_label": "Jira Cloud REST API (Issues y Projects)",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "jira",
+        "crear issue en jira",
+        "ticket de jira",
+        "jira cloud",
+        "jira service management",
+        "jira software",
+        "atlassian jira"
+      ],
+      "use_case_hint": "Crear y actualizar issues de desarrollo o soporte en Jira Cloud",
+      "env_vars": [
+        "JIRA_BASE_URL",
+        "JIRA_EMAIL",
+        "JIRA_API_TOKEN"
+      ],
+      "endpoint_pattern": "https://{JIRA_BASE_URL}.atlassian.net/rest/api/3/issue",
+      "auth_scheme": "basic",
+      "integration_kind": "rest_api",
+      "risk_level": "medium",
+      "has_side_effects": true,
+      "docs_url": "https://developer.atlassian.com/cloud/jira/platform/rest/v3/"
+    },
+    {
+      "connector_key": "supabase_api",
+      "connector_label": "Supabase / PostgreSQL Database Client",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "is_inbound_trigger": false,
+      "detection_signals": [
+        "supabase",
+        "postgres",
+        "postgresql",
+        "base de datos sql",
+        "consulta sql",
+        "mysql",
+        "neon",
+        "base de datos propia"
+      ],
+      "use_case_hint": "Consultar bases de datos PostgreSQL/Supabase como sistema de registro del agente",
+      "env_vars": [
+        "DATABASE_URL",
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_ROLE_KEY"
+      ],
+      "endpoint_pattern": "{SUPABASE_URL}/rest/v1/{table}",
+      "auth_scheme": "api_key",
+      "integration_kind": "rest_api",
+      "risk_level": "medium",
+      "has_side_effects": false,
+      "docs_url": "https://supabase.com/docs/reference/python/introduction"
+    }
+  ]
+}

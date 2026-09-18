@@ -4268,6 +4268,10 @@ class ToolRecommendationPreflight(ContractModel):
     design_tool_implications: list[str] = PydanticField(default_factory=list)
     design_memory_implications: list[str] = PydanticField(default_factory=list)
     missing_information: list[ToolRecommendationGap] = PydanticField(default_factory=list)
+    detected_connectors: list[dict[str, Any]] = PydanticField(
+        default_factory=list,
+        description="Conectores tecnologicos de tendencia detectados en el texto del contexto de negocio mediante el catalogo tool-connectors-catalog.v1.json.",
+    )
 
 
 class ToolRecommendationArtifact(ContractModel):

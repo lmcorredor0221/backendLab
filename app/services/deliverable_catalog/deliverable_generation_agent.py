@@ -52,7 +52,25 @@ def _deterministic_payload(
     guardrails = ctx.get("guardrails") if isinstance(ctx.get("guardrails"), list) else []
     tools = ctx.get("tools") if isinstance(ctx.get("tools"), list) else []
     tool_count = len(tools)
-    tool_names = ", ".join(t.get("name", "") for t in tools if isinstance(t, dict) and t.get("name")) if tools else "herramientas estándar"
+
+    def _tool_display_name(tool: dict) -> str:
+        """Devuelve el nombre enriquecido del tool, incluyendo el conector detectado si difiere del nombre generico."""
+        name = tool.get("name", "")
+        # Si el name ya es especifico (no es un arquetipo generico), lo usamos directamente
+        generic_archetypes = {
+            "read_system_of_record", "transactional_write", "outbound_notification",
+            "knowledge_retrieval", "document_ingestion", "approval_gate",
+            "human_handoff", "scheduler",
+        }
+        if name and name not in generic_archetypes:
+            return name
+        return name
+
+    tool_names = (
+        ", ".join(_tool_display_name(t) for t in tools if isinstance(t, dict) and t.get("name"))
+        if tools else "herramientas estandar"
+    )
+
     estimation = ctx.get("estimation_report") if isinstance(ctx.get("estimation_report"), dict) else {}
 
     if entry.deliverable_type == "diagram":

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
+import pathlib
 import re
 from uuid import UUID
+
 
 from app.models import (
     ApprovedToolDigestEntry,
@@ -149,17 +152,71 @@ TOOL_FAMILY_CATALOG: dict[str, dict[str, object]] = {
         "suggested_tool_keys": ["scheduler"],
         "estimated_complexity": "medium",
     },
+    "messaging_gateway": {
+        "label": "Gateway de mensajeria conversacional (Inbound/Outbound)",
+        "supported_capabilities": ["outbound_notification"],
+        "suggested_tool_keys": ["outbound_notification"],
+        "estimated_complexity": "medium",
+    },
 }
 
+# ─── Cargador del catálogo de conectores de tendencia ──────────────────────────
+
+_CONNECTOR_CATALOG_PATH = pathlib.Path(__file__).parent.parent.parent / "shared_specs" / "tool-connectors-catalog.v1.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_connector_catalog() -> list[dict]:
+    """Carga el catálogo de conectores de tendencia desde shared_specs/.
+
+    Usa lru_cache para evitar I/O repetida en cada request.
+    Se invalida con un restart del servidor (misma estrategia que registry_service).
+    Retorna lista vacía si el archivo no existe para mantener retrocompatibilidad.
+    """
+    if not _CONNECTOR_CATALOG_PATH.exists():
+        return []
+    with _CONNECTOR_CATALOG_PATH.open(encoding="utf-8-sig") as f:
+        data = json.load(f)
+    return data.get("connectors", [])
+
+
+
+def _detect_connectors_from_text(text: str) -> list[dict]:
+    """Detecta conectores específicos del catálogo de tendencia en el texto del negocio.
+
+    Itera el catálogo e intenta hacer coincidir cada señal de detección con el texto
+    normalizado. Las señales más largas tienen prioridad para evitar falsos positivos.
+    Retorna todos los conectores detectados (puede ser más de uno).
+    """
+    detected: list[dict] = []
+    seen_keys: set[str] = set()
+
+    for connector in _load_connector_catalog():
+        key = connector.get("connector_key", "")
+        if not key or key in seen_keys:
+            continue
+        signals: list[str] = connector.get("detection_signals", [])
+        # Ordenar por longitud descendente: señales más específicas primero
+        for signal in sorted(signals, key=len, reverse=True):
+            if signal in text:
+                detected.append(connector)
+                seen_keys.add(key)
+                break
+
+    return detected
+
 EXTERNAL_SOURCE_PATTERNS: dict[str, tuple[str, ...]] = {
-    "crm": ("crm", "salesforce", "hubspot"),
-    "erp": ("erp", "sap", "oracle"),
+    "crm": ("crm", "salesforce", "hubspot", "zoho crm", "hubspot crm"),
+    "erp": ("erp", "sap", "oracle", "odoo", "odoo erp"),
+    "odoo": ("odoo", "odoo crm", "odoo sales", "gestion odoo", "sistema odoo"),  # señal específica de Odoo
     "ticketing": ("ticket", "incidente", "mesa de ayuda", "service desk", "zendesk", "jira"),
-    "database": ("base de datos", "database", "sql", "postgres", "mysql"),
-    "api": ("api", "webhook", "endpoint"),
+    "database": ("base de datos", "database", "sql", "postgres", "mysql", "supabase", "neon"),
+    "api": ("api", "webhook", "endpoint", "rest api"),
     "portal": ("portal", "backoffice"),
     "email_inbox": ("correo", "email", "mailbox", "inbox"),
     "filesystem": ("archivo", "carpeta", "drive", "sharepoint", "documento"),
+    "spreadsheet": ("google sheets", "hoja de calculo", "planilla google", "gsheet"),  # nuevo
+    "payment": ("stripe", "mercadopago", "mercado pago", "cobro", "pago", "factura"),  # nuevo
 }
 
 NOTIFICATION_CHANNEL_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -167,8 +224,11 @@ NOTIFICATION_CHANNEL_PATTERNS: dict[str, tuple[str, ...]] = {
     "slack": ("slack",),
     "teams": ("teams", "microsoft teams"),
     "sms": ("sms", "mensaje de texto"),
+    "whatsapp": ("whatsapp", "whats app", "mensajes de whatsapp", "bot de whatsapp", "whatsapp business"),  # nuevo
+    "telegram": ("telegram", "bot de telegram", "canal telegram", "telegram bot"),  # nuevo
     "portal": ("portal", "bandeja"),
 }
+
 
 WRITE_ACTION_PATTERNS: dict[str, tuple[str, ...]] = {
     "update_record": ("actualizar", "update", "modificar", "registrar", "guardar"),
@@ -1245,6 +1305,31 @@ def build_placeholder_tool_recommendation(
             )
             _append_gap(needs_information, gap)
 
+    # ─── NUEVO: Registrar familia messaging_gateway para canales conversacionales ───
+    messaging_channels = [ch for ch in notification_channels if ch in {"whatsapp", "telegram"}]
+    if messaging_channels:
+        _register_family(
+            candidate_families,
+            family_key="messaging_gateway",
+            status="required",
+            reason=(
+                f"El workflow define '{', '.join(messaging_channels)}' como canal conversacional principal. "
+                "Se requiere un gateway de mensajeria bidireccional que gestione webhooks de entrada y mensajes de salida."
+            ),
+            matched_signals=messaging_channels,
+        )
+        _register_capability(
+            mandatory_capabilities,
+            capability_key="outbound_notification",
+            required=True,
+            reason=(
+                f"El canal conversacional '{', '.join(messaging_channels)}' requiere enviar respuestas al usuario "
+                "como parte del ciclo de conversacion del agente."
+            ),
+            source_evidence=["discovery.current_process", "discovery.desired_outcome", "canvas.user_goal"],
+            confidence=0.92,
+        )
+
     if has_handoff_signal or approval_boundaries:
         _register_family(
             candidate_families,
@@ -1434,6 +1519,9 @@ def build_placeholder_tool_recommendation(
         source_refs=normalized_sources,
     )
 
+    # Detectar conectores de tendencia del catálogo a partir del texto de negocio normalizado
+    detected_connectors = _detect_connectors_from_text(business_text)
+
     preflight = ToolRecommendationPreflight(
         case_classification=case_classification,
         agent_goal=_normalize_text(canvas.user_goal or discovery.desired_outcome or discovery.problem_statement),
@@ -1457,6 +1545,7 @@ def build_placeholder_tool_recommendation(
         design_tool_implications=design_tool_implications,
         design_memory_implications=design_memory_implications,
         missing_information=needs_information,
+        detected_connectors=detected_connectors,
     )
 
     selected_tool_keys = {item.tool_key for item in [*recommended_tools, *optional_tools]}
@@ -2301,22 +2390,58 @@ def _build_blueprint_tool_from_recommendation(
     write_inputs = artifact.preflight.required_write_actions or ["approved_action"]
     approval_inputs = artifact.preflight.approval_boundaries or ["approval_decision"]
 
+    # ─── Resolución de conector de tendencia ──────────────────────────────────────
+    # Busca el primer conector detectado que mapea a la capability de esta entrada.
+    # Si se encuentra, sus metadatos enriquecen nombre, endpoint, auth y env_vars del tool.
+    detected = artifact.preflight.detected_connectors or []
+
+    def _match_connector(maps_to_capability: str) -> dict | None:
+        for c in detected:
+            if c.get("maps_to_capability") == maps_to_capability:
+                return c
+        return None
+
+    def _connector_env_comment(connector: dict) -> str:
+        env_vars = connector.get("env_vars", [])
+        if not env_vars:
+            return ""
+        return f"Variables de entorno requeridas: {', '.join(env_vars)}. Docs: {connector.get('docs_url', '')}"
+
     if entry.tool_key == "read_system_of_record":
+        connector = _match_connector("read_system_of_record")
+        _tool_name = connector["connector_key"] if connector else "read_system_of_record"
+        _tool_purpose = (
+            f"Consultar {connector['connector_label']} para obtener datos del sistema de registro antes de decidir."
+            if connector
+            else entry.capability_covered or "Consultar la fuente operativa aprobada (CRM, ERP, DB) antes de responder o decidir."
+        )
+        _when_to_use = (
+            f"Invocar al inicio de cada turno de razonamiento para obtener el estado actualizado de {connector['connector_label']}."
+            if connector
+            else "Utilizar en la fase de ejecucion cuando el agente requiera consultar datos actualizados de clientes, transacciones o inventario desde un sistema externo antes de formular una decision."
+        )
+        _endpoint = connector.get("endpoint_pattern", "") if connector else seed.endpoint_reference or "integration://system-of-record/read"
+        _auth = f"workspace_secret:{connector['auth_scheme']}" if connector else seed.auth_reference or "workspace_managed_secret"
+        _integration = connector.get("integration_kind", "api") if connector else seed.integration_kind or "api"
+        _risk = connector.get("risk_level", "medium") if connector else seed.risk_level or "medium"
+        _env_comment = _connector_env_comment(connector) if connector else ""
+
         return BlueprintTool(
-            name="read_system_of_record",
-            purpose=entry.capability_covered or "Consultar la fuente operativa aprobada (CRM, ERP, DB) antes de responder o decidir.",
+            name=_tool_name,
+            purpose=_tool_purpose,
             owner=seed.owner or "system_owner_pending",
             archetype="read_only_lookup",
             tool_type="external",
             execution_stage="execution",
-            when_to_use="Utilizar en la fase de ejecucion cuando el agente requiera consultar datos actualizados de clientes, transacciones o inventario desde un sistema externo antes de formular una decision.",
-            integration_kind=seed.integration_kind or "api",
-            endpoint_reference=seed.endpoint_reference or "integration://system-of-record/read",
-            auth_reference=seed.auth_reference or "workspace_managed_secret",
-            risk_level=seed.risk_level or "medium",
+            when_to_use=_when_to_use,
+            integration_kind=_integration,
+            endpoint_reference=_endpoint,
+            auth_reference=_auth,
+            risk_level=_risk,
             requires_approval=False,
             inputs=read_inputs,
             outputs=["normalized_system_record"],
+
             request_schema={
                 "type": "object",
                 "properties": {
@@ -2355,12 +2480,13 @@ def _build_blueprint_tool_from_recommendation(
             retry_strategy="Retry exponencial corto (max 3 intentos) para fallas transitorias 5xx.",
             idempotency_strategy="Lectura idempotente por naturaleza.",
             compensation_strategy="No aplica por ser read-only.",
-            approval_reason="",
+            approval_reason=_env_comment,
             failure_mode="Declarar needs_review cuando la fuente operativa no responda o devuelva 404.",
             rate_limit_policy="Aplicar limite de 100 req/min por workspace.",
             timeout_policy="Timeout de 5000ms con fallback controlado.",
-            contract_review_state="needs-review",
+            contract_review_state="connector-detected" if connector else "needs-review",
         )
+
 
     if entry.tool_key == "approval_gate":
         return BlueprintTool(
@@ -2424,21 +2550,40 @@ def _build_blueprint_tool_from_recommendation(
         )
 
     if entry.tool_key == "transactional_write":
+        connector = _match_connector("transactional_write")
+        _tool_name = connector["connector_key"] if connector else "transactional_write"
+        _tool_purpose = (
+            f"Ejecutar operaciones de escritura sobre {connector['connector_label']} tras recibir aprobacion valida del gate de control."
+            if connector
+            else entry.capability_covered or "Ejecutar la accion operativa aprobada sobre el sistema objetivo."
+        )
+        _when_to_use = (
+            f"Utilizar unicamente cuando el agente tenga aprobacion valida para aplicar cambios en {connector['connector_label']}."
+            if connector
+            else "Utilizar unicamente cuando el agente tenga una aprobacion valida en el approval_gate para aplicar mutaciones, crear registros o modificar estados en el sistema externo."
+        )
+        _endpoint = connector.get("endpoint_pattern", "") if connector else seed.endpoint_reference or "integration://system-of-record/write"
+        _auth = f"workspace_secret:{connector['auth_scheme']}" if connector else seed.auth_reference or "workspace_managed_secret"
+        _integration = connector.get("integration_kind", "api") if connector else seed.integration_kind or "api"
+        _risk = connector.get("risk_level", "high") if connector else seed.risk_level or "high"
+        _env_comment = _connector_env_comment(connector) if connector else ""
+
         return BlueprintTool(
-            name="transactional_write",
-            purpose=entry.capability_covered or "Ejecutar la accion operativa aprobada sobre el sistema objetivo.",
+            name=_tool_name,
+            purpose=_tool_purpose,
             owner=seed.owner or "system_owner_pending",
             archetype="transactional_write",
             tool_type="external",
             execution_stage="execution",
-            when_to_use="Utilizar unicamente cuando el agente tenga una aprobacion valida en el approval_gate para aplicar mutaciones, crear registros o modificar estados en el sistema externo.",
-            integration_kind=seed.integration_kind or "api",
-            endpoint_reference=seed.endpoint_reference or "integration://system-of-record/write",
-            auth_reference=seed.auth_reference or "workspace_managed_secret",
-            risk_level=seed.risk_level or "high",
+            when_to_use=_when_to_use,
+            integration_kind=_integration,
+            endpoint_reference=_endpoint,
+            auth_reference=_auth,
+            risk_level=_risk,
             requires_approval=True,
             inputs=["approved_action", "approval_token", *write_inputs],
             outputs=["write_receipt", "updated_record_ref"],
+
             request_schema={
                 "type": "object",
                 "properties": {
@@ -2477,12 +2622,13 @@ def _build_blueprint_tool_from_recommendation(
             retry_strategy="Retry selectivo solo para errores transitorios 503 sin mutacion efectuada.",
             idempotency_strategy="Exigir idempotency_key estable por accion aprobada.",
             compensation_strategy="Aplicar rollback funcional o remediation guiada cuando exista fallo parcial.",
-            approval_reason="Tool obligatoria cuando el workflow requiere side effects aprobados.",
+            approval_reason=f"Tool obligatoria cuando el workflow requiere side effects aprobados.{' ' + _env_comment if _env_comment else ''}",
             failure_mode="Bloquear, registrar incidente y escalar si el write no confirma consistencia.",
             rate_limit_policy="Limitar a 20 mutaciones por minuto por workspace.",
             timeout_policy="Timeout de 10000ms con confirmacion explicita del estado final.",
-            contract_review_state="needs-review",
+            contract_review_state="connector-detected" if connector else "needs-review",
         )
+
 
     if entry.tool_key == "knowledge_retrieval":
         return BlueprintTool(
@@ -2614,21 +2760,43 @@ def _build_blueprint_tool_from_recommendation(
         )
 
     if entry.tool_key == "outbound_notification":
+        connector = _match_connector("outbound_notification")
+        _tool_name = connector["connector_key"] if connector else "outbound_notification"
+        _tool_purpose = (
+            f"Enviar mensajes y respuestas al usuario a traves de {connector['connector_label']}."
+            if connector
+            else entry.capability_covered or "Cerrar el loop operativo enviando notificaciones a canales externos (Slack, Email, Teams)."
+        )
+        _when_to_use = (
+            f"Invocar para responder al usuario final en {connector['connector_label']} tras completar el razonamiento o la accion aprobada."
+            if connector
+            else "Se utiliza al finalizar un flujo de trabajo o tras una aprobacion para enviar reportes, alertas o confirmaciones al usuario final o a un equipo en Slack/Email."
+        )
+        _endpoint = connector.get("endpoint_pattern", "") if connector else seed.endpoint_reference or "notification://approved-channel/send"
+        _auth = f"workspace_secret:{connector['auth_scheme']}" if connector else seed.auth_reference or "workspace_managed_secret"
+        _integration = connector.get("integration_kind", "api") if connector else seed.integration_kind or "api"
+        _risk = connector.get("risk_level", "medium") if connector else seed.risk_level or "medium"
+        _env_comment = _connector_env_comment(connector) if connector else ""
+        # Cuando el conector es un canal conversacional, también es inbound trigger
+        _is_inbound = connector.get("is_inbound_trigger", False) if connector else False
+        _channel_enum = connector.get("connector_key", "webhook") if connector else "webhook"
+
         return BlueprintTool(
-            name="outbound_notification",
-            purpose=entry.capability_covered or "Cerrar el loop operativo enviando notificaciones a canales externos (Slack, Email, Teams).",
+            name=_tool_name,
+            purpose=_tool_purpose,
             owner=seed.owner or "ops_owner_pending",
             archetype="notification",
             tool_type="external",
             execution_stage="execution",
-            when_to_use="Se utiliza al finalizar un flujo de trabajo o tras una aprobacion para enviar reportes, alertas o confirmaciones al usuario final o a un equipo en Slack/Email.",
-            integration_kind=seed.integration_kind or "api",
-            endpoint_reference=seed.endpoint_reference or "notification://approved-channel/send",
-            auth_reference=seed.auth_reference or "workspace_managed_secret",
-            risk_level=seed.risk_level or "medium",
+            when_to_use=_when_to_use,
+            integration_kind=_integration,
+            endpoint_reference=_endpoint,
+            auth_reference=_auth,
+            risk_level=_risk,
             requires_approval=False,
             inputs=["recipient_ref", "approved_message_template", "delivery_channel"],
             outputs=["delivery_receipt"],
+
             request_schema={
                 "type": "object",
                 "properties": {
@@ -2668,12 +2836,13 @@ def _build_blueprint_tool_from_recommendation(
             retry_strategy="Retry asincrono con circuit breaker por canal.",
             idempotency_strategy="Deduplicar mensajes por workflow_step y recipient_ref.",
             compensation_strategy="Evitar reenvios duplicados y escalar cuando el canal falle.",
-            approval_reason="",
+            approval_reason=_env_comment,
             failure_mode="Escalar a owner si la notificacion no se entrega en la ventana esperada.",
             rate_limit_policy="Aplicar limites de 60 msgs/min por canal.",
             timeout_policy="Timeout de 5000ms con confirmacion de entrega.",
-            contract_review_state="needs-review",
+            contract_review_state="connector-detected" if connector else "needs-review",
         )
+
 
     if entry.tool_key == "human_handoff":
         return BlueprintTool(

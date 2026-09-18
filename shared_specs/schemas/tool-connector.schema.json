@@ -1,0 +1,48 @@
+﻿{
+  "": "http://json-schema.org/draft-07/schema#",
+  "title": "ToolConnectorCatalog",
+  "type": "object",
+  "required": ["version", "description", "connectors"],
+  "properties": {
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "connectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "connector_key",
+          "connector_label",
+          "archetype",
+          "maps_to_capability",
+          "detection_signals",
+          "env_vars"
+        ],
+        "properties": {
+          "connector_key": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+          "connector_label": { "type": "string", "minLength": 3 },
+          "archetype": { "type": "string" },
+          "maps_to_capability": { "type": "string" },
+          "is_inbound_trigger": { "type": "boolean" },
+          "detection_signals": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "use_case_hint": { "type": "string" },
+          "env_vars": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "endpoint_pattern": { "type": "string" },
+          "webhook_endpoint_pattern": { "type": "string" },
+          "auth_scheme": { "type": "string" },
+          "integration_kind": { "type": "string" },
+          "risk_level": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+          "has_side_effects": { "type": "boolean" },
+          "docs_url": { "type": "string" }
+        }
+      }
+    }
+  }
+}
