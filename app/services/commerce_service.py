@@ -1388,7 +1388,15 @@ def create_checkout_session(
         )
     ).first()
     if existing is not None:
-        return serialize_checkout_response(db, existing)
+        if (
+            existing.status not in {CommercialOrderStatus.failed, CommercialOrderStatus.canceled}
+            and (bool(existing.checkout_url) or existing.status == CommercialOrderStatus.paid)
+        ):
+            return serialize_checkout_response(db, existing)
+        # Release the idempotency key of the failed/stale order so a fresh order can be created
+        existing.idempotency_key = f"{existing.idempotency_key}:discarded:{existing.id}"
+        db.add(existing)
+        db.flush()
 
     provider_key = resolve_checkout_provider_key_for_workspace(
         db,
