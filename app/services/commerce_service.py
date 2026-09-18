@@ -461,12 +461,17 @@ def get_price(db: Session, product_key: str, price_code: str = "") -> ProductPri
     return price
 
 
+def round_cop_currency_amount(cop_amount: float | int) -> int:
+    """Redondea el monto en COP al millar mas cercano (ej. 120.939 -> 121.000, 306.999 -> 307.000)."""
+    return int(round(float(cop_amount) / 1000.0) * 1000)
+
+
 def serialize_price(record: ProductPriceRecord) -> ProductPriceResponse:
     trm_info = get_today_trm_data()
     trm = trm_info["rate"]
     usd_cents = record.unit_amount_usd_cents if record.unit_amount_usd_cents > 0 else record.unit_amount_cents
     usd_val = usd_cents / 100.0
-    cop_val = round(usd_val * trm)
+    cop_val = round_cop_currency_amount(usd_val * trm)
 
     return ProductPriceResponse(
         price_code=record.price_code,
@@ -795,11 +800,16 @@ def _external_checkout_provider_candidates(
     for provider_key in priority:
         if provider_key not in supported:
             continue
-        key = (provider_key, _configured_environment_for_provider(provider_key))
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append(key)
+        configured_env = _configured_environment_for_provider(provider_key)
+        candidate_envs = [configured_env]
+        if configured_env != "production":
+            candidate_envs.append("production")
+        for env in candidate_envs:
+            key = (provider_key, env)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(key)
     return candidates
 
 

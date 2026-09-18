@@ -2062,3 +2062,126 @@ def test_sandbox_payment_credits_workspace_balance_from_package_code(db_session:
     assert payment.metadata_payload["package_credit"]["package_code"] == "bp-pack-3"
     assert payment.metadata_payload["package_credit"]["grants"][0]["units"] == 3
     assert order.metadata_payload["package_credit"]["grants"][0]["product_key"] == "blueprint_pro"
+
+
+def test_round_cop_currency_amount_rounds_to_nearest_thousand() -> None:
+    from app.services.commerce_service import round_cop_currency_amount
+
+    assert round_cop_currency_amount(120_939) == 121_000
+    assert round_cop_currency_amount(306_999) == 307_000
+    assert round_cop_currency_amount(122_917.47) == 123_000
+    assert round_cop_currency_amount(199_000) == 199_000
+    assert round_cop_currency_amount(120_100) == 120_000
+
+
+def test_mercadopago_rounds_cop_mapping_and_takes_production_mapping(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.payment_providers.mercadopago import _mercadopago_checkout_amount_cents
+    from app.models import CommerceProviderProductMappingRecord
+
+    user, workspace, record = _seed_checkout_context(db_session)
+    order = CommercialOrderRecord(
+        workspace_id=workspace.id,
+        session_id=record.id,
+        buyer_user_id=user.id,
+        status=CommercialOrderStatus.pending,
+        currency="COP",
+        subtotal_cents=12_093_900,
+        total_cents=12_093_900,
+        provider="mercadopago",
+        checkout_ref="mp_test_rounding",
+        idempotency_key="idemp_rounding",
+        metadata_payload={"package_code": "blueprint_pro_co"},
+    )
+    mapping = CommerceProviderProductMappingRecord(
+        workspace_id=workspace.id,
+        provider_key="mercadopago",
+        environment="production",
+        internal_product_key="blueprint_pro",
+        package_code="blueprint_pro_co",
+        billing_mode="one_time",
+        currency="COP",
+        internal_unit_amount_usd_cents=12_093_900,  # 120.939 COP
+    )
+
+    # El monto debe redondearse al millar mas cercano: 120.939 -> 121.000 COP (12.100.000 centavos)
+    amount_cents = _mercadopago_checkout_amount_cents(order=order, mapping=mapping)
+    assert amount_cents == 12_100_000
+
+
+def test_mercadopago_finalizes_with_production_mapping_when_sandbox_not_found(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform_admin, platform_workspace = _seed_platform_admin_workspace(db_session)
+    user, customer_workspace, record = _seed_checkout_context(db_session)
+
+    # Configurar credenciales y mapping en ambiente PRODUCTION exclusivamente
+    upsert_commerce_provider_credentials(
+        db_session,
+        workspace_id=platform_workspace.id,
+        provider_key="mercadopago",
+        payload=CommerceProviderCredentialUpsertRequest(
+            environment="production",
+            enabled=True,
+            api_base_url="https://api.mercadopago.test",
+            webhook_public_url="https://api.lean.test/api/v1/webhooks/mercadopago/url_secret/production",
+            secrets={
+                "secret_key": "APP_USR-prod-token",
+                "public_key": "APP_USR-prod-pubkey",
+                "webhook_signing_secret": "mp_whsec_prod",
+                "webhook_url_secret": "url_secret",
+            },
+        ),
+        actor_user_id=platform_admin.id,
+    )
+    upsert_commerce_provider_mapping(
+        db_session,
+        workspace_id=platform_workspace.id,
+        provider_key="mercadopago",
+        payload=CommerceProviderProductMappingUpsertRequest(
+            environment="production",
+            internal_product_key="blueprint_pro",
+            package_code="blueprint_pro_co",
+            billing_mode="one_time",
+            currency="COP",
+            internal_unit_amount_usd_cents=12_093_900,
+            provider_product_id="services",
+            provider_plan_id="ticket",
+            provider_price_id="credit_card",
+            provider_payment_link_id="amex",
+            provider_offer_ref="LEAN AGENT BUILDER",
+        ),
+    )
+    db_session.flush()
+
+    FakeMercadoPagoClient.create_calls = []
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+
+    # Con settings en sandbox por defecto, finalize_checkout debe promover a production
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            package_code="blueprint_pro_co",
+            provider="mercadopago",
+            idempotency_key=f"{record.id}:fallback-to-production-mapping",
+            success_url="https://example.test/success",
+            cancel_url="https://example.test/cancel",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+
+    order = db_session.get(CommercialOrderRecord, checkout.order_id)
+    assert order is not None
+    assert order.status == CommercialOrderStatus.pending
+    assert order.metadata_payload["mercadopago_environment"] == "production"
+    assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "APP_USR-prod-token"
+    # El monto enviado a Mercado Pago debe estar redondeado: 120.939 -> 121000.00
+    assert FakeMercadoPagoClient.create_calls[0]["payload"]["total_amount"] == "121000.00"
+

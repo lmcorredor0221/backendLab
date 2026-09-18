@@ -16,6 +16,7 @@ from app.services.commerce_provider_redaction import redact_payload
 from app.services.commerce_provider_scope import resolve_commerce_provider_configuration_workspace_id
 from app.services.commerce_provider_secrets import build_commerce_provider_status, load_commerce_provider_secret
 from app.services.commerce_provider_utils import normalize_commerce_provider_environment
+from app.services.commerce_service import get_today_trm_data, round_cop_currency_amount
 from app.services.mercadopago.client import MercadoPagoApiError, MercadoPagoClient, MercadoPagoClientConfig
 from app.services.payment_providers.base import (
     CheckoutProviderContext,
@@ -66,6 +67,17 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
             provider_key=self.provider_key,
             environment=environment,
         )
+        if not status.enabled and environment != "production":
+            prod_status = build_commerce_provider_status(
+                session,
+                workspace_id=configuration_workspace_id,
+                provider_key=self.provider_key,
+                environment="production",
+            )
+            if prod_status.enabled:
+                status = prod_status
+                environment = "production"
+
         if not status.enabled:
             raise ValueError("Mercado Pago provider is disabled for this workspace.")
         access_token = load_commerce_provider_secret(
@@ -75,6 +87,17 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
             environment=environment,
             secret_kind="secret_key",
         )
+        if not access_token and environment != "production":
+            prod_token = load_commerce_provider_secret(
+                session,
+                workspace_id=configuration_workspace_id,
+                provider_key=self.provider_key,
+                environment="production",
+                secret_kind="secret_key",
+            )
+            if prod_token:
+                access_token = prod_token
+                environment = "production"
         if not access_token:
             raise ValueError("Mercado Pago access token is not configured for this workspace.")
         if not status.webhook_public_url:
@@ -88,6 +111,18 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
             internal_product_key=context.product.product_key,
             package_code=package_code,
         )
+        if mapping is None and environment != "production":
+            prod_mapping = find_commerce_provider_mapping(
+                session,
+                workspace_id=configuration_workspace_id,
+                provider_key=self.provider_key,
+                environment="production",
+                internal_product_key=context.product.product_key,
+                package_code=package_code,
+            )
+            if prod_mapping is not None:
+                mapping = prod_mapping
+                environment = "production"
         if mapping is None:
             raise ValueError(
                 f"Mercado Pago product mapping is not configured for product {context.product.product_key}"
@@ -272,8 +307,22 @@ def _build_mercadopago_order_payload(
 
 def _mercadopago_checkout_amount_cents(*, order: CommercialOrderRecord, mapping) -> int:
     mapping_amount_cents = int(getattr(mapping, "internal_unit_amount_usd_cents", 0) or 0)
+    currency = (getattr(mapping, "currency", "") or order.currency or "COP").strip().upper()
     if mapping_amount_cents > 0:
+        if currency == "COP":
+            whole_cop = mapping_amount_cents // 100
+            rounded_cop = round_cop_currency_amount(whole_cop)
+            return rounded_cop * 100
         return mapping_amount_cents
+
+    package_code = str(order.metadata_payload.get("package_code") or "")
+    if currency == "COP" or package_code.endswith("_co"):
+        trm_info = get_today_trm_data()
+        trm_rate = float(trm_info.get("rate") or 3150.0)
+        usd_val = order.total_cents / 100.0
+        rounded_cop = round_cop_currency_amount(usd_val * trm_rate)
+        return rounded_cop * 100
+
     return max(0, order.total_cents)
 
 
