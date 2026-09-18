@@ -357,8 +357,9 @@ def _build_mercadopago_order_payload(
     order: CommercialOrderRecord,
     mapping,
 ) -> dict[str, object]:
+    currency = (getattr(mapping, "currency", "") or order.currency or "COP").strip().upper()
     amount_cents = _mercadopago_checkout_amount_cents(order=order, mapping=mapping)
-    amount = _amount_text_from_cents(amount_cents)
+    amount = _amount_text_from_cents(amount_cents, currency=currency)
     success_url = _checkout_return_url(context.success_url, context.base_url, f"/checkout/mercadopago/{order.checkout_ref}/success")
     failure_url = _checkout_return_url(context.cancel_url, context.base_url, f"/checkout/mercadopago/{order.checkout_ref}/cancel")
     pending_url = _checkout_return_url(context.cancel_url or context.success_url, context.base_url, f"/checkout/mercadopago/{order.checkout_ref}/pending")
@@ -368,7 +369,6 @@ def _build_mercadopago_order_payload(
         "description": _safe_mercadopago_text(context.product.description),
         "quantity": 1,
         "unit_price": amount,
-        "total_amount": amount,
     }
     raw_category = _safe_mercadopago_identifier(getattr(mapping, "provider_product_id", "") or "").lower()
     if raw_category in VALID_MERCADOPAGO_CATEGORIES:
@@ -436,8 +436,10 @@ def _mercadopago_checkout_amount_cents(*, order: CommercialOrderRecord, mapping)
     return max(0, order.total_cents)
 
 
-def _amount_text_from_cents(amount_cents: int) -> str:
+def _amount_text_from_cents(amount_cents: int, *, currency: str = "COP") -> str:
     whole, cents = divmod(max(0, int(amount_cents)), 100)
+    if currency.strip().upper() in {"COP", "CLP", "PYG"}:
+        return str(whole)
     return f"{whole}.{cents:02d}"
 
 

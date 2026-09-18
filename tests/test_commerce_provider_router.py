@@ -1331,7 +1331,7 @@ def test_mercadopago_checkout_provider_creates_order_with_provider_record(
     assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "TEST-mp-access-token"
     assert FakeMercadoPagoClient.create_calls[0]["idempotency_key"] == f"mercadopago:{order.id}:order"
     assert payload["type"] == "online"
-    assert payload["total_amount"] == "199000.00"
+    assert payload["total_amount"] == "199000"
     assert payload["external_reference"] == order.checkout_ref
     assert payload["processing_mode"] == "manual"
     assert payload["capture_mode"] == "automatic"
@@ -1353,7 +1353,7 @@ def test_mercadopago_checkout_provider_creates_order_with_provider_record(
     items = payload["items"]
     assert isinstance(items, list)
     assert items[0]["external_code"] == "blueprint_pro"
-    assert items[0]["unit_price"] == "199000.00"
+    assert items[0]["unit_price"] == "199000"
     assert items[0]["category_id"] == "services"
     assert "back_urls" not in payload
     assert "binary_mode" not in payload
@@ -1404,7 +1404,7 @@ def test_mercadopago_checkout_rejection_persists_diagnostic_record(
     assert checkout_record.status == "rejected"
     assert checkout_record.amount_cents == 19_900_000
     assert checkout_record.currency == "COP"
-    assert checkout_record.request_payload_redacted["total_amount"] == "199000.00"
+    assert checkout_record.request_payload_redacted["total_amount"] == "199000"
     assert checkout_record.response_payload_redacted["message"] == "invalid_amount"
     assert checkout_record.metadata_payload["mercadopago_http_status"] == 400
 
@@ -2182,8 +2182,8 @@ def test_mercadopago_finalizes_with_production_mapping_when_sandbox_not_found(
     assert order.status == CommercialOrderStatus.pending
     assert order.metadata_payload["mercadopago_environment"] == "production"
     assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "APP_USR-prod-token"
-    # El monto enviado a Mercado Pago debe estar redondeado: 120.939 -> 121000.00
-    assert FakeMercadoPagoClient.create_calls[0]["payload"]["total_amount"] == "121000.00"
+    # El monto enviado a Mercado Pago debe estar redondeado: 120.939 -> 121000
+    assert FakeMercadoPagoClient.create_calls[0]["payload"]["total_amount"] == "121000"
 
 
 def test_mercadopago_checkout_leanagentbuilder_production_auto_detects(
@@ -2222,7 +2222,5 @@ def test_mercadopago_checkout_leanagentbuilder_production_auto_detects(
     assert order.metadata_payload["mercadopago_environment"] == "production"
     assert FakeMercadoPagoClient.create_calls[0]["access_token"] == "APP_USR-live-token-123"
     amount_str = FakeMercadoPagoClient.create_calls[0]["payload"]["total_amount"]
-    assert amount_str.endswith("000.00")
+    assert amount_str.endswith("000")
     assert float(amount_str) >= 100_000.0
-
-
