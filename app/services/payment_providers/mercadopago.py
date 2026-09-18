@@ -314,14 +314,40 @@ class MercadoPagoPaymentProvider(TemplateCommercePaymentProvider):
 
 
 VALID_MERCADOPAGO_CATEGORIES = {
-    "art", "baby", "coupons", "donations", "computing", "video_games",
-    "services", "learnings", "other_services", "fashion", "games", "home",
-    "musical", "phones", "automotive", "books", "travel", "tickets",
+    "art",
+    "baby",
+    "coupons",
+    "donations",
+    "computing",
+    "cameras",
+    "video_games",
+    "television",
+    "car_electronics",
+    "electronics",
+    "automotive",
+    "entertainment",
+    "fashion",
+    "games",
+    "home",
+    "musical",
+    "phones",
+    "services",
+    "learnings",
+    "tickets",
+    "travels",
+    "virtual_goods",
+    "others",
 }
 
 VALID_MERCADOPAGO_PAYMENT_TYPES = {
-    "credit_card", "debit_card", "ticket", "bank_transfer", "atm",
-    "digital_currency", "prepaid_card", "account_money",
+    "credit_card",
+    "debit_card",
+    "ticket",
+    "bank_transfer",
+    "atm",
+    "digital_currency",
+    "prepaid_card",
+    "account_money",
 }
 
 
@@ -347,6 +373,8 @@ def _build_mercadopago_order_payload(
     raw_category = _safe_mercadopago_identifier(getattr(mapping, "provider_product_id", "") or "").lower()
     if raw_category in VALID_MERCADOPAGO_CATEGORIES:
         item["category_id"] = raw_category
+    else:
+        item["category_id"] = "virtual_goods"
     binary_mode = _metadata_bool(mapping.metadata_payload, "binary_mode")
     config: dict[str, object] = {
         "online": {
