@@ -1112,6 +1112,14 @@ def calculate_project_upgrade_discount_cents(
     return discount_cents, net_cents, True
 
 
+PUBLIC_CHECKOUT_REDIRECT_HOSTS = frozenset(
+    {
+        "leanagentbuilder.com",
+        "www.leanagentbuilder.com",
+    }
+)
+
+
 def validate_safe_redirect_url(url: str, base_url: str = "") -> str:
     if not url:
         return ""
@@ -1124,7 +1132,14 @@ def validate_safe_redirect_url(url: str, base_url: str = "") -> str:
             raise ValueError(f"Invalid redirect URL format: {cleaned}")
         if base_url:
             base_parsed = urlparse(base_url)
-            allowed_hosts = {base_parsed.netloc, base_parsed.hostname, "localhost", "127.0.0.1", "example.test"}
+            allowed_hosts = {
+                base_parsed.netloc,
+                base_parsed.hostname,
+                "localhost",
+                "127.0.0.1",
+                "example.test",
+                *PUBLIC_CHECKOUT_REDIRECT_HOSTS,
+            }
             allowed_hosts.discard(None)
             allowed_hosts.discard("")
             host = parsed.hostname or parsed.netloc

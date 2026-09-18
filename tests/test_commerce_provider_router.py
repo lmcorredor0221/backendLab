@@ -1805,6 +1805,34 @@ def test_checkout_rejects_open_redirect_urls(db_session: Session) -> None:
         )
 
 
+def test_checkout_accepts_public_lab_redirect_when_backend_base_url_is_local(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "commerce_checkout_provider", "sandbox")
+    user, _, record = _seed_checkout_context(db_session)
+    success_url = f"https://www.leanagentbuilder.com/projects/{record.id}/blueprint/pro"
+
+    checkout = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            success_url=success_url,
+            cancel_url=success_url,
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+
+    order = db_session.get(CommercialOrderRecord, checkout.order_id)
+    assert order is not None
+    assert order.metadata_payload["success_url"] == success_url
+    assert order.metadata_payload["cancel_url"] == success_url
+
+
 def test_checkout_enforces_idempotency(db_session: Session) -> None:
     user, _, record = _seed_checkout_context(db_session)
     idempotency_key = f"{record.id}:idempotent-checkout-test"
