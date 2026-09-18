@@ -103,8 +103,8 @@ def _create_hotmart_order(session: Session, record: SessionRecord, user: UserRec
         buyer_user_id=user.id,
         status=CommercialOrderStatus.pending,
         currency="USD",
-        subtotal_cents=4900,
-        total_cents=4900,
+        subtotal_cents=3900,
+        total_cents=3900,
         provider="hotmart",
         checkout_ref=f"hotmart_{uuid4().hex}",
         checkout_url="",
@@ -122,14 +122,14 @@ def _create_hotmart_order(session: Session, record: SessionRecord, user: UserRec
                 "price_code": "",
                 "price_version": "",
                 "provider": "hotmart",
-                "subtotal_cents": 4900,
+                "subtotal_cents": 3900,
                 "discount_cents": 0,
-                "total_cents": 4900,
-                "checkout_amount_cents": 4900,
+                "total_cents": 3900,
+                "checkout_amount_cents": 3900,
                 "checkout_currency": "USD",
-                "amount_usd_base_cents": 4900,
+                "amount_usd_base_cents": 3900,
                 "discount_usd_cents": 0,
-                "net_amount_usd_cents": 4900,
+                "net_amount_usd_cents": 3900,
                 "trm_cop_frozen": 4000.0,
                 "trm_effective_date": "",
                 "is_upgrade": False,
@@ -150,8 +150,8 @@ def _create_hotmart_order(session: Session, record: SessionRecord, user: UserRec
             product_key="blueprint_pro",
             price_code="",
             quantity=1,
-            unit_amount_cents=4900,
-            total_amount_cents=4900,
+            unit_amount_cents=3900,
+            total_amount_cents=3900,
             metadata_payload={},
         )
     )
@@ -565,7 +565,7 @@ def test_hotmart_payment_link_uses_frozen_snapshot_for_cop_checkout(db_session: 
             return httpx.Response(200, json={"access_token": "access-token-value", "expires_in": 3600})
         payload = json.loads(request.content.decode("utf-8"))
         assert payload["currency"] == "COP"
-        assert payload["value"] == 196000.0
+        assert payload["value"] == 156000.0
         return httpx.Response(201, json={"ucode": "pl-cop-123", "url": "https://pay.hotmart.test/pl-cop-123"})
 
     response = create_hotmart_payment_link_for_order(
@@ -581,4 +581,4 @@ def test_hotmart_payment_link_uses_frozen_snapshot_for_cop_checkout(db_session: 
     db_session.commit()
 
     assert response.currency == "COP"
-    assert response.net_amount_cents == 19600000
+    assert response.net_amount_cents == 15600000

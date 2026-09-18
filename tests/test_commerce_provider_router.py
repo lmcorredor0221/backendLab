@@ -254,9 +254,9 @@ def test_hotmart_checkout_auto_creates_payment_link_from_platform_scope(
             provider_ref="hm-provider-link-1",
             checkout_url="https://pay.hotmart.test/auto-link",
             activation_status="pending_activation",
-            gross_amount_cents=4900,
+            gross_amount_cents=3900,
             discount_amount_cents=0,
-            net_amount_cents=4900,
+            net_amount_cents=3900,
             currency="USD",
             discount_origin="none",
             created_at=utc_now(),
@@ -730,7 +730,7 @@ def test_payu_checkout_provider_creates_signed_webcheckout_redirect(
     assert checkout_record.metadata_payload["payu_checkout_gateway_url"] == "https://sandbox.checkout.payulatam.com/ppp-web-gateway-payu/"
     assert fields["merchantId"] == "508029"
     assert fields["accountId"] == "512321"
-    assert fields["amount"] == "49.00"
+    assert fields["amount"] == "39.00"
     assert fields["currency"] == "USD"
     assert fields["tax"] == "0"
     assert fields["taxReturnBase"] == "0"
@@ -746,7 +746,7 @@ def test_payu_checkout_provider_creates_signed_webcheckout_redirect(
         api_key="4Vj8eK4rloUd272L48hsrarnUA",
         merchant_id="508029",
         reference_code=fields["referenceCode"],
-        amount="49.00",
+        amount="39.00",
         currency="USD",
         payment_methods="VISA,MASTERCARD",
     )
@@ -828,7 +828,7 @@ def test_rapyd_checkout_provider_creates_hosted_checkout_with_provider_record(
     assert FakeRapydClient.create_calls[0]["api_base_url"] == "https://sandboxapi.rapyd.test"
     payload = FakeRapydClient.create_calls[0]["payload"]
     assert isinstance(payload, dict)
-    assert payload["amount"] == 49.0
+    assert payload["amount"] == 39.0
     assert payload["country"] == "CO"
     assert payload["currency"] == "USD"
     assert payload["merchant_reference_id"] == order.checkout_ref
@@ -936,7 +936,7 @@ def test_rapyd_checkout_uses_market_mapping_amount_and_currency(
     ).one()
     payload = FakeRapydClient.create_calls[0]["payload"]
     assert order.currency == "USD"
-    assert order.total_cents == 4900
+    assert order.total_cents == 3900
     assert payload["amount"] == 199000.0
     assert payload["country"] == "CO"
     assert payload["currency"] == "COP"
@@ -968,13 +968,13 @@ def test_payu_checkout_response_redirects_by_verified_browser_state(
     query = {
         "merchantId": "508029",
         "referenceCode": checkout_record.provider_checkout_id,
-        "TX_VALUE": "49.00",
+        "TX_VALUE": "39.00",
         "currency": "USD",
         "transactionState": "4",
         "lapTransactionState": "APPROVED",
     }
     query["signature"] = hashlib.md5(
-        f"4Vj8eK4rloUd272L48hsrarnUA~508029~{query['referenceCode']}~49.0~USD~4".encode("utf-8")
+        f"4Vj8eK4rloUd272L48hsrarnUA~508029~{query['referenceCode']}~39.0~USD~4".encode("utf-8")
     ).hexdigest()
 
     approved_redirect = resolve_payu_response_redirect(db_session, checkout_ref=checkout.checkout_ref, query_params=query)
@@ -1013,7 +1013,7 @@ def test_payu_confirmation_approved_payment_uses_common_fulfillment_and_dedupes(
     payload = {
         "merchant_id": "508029",
         "reference_sale": checkout_record.provider_checkout_id,
-        "value": "49.00",
+        "value": "39.00",
         "currency": "USD",
         "state_pol": "4",
         "reference_pol": "7069375",
@@ -1024,7 +1024,7 @@ def test_payu_confirmation_approved_payment_uses_common_fulfillment_and_dedupes(
         "extra3": str(workspace.id),
     }
     payload["sign"] = hashlib.md5(
-        f"4Vj8eK4rloUd272L48hsrarnUA~508029~{payload['reference_sale']}~49.0~USD~4".encode("utf-8")
+        f"4Vj8eK4rloUd272L48hsrarnUA~508029~{payload['reference_sale']}~39.0~USD~4".encode("utf-8")
     ).hexdigest()
     raw_body = urlencode(payload).encode("utf-8")
 
@@ -1083,7 +1083,7 @@ def test_payu_confirmation_rejects_invalid_signature(
     payload = {
         "merchant_id": "508029",
         "reference_sale": str(order.metadata_payload["payu_reference_code"]),
-        "value": "49.00",
+        "value": "39.00",
         "currency": "USD",
         "state_pol": "4",
         "transaction_id": "payu_txn_invalid",
@@ -1482,7 +1482,7 @@ def test_rapyd_webhook_payment_succeeded_uses_common_fulfillment_and_dedupes(
         "data": {
             "id": "payment_rapyd_123",
             "status": "CLO",
-            "amount": 49.0,
+            "amount": 39.0,
             "currency_code": "USD",
             "merchant_reference_id": order.checkout_ref,
             "metadata": {
@@ -1623,7 +1623,7 @@ def test_rebill_webhook_approved_payment_uses_common_fulfillment_and_dedupes(
         "data": {
             "id": "pay_rebill_123",
             "status": "approved",
-            "amount": 49.0,
+            "amount": 39.0,
             "currency": "USD",
             "metadata": {
                 "lab_order_id": str(order.id),

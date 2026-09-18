@@ -133,7 +133,7 @@ def test_complete_saas_journey_e2e(db_session: Session) -> None:
             event_key="payment_confirmed",
             source="commerce_webhook",
             tier=CommercialTier.blueprint_pro,
-            event_metadata={"product_key": "blueprint_pro", "amount_cents": 4900},
+            event_metadata={"product_key": "blueprint_pro", "amount_cents": 3900},
         )
     )
     db_session.commit()

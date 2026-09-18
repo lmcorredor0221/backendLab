@@ -28,8 +28,8 @@ def db_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[Session]:
 def test_base_prices_summary_uses_seeded_platform_prices(db_session: Session) -> None:
     response = commerce_service.get_base_prices_summary(db_session)
 
-    assert response.blueprint_pro_usd == 49.0
-    assert response.acp_premium_usd == 149.0
+    assert response.blueprint_pro_usd == 39.0
+    assert response.acp_premium_usd == 99.0
 
 
 def test_base_prices_summary_migrates_legacy_defaults(db_session: Session) -> None:
@@ -59,5 +59,5 @@ def test_base_prices_summary_migrates_legacy_defaults(db_session: Session) -> No
 
     response = commerce_service.get_base_prices_summary(db_session)
 
-    assert response.blueprint_pro_usd == 49.0
-    assert response.acp_premium_usd == 149.0
+    assert response.blueprint_pro_usd == 39.0
+    assert response.acp_premium_usd == 99.0

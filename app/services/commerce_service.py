@@ -243,16 +243,16 @@ PRICE_SEED: tuple[dict, ...] = (
         "product_key": "blueprint_pro",
         "price_code": "blueprint-pro-usd-v1",
         "currency": "USD",
-        "unit_amount_cents": 4900,
-        "unit_amount_usd_cents": 4900,
+        "unit_amount_cents": 3900,
+        "unit_amount_usd_cents": 3900,
         "billing_period": "one_time",
     },
     {
         "product_key": "acp",
         "price_code": "acp-premium-usd-v1",
         "currency": "USD",
-        "unit_amount_cents": 14900,
-        "unit_amount_usd_cents": 14900,
+        "unit_amount_cents": 9900,
+        "unit_amount_usd_cents": 9900,
         "billing_period": "one_time",
     },
 )
@@ -363,10 +363,10 @@ def ensure_commercial_seed(db: Session) -> None:
         if existing.unit_amount_usd_cents <= 0 and item["unit_amount_usd_cents"] > 0:
             existing.unit_amount_usd_cents = item["unit_amount_usd_cents"]
             existing.unit_amount_cents = item["unit_amount_cents"]
-        legacy_defaults = {"blueprint_pro": 6000, "acp": 22000}
+        legacy_defaults = {"blueprint_pro": {4900, 6000}, "acp": {14900, 22000}}
         if (
             item["product_key"] in legacy_defaults
-            and existing.unit_amount_usd_cents == legacy_defaults[item["product_key"]]
+            and existing.unit_amount_usd_cents in legacy_defaults[item["product_key"]]
         ):
             existing.unit_amount_usd_cents = item["unit_amount_usd_cents"]
             existing.unit_amount_cents = item["unit_amount_cents"]
@@ -486,8 +486,8 @@ def get_base_prices_summary(db: Session) -> BasePricesResponse:
     acp = get_price(db, "acp")
     trm_info = get_today_trm_data()
 
-    pro_val = (pro.unit_amount_usd_cents if pro.unit_amount_usd_cents > 0 else 4900) / 100.0
-    acp_val = (acp.unit_amount_usd_cents if acp.unit_amount_usd_cents > 0 else 14900) / 100.0
+    pro_val = (pro.unit_amount_usd_cents if pro.unit_amount_usd_cents > 0 else 3900) / 100.0
+    acp_val = (acp.unit_amount_usd_cents if acp.unit_amount_usd_cents > 0 else 9900) / 100.0
 
     return BasePricesResponse(
         blueprint_free_usd=0.0,
@@ -1100,12 +1100,12 @@ def calculate_project_upgrade_discount_cents(
 
     try:
         bp_price = get_price(db, "blueprint_pro")
-        bp_usd_cents = bp_price.unit_amount_usd_cents if bp_price.unit_amount_usd_cents > 0 else (bp_price.unit_amount_cents if bp_price.currency == "USD" else 4900)
+        bp_usd_cents = bp_price.unit_amount_usd_cents if bp_price.unit_amount_usd_cents > 0 else (bp_price.unit_amount_cents if bp_price.currency == "USD" else 3900)
     except Exception:
-        bp_usd_cents = 4900
+        bp_usd_cents = 3900
 
     if bp_usd_cents <= 0:
-        bp_usd_cents = 4900
+        bp_usd_cents = 3900
 
     discount_cents = min(bp_usd_cents, base_amount_cents)
     net_cents = max(0, base_amount_cents - discount_cents)
@@ -1744,6 +1744,11 @@ def create_access_request(
     )
     if provider_key:
         raise CheckoutAvailableForAccessRequestError(product_key=policy.product, provider_key=provider_key)
+    blocked_by_open_debt = has_open_commercial_debt(
+        db,
+        workspace_id=workspace_id,
+        product_key=policy.product,
+    )
     active_entitlement = db.exec(
         select(CommercialEntitlementRecord).where(
             CommercialEntitlementRecord.workspace_id == workspace_id,
@@ -1752,7 +1757,7 @@ def create_access_request(
             CommercialEntitlementRecord.status == CommercialEntitlementStatus.active,
         )
     ).first()
-    if active_entitlement is not None:
+    if active_entitlement is not None and not blocked_by_open_debt:
         latest_approved = db.exec(
             select(CommercialAccessRequestRecord).where(
                 CommercialAccessRequestRecord.workspace_id == workspace_id,
@@ -1764,16 +1769,16 @@ def create_access_request(
         if latest_approved is not None:
             return serialize_access_request(latest_approved)
 
+    existing_statuses = [CommercialAccessRequestStatus.pending]
+    if not blocked_by_open_debt:
+        existing_statuses.append(CommercialAccessRequestStatus.approved)
     existing = db.exec(
         select(CommercialAccessRequestRecord).where(
             CommercialAccessRequestRecord.workspace_id == workspace_id,
             CommercialAccessRequestRecord.session_id == request.session_id,
             CommercialAccessRequestRecord.requester_user_id == current_user.id,
             CommercialAccessRequestRecord.capability == request.capability,
-            CommercialAccessRequestRecord.status.in_([
-                CommercialAccessRequestStatus.pending,
-                CommercialAccessRequestStatus.approved,
-            ]),
+            CommercialAccessRequestRecord.status.in_(existing_statuses),
         ).order_by(CommercialAccessRequestRecord.created_at.desc())
     ).first()
     if existing is not None:
@@ -1848,6 +1853,11 @@ def request_access(
     )
     if provider_key:
         raise CheckoutAvailableForAccessRequestError(product_key=product_key, provider_key=provider_key)
+    blocked_by_open_debt = has_open_commercial_debt(
+        db,
+        workspace_id=record.workspace_id,
+        product_key=product_key,
+    )
     active_entitlement = db.exec(
         select(CommercialEntitlementRecord).where(
             CommercialEntitlementRecord.workspace_id == record.workspace_id,
@@ -1856,7 +1866,7 @@ def request_access(
             CommercialEntitlementRecord.status == CommercialEntitlementStatus.active,
         )
     ).first()
-    if active_entitlement is not None:
+    if active_entitlement is not None and not blocked_by_open_debt:
         latest_approved = db.exec(
             select(CommercialAccessRequestRecord).where(
                 CommercialAccessRequestRecord.workspace_id == record.workspace_id,
@@ -1868,16 +1878,16 @@ def request_access(
         if latest_approved is not None:
             return serialize_access_request(latest_approved)
 
+    existing_statuses = [CommercialAccessRequestStatus.pending]
+    if not blocked_by_open_debt:
+        existing_statuses.append(CommercialAccessRequestStatus.approved)
     existing = db.exec(
         select(CommercialAccessRequestRecord).where(
             CommercialAccessRequestRecord.workspace_id == record.workspace_id,
             CommercialAccessRequestRecord.session_id == record.id,
             CommercialAccessRequestRecord.requester_user_id == current_user.id,
             CommercialAccessRequestRecord.capability == payload.capability,
-            CommercialAccessRequestRecord.status.in_([
-                CommercialAccessRequestStatus.pending,
-                CommercialAccessRequestStatus.approved,
-            ]),
+            CommercialAccessRequestRecord.status.in_(existing_statuses),
         ).order_by(CommercialAccessRequestRecord.created_at.desc())
     ).first()
     if existing is not None:

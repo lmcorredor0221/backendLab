@@ -204,6 +204,7 @@ from app.services.operations_service import (
     record_estimation_artifact,
     record_export_artifact,
 )
+from app.services.project_title_service import generate_commercial_project_title
 from app.services.auth_service import get_current_user
 from app.services.builder_service import patch_blueprint
 from app.services.evaluation_workbench import (
@@ -1084,11 +1085,11 @@ def _sync_estimate_journey_after_generation(
     )
 
 
-def maybe_set_session_title(record: SessionRecord, discovery: DiscoveryArtifact) -> None:
+def maybe_set_session_title(record: SessionRecord, discovery: DiscoveryArtifact, *, language: str = "es") -> None:
     if not discovery.problem_statement:
         return
 
-    suggested_title = " ".join(discovery.problem_statement.strip().split())[:80]
+    suggested_title = generate_commercial_project_title(discovery.problem_statement, language=language)
     if not suggested_title:
         return
 
@@ -4563,7 +4564,7 @@ def normalize_discovery_route(
     )
 
     upsert_opportunity(db, session_id, envelope)
-    maybe_set_session_title(record, envelope.data)
+    maybe_set_session_title(record, envelope.data, language=current_user.preferred_language)
     touch_session(record, envelope.stage, envelope.status)
     write_skill_runs(
         db,
@@ -10214,7 +10215,7 @@ def rerun_skill_route(
             next_action="build_canvas" if not discovery_missing_fields else "collect_missing_fields",
         )
         upsert_opportunity(db, session_id, discovery_envelope)
-        maybe_set_session_title(record, next_discovery)
+        maybe_set_session_title(record, next_discovery, language=current_user.preferred_language)
         resulting_stage = discovery_envelope.stage
         resulting_status = discovery_envelope.status
         discovery = next_discovery

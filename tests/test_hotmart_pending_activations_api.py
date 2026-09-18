@@ -51,7 +51,7 @@ def _external_sale_payload(*, buyer_email: str) -> dict[str, object]:
             },
             "purchase": {
                 "transaction": "HP-API-901",
-                "price": {"value": 149.0, "currency_code": "USD"},
+                "price": {"value": 99.0, "currency_code": "USD"},
                 "product": {"id": "hm-prod-bundle", "ucode": "HMBUNDLE"},
                 "offer": {"code": "offer-bundle"},
                 "plan": {"code": "plan-bundle"},

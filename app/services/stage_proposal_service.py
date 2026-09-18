@@ -48,6 +48,7 @@ from app.models import (
 from app.services.llm_runtime.builder_contracts import DiscoveryAnalysisOutput, RequirementsDefinitionOutput
 from app.services.product_processing.policy import resolve_product_processing_mode
 from app.services.product_processing.contracts import ProductProcessingMode
+from app.services.project_title_service import generate_commercial_project_title
 from app.services.skill_runtime import validate_definition_artifact
 from app.services.estimation_calibration import persist_estimation_run
 from app.services.journey_stage_contract import get_journey_stage_boundary, list_journey_stage_boundaries
@@ -847,7 +848,7 @@ class StageProposalService:
             record.value_statement = artifact.value_statement
             record.updated_at = utc_now()
             session.add(record)
-            session_record.title = artifact.problem_statement[:80] or session_record.title
+            session_record.title = generate_commercial_project_title(artifact.problem_statement) or session_record.title
             return {
                 "projected_artifact": "opportunity",
                 **projection_meta,

@@ -490,8 +490,8 @@ def test_active_entitlement_keeps_access_allowed_despite_stale_pending_checkout(
         buyer_user_id=user.id,
         status=CommercialOrderStatus.pending,
         currency="USD",
-        subtotal_cents=4900,
-        total_cents=4900,
+        subtotal_cents=3900,
+        total_cents=3900,
         provider="hotmart",
         checkout_ref=f"hotmart_{record.id}",
         idempotency_key=f"stale-checkout:{record.id}",
@@ -504,8 +504,8 @@ def test_active_entitlement_keeps_access_allowed_despite_stale_pending_checkout(
             product_key="blueprint_pro",
             price_code="blueprint-pro-usd-v1",
             quantity=1,
-            unit_amount_cents=4900,
-            total_amount_cents=4900,
+            unit_amount_cents=3900,
+            total_amount_cents=3900,
         )
     )
     db_session.add(

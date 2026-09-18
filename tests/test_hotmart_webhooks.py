@@ -152,7 +152,7 @@ def _external_sale_payload(
     product_ucode: str = "HMBUNDLE",
     offer_code: str = "offer-bundle",
     plan_code: str = "plan-bundle",
-    amount_value: float = 149.0,
+    amount_value: float = 99.0,
     currency_code: str = "USD",
 ) -> dict[str, object]:
     return {

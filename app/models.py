@@ -6316,8 +6316,8 @@ class BasePricesUpdateRequest(ContractModel):
 class BasePricesResponse(ContractModel):
     contract_version: str = "base-prices.v1"
     blueprint_free_usd: float = 0.0
-    blueprint_pro_usd: float = 49.0
-    acp_premium_usd: float = 149.0
+    blueprint_pro_usd: float = 39.0
+    acp_premium_usd: float = 99.0
     trm_cop: float = 3171.93
     updated_at: datetime = PydanticField(default_factory=utc_now)
 
