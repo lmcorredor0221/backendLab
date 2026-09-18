@@ -2972,13 +2972,33 @@ def _entry_with_contract_seed(
     artifact: ToolRecommendationArtifact,
     entry: ToolRecommendationEntry,
 ) -> ToolRecommendationEntry:
-    if entry.contract_seed is not None or entry.tool_key not in CAPABILITY_CATALOG:
+    if entry.tool_key not in CAPABILITY_CATALOG and entry.contract_seed is not None:
         return entry
     try:
-        contract_seed = _build_blueprint_tool_from_recommendation(artifact=artifact, entry=entry)
+        contract_seed = entry.contract_seed or _build_blueprint_tool_from_recommendation(artifact=artifact, entry=entry)
     except ValueError:
         return entry
-    return entry.model_copy(update={"contract_seed": contract_seed})
+
+    updates: dict[str, Any] = {"contract_seed": contract_seed}
+
+    # Si el contract_seed fue enriquecido con un conector específico (ej. odoo_crm_api, whatsapp_cloud_api),
+    # actualizamos tool_label para que la UI del frontend muestre directamente la herramienta real.
+    generic_keys = {
+        "read_system_of_record", "transactional_write", "outbound_notification",
+        "knowledge_retrieval", "document_ingestion", "approval_gate",
+        "human_handoff", "scheduler",
+    }
+    if contract_seed.name and contract_seed.name not in generic_keys:
+        detected = artifact.preflight.detected_connectors or []
+        matching_connector = next((c for c in detected if c.get("connector_key") == contract_seed.name), None)
+        if matching_connector:
+            updates["tool_label"] = matching_connector.get("connector_label", contract_seed.name)
+        else:
+            updates["tool_label"] = contract_seed.name.replace("_", " ").title()
+
+    return entry.model_copy(update=updates)
+
+
 
 
 def _attach_recommendation_contract_seeds(
