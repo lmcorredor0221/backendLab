@@ -1065,13 +1065,14 @@
       ],
       "objective": "Modelar agentes, responsabilidades, handoffs y guardrails del runtime objetivo.",
       "semantic_rules": [
-        "Mostrar un orquestador o supervisor principal",
+        "Mostrar un orquestador o supervisor principal con etiqueta o tipo explicito (e.g. Supervisor, Orquestador o kind orchestrator)",
         "Mostrar al menos dos agentes, subagentes o capacidades ejecutoras",
         "Mostrar handoffs explicitos entre agentes",
         "Mostrar herramientas, conectores o tool calls",
         "Mostrar memoria, contexto, RAG o checkpoints",
         "Mostrar guardrails y human-in-the-loop cuando exista impacto operativo",
         "Mostrar fallback, reintento o escalamiento",
+        "Mostrar explicitamente el entregable o salida final del flujo (e.g. Salida, Entregable, Documento o Dossier)",
         "Evitar loops sin salida"
       ],
       "exclusions": [

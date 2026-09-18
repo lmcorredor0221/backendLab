@@ -10,7 +10,13 @@ from sqlalchemy.engine import Engine
 
 from app.db import engine
 from app.models import ArtifactRegistryRecord, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord, UserRecord, utc_now
-from app.services.diagram_center.contracts import DiagramGenerationInput, DiagramGenerationJobResponse, DiagramModel, DiagramNotation
+from app.services.diagram_center.contracts import (
+    DiagramGenerationInput,
+    DiagramGenerationJobResponse,
+    DiagramModel,
+    DiagramNotation,
+    StructuredDiagramModel,
+)
 from app.services.diagram_center.persistence import (
     DiagramGenerationJobRecord,
     DiagramGovernanceRecord,
@@ -18,6 +24,7 @@ from app.services.diagram_center.persistence import (
 )
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
 from app.services.diagram_center.renderer_service import RENDERER_REVISION, render_diagram
+from app.services.diagram_center.semantic_repair import repair_structured_diagram_model
 from app.services.llm_runtime.capability_registry import BuilderCapability
 from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
 from app.services.llm_runtime.stage_context_types import StageContextBundle
@@ -684,6 +691,12 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
             return
 
         try:
+            if isinstance(result.artifact, StructuredDiagramModel):
+                try:
+                    repaired_artifact, _ = repair_structured_diagram_model(result.artifact)
+                    result.artifact = repaired_artifact
+                except Exception:
+                    pass
             raw_model = result.artifact.model_dump(mode="json")
             existing_metadata = raw_model.get("metadata", {})
             if not isinstance(existing_metadata, dict):
@@ -730,6 +743,56 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
             return
 
         quality = evaluate_diagram_quality(model)
+        if not quality.valid:
+            critique_issues = " ".join(quality.errors)
+            critique_retry_count = int(job.request_metadata.get("critique_retry_count", 0))
+            if critique_retry_count < 1:
+                critique_feedback_rule = (
+                    f"CORRECCION OBLIGATORIA POR QUALITY GATE: El borrador anterior fue rechazado por: {critique_issues}. "
+                    "Regenera el diagrama corrigiendo estrictamente estos faltantes. "
+                    "Asegura un supervisor u orquestador principal explicito (kind='orchestrator' o label 'Supervisor'), "
+                    "al menos dos agentes, handoffs explicitos y el entregable o salida final (kind='output' o label 'Salida/Entregable')."
+                )
+                corrected_generation_input = generation_input.model_copy(
+                    update={
+                        "semantic_rules": [
+                            critique_feedback_rule,
+                            *generation_input.semantic_rules,
+                        ]
+                    }
+                )
+                retry_result = provider.generate_diagram_model(corrected_generation_input, context_bundle=stage_context)
+                if retry_result.artifact is not None:
+                    try:
+                        if isinstance(retry_result.artifact, StructuredDiagramModel):
+                            retry_repaired, _ = repair_structured_diagram_model(retry_result.artifact)
+                            retry_result.artifact = retry_repaired
+                        retry_raw = retry_result.artifact.model_dump(mode="json")
+                        retry_metadata = {**metadata, "critique_feedback": critique_issues}
+                        retry_raw.update(
+                            {
+                                "diagram_key": entry.key,
+                                "title": entry.title,
+                                "notation": effective_notation.value,
+                                "source_refs": list(dict.fromkeys([*retry_raw.get("source_refs", []), *source_refs])),
+                                "metadata": retry_metadata,
+                            }
+                        )
+                        retry_model = DiagramModel.model_validate(retry_raw)
+                        retry_quality = evaluate_diagram_quality(retry_model)
+                        if retry_quality.valid or retry_quality.score > quality.score:
+                            model = retry_model
+                            quality = retry_quality
+                            result = retry_result
+                            job.request_metadata = {
+                                **job.request_metadata,
+                                "critique_retry_count": critique_retry_count + 1,
+                                "critique_feedback": critique_issues,
+                                "critique_issues_resolved": retry_quality.valid,
+                            }
+                    except Exception:
+                        pass
+
         if not quality.valid:
             _fail_job(db, job, "quality_gate_failed", " ".join(quality.errors))
             return

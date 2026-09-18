@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.services.diagram_center.contracts import DiagramModel
+from app.services.diagram_center.contracts import DiagramModel, StructuredDiagramModel
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
+from app.services.diagram_center.semantic_repair import repair_structured_diagram_model
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "diagram_layout"
@@ -154,3 +155,91 @@ def test_agent_orchestration_quality_gate_accepts_complete_models() -> None:
     assert report.checks["agent_orchestration_has_hitl"] is True
     assert report.checks["agent_orchestration_has_output"] is True
     assert report.checks["agent_orchestration_has_fallback"] is True
+
+
+def test_agent_orchestration_semantic_repair_fixes_missing_orchestrator_and_output() -> None:
+    # Model that reproduces the production error: missing supervisor/orchestrator and missing output/deliverable
+    raw_unrepaired = StructuredDiagramModel(
+        diagram_key="agent_orchestration",
+        title="Orquestacion agentiva",
+        notation="flowchart",
+        nodes=[
+            {
+                "id": "triage_entry",
+                "label": "Triage Inicial y Validacion",
+                "kind": "agent",
+                "description": "Recibe peticion y analiza intencion.",
+                "source_refs": ["design:1"],
+            },
+            {
+                "id": "agent_execution",
+                "label": "Agente de Ejecucion",
+                "kind": "agent",
+                "description": "Ejecuta tareas operativas asignadas.",
+                "source_refs": ["design:1"],
+            },
+            {
+                "id": "agent_reviewer",
+                "label": "Agente Revisor",
+                "kind": "agent",
+                "description": "Verifica calidad del procesamiento.",
+                "source_refs": ["design:1"],
+            },
+            {
+                "id": "mem_rag",
+                "label": "Memoria RAG y Estado",
+                "kind": "memory",
+                "source_refs": ["memory:1"],
+            },
+            {
+                "id": "tool_mcp",
+                "label": "Herramientas MCP",
+                "kind": "tool",
+                "source_refs": ["tools:1"],
+            },
+            {
+                "id": "gate_hitl",
+                "label": "Gate de Aprobacion Humana HITL",
+                "kind": "guardrail_gate",
+                "source_refs": ["design:2"],
+            },
+            {
+                "id": "fallback_handler",
+                "label": "Manejador de Fallback y Escalamiento",
+                "kind": "fallback",
+                "source_refs": ["design:2"],
+            },
+        ],
+        edges=[
+            {"id": "e1", "source": "triage_entry", "target": "agent_execution", "kind": "relationship", "label": "delega tarea / handoff", "source_refs": ["design:1"]},
+            {"id": "e2", "source": "agent_execution", "target": "agent_reviewer", "kind": "relationship", "label": "envia para revision", "source_refs": ["design:1"]},
+            {"id": "e3", "source": "agent_execution", "target": "mem_rag", "kind": "checkpoint", "label": "consulta contexto", "source_refs": ["memory:1"]},
+            {"id": "e4", "source": "agent_execution", "target": "tool_mcp", "kind": "tool_call", "label": "invoca api", "source_refs": ["tools:1"]},
+            {"id": "e5", "source": "agent_reviewer", "target": "gate_hitl", "kind": "decision", "label": "evalua seguridad", "source_refs": ["design:2"]},
+            {"id": "e6", "source": "gate_hitl", "target": "fallback_handler", "kind": "escalation", "label": "en caso de error", "source_refs": ["design:2"]},
+        ],
+        source_refs=["design:1", "memory:1", "tools:1", "design:2"],
+    )
+
+    # 1) Without repair, quality gate fails with the exact production error
+    unrepaired_dm = DiagramModel.model_validate(raw_unrepaired.model_dump(mode="json"))
+    initial_report = evaluate_diagram_quality(unrepaired_dm)
+    assert initial_report.valid is False
+    assert initial_report.checks["agent_orchestration_has_orchestrator"] is False
+    assert initial_report.checks["agent_orchestration_has_output"] is False
+    assert any("Orquestacion agentiva incompleta: falta orquestador/supervisor, salida o entregable" in err for err in initial_report.errors)
+
+    # 2) With semantic repair applied, missing elements are corrected automatically
+    repaired_model, repairs = repair_structured_diagram_model(raw_unrepaired)
+    assert len(repairs) >= 2
+
+    # 3) Repaired model passes the Quality Gate with flying colors
+    repaired_dm = DiagramModel.model_validate(repaired_model.model_dump(mode="json"))
+    repaired_report = evaluate_diagram_quality(repaired_dm)
+    assert repaired_report.valid is True
+    assert repaired_report.score >= 90
+    assert repaired_report.checks["agent_orchestration_has_orchestrator"] is True
+    assert repaired_report.checks["agent_orchestration_has_output"] is True
+    assert repaired_report.checks["agent_orchestration_has_multiple_agents"] is True
+    assert repaired_report.checks["agent_orchestration_has_handoffs"] is True
+

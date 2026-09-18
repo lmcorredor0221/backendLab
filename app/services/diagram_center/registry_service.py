@@ -271,6 +271,8 @@ def build_prompt_spec(entry: DiagramRegistryEntry, *, override: dict[str, Any] |
         semantic_rules.extend(
             [
                 "Diferenciar explicitamente agentes orquestadores, trabajadores, evaluadores y guardrails usando `kind` o `metadata.agent_kind`.",
+                "Incluir obligatoriamente un orquestador o supervisor principal etiquetado como 'Supervisor' u 'Orquestador' (o kind 'orchestrator').",
+                "Incluir obligatoriamente un nodo o entregable de salida final etiquetado como 'Salida', 'Entregable', 'Resultado' o 'Documento' (o kind 'output').",
                 "Representar patrones de razonamiento (Plan-and-Execute, ReAct, ToT, HTN) mostrando la secuencia formal de pensamiento, planificacion, ejecucion y retroalimentacion.",
                 "Diferenciar los tipos de memoria: Working Memory (buffer volatil), Vector Store (RAG/Embeddings) y Shared State KV usando `kind` o `metadata.memory_kind`.",
                 "Representar conectores de herramientas etiquetando explicitamente servidores MCP, herramientas internas y Approval Gates (Human-in-the-Loop).",
