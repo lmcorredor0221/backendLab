@@ -1178,6 +1178,15 @@ def _compact_tool_recommendation_case_payload(prompt_input: ToolRecommendationPr
             }
             for item in prompt_input.existing_gaps[:6]
         ],
+        "detected_ecosystem_platforms": [
+            {
+                "connector_key": c.get("connector_key", ""),
+                "connector_label": c.get("connector_label", ""),
+                "categories": c.get("categories", []),
+                "use_case_hint": _compact_text(c.get("use_case_hint", ""), limit=160),
+            }
+            for c in prompt_input.detected_connectors[:8]
+        ],
         "compact_evidence": _compact_string_list(list(prompt_input.compact_evidence), limit=8, item_limit=160),
     }
 

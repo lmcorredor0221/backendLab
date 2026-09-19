@@ -198,7 +198,7 @@ def _detect_connectors_from_text(text: str) -> list[dict]:
         signals: list[str] = connector.get("detection_signals", [])
         # Ordenar por longitud descendente: señales más específicas primero
         for signal in sorted(signals, key=len, reverse=True):
-            if signal in text:
+            if re.search(r"\b" + re.escape(signal) + r"\b", text, flags=re.IGNORECASE):
                 detected.append(connector)
                 seen_keys.add(key)
                 break
@@ -206,17 +206,19 @@ def _detect_connectors_from_text(text: str) -> list[dict]:
     return detected
 
 EXTERNAL_SOURCE_PATTERNS: dict[str, tuple[str, ...]] = {
-    "crm": ("crm", "salesforce", "hubspot", "zoho crm", "hubspot crm"),
-    "erp": ("erp", "sap", "oracle", "odoo", "odoo erp"),
-    "odoo": ("odoo", "odoo crm", "odoo sales", "gestion odoo", "sistema odoo"),  # señal específica de Odoo
-    "ticketing": ("ticket", "incidente", "mesa de ayuda", "service desk", "zendesk", "jira"),
+    "crm": ("crm", "salesforce", "hubspot", "zoho crm", "hubspot crm", "odoo crm", "odoo", "pipedrive", "dynamics sales", "leads", "flujos del crm"),
+    "erp": ("erp", "sap", "oracle", "odoo", "odoo erp", "netsuite", "business central", "dynamics", "siigo", "alegra", "quickbooks", "inventario", "facturacion", "gestion odoo"),
+    "odoo": ("odoo", "odoo crm", "odoo erp", "odoo sales", "gestion odoo", "sistema odoo", "flujos del crm de odoo", "modulo odoo"),
+    "itsm": ("servicenow", "service now", "jira service management", "jsm", "freshservice", "itsm", "cmdb", "incidente ti", "mesa de ayuda ti", "cambio ti"),
+    "service_desk": ("zendesk", "freshdesk", "zoho desk", "help desk", "ticket", "incidente", "mesa de ayuda", "service desk"),
+    "ticketing": ("ticket", "incidente", "mesa de ayuda", "service desk", "zendesk", "jira", "freshdesk", "servicenow"),
     "database": ("base de datos", "database", "sql", "postgres", "mysql", "supabase", "neon"),
-    "api": ("api", "webhook", "endpoint", "rest api"),
+    "api": ("api", "webhook", "endpoint", "rest api", "jsonrpc", "xmlrpc"),
     "portal": ("portal", "backoffice"),
     "email_inbox": ("correo", "email", "mailbox", "inbox"),
     "filesystem": ("archivo", "carpeta", "drive", "sharepoint", "documento"),
-    "spreadsheet": ("google sheets", "hoja de calculo", "planilla google", "gsheet"),  # nuevo
-    "payment": ("stripe", "mercadopago", "mercado pago", "cobro", "pago", "factura"),  # nuevo
+    "spreadsheet": ("google sheets", "hoja de calculo", "planilla google", "gsheet", "excel google"),
+    "payment": ("stripe", "mercadopago", "mercado pago", "cobro", "pago", "factura", "facturacion electronica"),
 }
 
 NOTIFICATION_CHANNEL_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -2439,6 +2441,8 @@ def _build_blueprint_tool_from_recommendation(
             auth_reference=_auth,
             risk_level=_risk,
             requires_approval=False,
+            categories=list(connector.get("categories", [])) if connector else [],
+            connector_key=connector.get("connector_key") if connector else None,
             inputs=read_inputs,
             outputs=["normalized_system_record"],
 
@@ -2581,6 +2585,8 @@ def _build_blueprint_tool_from_recommendation(
             auth_reference=_auth,
             risk_level=_risk,
             requires_approval=True,
+            categories=list(connector.get("categories", [])) if connector else [],
+            connector_key=connector.get("connector_key") if connector else None,
             inputs=["approved_action", "approval_token", *write_inputs],
             outputs=["write_receipt", "updated_record_ref"],
 
@@ -2631,19 +2637,39 @@ def _build_blueprint_tool_from_recommendation(
 
 
     if entry.tool_key == "knowledge_retrieval":
+        connector = _match_connector("knowledge_retrieval")
+        _tool_name = connector["connector_key"] if connector else "knowledge_retrieval"
+        _tool_purpose = (
+            f"Recuperar conocimiento aprobado desde {connector['connector_label']} para grounding y respuestas trazables."
+            if connector
+            else entry.capability_covered or "Recuperar conocimiento aprobado para grounding y respuestas trazables."
+        )
+        _when_to_use = (
+            f"Invocada durante el razonamiento cuando el agente requiere consultar documentos, manuales o wikis en {connector['connector_label']}."
+            if connector
+            else "Invocada durante el razonamiento o respuesta conversacional cuando el agente requiere evidencia fáctica de manuales, normativas o documentos aprobados."
+        )
+        _endpoint = connector.get("endpoint_pattern", "") if connector else seed.endpoint_reference or "knowledge://approved-retrieval/query"
+        _auth = f"workspace_secret:{connector['auth_scheme']}" if connector else seed.auth_reference or "workspace_managed_secret"
+        _integration = connector.get("integration_kind", "retrieval") if connector else seed.integration_kind or "retrieval"
+        _risk = connector.get("risk_level", "low") if connector else seed.risk_level or "low"
+        _env_comment = _connector_env_comment(connector) if connector else ""
+
         return BlueprintTool(
-            name="knowledge_retrieval",
-            purpose=entry.capability_covered or "Recuperar conocimiento aprobado para grounding y respuestas trazables.",
+            name=_tool_name,
+            purpose=_tool_purpose,
             owner=seed.owner or "knowledge_owner_pending",
             archetype="knowledge_retrieval",
-            tool_type="internal",
+            tool_type="external" if connector else "internal",
             execution_stage="discovery",
-            when_to_use="Invocada durante el razonamiento o respuesta conversacional cuando el agente requiere evidencia fáctica de manuales, normativas o documentos aprobados.",
-            integration_kind=seed.integration_kind or "retrieval",
-            endpoint_reference=seed.endpoint_reference or "knowledge://approved-retrieval/query",
-            auth_reference=seed.auth_reference or "workspace_managed_secret",
-            risk_level=seed.risk_level or "medium",
+            when_to_use=_when_to_use,
+            integration_kind=_integration,
+            endpoint_reference=_endpoint,
+            auth_reference=_auth,
+            risk_level=_risk,
             requires_approval=False,
+            categories=list(connector.get("categories", [])) if connector else [],
+            connector_key=connector.get("connector_key") if connector else None,
             inputs=["question", "approved_source_filters"],
             outputs=["grounded_answer_context", "citations_bundle"],
             request_schema={
@@ -2692,27 +2718,47 @@ def _build_blueprint_tool_from_recommendation(
             retry_strategy="Retry corto solo para fallas transitorias del retrieval.",
             idempotency_strategy="Consultas deterministicas sobre filtros aprobados.",
             compensation_strategy="No aplica; responder falta de evidencia cuando no exista grounding.",
-            approval_reason="",
+            approval_reason=_env_comment,
             failure_mode="Declarar needs_review si no hay evidencia suficiente o las fuentes fallan.",
             rate_limit_policy="Sin limite directo dentro del runtime interno.",
             timeout_policy="Timeout de 3000ms con fallback a falta de evidencia.",
-            contract_review_state="needs-review",
+            contract_review_state="connector-detected" if connector else "needs-review",
         )
 
     if entry.tool_key == "document_ingestion":
+        connector = _match_connector("document_ingestion")
+        _tool_name = connector["connector_key"] if connector else "document_ingestion"
+        _tool_purpose = (
+            f"Sincronizar y cargar documentos en {connector['connector_label']} para alimentar el índice de conocimiento."
+            if connector
+            else entry.capability_covered or "Preparar y refrescar fuentes documentales aprobadas para retrieval consistente."
+        )
+        _when_to_use = (
+            f"Utilizada en la fase de administración cuando se cargan nuevos archivos o se sincroniza una carpeta de {connector['connector_label']}."
+            if connector
+            else "Utilizada en la fase de administracion del conocimiento cuando se cargan nuevos archivos o se sincroniza una carpeta de SharePoint / Google Drive."
+        )
+        _endpoint = connector.get("endpoint_pattern", "") if connector else seed.endpoint_reference or "knowledge://approved-ingestion/refresh"
+        _auth = f"workspace_secret:{connector['auth_scheme']}" if connector else seed.auth_reference or "workspace_managed_secret"
+        _integration = connector.get("integration_kind", "pipeline") if connector else seed.integration_kind or "pipeline"
+        _risk = connector.get("risk_level", "medium") if connector else seed.risk_level or "medium"
+        _env_comment = _connector_env_comment(connector) if connector else ""
+
         return BlueprintTool(
-            name="document_ingestion",
-            purpose=entry.capability_covered or "Preparar y refrescar fuentes documentales aprobadas para retrieval consistente.",
+            name=_tool_name,
+            purpose=_tool_purpose,
             owner=seed.owner or "knowledge_owner_pending",
             archetype="document_ingestion",
             tool_type="external",
             execution_stage="tools",
-            when_to_use="Utilizada en la fase de administracion del conocimiento cuando se cargan nuevos archivos o se sincroniza una carpeta de SharePoint / Google Drive.",
-            integration_kind=seed.integration_kind or "pipeline",
-            endpoint_reference=seed.endpoint_reference or "knowledge://approved-ingestion/refresh",
-            auth_reference=seed.auth_reference or "workspace_managed_secret",
-            risk_level=seed.risk_level or "medium",
+            when_to_use=_when_to_use,
+            integration_kind=_integration,
+            endpoint_reference=_endpoint,
+            auth_reference=_auth,
+            risk_level=_risk,
             requires_approval=False,
+            categories=list(connector.get("categories", [])) if connector else [],
+            connector_key=connector.get("connector_key") if connector else None,
             inputs=["approved_documents", "ingestion_policy"],
             outputs=["ingestion_report", "indexed_source_refs"],
             request_schema={
@@ -2794,6 +2840,8 @@ def _build_blueprint_tool_from_recommendation(
             auth_reference=_auth,
             risk_level=_risk,
             requires_approval=False,
+            categories=list(connector.get("categories", [])) if connector else [],
+            connector_key=connector.get("connector_key") if connector else None,
             inputs=["recipient_ref", "approved_message_template", "delivery_channel"],
             outputs=["delivery_receipt"],
 
@@ -2988,6 +3036,7 @@ def _entry_with_contract_seed(
         "knowledge_retrieval", "document_ingestion", "approval_gate",
         "human_handoff", "scheduler",
     }
+    matching_connector = None
     if contract_seed.name and contract_seed.name not in generic_keys:
         detected = artifact.preflight.detected_connectors or []
         matching_connector = next((c for c in detected if c.get("connector_key") == contract_seed.name), None)
@@ -2995,6 +3044,37 @@ def _entry_with_contract_seed(
             updates["tool_label"] = matching_connector.get("connector_label", contract_seed.name)
         else:
             updates["tool_label"] = contract_seed.name.replace("_", " ").title()
+    elif contract_seed.connector_key:
+        detected = artifact.preflight.detected_connectors or []
+        matching_connector = next((c for c in detected if c.get("connector_key") == contract_seed.connector_key), None)
+
+    # Propagar categorías multi-etiqueta no excluyentes
+    if matching_connector and matching_connector.get("categories"):
+        updates["categories"] = list(matching_connector["categories"])
+    elif contract_seed.categories:
+        updates["categories"] = list(contract_seed.categories)
+
+    # Extraer y propagar señales de detección del contexto del caso
+    if matching_connector:
+        full_text = (
+            f"{artifact.generation_instructions} "
+            f"{artifact.preflight.agent_goal or ''} "
+            f"{artifact.context_digest.workflow_summary or ''}"
+        ).lower()
+        matched_signals = [
+            sig for sig in matching_connector.get("detection_signals", [])
+            if re.search(r"\b" + re.escape(sig) + r"\b", full_text, flags=re.IGNORECASE)
+        ]
+        updates["detected_source_signals"] = matched_signals[:4]
+
+        # Rationale claro y contextual para la UI
+        cats = [c.upper() for c in matching_connector.get("categories", [])]
+        cats_label = f"[{' · '.join(cats)}] " if cats else ""
+        hint = matching_connector.get("use_case_hint", "")
+        if hint:
+            updates["decision_reason"] = (
+                f"{cats_label}Identificada para resolver la necesidad del proyecto: {hint}."
+            )
 
     return entry.model_copy(update=updates)
 
@@ -3578,6 +3658,7 @@ def build_tool_recommendation_prompt_input(artifact: ToolRecommendationArtifact)
         design_memory_implications=list(artifact.preflight.design_memory_implications),
         existing_gaps=list(artifact.needs_information),
         compact_evidence=compact_evidence,
+        detected_connectors=list(artifact.preflight.detected_connectors or []),
     )
 
 

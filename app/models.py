@@ -3238,6 +3238,8 @@ class BlueprintTool(ContractModel):
     auth_reference: str = ""
     risk_level: str = ""
     requires_approval: bool = False
+    categories: list[str] = PydanticField(default_factory=list)
+    connector_key: str | None = None
     inputs: list[str] = PydanticField(default_factory=list)
     outputs: list[str] = PydanticField(default_factory=list)
     request_schema: dict[str, Any] = PydanticField(default_factory=dict)
@@ -3983,6 +3985,8 @@ class ToolRecommendationEntry(ContractModel):
     incompatibilities: list[str] = PydanticField(default_factory=list)
     redundant_with: list[str] = PydanticField(default_factory=list)
     confidence: float = 0.0
+    categories: list[str] = PydanticField(default_factory=list)
+    detected_source_signals: list[str] = PydanticField(default_factory=list)
     contract_seed: BlueprintTool | None = None
 
 
@@ -4139,6 +4143,7 @@ class ToolRecommendationPromptInput(ContractModel):
     design_memory_implications: list[str] = PydanticField(default_factory=list)
     existing_gaps: list[ToolRecommendationGap] = PydanticField(default_factory=list)
     compact_evidence: list[str] = PydanticField(default_factory=list)
+    detected_connectors: list[dict[str, Any]] = PydanticField(default_factory=list)
 
 
 class ToolRecommendationLLMDecision(ContractModel):
