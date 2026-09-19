@@ -399,6 +399,51 @@ def test_stage_operation_current_recovers_stale_active_operation_with_retry(clie
     assert payload["error_message"] == "Stage operation heartbeat expired before completion."
 
 
+def test_estimate_stage_operation_recovers_when_effective_heartbeat_ttl_expires(client: TestClient) -> None:
+    headers = auth_headers(client)
+    session_id = create_session(client, headers)
+    db, session_generator = db_session_from_client(client)
+    try:
+        record = db.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        now = utc_now()
+        operation = StageOperationRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=record.user_id,
+            stage_key="estimate",
+            action="generate_estimation_report",
+            idempotency_key="stale-estimate",
+            attempt_count=1,
+            status=StageOperationStatus.running,
+            current_step="analysis",
+            detail="Calculando esfuerzo, riesgo, ROI y politica de avance al paquete.",
+            request_payload={},
+            steps=[],
+            heartbeat_at=now - timedelta(minutes=9),
+            # Legacy rows may still have the old 30-minute expiry persisted.
+            expires_at=now + timedelta(minutes=21),
+        )
+        db.add(operation)
+        db.commit()
+        db.refresh(operation)
+        operation_id = str(operation.id)
+    finally:
+        session_generator.close()
+
+    current = client.get(
+        f"/api/v1/sessions/{session_id}/stage-operations/current?stage_key=estimate&action=generate_estimation_report",
+        headers=headers,
+    )
+
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["id"] == operation_id
+    assert payload["status"] == "failed"
+    assert payload["can_retry"] is True
+    assert payload["technical_detail"] == "stage_operation_stale"
+
+
 def test_stage_operation_with_missing_information_waits_for_user(client: TestClient) -> None:
     headers = auth_headers(client)
     session_id = create_session(client, headers)

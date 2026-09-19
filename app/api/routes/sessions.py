@@ -407,6 +407,9 @@ class StageOperationResponse(BaseModel):
 
 
 STAGE_OPERATION_HEARTBEAT_TTL = timedelta(minutes=30)
+STAGE_OPERATION_HEARTBEAT_TTL_BY_ACTION = {
+    "generate_estimation_report": timedelta(minutes=8),
+}
 STAGE_OPERATION_ACTIVE_STATUSES = {
     StageOperationStatus.queued,
     StageOperationStatus.running,
@@ -5342,8 +5345,24 @@ class StageOperationCancelled(RuntimeError):
     """Raised when a queued or checkpointed operation was cooperatively cancelled."""
 
 
-def _operation_expires_at(now: datetime) -> datetime:
-    return now + STAGE_OPERATION_HEARTBEAT_TTL
+def _operation_heartbeat_ttl(action: str | None = None) -> timedelta:
+    return STAGE_OPERATION_HEARTBEAT_TTL_BY_ACTION.get(action or "", STAGE_OPERATION_HEARTBEAT_TTL)
+
+
+def _operation_expires_at(now: datetime, *, action: str | None = None) -> datetime:
+    return now + _operation_heartbeat_ttl(action)
+
+
+def _operation_stale_deadline(operation: StageOperationRecord) -> datetime | None:
+    deadlines: list[datetime] = []
+    if operation.expires_at is not None:
+        deadlines.append(operation.expires_at)
+    heartbeat_base = operation.heartbeat_at or operation.updated_at or operation.created_at
+    if heartbeat_base is not None:
+        deadlines.append(heartbeat_base + _operation_heartbeat_ttl(operation.action))
+    if not deadlines:
+        return None
+    return min(deadlines)
 
 
 def _is_operation_active(operation: StageOperationRecord) -> bool:
@@ -5358,7 +5377,8 @@ def _is_operation_stale(operation: StageOperationRecord, now: datetime | None = 
     if not _is_operation_active(operation):
         return False
     current = now or utc_now()
-    return operation.expires_at is not None and operation.expires_at <= current
+    deadline = _operation_stale_deadline(operation)
+    return deadline is not None and deadline <= current
 
 
 def _resolve_stage_operation_idempotency_key(
@@ -5492,7 +5512,7 @@ def _update_stage_operation(
     elif status_value in STAGE_OPERATION_PAUSED_STATUSES:
         operation.expires_at = None
     else:
-        operation.expires_at = _operation_expires_at(now)
+        operation.expires_at = _operation_expires_at(now, action=operation.action)
     db.add(operation)
     db.commit()
     db.refresh(operation)
@@ -5519,7 +5539,7 @@ def _requeue_stage_operation(
     operation.completed_at = None
     operation.updated_at = now
     operation.heartbeat_at = now
-    operation.expires_at = _operation_expires_at(now)
+    operation.expires_at = _operation_expires_at(now, action=operation.action)
     db.add(operation)
     db.commit()
     db.refresh(operation)
@@ -5675,7 +5695,7 @@ def _get_or_create_stage_operation(
         request_payload=request_payload,
         steps=_stage_operation_steps("queued", action=action),
         heartbeat_at=now,
-        expires_at=_operation_expires_at(now),
+        expires_at=_operation_expires_at(now, action=action),
         created_at=now,
         updated_at=now,
     )
@@ -7076,7 +7096,7 @@ def cancel_stage_operation_route(
         operation.steps = _stage_operation_steps(operation.current_step, action=operation.action, cancelled=True)
     else:
         operation.detail = "Cancelacion solicitada. El runtime se detendra en el siguiente checkpoint seguro."
-        operation.expires_at = _operation_expires_at(now)
+        operation.expires_at = _operation_expires_at(now, action=operation.action)
     db.add(operation)
     db.commit()
     db.refresh(operation)
@@ -7123,7 +7143,7 @@ def retry_stage_operation_route(
     operation.completed_at = None
     operation.updated_at = now
     operation.heartbeat_at = now
-    operation.expires_at = _operation_expires_at(now)
+    operation.expires_at = _operation_expires_at(now, action=operation.action)
     operation.steps = _stage_operation_steps("queued", action=operation.action)
     db.add(operation)
     db.commit()
