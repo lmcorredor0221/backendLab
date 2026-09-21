@@ -1846,7 +1846,7 @@ class UserRecord(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     email: str = Field(index=True, unique=True)
     full_name: str
-    password_hash: str
+    password_hash: str | None = Field(default=None, nullable=True)
     phone_number: str | None = Field(default=None, nullable=True)
     preferred_currency: str = Field(default="COP", nullable=False)
     preferred_language: str = Field(default="es", nullable=False)
@@ -1860,6 +1860,22 @@ class UserRecord(SQLModel, table=True):
     is_active: bool = Field(default=True, nullable=False)
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
+class UserAuthIdentityRecord(SQLModel, table=True):
+    __tablename__ = "user_auth_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_subject", name="uq_user_auth_identity_provider_subject"),
+        UniqueConstraint("user_id", "provider", name="uq_user_auth_identity_user_provider"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", index=True, nullable=False)
+    provider: str = Field(index=True, nullable=False)
+    provider_subject: str = Field(index=True, nullable=False)
+    email_at_link: str = Field(default="", nullable=False)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    last_login_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
 class UserLegalAcceptanceRecord(SQLModel, table=True):
@@ -6183,6 +6199,33 @@ class LoginResponse(ContractModel):
     token_type: str = "bearer"
     expires_at: datetime
     user: AuthUser
+
+
+class GoogleAuthRequest(ContractModel):
+    credential: str
+    password: str | None = None
+    workspace_name: str | None = None
+    accept_terms: bool = False
+    accept_privacy: bool = False
+    accept_data_treatment: bool = False
+    consent_system_notifications: bool = False
+    consent_commercial_promotions: bool = False
+    consent_events_newsletters: bool = False
+
+
+class GoogleAuthProfile(ContractModel):
+    email: str
+    full_name: str
+
+
+class GoogleAuthResponse(ContractModel):
+    status: Literal["authenticated", "registration_required", "link_required"]
+    profile: GoogleAuthProfile
+    access_token: str | None = None
+    token_type: str = "bearer"
+    expires_at: datetime | None = None
+    user: AuthUser | None = None
+    is_new_user: bool = False
 
 
 class WorkspaceSelectionRequest(ContractModel):

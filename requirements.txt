@@ -10,3 +10,4 @@ python-multipart>=0.0.9,<1.0
 pytest>=8.3,<9.0
 PyYAML>=6.0,<7.0
 cryptography>=43.0,<44.0
+google-auth[requests]>=2.35,<3.0

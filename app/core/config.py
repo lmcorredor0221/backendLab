@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     local_admin_password: str = "LeanBuilder123!"
     local_admin_name: str = "Lean Builder Admin"
     auth_token_ttl_hours: int = 12
+    google_auth_enabled: bool = False
+    google_client_id: str = ""
     allow_demo_tier_upgrade: bool | None = None
     commerce_public_base_url: str = "http://localhost:3200"
     commerce_checkout_provider: str = "mercadopago"

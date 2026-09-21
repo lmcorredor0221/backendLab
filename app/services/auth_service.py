@@ -36,7 +36,9 @@ def hash_password(password: str, salt: bytes | None = None) -> str:
     return f"{salt_bytes.hex()}${digest.hex()}"
 
 
-def verify_password(password: str, password_hash: str) -> bool:
+def verify_password(password: str, password_hash: str | None) -> bool:
+    if not password_hash:
+        return False
     try:
         salt_hex, digest_hex = password_hash.split("$", 1)
     except ValueError:
@@ -176,9 +178,6 @@ def register_user(
     ip_address: str | None = None,
     user_agent: str | None = None,
 ) -> tuple[UserRecord, str, datetime]:
-    from app.models import UserLegalAcceptanceRecord
-    from app.services.workspace_access import ensure_personal_workspace
-
     # Bot protection
     if payload.honeypot_field and payload.honeypot_field.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Petición rechazada por verificación de seguridad antibot.")
@@ -204,42 +203,75 @@ def register_user(
             detail="El correo electrónico ya se encuentra registrado en la plataforma. Por favor inicia sesión.",
         )
 
-    user = UserRecord(
+    user = create_user_account(
+        db,
         email=normalized_email,
         full_name=payload.full_name.strip(),
         password_hash=hash_password(payload.password),
-        email_verified=True,
-        email_verified_at=utc_now(),
+        workspace_name=payload.workspace_name,
         consent_system_notifications=payload.consent_system_notifications,
         consent_commercial_promotions=payload.consent_commercial_promotions,
         consent_events_newsletters=payload.consent_events_newsletters,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+
+    token, expires_at = issue_access_token(db, user)
+    return user, token, expires_at
+
+
+def create_user_account(
+    db: Session,
+    *,
+    email: str,
+    full_name: str,
+    password_hash: str | None,
+    workspace_name: str | None = None,
+    consent_system_notifications: bool = False,
+    consent_commercial_promotions: bool = False,
+    consent_events_newsletters: bool = False,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> UserRecord:
+    from app.models import UserLegalAcceptanceRecord
+    from app.services.workspace_access import ensure_personal_workspace
+
+    user = UserRecord(
+        email=email.strip().lower(),
+        full_name=full_name.strip(),
+        password_hash=password_hash,
+        email_verified=True,
+        email_verified_at=utc_now(),
+        consent_system_notifications=consent_system_notifications,
+        consent_commercial_promotions=consent_commercial_promotions,
+        consent_events_newsletters=consent_events_newsletters,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    # Store Audit Evidence of Legal Acceptance
-    now_ts = utc_now()
-    doc_types = ["terms_and_conditions", "privacy_policy", "data_treatment_policy"]
-    for doc in doc_types:
-        acceptance = UserLegalAcceptanceRecord(
-            user_id=user.id,
-            document_type=doc,
-            document_version="v1.0-2026-08",
-            accepted=True,
-            accepted_at=now_ts,
-            ip_address=ip_address,
-            user_agent=user_agent,
+    accepted_at = utc_now()
+    for document_type in ("terms_and_conditions", "privacy_policy", "data_treatment_policy"):
+        db.add(
+            UserLegalAcceptanceRecord(
+                user_id=user.id,
+                document_type=document_type,
+                document_version="v1.0-2026-08",
+                accepted=True,
+                accepted_at=accepted_at,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
         )
-        db.add(acceptance)
     db.commit()
 
-    # Create default personal workspace
-    workspace_name = payload.workspace_name.strip() if payload.workspace_name and payload.workspace_name.strip() else f"Workspace de {user.full_name}"
-    ensure_personal_workspace(db, user, default_name=workspace_name)
-
-    token, expires_at = issue_access_token(db, user)
-    return user, token, expires_at
+    resolved_workspace_name = (
+        workspace_name.strip()
+        if workspace_name and workspace_name.strip()
+        else f"Workspace de {user.full_name}"
+    )
+    ensure_personal_workspace(db, user, default_name=resolved_workspace_name)
+    return user
 
 
 def get_user_consents(user: UserRecord) -> UserConsentResponse:

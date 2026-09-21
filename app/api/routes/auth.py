@@ -5,6 +5,8 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models import (
     AuthUser,
+    GoogleAuthRequest,
+    GoogleAuthResponse,
     LoginRequest,
     LoginResponse,
     UserConsentResponse,
@@ -50,6 +52,26 @@ def login(payload: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
         access_token=access_token,
         expires_at=expires_at,
         user=build_auth_user(db, user),
+    )
+
+
+@router.post("/google", response_model=GoogleAuthResponse)
+def google_auth(
+    payload: GoogleAuthRequest,
+    request: Request,
+    db: Session = Depends(get_session),
+) -> GoogleAuthResponse:
+    from app.services.google_auth_service import authenticate_with_google
+
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    origin = request.headers.get("origin")
+    return authenticate_with_google(
+        db,
+        payload,
+        origin=origin,
+        ip_address=client_ip,
+        user_agent=user_agent,
     )
 
 
