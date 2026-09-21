@@ -168,6 +168,7 @@ def _enqueue_purchase(db: Session, event: CommercialEventRecord) -> MarketingAna
             "currency": (event.currency or order.currency or "USD").upper(),
             "value": round(max(0, event.revenue_cents or order.total_cents) / 100, 2),
             "items": [_item_payload(line, order)],
+            "engagement_time_msec": 1,
         },
     )
     return _enqueue(
@@ -201,6 +202,7 @@ def _enqueue_refund(db: Session, event: CommercialEventRecord) -> MarketingAnaly
             "currency": (event.currency or order.currency or "USD").upper(),
             "value": round(max(0, amount_cents) / 100, 2),
             "items": [_item_payload(line, order)],
+            "engagement_time_msec": 1,
         },
     )
     return _enqueue(
@@ -260,7 +262,7 @@ def _ga_payload(*, client_id: str, context: dict[str, Any], event_name: str, par
     event_params = {**_traffic_params(context), **params}
     ga_session_id = context.get("ga_session_id")
     if ga_session_id:
-        event_params["ga_session_id"] = ga_session_id
+        event_params["session_id"] = int(ga_session_id)
     return {"client_id": client_id, "events": [{"name": event_name, "params": event_params}]}
 
 

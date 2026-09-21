@@ -102,6 +102,9 @@ def test_purchase_event_creates_single_ga4_outbox_record():
         assert payload["client_id"] == "12345.67890"
         assert payload["events"][0]["name"] == "purchase"
         assert payload["events"][0]["params"]["transaction_id"] == "mp-order-1"
+        assert payload["events"][0]["params"]["session_id"] == 999
+        assert payload["events"][0]["params"]["engagement_time_msec"] == 1
+        assert "ga_session_id" not in payload["events"][0]["params"]
         assert "must-not-leak" not in str(payload)
 
 
