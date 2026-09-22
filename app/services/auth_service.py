@@ -30,6 +30,16 @@ def utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _token_utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def hash_password(password: str, salt: bytes | None = None) -> str:
     salt_bytes = salt or os.urandom(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt_bytes, 390000)
@@ -60,12 +70,15 @@ def hash_token(token: str) -> str:
 def issue_access_token(db: Session, user: UserRecord) -> tuple[str, datetime]:
     settings = get_settings()
     raw_token = secrets.token_urlsafe(32)
-    expires_at = utc_now() + timedelta(hours=settings.auth_token_ttl_hours)
+    issued_at = _token_utc_now()
+    expires_at = issued_at + timedelta(hours=settings.auth_token_ttl_hours)
     db.add(
         AuthTokenRecord(
             user_id=user.id,
             token_hash=hash_token(raw_token),
             expires_at=expires_at,
+            created_at=issued_at,
+            last_used_at=issued_at,
         )
     )
     db.commit()
@@ -88,17 +101,17 @@ def get_current_user(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
-    now = utc_now()
+    now = _token_utc_now()
     token_hash = hash_token(credentials.credentials)
     token_record = db.exec(select(AuthTokenRecord).where(AuthTokenRecord.token_hash == token_hash)).first()
-    if token_record is None or token_record.expires_at <= now:
+    if token_record is None or _as_aware_utc(token_record.expires_at) <= now:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
     user = db.get(UserRecord, token_record.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
 
-    if token_record.last_used_at <= now - TOKEN_LAST_USED_WRITE_INTERVAL:
+    if _as_aware_utc(token_record.last_used_at) <= now - TOKEN_LAST_USED_WRITE_INTERVAL:
         # Use a dedicated short-lived session so we don't hold the request
         # connection open during the commit (the primary cause of pool exhaustion
         # under concurrent traffic).

@@ -115,6 +115,18 @@ def _authenticated_response(
     )
 
 
+def _link_google_identity(db: Session, user: UserRecord, *, subject: str, profile: GoogleAuthProfile) -> None:
+    db.add(
+        UserAuthIdentityRecord(
+            user_id=user.id,
+            provider=GOOGLE_PROVIDER,
+            provider_subject=subject,
+            email_at_link=profile.email,
+        )
+    )
+    db.commit()
+
+
 def authenticate_with_google(
     db: Session,
     payload: GoogleAuthRequest,
@@ -149,6 +161,10 @@ def authenticate_with_google(
 
     existing_user = db.exec(select(UserRecord).where(UserRecord.email == profile.email)).first()
     if existing_user is not None:
+        if not existing_user.password_hash:
+            _link_google_identity(db, existing_user, subject=subject, profile=profile)
+            return _authenticated_response(db, existing_user, profile=profile, is_new_user=False)
+
         if not payload.password:
             return GoogleAuthResponse(status="link_required", profile=profile)
         if not verify_password(payload.password, existing_user.password_hash):
@@ -157,15 +173,7 @@ def authenticate_with_google(
                 detail="La contraseña actual no permite vincular esta cuenta con Google.",
             )
 
-        db.add(
-            UserAuthIdentityRecord(
-                user_id=existing_user.id,
-                provider=GOOGLE_PROVIDER,
-                provider_subject=subject,
-                email_at_link=profile.email,
-            )
-        )
-        db.commit()
+        _link_google_identity(db, existing_user, subject=subject, profile=profile)
         return _authenticated_response(db, existing_user, profile=profile, is_new_user=False)
 
     if not (payload.accept_terms and payload.accept_privacy and payload.accept_data_treatment):

@@ -143,3 +143,31 @@ def test_existing_password_account_requires_password_before_google_link(monkeypa
     assert linked.user is not None
     assert linked.user.id == user.id
     assert identity.user_id == user.id
+
+
+def test_existing_passwordless_account_links_google_by_verified_email(monkeypatch) -> None:
+    engine = build_engine()
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(google_auth_service, "_verify_google_credential", lambda _: google_claims())
+
+    with Session(engine) as session:
+        user = UserRecord(
+            full_name="Jane Founder",
+            email="founder@example.com",
+            password_hash=None,
+            email_verified=True,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+        linked = google_auth_service.authenticate_with_google(
+            session,
+            GoogleAuthRequest(credential="verified-google-token"),
+        )
+        identity = session.exec(select(UserAuthIdentityRecord)).one()
+
+    assert linked.status == "authenticated"
+    assert linked.user is not None
+    assert linked.user.id == user.id
+    assert identity.user_id == user.id

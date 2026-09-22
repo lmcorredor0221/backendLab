@@ -5,10 +5,11 @@ from app.models import (
     AuthTokenRecord,
     UserLegalAcceptanceRecord,
     UserRegisterRequest,
+    UserRecord,
     WorkspaceMembershipRecord,
     WorkspaceRole,
 )
-from app.services.auth_service import hash_password, hash_token, register_user, verify_password
+from app.services.auth_service import hash_password, hash_token, issue_access_token, register_user, verify_password
 
 
 def test_password_hash_roundtrip() -> None:
@@ -23,6 +24,31 @@ def test_token_hash_is_stable() -> None:
 
     assert hash_token(token) == hash_token(token)
     assert hash_token(token) != token
+
+
+def test_issue_access_token_uses_timezone_aware_datetimes() -> None:
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.added: list[AuthTokenRecord] = []
+            self.commits = 0
+
+        def add(self, record: AuthTokenRecord) -> None:
+            self.added.append(record)
+
+        def commit(self) -> None:
+            self.commits += 1
+
+    db = RecordingSession()
+    user = UserRecord(email="founder@example.com", password_hash=hash_password("ValidPass1!"))
+
+    _, expires_at = issue_access_token(db, user)  # type: ignore[arg-type]
+
+    token_record = db.added[0]
+    assert db.commits == 1
+    assert expires_at.tzinfo is not None
+    assert token_record.expires_at.tzinfo is not None
+    assert token_record.created_at.tzinfo is not None
+    assert token_record.last_used_at.tzinfo is not None
 
 
 def test_register_user_creates_workspace_token_and_legal_acceptance_records() -> None:
@@ -65,7 +91,7 @@ def test_register_user_creates_workspace_token_and_legal_acceptance_records() ->
     assert user.default_workspace_id is not None
     assert token_record is not None
     assert token_record.user_id == user.id
-    assert expires_at == token_record.expires_at
+    assert expires_at.replace(tzinfo=None) == token_record.expires_at
     assert len(memberships) == 1
     assert memberships[0].workspace_id == user.default_workspace_id
     assert memberships[0].role == WorkspaceRole.owner
