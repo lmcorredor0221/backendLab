@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import timedelta
+import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -178,6 +179,29 @@ def test_docs_ingestion_redacts_sensitive_content_before_indexing(tmp_path: Path
         assert all(secret not in item.content_text for item in stored_sections)
         assert all("super-secret-password" not in item.content_text for item in stored_sections)
         assert "this-should-not-leak" not in manifest
+
+
+def test_docs_ingestion_normalizes_metadata_offsets_to_naive_utc(tmp_path: Path) -> None:
+    docs_root = tmp_path / "Docs"
+    runtime_root = tmp_path / "runtime"
+    document_path = docs_root / "governance" / "policy.md"
+    _write_doc(document_path, "# Policy\n\n## Vigencia\nContenido gobernado.\n")
+    metadata_path = runtime_root / "overrides" / "platform" / "governance" / "policy.md.meta.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "approved_at": "2026-08-14T10:00:00-05:00",
+                "effective_from": "2026-08-15T00:30:00+02:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parsed = KnowledgeMemoryService(docs_root=docs_root, runtime_root=runtime_root)._parse_document(document_path)
+
+    assert parsed.approved_at == datetime(2026, 8, 14, 15, 0)
+    assert parsed.effective_from == datetime(2026, 8, 14, 22, 30)
 
 
 def test_ensure_repo_docs_ingested_reuses_latest_run_when_runtime_artifacts_are_missing(

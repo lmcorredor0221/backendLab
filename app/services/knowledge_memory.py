@@ -8,7 +8,7 @@ import re
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -205,16 +205,22 @@ def _coerce_datetime(value: Any) -> datetime | None:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
+        return _to_naive_utc(value)
     if isinstance(value, str):
         candidate = value.strip()
         if not candidate:
             return None
         try:
-            return datetime.fromisoformat(candidate.replace("Z", "+00:00")).replace(tzinfo=None)
+            return _to_naive_utc(datetime.fromisoformat(candidate.replace("Z", "+00:00")))
         except ValueError:
             return None
     return None
+
+
+def _to_naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _encode_cursor(offset: int, query: str) -> str:

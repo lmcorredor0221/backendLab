@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import datetime
 
 import httpx
 import pytest
@@ -69,7 +70,7 @@ def test_hotmart_club_sync_stores_snapshot_and_opens_student_access_issue(db_ses
             assert request.url.params["subdomain"] == "leanclub"
             return httpx.Response(
                 200,
-                json={"items": [{"id": "lesson-1", "name": "Bienvenida", "completed": True, "completed_at": "2026-08-14T10:00:00Z"}]},
+                json={"items": [{"id": "lesson-1", "name": "Bienvenida", "completed": True, "completed_at": "2026-08-14T10:00:00-05:00"}]},
             )
         return httpx.Response(404, json={"error": f"Unexpected {request.url.path}"})
 
@@ -103,7 +104,9 @@ def test_hotmart_club_sync_stores_snapshot_and_opens_student_access_issue(db_ses
     assert list_hotmart_club_modules(db_session, workspace_id=workspace.id)[0].name == "Primeros pasos"
     assert list_hotmart_club_pages(db_session, workspace_id=workspace.id)[0].module_id == "module-1"
     assert list_hotmart_club_students(db_session, workspace_id=workspace.id)[0].email == "student@example.com"
-    assert list_hotmart_club_progress(db_session, workspace_id=workspace.id)[0].completed is True
+    progress = list_hotmart_club_progress(db_session, workspace_id=workspace.id)[0]
+    assert progress.completed is True
+    assert progress.completed_at == datetime(2026, 8, 14, 15, 0)
 
 
 def test_hotmart_club_student_with_active_internal_entitlement_does_not_open_issue(db_session: Session) -> None:
