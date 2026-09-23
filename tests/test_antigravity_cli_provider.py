@@ -98,6 +98,26 @@ def test_build_execution_args_without_model(tmp_path):
     assert "--model" not in args
 
 
+def test_resolve_timeout_uses_antigravity_config_as_floor():
+    settings = LLMRuntimeSettings(
+        antigravity=AntigravityProviderConfig(timeout_ms=1_200_000)
+    )
+    svc = AgyExecutionService(settings)
+
+    assert svc.resolve_timeout_ms(timeout_ms=90_000) == 1_200_000
+    assert svc.resolve_timeout_ms(timeout_ms=1_500_000) == 1_500_000
+
+
+def test_resolve_timeout_env_override_keeps_priority():
+    settings = LLMRuntimeSettings(
+        antigravity=AntigravityProviderConfig(timeout_ms=1_200_000)
+    )
+    svc = AgyExecutionService(settings)
+
+    with patch.dict(os.environ, {"ANTIGRAVITY_EXEC_TIMEOUT_MS": "600000"}):
+        assert svc.resolve_timeout_ms(timeout_ms=90_000) == 600_000
+
+
 def test_fallback_policy_capacity_error():
     policy = AgyFallbackPolicy(model="gemini-3.6-flash", fallback_models=["gemini-3.6-pro"])
     decision = policy.classify_failure(stdout="", stderr="Resource exhausted: rate limit reached for model")

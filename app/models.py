@@ -2292,6 +2292,7 @@ class OpportunityRecord(SQLModel, table=True):
     constraints: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     operational_baseline: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     mvp_definition: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    operational_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     case_type: str = Field(default=CASE_TYPE_COPILOT)
     value_statement: str = Field(default="")
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
@@ -2323,6 +2324,8 @@ class BlueprintRecord(SQLModel, table=True):
     llm_policy: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     memory_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     knowledge_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    operational_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    objective_contract: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     safety_checks: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     guardrails: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     delivery_package: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
@@ -2839,6 +2842,7 @@ class ConstructionQuestionResponseRecord(SQLModel, table=True):
     answer_text: str = Field(default="")
     owner_role: str = Field(default="")
     impacted_artifacts: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    decision_context: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     answered_by_user_id: UUID | None = Field(default=None, foreign_key="users.id", nullable=True)
     answered_by_display: str = Field(default="")
     answered_at: datetime | None = Field(default=None, nullable=True)
@@ -3191,6 +3195,23 @@ class MvpDefinition(ContractModel):
     non_delegable_decisions: list[str] = PydanticField(default_factory=list)
 
 
+class OperationalCapabilityProfile(ContractModel):
+    interaction_channels: list[str] = PydanticField(default_factory=list)
+    knowledge_capabilities: list[str] = PydanticField(default_factory=list)
+    action_capabilities: list[str] = PydanticField(default_factory=list)
+    control_capabilities: list[str] = PydanticField(default_factory=list)
+    evidence_capabilities: list[str] = PydanticField(default_factory=list)
+    interaction_channel: str = ""
+    archetype_key: str = ""
+    knowledge_modes: list[str] = PydanticField(default_factory=list)
+    required_capabilities: list[str] = PydanticField(default_factory=list)
+    required_controls: list[str] = PydanticField(default_factory=list)
+    clarifying_questions: list[str] = PydanticField(default_factory=list)
+    operational_signals: dict[str, bool] = PydanticField(default_factory=dict)
+    confidence: float = 0.0
+    source_refs: list[str] = PydanticField(default_factory=list)
+
+
 class DiscoveryArtifact(ContractModel):
     problem_statement: str = ""
     current_user: str = ""
@@ -3202,6 +3223,7 @@ class DiscoveryArtifact(ContractModel):
     mvp_definition: MvpDefinition = PydanticField(default_factory=MvpDefinition)
     case_type: str = ""
     value_statement: str = ""
+    operational_profile: OperationalCapabilityProfile = PydanticField(default_factory=OperationalCapabilityProfile)
 
     @field_validator("autonomy_level", mode="before")
     @classmethod
@@ -3411,6 +3433,45 @@ class WorkflowProfile(ContractModel):
     approval_pause: str = ""
     timeout_policy: str = ""
     steps: list[WorkflowStep] = PydanticField(default_factory=list)
+
+
+class ObjectiveSuccessCriterion(ContractModel):
+    criterion_id: str = ""
+    statement: str = ""
+    evidence_refs: list[str] = PydanticField(default_factory=list)
+    verification_method: str = ""
+
+
+class ObjectiveTerminationConditions(ContractModel):
+    success: list[str] = PydanticField(default_factory=list)
+    stop: list[str] = PydanticField(default_factory=list)
+
+
+class ObjectiveContract(ContractModel):
+    objective_id: str = ""
+    level: Literal["business", "operational", "run", "delegated"] = "operational"
+    parent_objective_id: str | None = None
+    statement: str = ""
+    owner: str = "business_owner"
+    status: Literal["inferred", "confirmed", "rejected", "superseded"] = "inferred"
+    source_refs: list[str] = PydanticField(default_factory=list)
+    confidence: float = 0.0
+    success_criteria: list[ObjectiveSuccessCriterion] = PydanticField(default_factory=list)
+    constraint_refs: list[str] = PydanticField(default_factory=list)
+    termination_conditions: ObjectiveTerminationConditions = PydanticField(default_factory=ObjectiveTerminationConditions)
+    progress_signals: list[str] = PydanticField(default_factory=list)
+    mutation_policy: Literal["immutable_during_run", "human_approval_required", "bounded_replanning"] = "human_approval_required"
+    runtime_tracking: Literal["not_required", "recommended", "required"] = "not_required"
+    version: int = 1
+
+
+class ObjectiveContractBundle(ContractModel):
+    contract_version: str = "objective-contract.v1"
+    objectives: list[ObjectiveContract] = PydanticField(default_factory=list)
+    constraints: list[str] = PydanticField(default_factory=list)
+    source_refs: list[str] = PydanticField(default_factory=list)
+    active_objective_id: str = ""
+    policy_version: str = "objective-rollout-policy.v1"
 
 
 class ObservabilityPlan(ContractModel):
@@ -3806,6 +3867,8 @@ class BlueprintArtifact(ContractModel):
     architecture: str = ""
     reasoning_pattern: str = ""
     memory_strategy: str = ""
+    operational_profile: OperationalCapabilityProfile = PydanticField(default_factory=OperationalCapabilityProfile)
+    objective_contract: ObjectiveContractBundle = PydanticField(default_factory=ObjectiveContractBundle)
     tools: list[BlueprintTool] = PydanticField(default_factory=list)
     llm_policy: BlueprintLLMPolicy = PydanticField(default_factory=BlueprintLLMPolicy)
     memory_profile: MemoryProfile = PydanticField(default_factory=MemoryProfile)
@@ -3858,6 +3921,7 @@ class DesignBlueprintProjection(ContractModel):
     memory_strategy: str = ""
     memory_implications: list[str] = PydanticField(default_factory=list)
     cost_complexity_implications: list[str] = PydanticField(default_factory=list)
+    operational_profile: OperationalCapabilityProfile = PydanticField(default_factory=OperationalCapabilityProfile)
 
 
 class DesignAlternative(ContractModel):
@@ -3898,6 +3962,7 @@ class DesignAlternative(ContractModel):
     risk_tradeoffs: list[str] = PydanticField(default_factory=list)
     business_metrics: list[str] = PydanticField(default_factory=list)
     blueprint_projection: DesignBlueprintProjection = PydanticField(default_factory=DesignBlueprintProjection)
+    operational_profile: OperationalCapabilityProfile = PydanticField(default_factory=OperationalCapabilityProfile)
 
 
 class DesignFitAlternativeScore(ContractModel):
@@ -3975,6 +4040,7 @@ class DesignRecommendationArtifact(ContractModel):
     quality_gate: dict[str, Any] = PydanticField(default_factory=dict)
     review_state: ReviewState = ReviewState.partial
     summary: str = ""
+    operational_profile: OperationalCapabilityProfile = PydanticField(default_factory=OperationalCapabilityProfile)
 
 
 class ToolRecommendationSourceStageVersions(ContractModel):
@@ -4122,6 +4188,12 @@ class ToolRecommendationAllowedToolKey(str, Enum):
     outbound_notification = "outbound_notification"
     human_handoff = "human_handoff"
     scheduler = "scheduler"
+    browser_observe = "browser_observe"
+    browser_execute = "browser_execute"
+    business_graph_query = "business_graph_query"
+    business_policy_evaluation = "business_policy_evaluation"
+    action_verification = "action_verification"
+    audit_event_write = "audit_event_write"
 
 
 class ToolRecommendationPromptToolOption(ContractModel):
@@ -4477,6 +4549,8 @@ class MemoryRecommendationArtifact(ContractModel):
     working_memory_design: MemoryLayerDesign = PydanticField(default_factory=MemoryLayerDesign)
     long_term_design: MemoryLayerDesign = PydanticField(default_factory=MemoryLayerDesign)
     knowledge_design: MemoryKnowledgeDesign = PydanticField(default_factory=MemoryKnowledgeDesign)
+    operational_knowledge_layers: list[MemoryLayerDesign] = PydanticField(default_factory=list)
+    objective_memory_policy: dict[str, Any] = PydanticField(default_factory=dict)
     context_budget_plan: list[MemoryContextBudgetEntry] = PydanticField(default_factory=list)
     write_read_matrix: list[MemoryWriteReadRule] = PydanticField(default_factory=list)
     retention_and_deletion: list[MemoryRetentionDeletionRule] = PydanticField(default_factory=list)
@@ -5184,6 +5258,12 @@ class ConstructionQuestionEntry(ContractModel):
     target_owner: str = ""
     blocking: bool = False
     options: list[ConstructionQuestionOption] = PydanticField(default_factory=list)
+    question_kind: str = "general"
+    subject_type: str = ""
+    subject_id: str = ""
+    allowed_decisions: list[str] = PydanticField(default_factory=list)
+    answer_semantics: str = ""
+    contract_version: int = 1
 
 
 class ConstructionQuestionImpactAnalysis(ContractModel):
@@ -5237,6 +5317,13 @@ class ConstructionQuestionViewEntry(ContractModel):
     impacted_artifacts: list[str] = PydanticField(default_factory=list)
     options: list[ConstructionQuestionOption] = PydanticField(default_factory=list)
     impact_analysis: ConstructionQuestionImpactAnalysis | None = None
+    question_kind: str = "general"
+    subject_type: str = ""
+    subject_id: str = ""
+    allowed_decisions: list[str] = PydanticField(default_factory=list)
+    answer_semantics: str = ""
+    contract_version: int = 1
+    decision_context: dict[str, Any] = PydanticField(default_factory=dict)
 
     @field_validator("status")
     @classmethod
@@ -5249,14 +5336,17 @@ class ConstructionQuestionViewEntry(ContractModel):
 class ConstructionQuestionAnswerRequest(ContractModel):
     answer_text: str = ""
     owner_role: str = ""
-    decision: Literal["answer", "choose_option", "delegate", "dismiss"] = "answer"
+    decision: Literal["answer", "choose_option", "delegate", "dismiss", "reopen"] = "answer"
     selected_option_key: str = ""
     impacted_artifacts: list[str] = PydanticField(default_factory=list)
+    decision_context: dict[str, Any] = PydanticField(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_answer_payload(self) -> "ConstructionQuestionAnswerRequest":
         normalized = self.answer_text.strip()
         selected_opt = self.selected_option_key.strip()
+        if self.decision == "reopen":
+            return self
         if self.decision == "answer" and not normalized:
             raise ValueError("Construction question answer cannot be empty")
         if self.decision == "choose_option" and not selected_opt and not normalized:
@@ -8384,6 +8474,11 @@ class InitiativeAlternativeRecommendation(ContractModel):
     suggested_next_step: str
 
 
+class InitiativeOperationalProfile(OperationalCapabilityProfile):
+    business_summary: str = ""
+    technical_detail: str = ""
+
+
 class InitiativeEvaluationResponse(ContractModel):
     is_viable: bool
     readiness_score: int = PydanticField(ge=0, le=100)
@@ -8399,3 +8494,4 @@ class InitiativeEvaluationResponse(ContractModel):
     prefilled_project_data: dict[str, Any] = PydanticField(default_factory=dict)
     token_usage: dict[str, int] = PydanticField(default_factory=dict)
     evaluation_id: str = ""
+    operational_profile: InitiativeOperationalProfile | None = None

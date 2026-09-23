@@ -44,6 +44,7 @@ from app.services.acp_serialization import (
 from app.services.acp_visualization import build_acp_visualization_files
 from app.services.acp_validation import build_acp_file_entry, build_acp_preview
 from app.services.deliverable_catalog.registry_service import list_registry_entries
+from app.services.objective_contracts import active_objective, build_objective_contract_bundle, objective_requires_runtime_loop
 
 
 def _slugify(value: str, default: str = "item") -> str:
@@ -531,6 +532,7 @@ def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
         "├── business/                 # Lean canvas, KPIs y restricciones de negocio",
         "├── architecture/             # Topología, C4 context y traza de decisiones",
         "├── cognition/                # Patrones de razonamiento y perfiles de workflow",
+        "├── objectives/               # Objective Contract, criterios, progreso y terminacion",
         "├── memory/                   # Estrategia de memoria dual y context budgets",
         "├── knowledge/                # Fuentes documentales, embeddings e ingestión",
         "├── tools/                    # Contratos tipados y permisos de herramientas",
@@ -1901,6 +1903,105 @@ def _build_workflow_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     ]
 
 
+def _build_objective_files(
+    snapshot: SessionSnapshot,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+) -> list[ACPFileEntry]:
+    bundle = build_objective_contract_bundle(snapshot, response_records)
+    objective = active_objective(bundle)
+    objective_payload = objective.model_dump(mode="json") if objective is not None else {}
+    traceability_payload = {
+        "contract_version": bundle.contract_version,
+        "active_objective_id": bundle.active_objective_id,
+        "policy_version": bundle.policy_version,
+        "source_refs": list(bundle.source_refs),
+        "constraints": list(bundle.constraints),
+        "status": objective.status if objective is not None else "missing",
+        "runtime_tracking": objective.runtime_tracking if objective is not None else "not_required",
+        "success_criteria": objective_payload.get("success_criteria", []),
+        "termination_conditions": objective_payload.get("termination_conditions", {}),
+        "progress_signals": objective_payload.get("progress_signals", []),
+        "acp_validation": {
+            "uses_responder_preguntas": True,
+            "question_kind": "objective_validation",
+            "reopen_supported": True,
+            "new_interaction_mechanism": False,
+        },
+    }
+    files = [
+        build_acp_file_entry(
+            path="ACP/objectives/objective-contract.yaml",
+            domain="objectives",
+            title="Objective contract",
+            format="yaml",
+            source_sections=["canvas.user_goal", "discovery.desired_outcome", "evaluation_dataset", "acp.questions"],
+            content_text=serialize_yaml_document(bundle.model_dump(mode="json")),
+            warnings=[] if objective is not None and objective.status != "rejected" else ["El objetivo activo fue rechazado; corregir antes de activar runtime operacional."],
+        ),
+        build_acp_file_entry(
+            path="ACP/objectives/objective-traceability.yaml",
+            domain="objectives",
+            title="Objective traceability",
+            format="yaml",
+            source_sections=["objective-contract.v1", "prompt-pack.v1", "construction-readiness"],
+            content_text=serialize_yaml_document(traceability_payload),
+        ),
+    ]
+    if objective is not None and objective.status != "rejected" and objective_requires_runtime_loop(objective):
+        loop_payload = {
+            "workflow_key": "objective_loop",
+            "activation": "design_contract_only",
+            "runtime_tracking": objective.runtime_tracking,
+            "objective_id": objective.objective_id,
+            "statement": objective.statement,
+            "loop_steps": [
+                {
+                    "step": "load_objective",
+                    "purpose": "Cargar objetivo activo, restricciones, criterios y condiciones de terminacion.",
+                    "required_inputs": ["objective-contract.v1"],
+                },
+                {
+                    "step": "plan_next_action",
+                    "purpose": "Seleccionar la siguiente accion que acerque al objetivo sin violar restricciones.",
+                    "required_inputs": ["behavior-spec.v1", "memory-policy.v1", "tool-contract.v1"],
+                },
+                {
+                    "step": "execute_or_request_approval",
+                    "purpose": "Ejecutar solo acciones permitidas o pedir aprobacion humana cuando aplique.",
+                    "required_inputs": ["approved_action", "approval_policy"],
+                },
+                {
+                    "step": "evaluate_progress",
+                    "purpose": "Comparar evidencia y resultado contra criterios de exito y senales de progreso.",
+                    "required_inputs": ["evidence_refs", "progress_signals"],
+                },
+                {
+                    "step": "terminate_or_replan",
+                    "purpose": "Cerrar si hay exito, detener por stop condition o replanificar de forma acotada.",
+                    "required_inputs": ["termination_conditions", "mutation_policy"],
+                },
+            ],
+            "guardrails": {
+                "mutation_policy": objective.mutation_policy,
+                "stop_conditions": list(objective.termination_conditions.stop),
+                "progress_signals": list(objective.progress_signals),
+                "human_validation_source": "ACP Responder preguntas",
+            },
+        }
+        files.append(
+            build_acp_file_entry(
+                path="ACP/workflows/objective-loop.yaml",
+                domain="workflows",
+                title="Objective Loop",
+                format="yaml",
+                source_sections=["objective-contract.v1", "behavior-spec.v1", "memory-policy.v1"],
+                content_text=serialize_yaml_document(loop_payload),
+                warnings=["Especificacion de diseno portable; no activa ejecucion productiva dentro de LAB."],
+            )
+        )
+    return files
+
+
 def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     discovery = snapshot.discovery
     blueprint = snapshot.blueprint
@@ -2199,6 +2300,7 @@ def _external_dependency_entries(preview: ACPPreview) -> list[dict[str, Any]]:
         "deployment": "deployment_environment",
         "runtime": "runtime_or_secrets",
         "knowledge": "knowledge_source",
+        "objectives": "objective_contract",
         "package": "package_validation",
     }
     entries: list[dict[str, Any]] = []
@@ -3678,6 +3780,7 @@ def generate_acp_files(
     files.extend(_build_memory_files(snapshot))
     files.extend(_build_knowledge_files(snapshot, continuity_answers))
     files.extend(_build_tools_files(snapshot))
+    files.extend(_build_objective_files(snapshot, response_records))
     files.extend(_build_workflow_files(snapshot))
     files.extend(_build_prompt_files(snapshot))
     files.extend(_build_runtime_files(snapshot, continuity_answers))

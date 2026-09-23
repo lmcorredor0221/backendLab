@@ -2342,6 +2342,35 @@ def test_normalize_discovery_accepts_legacy_autonomy_aliases(client: TestClient)
     }
 
 
+def test_normalize_discovery_can_update_existing_opportunity_with_operational_profile(client: TestClient) -> None:
+    headers = auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    first_response = client.post(
+        f"/api/v1/sessions/{session_id}/normalize-discovery",
+        headers=headers,
+        json=complete_discovery_payload(),
+    )
+    assert first_response.status_code == 200
+
+    payload = complete_discovery_payload()
+    payload["problem_statement"] = "Actualizar discovery sin romper perfil operacional persistido."
+    second_response = client.post(
+        f"/api/v1/sessions/{session_id}/normalize-discovery",
+        headers=headers,
+        json=payload,
+    )
+    assert second_response.status_code == 200
+
+    snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    discovery = snapshot_response.json()["discovery"]
+    assert discovery["problem_statement"] == payload["problem_statement"]
+    assert "operational_profile" in discovery
+
+
 def test_approving_discover_and_define_advances_session_stage(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

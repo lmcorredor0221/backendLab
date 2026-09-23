@@ -12,6 +12,7 @@ from app.models import (
     InitiativeAlternativeRecommendation,
     InitiativeDimensionScore,
     InitiativeEvaluationRequest,
+    InitiativeOperationalProfile,
     InitiativeEvaluationResponse,
 )
 from app.services.agent_i18n import apply_agent_language_directive, get_effective_language
@@ -58,6 +59,34 @@ HIGH_AGENT_PATTERNS = [
     r"\b(llamar apis|herramientas|tools|supervisor|copiloto|hitl|flujo variable)\b",
 ]
 
+OPERATIONAL_SIGNAL_PATTERNS: dict[str, str] = {
+    "has_browser_ui": (
+        r"(portal|pantalla|interfaz|formulario|backoffice|web app|aplicaci[oó]n sin api|sin api oficial|"
+        r"sin endpoint|como usuario|crm|erp|sistema web|m[oó]dulo de ventas)"
+    ),
+    "has_operational_write": (
+        r"(crear|registrar|actualizar|guardar|enviar|aprobar|cargar|emitir|confirmar|generar|"
+        r"create|register|update|save|send|approve|submit|upload)"
+    ),
+    "has_vector_knowledge": (
+        r"(manual|manuales|procedimiento|procedimientos|faq|faqs|documentaci[oó]n|documentos|"
+        r"pol[ií]ticas textuales|runbook|knowledge base|base de conocimiento)"
+    ),
+    "has_business_graph": (
+        r"(roles?|clientes?|entidades|dependencias|permisos|relaciones|workflow|m[oó]dulos?|"
+        r"jerarqu[ií]a|aprobadores|business graph|grafo)"
+    ),
+    "has_policy_rules": (
+        r"(l[ií]mites?|montos?|descuentos?|estado final|estados|condiciones|reglas?|pol[ií]tica|"
+        r"umbral|approval limit|discount)"
+    ),
+    "has_approval": r"(aprobaci[oó]n|aprobar|autorizar|no delegable|sensible|humana|human approval|approval)",
+    "has_verification": (
+        r"(comprobar|verificar|validar resultado|recibo|n[uú]mero de orden|orden confirmada|"
+        r"estado final|evidencia|receipt|confirmation|verify)"
+    ),
+}
+
 
 def _evaluate_heuristic_pre_filter(text: str) -> tuple[bool, str]:
     """Check if the text can be decisively evaluated without LLM tokens."""
@@ -68,12 +97,106 @@ def _evaluate_heuristic_pre_filter(text: str) -> tuple[bool, str]:
     return False, "requires_llm_or_heuristic_scoring"
 
 
+def _detect_operational_signals(text: str) -> dict[str, bool]:
+    lowered = text.lower()
+    return {
+        key: bool(re.search(pattern, lowered))
+        for key, pattern in OPERATIONAL_SIGNAL_PATTERNS.items()
+    }
+
+
+def _is_operational_ui_case(signals: dict[str, bool]) -> bool:
+    return bool(
+        signals.get("has_browser_ui")
+        and signals.get("has_operational_write")
+        and (
+            signals.get("has_policy_rules")
+            or signals.get("has_business_graph")
+            or signals.get("has_verification")
+        )
+    )
+
+
+def _build_operational_profile(signals: dict[str, bool], *, lang: str) -> InitiativeOperationalProfile | None:
+    if not _is_operational_ui_case(signals):
+        return None
+
+    knowledge_modes: list[str] = []
+    if signals.get("has_vector_knowledge"):
+        knowledge_modes.append("vector_retrieval")
+    if signals.get("has_business_graph"):
+        knowledge_modes.append("business_graph")
+    if signals.get("has_policy_rules"):
+        knowledge_modes.append("policy_evaluation")
+
+    required_capabilities = ["browser_observe", "browser_execute"]
+    if signals.get("has_business_graph"):
+        required_capabilities.append("business_graph_query")
+    if signals.get("has_policy_rules"):
+        required_capabilities.append("business_policy_evaluation")
+    if signals.get("has_verification"):
+        required_capabilities.append("action_verification")
+    if signals.get("has_operational_write"):
+        required_capabilities.append("transactional_write")
+
+    required_controls = ["audit_log"]
+    if signals.get("has_approval") or signals.get("has_policy_rules"):
+        required_controls.append("approval_gate")
+    if signals.get("has_verification"):
+        required_controls.append("action_verification")
+
+    clarifying = {
+        "en": [
+            "Is there an official API, or must the operation be performed in the portal?",
+            "Which actions change system state and require approval?",
+        ],
+        "pt": [
+            "Existe uma API oficial ou a operacao deve ser feita no portal?",
+            "Quais acoes alteram estado e exigem aprovacao?",
+        ],
+        "es": [
+            "Existe una API oficial o la operacion debe hacerse en el portal?",
+            "Que acciones cambian estado y requieren aprobacion?",
+        ],
+    }.get(lang, [])
+
+    evidence_capabilities = ["audit_log"]
+    if signals.get("has_verification"):
+        evidence_capabilities.append("result_receipt")
+
+    return InitiativeOperationalProfile(
+        interaction_channels=["browser_ui"],
+        knowledge_capabilities=knowledge_modes,
+        action_capabilities=[item for item in required_capabilities if item.startswith("browser") or item == "transactional_write"],
+        control_capabilities=required_controls,
+        evidence_capabilities=evidence_capabilities,
+        interaction_channel="browser_ui",
+        archetype_key="business_ui_operator",
+        knowledge_modes=knowledge_modes,
+        required_capabilities=required_capabilities,
+        required_controls=required_controls,
+        clarifying_questions=clarifying,
+        operational_signals=signals,
+        confidence=0.86 if signals.get("has_verification") else 0.76,
+        source_refs=["initiative_text"],
+        business_summary={
+            "en": "Application-operator agent that consults knowledge, validates rules, acts in a business UI, and verifies the result.",
+            "pt": "Agente operador de aplicacoes que consulta conhecimento, valida regras, atua na interface de negocio e verifica o resultado.",
+            "es": "Agente operador de aplicaciones que consulta conocimiento, valida reglas, actua en la interfaz de negocio y verifica el resultado.",
+        }.get(lang, ""),
+        technical_detail="Browser automation + knowledge retrieval + business policy evaluation + evidence/audit controls.",
+    )
+
+
 def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> InitiativeEvaluationResponse:
     """Deterministic rule-based evaluation when LLM is bypassed or offline."""
     lang = get_effective_language(request.language)
     text = request.initiative_text.strip()
     lowered = text.lower()
     dim_names = DIMENSIONS_META.get(lang, DIMENSIONS_META["es"])
+    operational_signals = _detect_operational_signals(text)
+    operational_profile = _build_operational_profile(operational_signals, lang=lang)
+    is_operational_case = operational_profile is not None
 
     # Analyze signals across ES, EN, PT
     has_unstructured = bool(re.search(
@@ -83,26 +206,28 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
     has_tools = bool(re.search(
         r"(api|erp|crm|base de datos|database|sistema|system|webhook|herramienta|tool|consult|query|guardar|save|enviar|send|notificar|notify|buscar|search|integr|zendesk|sap|salesforce|postgres|sql)",
         lowered,
-    ))
+    )) or is_operational_case
     has_multistep = bool(re.search(
         r"(paso|step|proceso|process|flujo|flow|depend|evaluar|evaluat|orquest|orchestrat|valid|aprob|approv|decid|decision|compar|detect|correg|correct|escalat)",
         lowered,
-    ))
+    )) or is_operational_case
     has_hitl = bool(re.search(
         r"(supervis|humano|human|aprobaci|approv|revis|review|alerta|alert|intervenci|intervent|riesgo|risk|sensible|sensitiv|hitl|copilot|copiloto)",
         lowered,
-    ))
+    )) or operational_signals.get("has_approval", False) or operational_signals.get("has_policy_rules", False)
     is_pure_script = bool(re.search(
         r"(fijo|fixed|calculo|calculat|formula|estatico|static|siempre igual|always the same|excel simple|cron|sumar|restar|multiplicar|division|promedio|basic crud)",
         lowered,
-    ))
+    )) and not is_operational_case
 
     # Calculate dimension scores (0-100)
-    score_d1 = 85 if has_unstructured else 35
-    score_d2 = 90 if has_tools else 40
-    score_d3 = 85 if has_multistep else 35
-    score_d4 = 80 if has_hitl else 60
+    score_d1 = 85 if has_unstructured else (62 if is_operational_case and operational_signals.get("has_policy_rules") else 35)
+    score_d2 = 94 if is_operational_case else (90 if has_tools else 40)
+    score_d3 = 90 if is_operational_case else (85 if has_multistep else 35)
+    score_d4 = 86 if is_operational_case else (80 if has_hitl else 60)
     score_d5 = 15 if is_pure_script else (90 if (has_unstructured and has_tools and has_multistep) else 60)
+    if is_operational_case:
+        score_d5 = max(score_d5, 82)
 
     weights = [0.25, 0.25, 0.20, 0.15, 0.15]
     raw_score = int(
@@ -143,7 +268,7 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
             "not_recommended": "This initiative is better suited for deterministic code, RPA, or standard software. An autonomous agent would introduce unnecessary cost and latency.",
         }
         archetypes = {
-            "viable": "HITL Copilot & Systems Orchestrator" if has_tools else "Document Reasoning & Analysis Agent",
+            "viable": "Business Application Operator Agent" if is_operational_case else ("HITL Copilot & Systems Orchestrator" if has_tools else "Document Reasoning & Analysis Agent"),
             "partially_viable": "Assisted Task Agent",
             "not_recommended": None,
         }
@@ -166,7 +291,7 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
             "not_recommended": "Esta iniciativa é melhor resolvida com código determinístico, RPA ou software padrão. Um agente adicionaria custo desnecessário.",
         }
         archetypes = {
-            "viable": "Copiloto HITL e Orquestrador de Sistemas" if has_tools else "Agente de Análise e Raciocínio Documental",
+            "viable": "Agente Operador de Aplicações" if is_operational_case else ("Copiloto HITL e Orquestrador de Sistemas" if has_tools else "Agente de Análise e Raciocínio Documental"),
             "partially_viable": "Agente Assistido de Tarefas",
             "not_recommended": None,
         }
@@ -189,10 +314,21 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
             "not_recommended": "Esta iniciativa se resuelve mejor con código determinista, RPA o software tradicional. Un agente agregaría costo y latencia innecesarios.",
         }
         archetypes = {
-            "viable": "Copiloto HITL y Orquestrador de Sistemas" if has_tools else "Agente de Análisis y Razonamiento Documental",
+            "viable": "Agente operador de aplicaciones" if is_operational_case else ("Copiloto HITL y Orquestrador de Sistemas" if has_tools else "Agente de Análisis y Razonamiento Documental"),
             "partially_viable": "Agente Asistido de Tareas",
             "not_recommended": None,
         }
+
+    if operational_profile is not None:
+        if lang == "en":
+            verdict_titles["viable"] = "Operational Agent Candidate for Business Applications"
+            verdict_summaries["viable"] = "This initiative fits an agent that reads business knowledge, validates rules, operates a UI, requests approval when needed, and verifies the final result."
+        elif lang == "pt":
+            verdict_titles["viable"] = "Candidato a Agente Operacional de Aplicações"
+            verdict_summaries["viable"] = "A iniciativa se encaixa em um agente que consulta conhecimento, valida regras, opera uma interface, pede aprovação quando necessário e verifica o resultado final."
+        else:
+            verdict_titles["viable"] = "Candidato a agente operativo de aplicaciones"
+            verdict_summaries["viable"] = "La iniciativa encaja con un agente que consulta conocimiento, valida reglas, opera una interfaz, pide aprobacion cuando corresponde y verifica el resultado final."
 
     dimensions = [
         InitiativeDimensionScore(
@@ -271,10 +407,30 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
         strengths.append("Entradas no estructuradas que aprovechan el entendimiento del LLM" if lang == "es" else ("Unstructured inputs well suited for LLMs" if lang == "en" else "Entradas não estruturadas ideais para LLMs"))
     if has_tools:
         strengths.append("Integración con sistemas externos mediante herramientas/APIs" if lang == "es" else ("Integration with external tools/APIs" if lang == "en" else "Integração com sistemas externos via APIs"))
+    if operational_profile is not None:
+        strengths.append(
+            "Operación sobre interfaz con reglas, aprobaciones y evidencia verificable"
+            if lang == "es"
+            else (
+                "Business UI operation with rules, approvals, and verifiable evidence"
+                if lang == "en"
+                else "Operação em interface com regras, aprovações e evidência verificável"
+            )
+        )
     if is_pure_script:
         risks.append("Reglas estáticas que no requieren inteligencia probabilística" if lang == "es" else ("Static rules that do not require probabilistic AI" if lang == "en" else "Regras estáticas que não necessitam de IA"))
     if not has_hitl:
         risks.append("Falta de definición de puntos de supervisión humana" if lang == "es" else ("Missing human-in-the-loop checkpoints definition" if lang == "en" else "Falta de definição de pontos de supervisão humana"))
+    if operational_profile is not None:
+        risks.append(
+            "LAB debe confirmar permisos, metodo de verificacion y acciones que requieren aprobacion antes del ACP."
+            if lang == "es"
+            else (
+                "LAB must confirm permissions, verification method, and approval-required actions before the ACP."
+                if lang == "en"
+                else "LAB deve confirmar permissoes, metodo de verificacao e acoes que exigem aprovacao antes do ACP."
+            )
+        )
 
     # Suggested project prefill
     prefilled_title = text[:50].strip().title()
@@ -288,7 +444,7 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
         verdict_title=verdict_titles[badge],
         verdict_summary=verdict_summaries[badge],
         suggested_archetype=archetypes[badge],
-        suggested_tier=CommercialTier.acp if (is_viable and has_tools) else (CommercialTier.blueprint_pro if is_viable else None),
+        suggested_tier=CommercialTier.acp if (is_viable and (has_tools or operational_profile is not None)) else (CommercialTier.blueprint_pro if is_viable else None),
         dimensions=dimensions,
         key_strengths=strengths or ["Definición inicial clara"],
         key_risks_or_gaps=risks or ["Requiere detallar esquemas de herramientas en etapa Define"],
@@ -299,6 +455,7 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
             "initial_prompt": text,
             "archetype": archetypes[badge] or "standard_workflow",
             "recommended_stage": "normalize_discovery",
+            "operational_profile": operational_profile.model_dump(mode="json") if operational_profile is not None else None,
         },
         token_usage={
             "prompt_tokens": 0,
@@ -307,6 +464,7 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
             "latency_ms": 12,
         },
         evaluation_id=f"eval_{uuid4().hex[:12]}",
+        operational_profile=operational_profile,
     )
 
 

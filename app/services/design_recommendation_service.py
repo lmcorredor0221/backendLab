@@ -340,6 +340,7 @@ def _catalog_intelligence_for_architecture(
     archetype_preferences = {
         "single_agent": ("copilot_assistant", "workflow_operator", "research_synthesizer"),
         "single_agent_with_skills": (
+            "business_ui_operator",
             "workflow_operator",
             "rag_knowledge_assistant",
             "knowledge_steward",
@@ -693,6 +694,71 @@ def _contains_case_signal(case_text: str, signals: tuple[str, ...]) -> bool:
     return any(signal in case_text for signal in signals)
 
 
+def _is_business_ui_operator_case(discovery: DiscoveryArtifact | None, canvas: CanvasArtifact | None) -> bool:
+    text = _case_text(discovery, canvas)
+    has_ui = _contains_case_signal(
+        text,
+        ("portal", "pantalla", "interfaz", "formulario", "backoffice", "web app", "aplicacion sin api", "aplicación sin api"),
+    )
+    has_write = _contains_case_signal(
+        text,
+        ("crear", "registrar", "actualizar", "guardar", "enviar", "aprobar", "cargar", "confirmar"),
+    )
+    has_control = _contains_case_signal(
+        text,
+        ("descuento", "limite", "límite", "monto", "permiso", "rol", "politica", "política", "verificar", "comprobar", "recibo"),
+    )
+    return has_ui and has_write and has_control
+
+
+def _operational_profile_for_case(
+    discovery: DiscoveryArtifact | None,
+    canvas: CanvasArtifact | None,
+) -> "OperationalCapabilityProfile":
+    from app.models import OperationalCapabilityProfile
+
+    text = _case_text(discovery, canvas)
+    if not _is_business_ui_operator_case(discovery, canvas):
+        return OperationalCapabilityProfile()
+    knowledge_modes: list[str] = []
+    if _contains_case_signal(text, ("manual", "procedimiento", "faq", "document", "politica", "política")):
+        knowledge_modes.append("vector_retrieval")
+    if _contains_case_signal(text, ("rol", "permiso", "cliente", "entidad", "dependencia", "relacion", "relación")):
+        knowledge_modes.append("business_graph")
+    required_capabilities = ["browser_observe", "browser_execute", "action_verification"]
+    if knowledge_modes:
+        required_capabilities.append("knowledge_retrieval")
+    if "business_graph" in knowledge_modes:
+        required_capabilities.append("business_graph_query")
+    if _contains_case_signal(text, ("descuento", "limite", "límite", "monto", "estado", "politica", "política")):
+        required_capabilities.append("business_policy_evaluation")
+    return OperationalCapabilityProfile(
+        interaction_channels=["browser_ui"],
+        knowledge_capabilities=knowledge_modes,
+        action_capabilities=["browser_observe", "browser_execute", "transactional_write"],
+        control_capabilities=["approval_gate", "action_verification", "checkpoint_resume"],
+        evidence_capabilities=["audit_log", "screenshot", "result_receipt"],
+        interaction_channel="browser_ui",
+        archetype_key="business_ui_operator",
+        knowledge_modes=knowledge_modes,
+        required_capabilities=_normalized_list(required_capabilities),
+        required_controls=["approval_gate", "audit_log", "action_verification"],
+        clarifying_questions=[
+            "Existe una API oficial o la operacion debe hacerse en el portal?",
+            "Que acciones requieren aprobacion humana o comprobacion posterior?",
+        ],
+        operational_signals={
+            "has_browser_ui": True,
+            "has_operational_write": True,
+            "has_policy_rules": "business_policy_evaluation" in required_capabilities,
+            "has_business_graph": "business_graph" in knowledge_modes,
+            "has_verification": True,
+        },
+        confidence=0.84,
+        source_refs=["discovery", "canvas"],
+    )
+
+
 def _merge_implication_lines(*groups: Iterable[str]) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -976,6 +1042,16 @@ def _case_tool_implications(
         implications.append("outbound_notification: cerrar el ciclo con el owner o usuario por canal gobernado.")
     if _contains_case_signal(text, ("actualizar", "registrar", "guardar", "crear caso", "create ticket")):
         implications.append("transactional_write: ejecutar escrituras solo con boundary, idempotencia y aprobacion.")
+    if _is_business_ui_operator_case(discovery, canvas):
+        implications.extend(
+            [
+                "browser_observe: leer estado y estructura de la interfaz antes de actuar.",
+                "browser_execute: ejecutar clicks, escritura y confirmaciones solo bajo permisos aprobados.",
+                "business_policy_evaluation: resolver allow, deny o approval_required antes de side effects.",
+                "action_verification: comprobar recibo, estado final o evidencia observable despues de ejecutar.",
+                "audit_event_write: registrar decision, evidencia, aprobacion y resultado.",
+            ]
+        )
     if _contains_case_signal(text, ("programar", "schedule", "agendar", "cron", "diario", "semanal")):
         implications.append("scheduler: reanudar trabajos programados o asincronos con limites de reintento.")
     return implications
@@ -993,6 +1069,14 @@ def _case_memory_implications(
         implications.append("source_ref_grounding: guardar referencias y version de fuente, no cuerpos completos.")
     if _contains_case_signal(text, ("actualizar", "registrar", "aprobar", "autorizar", "side effect")):
         implications.append("approval_checkpoint: persistir estado previo/posterior a acciones sensibles.")
+    if _is_business_ui_operator_case(discovery, canvas):
+        implications.extend(
+            [
+                "objective_progress_state: conservar objetivo vigente, version y progreso por criterio.",
+                "evidence_log: guardar referencias a capturas, recibos y verificaciones sin mezclarlo con memoria conversacional.",
+                "business_graph_refs: mantener entidades, roles y dependencias como capa estructurada separada del RAG textual.",
+            ]
+        )
     if _contains_case_signal(text, ("handoff", "escalar", "derivar", "humano")):
         implications.append("handoff_resume_context: retomar desde el owner y payload correcto.")
     return implications
@@ -1056,6 +1140,14 @@ def _enrich_design_alternative(
         ]
     )
     business_metrics = _normalized_list([*_business_metrics(discovery, canvas), *alternative.business_metrics])
+    operational_profile = _operational_profile_for_case(discovery, canvas)
+    if operational_profile.archetype_key:
+        archetype_entry = PatternCatalogEntry(
+            family="agent_archetype",
+            key="business_ui_operator",
+            label="Operador de aplicaciones de negocio",
+            summary="El caso requiere operar una interfaz de negocio con reglas, permisos, aprobaciones y evidencia.",
+        )
     projection = alternative.blueprint_projection
     projection_update = {
         "architecture": projection.architecture or alternative.architecture,
@@ -1070,6 +1162,7 @@ def _enrich_design_alternative(
                 f"Mantenibilidad: {alternative.maintainability or 'medium'}",
             ]
         ),
+        "operational_profile": operational_profile,
     }
     return alternative.model_copy(
         update={
@@ -1105,6 +1198,7 @@ def _enrich_design_alternative(
             ),
             "coordination_model": alternative.coordination_model or canonical_architecture,
             "blueprint_projection": projection.model_copy(update=projection_update),
+            "operational_profile": operational_profile,
         }
     )
 
@@ -1408,6 +1502,19 @@ def build_design_recommendation_artifact(
     definition: RequirementsDefinitionOutput,
 ) -> DesignRecommendationArtifact:
     alternatives = _build_fallback_alternatives(discovery, canvas)
+    operational_profile = _operational_profile_for_case(discovery, canvas)
+    if operational_profile.archetype_key:
+        alternatives = [
+            item.model_copy(
+                update={
+                    "operational_profile": operational_profile,
+                    "blueprint_projection": item.blueprint_projection.model_copy(
+                        update={"operational_profile": operational_profile}
+                    ),
+                }
+            )
+            for item in alternatives
+        ]
     fit_matrix: list[DesignFitMatrixEntry] = []
     for requirement in _definition_requirements(definition)[:18]:
         fit_matrix.append(
@@ -1443,6 +1550,7 @@ def build_design_recommendation_artifact(
         missing_information=_normalized_list(
             [item.question for item in definition.open_questions if _definition_question_blocks_design(item)]
         ),
+        operational_profile=operational_profile,
         summary="Comparador inicial de alternativas construido desde catalogos gobernados y Definition aprobado.",
     )
 

@@ -113,6 +113,45 @@ class SuccessCriterion(ContractModel):
     source: str = ""
 
 
+class ObjectiveSuccessCriterionV1(ContractModel):
+    criterion_id: str = ""
+    statement: str = ""
+    evidence_refs: list[str] = PydanticField(default_factory=list)
+    verification_method: str = ""
+
+
+class ObjectiveTerminationConditionsV1(ContractModel):
+    success: list[str] = PydanticField(default_factory=list)
+    stop: list[str] = PydanticField(default_factory=list)
+
+
+class ObjectiveContractV1(ContractModel):
+    objective_id: str = ""
+    level: Literal["business", "operational", "run", "delegated"] = "operational"
+    parent_objective_id: str | None = None
+    statement: str = ""
+    owner: str = "business_owner"
+    status: Literal["inferred", "confirmed", "rejected", "superseded"] = "inferred"
+    source_refs: list[str] = PydanticField(default_factory=list)
+    confidence: float = 0.0
+    success_criteria: list[ObjectiveSuccessCriterionV1] = PydanticField(default_factory=list)
+    constraint_refs: list[str] = PydanticField(default_factory=list)
+    termination_conditions: ObjectiveTerminationConditionsV1 = PydanticField(default_factory=ObjectiveTerminationConditionsV1)
+    progress_signals: list[str] = PydanticField(default_factory=list)
+    mutation_policy: Literal["immutable_during_run", "human_approval_required", "bounded_replanning"] = "human_approval_required"
+    runtime_tracking: Literal["not_required", "recommended", "required"] = "not_required"
+    version: int = 1
+
+
+class ObjectiveContractBundleV1(ContractModel):
+    contract_version: Literal["objective-contract.v1"] = "objective-contract.v1"
+    objectives: list[ObjectiveContractV1] = PydanticField(default_factory=list)
+    constraints: list[str] = PydanticField(default_factory=list)
+    source_refs: list[str] = PydanticField(default_factory=list)
+    active_objective_id: str = ""
+    policy_version: str = "objective-rollout-policy.v1"
+
+
 class BehaviorState(ContractModel):
     name: str
     actor: str
@@ -733,6 +772,7 @@ class ContractReference(ContractModel):
 class ConstructionPackV1(CanonicalContractBase):
     schema_version: Literal["construction-pack.v1"] = "construction-pack.v1"
     blueprint_ref: ContractReference
+    objective_contract: ObjectiveContractBundleV1 = PydanticField(default_factory=ObjectiveContractBundleV1)
     components: list[ConstructionComponent] = PydanticField(default_factory=list)
     topology: dict[str, Any] = PydanticField(default_factory=dict)
     multi_agent_benchmark: MultiAgentBenchmarkV1 | None = None
@@ -806,6 +846,7 @@ class AcpV2RuntimeAgent(ContractModel):
     agent_key: str
     role: str
     goal: str
+    objective_id: str = ""
     runtime_mode: str = ""
     inputs: list[str]
     outputs: list[str]
@@ -1206,6 +1247,7 @@ class AgentConstructionPackageV2(CanonicalContractBase):
     portable_manifest: AcpV2PortableManifest
     migration: AcpV2MigrationInfo
     system_specification: dict[str, Any]
+    objective_contract: ObjectiveContractBundleV1 = PydanticField(default_factory=ObjectiveContractBundleV1)
     build_plan: AcpV2BuildPlan
     agent_runtime: AcpV2AgentRuntime
     implementation_decisions: list[AcpV2ImplementationDecision]
@@ -1356,6 +1398,7 @@ class BlueprintCoreV1(CanonicalContractBase):
     identity: BlueprintIdentity
     purpose: BlueprintPurpose
     scope: BlueprintScope
+    objective_contract: ObjectiveContractBundleV1 = PydanticField(default_factory=ObjectiveContractBundleV1)
     behavior_spec: BehaviorSpecV1
     heuristic_decision: HeuristicDecisionV1
     tool_contracts: list[ToolContractV1] = PydanticField(default_factory=list)

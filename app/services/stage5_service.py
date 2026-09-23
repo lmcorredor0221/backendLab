@@ -50,6 +50,11 @@ FEATURE_FLAG_DELIVERABLE_CATALOG = "deliverable_catalog_enabled"
 FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN = "deliverable_governance_admin_enabled"
 FEATURE_FLAG_ACP_INHERITED_UNCERTAINTY = "acp_inherited_uncertainty_v1"
 FEATURE_FLAG_LEGACY_PREMIUM_MIGRATION = "legacy_premium_migration_v1"
+FEATURE_FLAG_OPERATIONAL_ARCHITECTURE_DETECTION = "operational_architecture_detection_v1"
+FEATURE_FLAG_OBJECTIVE_CONTRACT = "objective_contract_v1"
+FEATURE_FLAG_OBJECTIVE_QUESTIONS = "objective_questions_v1"
+FEATURE_FLAG_OBJECTIVE_GATE = "objective_gate_v1"
+FEATURE_FLAG_OBJECTIVE_LOOP = "objective_loop_v1"
 
 SPECIALIST_RUN_KINDS = ("evaluation_specialist", "risk_specialist", "artifact_specialist")
 

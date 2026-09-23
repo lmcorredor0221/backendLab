@@ -408,6 +408,7 @@ class StageOperationResponse(BaseModel):
 
 STAGE_OPERATION_HEARTBEAT_TTL = timedelta(minutes=30)
 STAGE_OPERATION_HEARTBEAT_TTL_BY_ACTION = {
+    "analyze_discovery": timedelta(minutes=30),
     "generate_estimation_report": timedelta(minutes=8),
 }
 STAGE_OPERATION_ACTIVE_STATUSES = {
@@ -1524,9 +1525,48 @@ def upsert_construction_question_response(
     record.expected_answer_format = question.expected_answer_format
     record.target_owner = question.target_owner
     record.blocking = question.blocking
+    base_decision_context = {
+        **dict(question.decision_context or {}),
+        "question_kind": question.question_kind,
+        "subject_type": question.subject_type,
+        "subject_id": question.subject_id,
+        "allowed_decisions": list(question.allowed_decisions or []),
+        "answer_semantics": question.answer_semantics,
+        "contract_version": question.contract_version,
+    }
+    if payload.decision_context:
+        base_decision_context.update(payload.decision_context)
+    if payload.decision == "reopen":
+        record.status = "open"
+        record.blocking = question.blocking
+        record.answer_text = ""
+        record.owner_role = payload.owner_role.strip() or question.owner_role or question.target_owner
+        record.impacted_artifacts = payload.impacted_artifacts or question.impacted_artifacts
+        record.decision_context = {
+            **base_decision_context,
+            "route_decision": payload.decision,
+            "domain_decision": "reopen",
+            "reopened_by_user_id": str(current_user.id),
+            "reopened_at": now.isoformat(),
+        }
+        record.answered_by_user_id = None
+        record.answered_by_display = ""
+        record.answered_at = None
+        record.resolved_at = None
+        record.updated_at = now
+        session.add(record)
+        session.flush()
+        return record
+
     is_delegate = payload.decision == "delegate"
     is_dismiss = payload.decision == "dismiss"
     is_choose = payload.decision == "choose_option"
+    if question.question_kind == "objective_validation" and (is_delegate or is_dismiss):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Objective validation questions must be confirmed, corrected, rejected, or reopened.",
+        )
+    domain_decision = str(base_decision_context.get("domain_decision") or "").strip()
     normalized_answer = payload.answer_text.strip()
     if is_choose and not normalized_answer:
         normalized_answer = payload.selected_option_key.strip()
@@ -1548,6 +1588,18 @@ def upsert_construction_question_response(
     record.answer_text = normalized_answer
     record.owner_role = payload.owner_role.strip() or question.owner_role or question.target_owner
     record.impacted_artifacts = payload.impacted_artifacts or question.impacted_artifacts
+    selected_option = payload.selected_option_key.strip()
+    if question.question_kind == "objective_validation":
+        if is_choose:
+            domain_decision = selected_option or normalized_answer
+        elif payload.decision == "answer":
+            domain_decision = domain_decision or "correct"
+    record.decision_context = {
+        **base_decision_context,
+        "route_decision": payload.decision,
+        "domain_decision": domain_decision,
+        "selected_option_key": selected_option,
+    }
     record.answered_by_user_id = current_user.id
     record.answered_by_display = current_user.full_name or current_user.email
     record.answered_at = now
@@ -5294,10 +5346,10 @@ def _execute_propose_design(
 _STAGE_OPERATION_STEPS_BY_ACTION: dict[str, list[tuple[str, str]]] = {
     "analyze_discovery": [
         ("queued", "Solicitud recibida"),
-        ("normalize", "Estructuracion de contexto"),
-        ("analysis", "Analisis de necesidad"),
+        ("normalize", "Contexto de Discovery"),
+        ("analysis", "Necesidad y alcance"),
         ("questions", "Preguntas y gaps"),
-        ("persist", "Publicacion de Discover"),
+        ("persist", "Resultado de Discovery"),
     ],
     "define_requirements": [
         ("queued", "Solicitud recibida"),
@@ -5408,6 +5460,7 @@ def _recover_stale_stage_operation(db: Session, operation: StageOperationRecord)
     operation.detail = "La operacion quedo sin heartbeat y requiere reintento explicito."
     operation.error_message = "Stage operation heartbeat expired before completion."
     operation.technical_detail = "stage_operation_stale"
+    operation.steps = _stage_operation_steps(operation.current_step, action=operation.action, failed=True)
     operation.updated_at = now
     operation.completed_at = now
     operation.expires_at = None
@@ -5500,9 +5553,13 @@ def _update_stage_operation(
     )
     if result_artifact_id is not None:
         operation.result_artifact_id = result_artifact_id
-    if error_message:
+    if status_value == StageOperationStatus.failed:
+        if error_message:
+            operation.error_message = error_message
+        if technical_detail:
+            operation.technical_detail = technical_detail
+    else:
         operation.error_message = error_message
-    if technical_detail:
         operation.technical_detail = technical_detail
     operation.updated_at = now
     operation.heartbeat_at = now

@@ -33,7 +33,8 @@ from app.contracts.canonical_v1 import (
     SuccessCriterion,
     ToolContractV1,
 )
-from app.models import PatternCatalogEntry, SessionSnapshot
+from app.models import ObjectiveContractBundle, PatternCatalogEntry, SessionSnapshot
+from app.services.objective_contracts import active_objective, build_objective_contract_bundle
 
 _PROMPT_ARTIFACT_CACHE: dict[tuple[str, str], PromptArtifactV1] = {}
 _SUPPORTED_REASONING_PATTERNS = {"Plan-and-Execute", "ReAct"}
@@ -50,9 +51,9 @@ _ROLE_MEMORY_TASK_KINDS = {
     "recovery": "recovery_runtime",
 }
 _ROLE_CONTRACT_CONTEXT_SOURCES = {
-    "planner": ["blueprint-core.v1", "behavior-spec.v1", "heuristic-decision.v1", "short-term-memory.v1"],
-    "executor": ["behavior-spec.v1", "memory-policy.v1", "short-term-memory.v1"],
-    "evaluator": ["evaluation-pack.v1", "behavior-spec.v1", "heuristic-decision.v1", "short-term-memory.v1"],
+    "planner": ["blueprint-core.v1", "objective-contract.v1", "behavior-spec.v1", "heuristic-decision.v1", "short-term-memory.v1"],
+    "executor": ["objective-contract.v1", "behavior-spec.v1", "memory-policy.v1", "short-term-memory.v1"],
+    "evaluator": ["objective-contract.v1", "evaluation-pack.v1", "behavior-spec.v1", "heuristic-decision.v1", "short-term-memory.v1"],
     "tool_use": ["tool-contract.v1", "llm-policy.v1", "short-term-memory.v1"],
     "memory": ["memory-policy.v1", "behavior-spec.v1", "short-term-memory.v1", "knowledge-manifest.v1"],
     "retrieval": ["knowledge-contract.v1", "memory-policy.v1", "knowledge-manifest.v1", "short-term-memory.v1"],
@@ -129,6 +130,27 @@ def stable_hash_payload(value: Any) -> Any:
     return value
 
 
+def objective_payload(bundle: ObjectiveContractBundle) -> dict[str, Any]:
+    objective = active_objective(bundle)
+    return objective.model_dump(mode="json") if objective is not None else {}
+
+
+def augment_objective_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    if not schema or schema.get("type") != "object":
+        return schema
+    updated = dict(schema)
+    properties = dict(updated.get("properties", {}))
+    properties.setdefault("objective_id", {"type": "string"})
+    properties.setdefault("criterion_ids", {"type": "array", "items": {"type": "string"}})
+    properties.setdefault("evidence_refs", {"type": "array", "items": {"type": "string"}})
+    properties.setdefault("objective_progress", {"type": "string"})
+    properties.setdefault("drift_detected", {"type": "boolean"})
+    properties.setdefault("termination_reason", {"type": "string"})
+    properties.setdefault("replan_reason", {"type": "string"})
+    updated["properties"] = properties
+    return updated
+
+
 def evaluation_case_key(case: Any, index: int) -> str:
     raw = getattr(case, "case_key", None) or getattr(case, "name", None) or getattr(case, "title", None)
     if isinstance(raw, str) and raw.strip():
@@ -168,8 +190,13 @@ def prompt_variables(tool_contracts: Sequence[ToolContractV1], success_criteria:
     variables = [
         PromptVariable(
             name="goal",
-            description="Objetivo principal del blueprint en la ejecucion actual.",
-            source_paths=["discovery.desired_outcome", "canvas.user_goal"],
+            description="Objetivo activo confirmado o inferido para la ejecucion actual.",
+            source_paths=["objective-contract.v1.active_objective", "canvas.user_goal", "discovery.desired_outcome"],
+        ),
+        PromptVariable(
+            name="objective_contract",
+            description="Contrato portable con objetivo, criterios, restricciones, senales de progreso y condiciones de terminacion.",
+            source_paths=["objective-contract.v1"],
         ),
         PromptVariable(
             name="constraints",
@@ -945,6 +972,7 @@ class Stage4CompilerContext:
     tool_contracts: list[ToolContractV1]
     memory_policy: MemoryPolicyV1
     knowledge_contract: KnowledgeContractV1
+    objective_contract: ObjectiveContractBundle
     assembled_role_contexts: dict[str, RoleAssembledContext]
     success_criteria: list[SuccessCriterion]
     selected_architecture: str
@@ -1027,10 +1055,13 @@ class ContextNormalizer:
         discovery = snapshot.discovery
         canvas = snapshot.canvas
         blueprint = snapshot.blueprint
+        objective_contract = build_objective_contract_bundle(snapshot)
+        objective = active_objective(objective_contract)
 
         goal = coalesce(
-            discovery.desired_outcome if discovery is not None else None,
+            objective.statement if objective is not None else None,
             canvas.user_goal if canvas is not None else None,
+            discovery.desired_outcome if discovery is not None else None,
             snapshot.session.title,
             fallback="Objetivo no documentado.",
         )
@@ -1106,6 +1137,7 @@ class ContextNormalizer:
             tool_contracts=list(tool_contracts),
             memory_policy=memory_policy,
             knowledge_contract=knowledge_contract,
+            objective_contract=objective_contract,
             assembled_role_contexts=assembled_role_contexts,
             success_criteria=list(success_criteria),
             selected_architecture=selected_architecture,
@@ -1984,6 +2016,7 @@ class LLMPromptCompiler:
             llm_policy,
             context.memory_policy,
             context.knowledge_contract,
+            context.objective_contract,
             context.tool_contracts,
         )
         role_contexts = context.assembled_role_contexts
@@ -1993,18 +2026,19 @@ class LLMPromptCompiler:
             title=f"System prompt ({behavior.compiler_label})",
             content=render_system_prompt(context.snapshot, context.success_criteria, behavior.compiler_label),
             variables=context.prompt_variables,
-            context_sources=["blueprint-core.v1", "heuristic-decision.v1"],
+            context_sources=["blueprint-core.v1", "objective-contract.v1", "heuristic-decision.v1"],
             output_schema=self._output_schema("system", behavior.compiler_key),
             guardrails=context.blueprint_guardrails,
             stop_conditions=context.stop_conditions,
             fallback="Escalar a revision humana si el contrato no cubre la decision requerida.",
             evaluation_case_keys=[case.key for case in context.evaluation_cases],
-            input_contracts=["blueprint-core.v1", "heuristic-decision.v1"],
+            input_contracts=["blueprint-core.v1", "objective-contract.v1", "heuristic-decision.v1"],
             dependency_payload={
                 "compiler_key": behavior.compiler_key,
                 "guardrails": context.blueprint_guardrails,
                 "success_criteria": [item.model_dump(mode="json") for item in context.success_criteria],
                 "decision_summary": heuristic_decision.decision_summary,
+                "objective_contract": objective_payload(context.objective_contract),
             },
             note="Prompt base del sistema gobernado por el compilador y los contratos aprobados.",
         )
@@ -2016,6 +2050,7 @@ class LLMPromptCompiler:
                 [
                     behavior.prompt_hints["planner"],
                     f"Objetivo actual: {context.goal}",
+                    f"Objective contract: {context.objective_contract.active_objective_id or 'sin objetivo activo'}",
                     "Estados compilados:",
                     format_states(behavior.behavior_spec.states),
                     f"Criteria de cierre: {', '.join(behavior.behavior_spec.termination_criteria)}",
@@ -2028,9 +2063,10 @@ class LLMPromptCompiler:
             stop_conditions=context.stop_conditions,
             fallback="Si el contexto no alcanza, devolver needs-resolution con la decision faltante.",
             evaluation_case_keys=[case.key for case in context.evaluation_cases],
-            input_contracts=["behavior-spec.v1", "heuristic-decision.v1"],
+            input_contracts=["objective-contract.v1", "behavior-spec.v1", "heuristic-decision.v1"],
             dependency_payload={
                 "compiler_key": behavior.compiler_key,
+                "objective_contract": objective_payload(context.objective_contract),
                 "states": [state.model_dump(mode="json") for state in behavior.behavior_spec.states],
                 "termination": behavior.behavior_spec.termination_criteria,
                 "reasoning_pattern": behavior.behavior_spec.reasoning_pattern,
@@ -2044,6 +2080,8 @@ class LLMPromptCompiler:
             content="\n".join(
                 [
                     behavior.prompt_hints["executor"],
+                    f"Objetivo actual: {context.goal}",
+                    f"Objective contract: {context.objective_contract.active_objective_id or 'sin objetivo activo'}",
                     "Solo puedes avanzar un estado permitido por turno.",
                     "Estados compilados:",
                     format_states(behavior.behavior_spec.states),
@@ -2058,9 +2096,10 @@ class LLMPromptCompiler:
             stop_conditions=context.stop_conditions,
             fallback="Solicitar remediation o approval antes de continuar cuando un estado quede bloqueado.",
             evaluation_case_keys=[case.key for case in context.evaluation_cases],
-            input_contracts=["behavior-spec.v1", "memory-policy.v1"],
+            input_contracts=["objective-contract.v1", "behavior-spec.v1", "memory-policy.v1"],
             dependency_payload={
                 "compiler_key": behavior.compiler_key,
+                "objective_contract": objective_payload(context.objective_contract),
                 "states": [state.model_dump(mode="json") for state in behavior.behavior_spec.states],
                 "checkpoint_policy": behavior.behavior_spec.checkpoint_policy,
                 "timeout_policy": behavior.behavior_spec.timeout_policy,
@@ -2075,6 +2114,8 @@ class LLMPromptCompiler:
             content="\n".join(
                 [
                     behavior.prompt_hints["evaluator"],
+                    f"Objetivo actual: {context.goal}",
+                    f"Objective contract: {context.objective_contract.active_objective_id or 'sin objetivo activo'}",
                     "Valida readiness, termination, retries, fallbacks y trazabilidad antes de cerrar.",
                     f"Acceptance cases: {', '.join(case.key for case in context.evaluation_cases) or 'sin casos declarados'}",
                     f"Termination criteria: {', '.join(behavior.behavior_spec.termination_criteria)}",
@@ -2087,9 +2128,10 @@ class LLMPromptCompiler:
             stop_conditions=context.stop_conditions,
             fallback="Si la evaluacion no es concluyente, marcar blocked y describir la evidencia faltante.",
             evaluation_case_keys=[case.key for case in context.evaluation_cases],
-            input_contracts=["evaluation-pack.v1", "behavior-spec.v1", "heuristic-decision.v1"],
+            input_contracts=["objective-contract.v1", "evaluation-pack.v1", "behavior-spec.v1", "heuristic-decision.v1"],
             dependency_payload={
                 "compiler_key": behavior.compiler_key,
+                "objective_contract": objective_payload(context.objective_contract),
                 "evaluation_cases": [case.model_dump(mode="json") for case in context.evaluation_cases],
                 "termination": behavior.behavior_spec.termination_criteria,
             },
@@ -2377,6 +2419,7 @@ class LLMPromptCompiler:
         dependency_payload: dict[str, Any],
         note: str,
     ) -> PromptArtifactV1:
+        output_schema = augment_objective_output_schema(output_schema)
         payload_hash = hashlib.sha256(
             json.dumps(
                 stable_hash_payload(
@@ -2431,6 +2474,7 @@ class LLMPromptCompiler:
         llm_policy: LLMPolicyV1,
         memory_policy: MemoryPolicyV1,
         knowledge_contract: KnowledgeContractV1,
+        objective_contract: ObjectiveContractBundle,
         tool_contracts: Sequence[ToolContractV1],
     ) -> str:
         payload = {
@@ -2439,6 +2483,7 @@ class LLMPromptCompiler:
             "llm_policy": llm_policy.model_dump(mode="json"),
             "memory_policy": memory_policy.model_dump(mode="json"),
             "knowledge_contract": knowledge_contract.model_dump(mode="json"),
+            "objective_contract": objective_contract.model_dump(mode="json"),
             "tool_contracts": [tool.model_dump(mode="json") for tool in tool_contracts],
         }
         return hashlib.sha256(

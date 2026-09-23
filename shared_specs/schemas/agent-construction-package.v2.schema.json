@@ -1467,6 +1467,11 @@
           "title": "Memory Refs",
           "type": "array"
         },
+        "objective_id": {
+          "default": "",
+          "title": "Objective Id",
+          "type": "string"
+        },
         "outputs": {
           "items": {
             "type": "string"
@@ -2403,6 +2408,217 @@
       ],
       "title": "CanonicalProvenanceEntry",
       "type": "object"
+    },
+    "ObjectiveContractBundleV1": {
+      "additionalProperties": false,
+      "properties": {
+        "active_objective_id": {
+          "default": "",
+          "title": "Active Objective Id",
+          "type": "string"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "contract_version": {
+          "const": "objective-contract.v1",
+          "default": "objective-contract.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "objectives": {
+          "items": {
+            "$ref": "#/$defs/ObjectiveContractV1"
+          },
+          "title": "Objectives",
+          "type": "array"
+        },
+        "policy_version": {
+          "default": "objective-rollout-policy.v1",
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "title": "ObjectiveContractBundleV1",
+      "type": "object"
+    },
+    "ObjectiveContractV1": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "default": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "constraint_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraint Refs",
+          "type": "array"
+        },
+        "level": {
+          "default": "operational",
+          "enum": [
+            "business",
+            "operational",
+            "run",
+            "delegated"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "mutation_policy": {
+          "default": "human_approval_required",
+          "enum": [
+            "immutable_during_run",
+            "human_approval_required",
+            "bounded_replanning"
+          ],
+          "title": "Mutation Policy",
+          "type": "string"
+        },
+        "objective_id": {
+          "default": "",
+          "title": "Objective Id",
+          "type": "string"
+        },
+        "owner": {
+          "default": "business_owner",
+          "title": "Owner",
+          "type": "string"
+        },
+        "parent_objective_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Objective Id"
+        },
+        "progress_signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Progress Signals",
+          "type": "array"
+        },
+        "runtime_tracking": {
+          "default": "not_required",
+          "enum": [
+            "not_required",
+            "recommended",
+            "required"
+          ],
+          "title": "Runtime Tracking",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "statement": {
+          "default": "",
+          "title": "Statement",
+          "type": "string"
+        },
+        "status": {
+          "default": "inferred",
+          "enum": [
+            "inferred",
+            "confirmed",
+            "rejected",
+            "superseded"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "success_criteria": {
+          "items": {
+            "$ref": "#/$defs/ObjectiveSuccessCriterionV1"
+          },
+          "title": "Success Criteria",
+          "type": "array"
+        },
+        "termination_conditions": {
+          "$ref": "#/$defs/ObjectiveTerminationConditionsV1"
+        },
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "title": "ObjectiveContractV1",
+      "type": "object"
+    },
+    "ObjectiveSuccessCriterionV1": {
+      "additionalProperties": false,
+      "properties": {
+        "criterion_id": {
+          "default": "",
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "statement": {
+          "default": "",
+          "title": "Statement",
+          "type": "string"
+        },
+        "verification_method": {
+          "default": "",
+          "title": "Verification Method",
+          "type": "string"
+        }
+      },
+      "title": "ObjectiveSuccessCriterionV1",
+      "type": "object"
+    },
+    "ObjectiveTerminationConditionsV1": {
+      "additionalProperties": false,
+      "properties": {
+        "stop": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Stop",
+          "type": "array"
+        },
+        "success": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Success",
+          "type": "array"
+        }
+      },
+      "title": "ObjectiveTerminationConditionsV1",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -2478,6 +2694,9 @@
     },
     "migration": {
       "$ref": "#/$defs/AcpV2MigrationInfo"
+    },
+    "objective_contract": {
+      "$ref": "#/$defs/ObjectiveContractBundleV1"
     },
     "portable_manifest": {
       "$ref": "#/$defs/AcpV2PortableManifest"

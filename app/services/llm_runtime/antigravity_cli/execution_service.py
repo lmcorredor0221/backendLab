@@ -154,14 +154,17 @@ class AgyExecutionService:
 
     def resolve_timeout_ms(self, *, timeout_ms: int | None = None) -> int:
         if timeout_ms is not None:
-            return max(1_000, int(timeout_ms))
+            requested_timeout_ms = max(1_000, int(timeout_ms))
+        else:
+            requested_timeout_ms = 0
         env_val = os.getenv("ANTIGRAVITY_EXEC_TIMEOUT_MS", "").strip()
         if env_val:
             try:
                 return max(1_000, int(env_val))
             except ValueError:
                 pass
-        return max(1_000, self._agy_cfg.timeout_ms)
+        configured_timeout_ms = max(1_000, self._agy_cfg.timeout_ms)
+        return max(requested_timeout_ms, configured_timeout_ms)
 
     def resolve_agy_home(self) -> Path:
         env_home = os.getenv("ANTIGRAVITY_HOME", "").strip()

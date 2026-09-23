@@ -101,6 +101,48 @@ CAPABILITY_CATALOG: dict[str, dict[str, str]] = {
         "tool_label": "Scheduler o trigger",
         "capability_covered": "Disparar ejecuciones por eventos o ventanas programadas cuando el flujo lo exige.",
     },
+    "browser_observe": {
+        "label": "Observacion de interfaz",
+        "family": "browser_automation",
+        "tool_key": "browser_observe",
+        "tool_label": "Observacion de interfaz",
+        "capability_covered": "Leer estructura, contenido y estado de una interfaz de negocio sin generar side effects.",
+    },
+    "browser_execute": {
+        "label": "Ejecucion controlada en interfaz",
+        "family": "browser_automation",
+        "tool_key": "browser_execute",
+        "tool_label": "Ejecucion controlada en interfaz",
+        "capability_covered": "Hacer clic, escribir, cargar o confirmar acciones en una interfaz bajo permisos, aprobacion e idempotencia.",
+    },
+    "business_graph_query": {
+        "label": "Consulta de grafo de negocio",
+        "family": "business_graph",
+        "tool_key": "business_graph_query",
+        "tool_label": "Consulta de grafo de negocio",
+        "capability_covered": "Consultar entidades, roles, permisos, dependencias y relaciones estructuradas del negocio.",
+    },
+    "business_policy_evaluation": {
+        "label": "Evaluacion de politica de negocio",
+        "family": "policy_engine",
+        "tool_key": "business_policy_evaluation",
+        "tool_label": "Evaluacion de politica de negocio",
+        "capability_covered": "Resolver allow, deny o approval_required antes de ejecutar acciones operativas.",
+    },
+    "action_verification": {
+        "label": "Verificacion de accion",
+        "family": "verification",
+        "tool_key": "action_verification",
+        "tool_label": "Verificacion de accion",
+        "capability_covered": "Confirmar el resultado contra UI, sistema fuente, recibo o estado final observable.",
+    },
+    "audit_event_write": {
+        "label": "Registro de auditoria",
+        "family": "audit",
+        "tool_key": "audit_event_write",
+        "tool_label": "Registro de auditoria",
+        "capability_covered": "Registrar decision, evidencia, aprobacion y resultado de forma auditable.",
+    },
 }
 
 TOOL_FAMILY_CATALOG: dict[str, dict[str, object]] = {
@@ -151,6 +193,36 @@ TOOL_FAMILY_CATALOG: dict[str, dict[str, object]] = {
         "supported_capabilities": ["scheduler"],
         "suggested_tool_keys": ["scheduler"],
         "estimated_complexity": "medium",
+    },
+    "browser_automation": {
+        "label": "Automatizacion de interfaz de negocio",
+        "supported_capabilities": ["browser_observe", "browser_execute"],
+        "suggested_tool_keys": ["browser_observe", "browser_execute"],
+        "estimated_complexity": "high",
+    },
+    "business_graph": {
+        "label": "Grafo de entidades, roles y permisos",
+        "supported_capabilities": ["business_graph_query"],
+        "suggested_tool_keys": ["business_graph_query"],
+        "estimated_complexity": "medium",
+    },
+    "policy_engine": {
+        "label": "Motor de reglas y politicas",
+        "supported_capabilities": ["business_policy_evaluation"],
+        "suggested_tool_keys": ["business_policy_evaluation"],
+        "estimated_complexity": "medium",
+    },
+    "verification": {
+        "label": "Verificacion de resultado operativo",
+        "supported_capabilities": ["action_verification"],
+        "suggested_tool_keys": ["action_verification"],
+        "estimated_complexity": "medium",
+    },
+    "audit": {
+        "label": "Auditoria de decisiones y evidencia",
+        "supported_capabilities": ["audit_event_write"],
+        "suggested_tool_keys": ["audit_event_write"],
+        "estimated_complexity": "low",
     },
     "messaging_gateway": {
         "label": "Gateway de mensajeria conversacional (Inbound/Outbound)",
@@ -416,6 +488,73 @@ def _coverage_tool_matches(text: str, *, allowed_tool_keys: set[str]) -> list[st
         "semanal",
         "trigger",
         "evento",
+    )
+    register(
+        "browser_observe",
+        "portal",
+        "pantalla",
+        "interfaz",
+        "formulario",
+        "backoffice",
+        "web app",
+        "estado visible",
+        "observar",
+    )
+    register(
+        "browser_execute",
+        "click",
+        "clic",
+        "llenar",
+        "escribir",
+        "cargar",
+        "confirmar",
+        "crear orden",
+        "guardar",
+        "enviar",
+        "portal",
+    )
+    register(
+        "business_graph_query",
+        "rol",
+        "roles",
+        "permiso",
+        "permisos",
+        "cliente",
+        "entidad",
+        "dependencia",
+        "relacion",
+        "relación",
+        "grafo",
+    )
+    register(
+        "business_policy_evaluation",
+        "descuento",
+        "limite",
+        "límite",
+        "monto",
+        "politica",
+        "política",
+        "estado",
+        "approval_required",
+    )
+    register(
+        "action_verification",
+        "verificar",
+        "comprobar",
+        "recibo",
+        "numero de orden",
+        "número de orden",
+        "estado final",
+        "evidencia",
+    )
+    register(
+        "audit_event_write",
+        "auditoria",
+        "auditoría",
+        "trazabilidad",
+        "evidencia",
+        "decision log",
+        "registro de decision",
     )
 
     return matches
@@ -1030,6 +1169,32 @@ def build_placeholder_tool_recommendation(
         business_text,
         ("notificar", "alerta", "avisar", "seguimiento"),
     )
+    has_browser_ui_signal = _contains_any(
+        business_text,
+        (
+            "portal",
+            "pantalla",
+            "interfaz",
+            "formulario",
+            "backoffice",
+            "web app",
+            "aplicacion sin api",
+            "aplicación sin api",
+            "como usuario",
+        ),
+    )
+    raw_policy_rule_signal = _contains_any(
+        business_text,
+        ("descuento", "limite", "límite", "monto", "politica", "política", "estado", "condicion", "condición"),
+    )
+    raw_business_graph_signal = _contains_any(
+        business_text,
+        ("rol", "roles", "permiso", "permisos", "cliente", "entidad", "dependencia", "relacion", "relación", "grafo"),
+    )
+    raw_verification_signal = _contains_any(
+        business_text,
+        ("verificar", "comprobar", "recibo", "numero de orden", "número de orden", "estado final", "evidencia"),
+    )
     has_knowledge_signal = (
         blueprint.knowledge_profile.mode.strip().lower() == "rag"
         or bool(blueprint.knowledge_profile.sources)
@@ -1043,6 +1208,19 @@ def build_placeholder_tool_recommendation(
         or canvas.agent_profile.human_approvals
         or discovery.autonomy_level.strip().lower() == "high"
         or has_write_actions
+    )
+    operational_control_context = has_browser_ui_signal or has_write_actions or needs_human_gate
+    has_policy_rule_signal = raw_policy_rule_signal and (
+        operational_control_context
+        or _contains_any(business_text, ("descuento", "limite", "límite", "monto", "approval_required"))
+    )
+    has_business_graph_signal = raw_business_graph_signal and (
+        operational_control_context
+        or _contains_any(business_text, ("grafo", "relacion", "relación", "dependencia", "rol", "roles", "permiso", "permisos"))
+    )
+    has_verification_signal = raw_verification_signal and (
+        operational_control_context
+        or _contains_any(business_text, ("recibo", "numero de orden", "número de orden", "estado final"))
     )
 
     case_classification = _classify_case(
@@ -1105,6 +1283,98 @@ def build_placeholder_tool_recommendation(
             status="required",
             reason="Inferencia proactiva de consulta al sistema fuente para alimentar el flujo de ejecucion.",
             matched_signals=["operational_system_of_record"],
+        )
+
+    if has_browser_ui_signal:
+        _register_capability(
+            mandatory_capabilities,
+            capability_key="browser_observe",
+            required=True,
+            reason="El flujo debe leer una interfaz de negocio antes de actuar; observar se separa de ejecutar para minimo privilegio.",
+            source_evidence=["discovery.current_process", "canvas.user_goal", "design.selected_alternative.tool_implications"],
+            confidence=0.86,
+        )
+        _register_family(
+            candidate_families,
+            family_key="browser_automation",
+            status="required",
+            reason="Se detecto operacion sobre portal, pantalla o backoffice.",
+            matched_signals=["browser_ui"],
+        )
+        if has_write_actions or _contains_any(business_text, ("crear", "registrar", "guardar", "enviar", "aprobar", "cargar", "confirmar")):
+            _register_capability(
+                mandatory_capabilities,
+                capability_key="browser_execute",
+                required=True,
+                reason="El flujo requiere modificar estado desde una interfaz, por lo que la ejecucion debe declararse como tool separada y auditable.",
+                source_evidence=["discovery.desired_outcome", "canvas.user_goal", "design.selected_alternative.tool_implications"],
+                confidence=0.84,
+            )
+        _register_capability(
+            mandatory_capabilities,
+            capability_key="audit_event_write",
+            required=True,
+            reason="La operacion por navegador necesita decision log y evidencia para auditoria posterior.",
+            source_evidence=["design.selected_alternative.tool_implications", "blueprint.guardrails"],
+            confidence=0.78,
+        )
+        _register_family(
+            candidate_families,
+            family_key="audit",
+            status="required",
+            reason="Las acciones sobre interfaz deben dejar traza de decision, evidencia y resultado.",
+            matched_signals=["browser_ui", "audit_required"],
+        )
+
+    if has_business_graph_signal:
+        _register_capability(
+            mandatory_capabilities,
+            capability_key="business_graph_query",
+            required=True,
+            reason="El caso menciona roles, permisos, clientes, entidades o dependencias que conviene modelar como relaciones estructuradas.",
+            source_evidence=["discovery.current_process", "define.business_rules", "design.selected_alternative.tool_implications"],
+            confidence=0.76,
+        )
+        _register_family(
+            candidate_families,
+            family_key="business_graph",
+            status="required",
+            reason="Se requieren relaciones de negocio consultables antes de planear o ejecutar.",
+            matched_signals=["roles_permissions_entities"],
+        )
+
+    if has_policy_rule_signal:
+        _register_capability(
+            mandatory_capabilities,
+            capability_key="business_policy_evaluation",
+            required=True,
+            reason="El caso requiere resolver reglas de negocio como limites, descuentos, montos, estados o aprobaciones condicionadas.",
+            source_evidence=["define.business_rules", "discovery.constraints", "design.selected_alternative.tool_implications"],
+            confidence=0.8,
+        )
+        _register_family(
+            candidate_families,
+            family_key="policy_engine",
+            status="required",
+            reason="Las reglas de negocio no deben quedar como prompt libre cuando gobiernan side effects.",
+            matched_signals=["policy_rules"],
+        )
+
+    if has_verification_signal or has_browser_ui_signal:
+        _register_capability(
+            mandatory_capabilities,
+            capability_key="action_verification",
+            required=True,
+            reason="El flujo debe verificar recibo, estado final o evidencia observable antes de cerrar.",
+            source_evidence=["discovery.desired_outcome", "evaluation.expected_result", "design.selected_alternative.tool_implications"],
+            confidence=0.82 if has_verification_signal else 0.68,
+        )
+        _register_family(
+            candidate_families,
+            family_key="verification",
+            status="required" if has_verification_signal else "candidate",
+            reason="El resultado operativo debe comprobarse contra UI o sistema fuente.",
+            matched_signals=["verification_required" if has_verification_signal else "browser_ui"],
         )
 
     approval_gate_policy = knowledge_tool_policy["approval_gate"]
@@ -1359,6 +1629,12 @@ def build_placeholder_tool_recommendation(
             "document_ingestion",
             "approval_gate",
             "transactional_write",
+            "browser_observe",
+            "browser_execute",
+            "business_graph_query",
+            "business_policy_evaluation",
+            "action_verification",
+            "audit_event_write",
         }
         if required:
             _register_capability(
@@ -3013,6 +3289,107 @@ def _build_blueprint_tool_from_recommendation(
             contract_review_state="needs-review",
         )
 
+    if entry.tool_key in {
+        "browser_observe",
+        "browser_execute",
+        "business_graph_query",
+        "business_policy_evaluation",
+        "action_verification",
+        "audit_event_write",
+    }:
+        catalog = CAPABILITY_CATALOG[entry.tool_key]
+        side_effects = entry.tool_key in {"browser_execute", "audit_event_write"}
+        approval_required = entry.tool_key == "browser_execute"
+        risk_level = "high" if entry.tool_key == "browser_execute" else "medium" if entry.tool_key in {"business_policy_evaluation", "audit_event_write"} else "low"
+        request_fields = {
+            "browser_observe": ["target_view", "observation_goal", "allowed_selectors"],
+            "browser_execute": ["approved_action", "target_selector", "input_payload", "approval_token"],
+            "business_graph_query": ["entity_type", "entity_id", "relationship_scope"],
+            "business_policy_evaluation": ["policy_key", "actor_role", "action", "facts"],
+            "action_verification": ["expected_result", "verification_source", "receipt_ref"],
+            "audit_event_write": ["event_type", "decision_ref", "evidence_refs", "result"],
+        }[entry.tool_key]
+        return BlueprintTool(
+            name=entry.tool_key,
+            purpose=entry.capability_covered or str(catalog["capability_covered"]),
+            owner=seed.owner or "implementation_owner_pending",
+            archetype=str(catalog["family"]),
+            tool_type="external" if entry.tool_key.startswith("browser") or entry.tool_key.endswith("_query") else "internal",
+            execution_stage="execution",
+            when_to_use={
+                "browser_observe": "Antes de planear o ejecutar, para leer estado visible y validar que la pantalla esperada esta disponible.",
+                "browser_execute": "Solo despues de politica, permisos y aprobacion cuando aplique, para producir una accion UI acotada.",
+                "business_graph_query": "Antes de decidir sobre entidades, roles, dependencias o permisos estructurados.",
+                "business_policy_evaluation": "Antes de cualquier accion sensible para clasificar allow, deny o approval_required.",
+                "action_verification": "Despues de ejecutar para comprobar recibo, estado final o evidencia contra la fuente.",
+                "audit_event_write": "En cada decision material, approval, accion y verificacion para preservar trazabilidad.",
+            }[entry.tool_key],
+            integration_kind={
+                "browser_observe": "browser_automation",
+                "browser_execute": "browser_automation",
+                "business_graph_query": "graph_query",
+                "business_policy_evaluation": "policy_engine",
+                "action_verification": "verification",
+                "audit_event_write": "audit_log",
+            }[entry.tool_key],
+            endpoint_reference=seed.endpoint_reference or f"contract://{entry.tool_key}",
+            auth_reference=seed.auth_reference or "workspace_managed_secret",
+            risk_level=risk_level,
+            requires_approval=approval_required,
+            inputs=request_fields,
+            outputs={
+                "browser_observe": ["ui_observation", "screen_state_ref"],
+                "browser_execute": ["action_receipt", "post_action_state_ref"],
+                "business_graph_query": ["graph_facts", "relationship_refs"],
+                "business_policy_evaluation": ["policy_decision", "policy_reasons"],
+                "action_verification": ["verification_result", "evidence_refs"],
+                "audit_event_write": ["audit_event_ref"],
+            }[entry.tool_key],
+            request_schema={
+                "type": "object",
+                "properties": {field: {"type": "string"} for field in request_fields},
+                "required": request_fields[:2],
+            },
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "result": {"type": "object"},
+                },
+                "required": ["status"],
+            },
+            usage_examples=[
+                {
+                    "title": f"Uso portable de {entry.tool_key}",
+                    "request": {field: f"<{field}>" for field in request_fields},
+                    "response": {"status": "success", "evidence_refs": ["evidence://example"], "result": {}},
+                }
+            ],
+            security_config={
+                "least_privilege": True,
+                "separate_observe_execute": entry.tool_key in {"browser_observe", "browser_execute"},
+                "approval_required": approval_required,
+            },
+            validations=["request_schema_validation", "permission_scope_validation", "evidence_policy_validation"],
+            typed_errors=["POLICY_DENIED", "APPROVAL_REQUIRED", "SOURCE_UNAVAILABLE", "VERIFICATION_FAILED"],
+            permissions=[entry.tool_key],
+            scopes=["workspace", "write" if side_effects else "read"],
+            sensitive_data=["business_record"] if entry.tool_key != "audit_event_write" else ["decision_evidence"],
+            audit_rules=["Registrar actor, objective_id, criterion_ids, input hash, output hash y evidencia asociada."],
+            has_side_effects=side_effects,
+            execution_mode=seed.execution_mode or "sync",
+            approval_policy="Requiere aprobacion humana previa." if approval_required else "No requiere aprobacion por defecto; respetar politica de negocio.",
+            retry_strategy="Retry acotado solo para fallas transitorias; nunca repetir side effects no idempotentes.",
+            idempotency_strategy="Usar idempotency_key por objetivo, paso y accion material.",
+            compensation_strategy="Detener, auditar y pedir remediation si la verificacion falla o queda incierta.",
+            approval_reason="Accion con side effects sobre interfaz de negocio." if approval_required else "",
+            failure_mode="Devolver needs_resolution con evidencia faltante y no continuar el loop.",
+            rate_limit_policy="Limites por workspace, sesion y objetivo para evitar loops o automatizacion excesiva.",
+            timeout_policy="Timeout corto por accion y presupuesto global por ejecucion.",
+            contract_review_state="needs-review",
+        )
+
     raise ValueError(f"Unsupported recommendation tool key for promotion: {entry.tool_key}")
 
 
@@ -3034,7 +3411,9 @@ def _entry_with_contract_seed(
     generic_keys = {
         "read_system_of_record", "transactional_write", "outbound_notification",
         "knowledge_retrieval", "document_ingestion", "approval_gate",
-        "human_handoff", "scheduler",
+        "human_handoff", "scheduler", "browser_observe", "browser_execute",
+        "business_graph_query", "business_policy_evaluation", "action_verification",
+        "audit_event_write",
     }
     matching_connector = None
     if contract_seed.name and contract_seed.name not in generic_keys:

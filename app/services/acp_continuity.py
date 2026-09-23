@@ -264,6 +264,17 @@ def _merge_question_view_group(items: list[ConstructionQuestionViewEntry]) -> Co
             ),
             "options": _merge_question_options(items),
             "impact_analysis": primary.impact_analysis or _first_non_none(item.impact_analysis for item in ranked),
+            "question_kind": primary.question_kind or _first_non_empty(item.question_kind for item in ranked),
+            "subject_type": primary.subject_type or _first_non_empty(item.subject_type for item in ranked),
+            "subject_id": primary.subject_id or _first_non_empty(item.subject_id for item in ranked),
+            "allowed_decisions": merge_unique_strings(
+                decision
+                for item in items
+                for decision in item.allowed_decisions or []
+            ),
+            "answer_semantics": primary.answer_semantics or _first_non_empty(item.answer_semantics for item in ranked),
+            "contract_version": primary.contract_version or 1,
+            "decision_context": primary.decision_context or _first_non_none(item.decision_context for item in ranked) or {},
         }
     )
 
@@ -679,6 +690,13 @@ def build_construction_decision_log(
                 "answered_at": item.answered_at.isoformat() if item.answered_at else None,
                 "resolved_at": item.resolved_at.isoformat() if item.resolved_at else None,
                 "impacted_artifacts": list(item.impacted_artifacts or []),
+                "question_kind": item.question_kind,
+                "subject_type": item.subject_type,
+                "subject_id": item.subject_id,
+                "allowed_decisions": list(item.allowed_decisions or []),
+                "answer_semantics": item.answer_semantics,
+                "contract_version": item.contract_version,
+                "decision_context": dict(item.decision_context or {}),
                 "impact_analysis": analysis.model_dump(mode="json") if analysis else None,
             }
         )
@@ -932,6 +950,29 @@ def _current_question_status(
     return "answered"
 
 
+def _question_decision_context(
+    gap: ConstructionGapEntry,
+    question: ConstructionQuestionEntry,
+    record: ConstructionQuestionResponseRecord | None = None,
+) -> dict[str, Any]:
+    base = {
+        "question_kind": question.question_kind,
+        "subject_type": question.subject_type,
+        "subject_id": question.subject_id,
+        "allowed_decisions": list(question.allowed_decisions),
+        "answer_semantics": question.answer_semantics,
+        "contract_version": question.contract_version,
+        "gap_key": gap.gap_key,
+        "domain": gap.domain,
+        "blocking": question.blocking,
+        "source_sections": list(gap.source_sections),
+        "evidence_paths": list(gap.evidence_paths),
+    }
+    if record is not None and record.decision_context:
+        base.update(record.decision_context)
+    return base
+
+
 def _build_question_view(
     gap: ConstructionGapEntry,
     question: ConstructionQuestionEntry,
@@ -954,6 +995,13 @@ def _build_question_view(
             impacted_artifacts=gap.evidence_paths,
             options=question.options,
             impact_analysis=impact_analysis,
+            question_kind=question.question_kind,
+            subject_type=question.subject_type,
+            subject_id=question.subject_id,
+            allowed_decisions=list(question.allowed_decisions),
+            answer_semantics=question.answer_semantics,
+            contract_version=question.contract_version,
+            decision_context=_question_decision_context(gap, question),
         )
     resolved_status = _current_question_status(question.question_key, record)
     is_actively_blocking = question.blocking if resolved_status == "open" else False
@@ -977,6 +1025,13 @@ def _build_question_view(
         impacted_artifacts=record.impacted_artifacts or gap.evidence_paths,
         options=question.options,
         impact_analysis=impact_analysis,
+        question_kind=question.question_kind,
+        subject_type=question.subject_type,
+        subject_id=question.subject_id,
+        allowed_decisions=list(question.allowed_decisions),
+        answer_semantics=question.answer_semantics,
+        contract_version=question.contract_version,
+        decision_context=_question_decision_context(gap, question, record),
     )
 
 
@@ -1004,6 +1059,17 @@ def _build_question_view_from_record(
         resolved_at=record.resolved_at,
         impacted_artifacts=record.impacted_artifacts,
         impact_analysis=impact_analysis,
+        question_kind=str(record.decision_context.get("question_kind") or "general"),
+        subject_type=str(record.decision_context.get("subject_type") or ""),
+        subject_id=str(record.decision_context.get("subject_id") or ""),
+        allowed_decisions=[
+            str(item)
+            for item in record.decision_context.get("allowed_decisions", [])
+            if str(item).strip()
+        ],
+        answer_semantics=str(record.decision_context.get("answer_semantics") or ""),
+        contract_version=int(record.decision_context.get("contract_version") or 1),
+        decision_context=dict(record.decision_context or {}),
     )
 
 

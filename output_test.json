@@ -1,0 +1,318 @@
+{
+  "summary": "El análisis del descubrimiento confirma la necesidad de un copiloto comercial para la creación asistida de cotizaciones con validación de reglas de descuento, trazabilidad y aprobación humana antes del envío final.",
+  "facts": [
+    {
+      "key": "fact:problem",
+      "statement": "El equipo comercial recibe solicitudes de cotización por correo, WhatsApp y formularios web; la revisión manual, consulta de listas de precios y cálculo de descuentos es lenta y propensa a errores.",
+      "source_refs": [
+        "discovery.problem_statement"
+      ],
+      "confidence": 0.96
+    },
+    {
+      "key": "fact:current_user",
+      "statement": "Los usuarios involucrados en el proceso son vendedores comerciales, coordinador comercial y el jefe comercial en casos de descuentos especiales.",
+      "source_refs": [
+        "discovery.current_user"
+      ],
+      "confidence": 0.95
+    },
+    {
+      "key": "fact:current_process",
+      "statement": "El proceso actual incluye validar la existencia del cliente en CRM, consultar listas de precios vigentes, aplicar reglas de descuento, crear la cotización y solicitar aprobación si aplica.",
+      "source_refs": [
+        "discovery.current_process"
+      ],
+      "confidence": 0.94
+    },
+    {
+      "key": "fact:desired_outcome",
+      "statement": "El objetivo es reducir el tiempo de respuesta, estandarizar la aplicación de reglas comerciales, disminuir errores de precios y asegurar aprobación humana para casos sensibles.",
+      "source_refs": [
+        "discovery.desired_outcome"
+      ],
+      "confidence": 0.95
+    },
+    {
+      "key": "fact:autonomy_level",
+      "statement": "El nivel de autonomía solicitado es alto, pero restringido por revisión humana previa al envío y validación obligatoria de clientes.",
+      "source_refs": [
+        "discovery.autonomy_level"
+      ],
+      "confidence": 0.9
+    },
+    {
+      "key": "fact:constraints",
+      "statement": "Restricciones principales: trazabilidad total, citar política para justificar descuentos, verificar cliente en CRM y detenerse ante conflictos o faltantes.",
+      "source_refs": [
+        "discovery.constraints"
+      ],
+      "confidence": 0.93
+    }
+  ],
+  "inferred_needs": [
+    {
+      "key": "need:policy_retrieval",
+      "statement": "Se requiere un mecanismo estructurado para consultar políticas comerciales vigentes y justificar descuentos aplicados.",
+      "source_refs": [
+        "discovery.current_process",
+        "discovery.constraints"
+      ],
+      "confidence": 0.88
+    },
+    {
+      "key": "need:human_in_the_loop",
+      "statement": "Se requiere un punto de control con aprobación humana (Jefe Comercial) antes del envío final o en descuentos superiores al umbral.",
+      "source_refs": [
+        "discovery.desired_outcome",
+        "discovery.mvp_definition.v1_scope"
+      ],
+      "confidence": 0.91
+    },
+    {
+      "key": "need:audit_trail",
+      "statement": "Se requiere mantener registro de auditoría de cada validación y cálculo de descuento realizado.",
+      "source_refs": [
+        "discovery.constraints",
+        "discovery.operational_baseline.automation_opportunities"
+      ],
+      "confidence": 0.89
+    }
+  ],
+  "assumptions": [
+    {
+      "key": "assumption:crm_client_id",
+      "statement": "Se asume que los clientes existentes cuentan con un identificador único en el CRM/ERP para su verificación inmediata.",
+      "source_refs": [
+        "discovery.constraints"
+      ],
+      "confidence": 0.76
+    },
+    {
+      "key": "assumption:formal_policy_docs",
+      "statement": "Se asume que las políticas de descuento y listas de precios vigentes existen en documentos o tablas consultables.",
+      "source_refs": [
+        "discovery.current_process"
+      ],
+      "confidence": 0.78
+    }
+  ],
+  "ambiguities": [
+    {
+      "key": "ambiguity:discount_threshold_value",
+      "statement": "No se especifica en la captura el porcentaje exacto de descuento que constituye el umbral para requerir aprobación del Jefe Comercial.",
+      "source_refs": [
+        "discovery.current_user",
+        "discovery.mvp_definition.non_delegable_decisions"
+      ],
+      "confidence": 0.7
+    }
+  ],
+  "open_questions": [],
+  "domain_signals": [
+    {
+      "key": "domain:case_type",
+      "statement": "Caso de uso clasificado como copiloto comercial con asistencias de validación, cálculo y generación de borrador.",
+      "source_refs": [
+        "discovery.problem_statement",
+        "discovery.autonomy_level"
+      ],
+      "confidence": 0.86
+    }
+  ],
+  "risk_signals": [
+    {
+      "key": "risk:outdated_prices",
+      "statement": "Riesgo recurrente de aplicar listas de precios desactualizadas si no se garantiza la versión vigente.",
+      "source_refs": [
+        "discovery.operational_baseline.frequent_errors"
+      ],
+      "confidence": 0.85
+    },
+    {
+      "key": "risk:unauthorized_discounts",
+      "statement": "Riesgo de otorgar descuentos fuera de política si las condiciones del cliente se omiten.",
+      "source_refs": [
+        "discovery.operational_baseline.frequent_errors"
+      ],
+      "confidence": 0.83
+    }
+  ],
+  "sensitive_data_signals": [
+    {
+      "key": "sensitive:commercial_pricing",
+      "statement": "El proceso involucra información comercial sensible como listas de precios, márgenes y condiciones especiales por cliente.",
+      "source_refs": [
+        "discovery.problem_statement",
+        "discovery.current_process"
+      ],
+      "confidence": 0.88
+    }
+  ],
+  "missing_information": [],
+  "deferred_resolution_items": [
+    {
+      "source_stage": "discover",
+      "target_stage": "tools",
+      "kind": "integration",
+      "question": "¿Cómo se integrará técnicamente el agente con el CRM/ERP y las vías de entrada (correo, WhatsApp, web) para leer solicitudes y crear borradores?",
+      "recommendation": "Definir especificaciones de conectores y APIs en la etapa Tools.",
+      "reason": "Las herramientas e integraciones técnicas se difieren a la etapa Tools.",
+      "source_refs": [
+        "discovery.problem_statement",
+        "discovery.operational_baseline.automation_opportunities"
+      ]
+    },
+    {
+      "source_stage": "discover",
+      "target_stage": "memory",
+      "kind": "knowledge_retrieval",
+      "question": "¿Cómo se estructurará el almacenamiento y recuperación de listas de precios y políticas comerciales?",
+      "recommendation": "Diseñar la estrategia de memoria y RAG comercial en la etapa Memory.",
+      "reason": "La estrategia de memoria y gestión documental corresponde a la etapa Memory.",
+      "source_refs": [
+        "discovery.current_process",
+        "discovery.constraints"
+      ]
+    },
+    {
+      "source_stage": "discover",
+      "target_stage": "define",
+      "kind": "business_rule",
+      "question": "¿Cuáles son los umbrales porcentuales específicos de descuento para escalar la aprobación al Jefe Comercial?",
+      "recommendation": "Especificar los rangos numéricos y matriz de aprobación en la etapa Define.",
+      "reason": "La cuantificación detallada de reglas de negocio se refina en Define.",
+      "source_refs": [
+        "discovery.current_user",
+        "discovery.mvp_definition.non_delegable_decisions"
+      ]
+    },
+    {
+      "source_stage": "discover",
+      "target_stage": "acp",
+      "kind": "infrastructure_security",
+      "question": "¿Cómo se gestionarán las credenciales de acceso al CRM y la persistencia de los logs de trazabilidad y auditoría?",
+      "recommendation": "Definir secrets, esquemas de auditoría y despliegue en la etapa ACP.",
+      "reason": "Las decisiones de infraestructura, credenciales y despliegue se difieren a ACP.",
+      "source_refs": [
+        "discovery.constraints",
+        "discovery.problem_statement"
+      ]
+    }
+  ],
+  "evidence_refs": [
+    "session.discovery_draft",
+    "discovery.problem_statement",
+    "discovery.current_user",
+    "discovery.current_process",
+    "discovery.desired_outcome",
+    "discovery.constraints"
+  ],
+  "confidence": 0.88,
+  "normalized_discovery_candidate": {
+    "problem_statement": "El equipo comercial recibe solicitudes de cotización por correo, WhatsApp y formularios web. Cada vendedor debe revisar manualmente la información del cliente, consultar listas de precios, validar condiciones comerciales, aplicar descuentos permitidos y registrar la cotización en el CRM/ERP. El proceso es lento, propenso a errores y depende mucho del conocimiento de cada vendedor.",
+    "current_user": "Vendedores comerciales y coordinador comercial. En casos con descuentos especiales interviene el jefe comercial.",
+    "current_process": "Revisar la solicitud del cliente. Buscar si el cliente existe en el CRM. Validar productos, cantidades y disponibilidad. Consultar lista de precios vigente. Aplicar reglas de descuento según tipo de cliente, volumen y margen. Crear cotización en el sistema. Enviar para aprobación si supera el descuento permitido. Enviar cotización final al cliente.",
+    "desired_outcome": "Reducir el tiempo de creación de cotizaciones, estandarizar la aplicación de reglas comerciales, disminuir errores en precios/descuentos y asegurar que los casos sensibles pasen por aprobación humana antes de enviarse al cliente.",
+    "autonomy_level": "high",
+    "constraints": [
+      "Debe dejar trazabilidad de cada acción",
+      "citar la política usada para justificar descuentos",
+      "verificar que el cliente exista antes de actuar",
+      "no inventar datos faltantes y detenerse si hay conflicto entre la solicitud del cliente y las reglas comerciales."
+    ],
+    "operational_baseline": {
+      "current_time_spent": "Mas de 2 dias por semana",
+      "current_cost": "Impacto moderado en tiempo y calidad",
+      "frequent_errors": [
+        "Se aplican listas de precios desactualizadas",
+        "se omiten condiciones especiales del cliente",
+        "se calculan descuentos por fuera de política",
+        "se crean cotizaciones incompletas y no siempre queda evidencia de aprobación comercial."
+      ],
+      "automation_opportunities": [
+        "Automatizar lectura de solicitudes",
+        "recuperación de políticas comerciales",
+        "validación de cliente/productos",
+        "cálculo preliminar de descuento permitido",
+        "creación asistida de cotización en CRM/ERP",
+        "generación de resumen de aprobación y registro de auditoría."
+      ]
+    },
+    "mvp_definition": {
+      "v1_scope": [
+        "El agente debe asistir la creación de cotizaciones estándar para clientes existentes. Debe consultar documentación comercial",
+        "validar reglas de descuento",
+        "preparar los campos requeridos y crear un borrador de cotización en el sistema. La cotización solo se envía al cliente después de revisión humana."
+      ],
+      "out_of_scope": [
+        "No debe negociar precios con el cliente",
+        "aprobar descuentos excepcionales",
+        "modificar listas de precios",
+        "crear nuevos clientes sin revisión",
+        "confirmar inventario crítico ni enviar cotizaciones finales automáticamente."
+      ],
+      "north_star_metric": "Tiempo promedio de creación de cotización, porcentaje de cotizaciones sin reproceso, cumplimiento de reglas de descuento, número de aprobaciones correctamente solicitadas y reducción del tiempo de respuesta al cliente.",
+      "non_delegable_decisions": [
+        "Aprobar descuentos superiores al umbral permitido",
+        "aceptar márgenes negativos",
+        "modificar condiciones contractuales",
+        "crear clientes nuevos",
+        "enviar ofertas vinculantes y aprobar excepciones comerciales."
+      ]
+    },
+    "case_type": "copiloto",
+    "value_statement": "Optimizar y estandarizar el proceso de cotización comercial asistida mediante un agente inteligente, garantizando cumplimiento de políticas y supervisión humana.",
+    "operational_profile": {
+      "interaction_channels": [
+        "correo",
+        "whatsapp",
+        "formularios web"
+      ],
+      "knowledge_capabilities": [
+        "listas_precios",
+        "politicas_descuento",
+        "catalogo_productos"
+      ],
+      "action_capabilities": [
+        "validar_cliente",
+        "calcular_descuento",
+        "crear_borrador_cotizacion"
+      ],
+      "control_capabilities": [
+        "verificar_existencia_cliente",
+        "trazabilidad_auditoria",
+        "aprobacion_humana"
+      ],
+      "evidence_capabilities": [
+        "citar_politica_descuento",
+        "log_auditoria"
+      ],
+      "interaction_channel": "multicanal",
+      "archetype_key": "copiloto_comercial",
+      "knowledge_modes": [
+        "retrieval_politicas",
+        "consulta_precios"
+      ],
+      "required_capabilities": [
+        "lectura_solicitudes",
+        "calculo_descuento",
+        "creacion_borrador_crm"
+      ],
+      "required_controls": [
+        "aprobacion_descuento_especial",
+        "verificacion_cliente_existente"
+      ],
+      "clarifying_questions": [],
+      "operational_signals": {
+        "requiere_crm": true,
+        "requiere_aprobacion_humana": true,
+        "alta_frecuencia_errores_precios": true
+      },
+      "confidence": 0.88,
+      "source_refs": [
+        "session.discovery_draft"
+      ]
+    }
+  }
+}

@@ -57,9 +57,17 @@
           "type": "string"
         },
         "id": {
-          "format": "uuid",
-          "title": "Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
         },
         "phase_order": {
           "items": {
@@ -101,7 +109,6 @@
         }
       },
       "required": [
-        "id",
         "workspace_id",
         "session_id",
         "created_at",
@@ -699,10 +706,27 @@
     "ConstructionQuestionEntry": {
       "additionalProperties": false,
       "properties": {
+        "allowed_decisions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Decisions",
+          "type": "array"
+        },
+        "answer_semantics": {
+          "default": "",
+          "title": "Answer Semantics",
+          "type": "string"
+        },
         "blocking": {
           "default": false,
           "title": "Blocking",
           "type": "boolean"
+        },
+        "contract_version": {
+          "default": 1,
+          "title": "Contract Version",
+          "type": "integer"
         },
         "expected_answer_format": {
           "default": "",
@@ -726,6 +750,11 @@
           "title": "Question Key",
           "type": "string"
         },
+        "question_kind": {
+          "default": "general",
+          "title": "Question Kind",
+          "type": "string"
+        },
         "question_text": {
           "default": "",
           "title": "Question Text",
@@ -734,6 +763,16 @@
         "rationale": {
           "default": "",
           "title": "Rationale",
+          "type": "string"
+        },
+        "subject_id": {
+          "default": "",
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "subject_type": {
+          "default": "",
+          "title": "Subject Type",
           "type": "string"
         },
         "target_owner": {
@@ -748,6 +787,11 @@
     "ConstructionQuestionOption": {
       "additionalProperties": false,
       "properties": {
+        "confidence": {
+          "default": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
         "description": {
           "default": "",
           "title": "Description",
@@ -772,6 +816,18 @@
           "default": "",
           "title": "Label",
           "type": "string"
+        },
+        "recommended": {
+          "default": false,
+          "title": "Recommended",
+          "type": "boolean"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
         }
       },
       "title": "ConstructionQuestionOption",
@@ -838,7 +894,6 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
     "access": {
@@ -853,6 +908,11 @@
       "format": "date-time",
       "title": "Generated At",
       "type": "string"
+    },
+    "journey_state_machine": {
+      "additionalProperties": true,
+      "title": "Journey State Machine",
+      "type": "object"
     },
     "next_action": {
       "default": "",

@@ -14,6 +14,8 @@ from app.core.config import get_settings
 from app.db import engine, get_session
 from app.models import (
     AuthTokenRecord,
+    UserConsentResponse,
+    UserConsentUpdateRequest,
     UserCurrencyResponse,
     UserCurrencyUpdateRequest,
     UserLanguageResponse,

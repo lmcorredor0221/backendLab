@@ -66,6 +66,7 @@ def ensure_runtime_schema() -> None:
         "sessions": {
             "workspace_id": uuid_default,
             "commercial_tier": "TEXT NOT NULL DEFAULT 'blueprint'",
+            "marketing_context": f"JSON NOT NULL DEFAULT {json_default}",
             "selected_workflow_template_key": "TEXT NOT NULL DEFAULT ''",
             "suggested_title": "TEXT",
             "title_source": "TEXT NOT NULL DEFAULT 'migrated'",
@@ -77,6 +78,9 @@ def ensure_runtime_schema() -> None:
         },
         "users": {
             "default_workspace_id": uuid_default,
+        },
+        "commercial_orders": {
+            "marketing_context": f"JSON NOT NULL DEFAULT {json_default}",
         },
         "runtime_feature_flags": {
             "workspace_id": uuid_default,
@@ -90,6 +94,7 @@ def ensure_runtime_schema() -> None:
         "opportunities": {
             "operational_baseline": f"JSON NOT NULL DEFAULT {json_default}",
             "mvp_definition": f"JSON NOT NULL DEFAULT {json_default}",
+            "operational_profile": f"JSON NOT NULL DEFAULT {json_default}",
         },
         "canvases": {
             "agent_profile": f"JSON NOT NULL DEFAULT {json_default}",
@@ -97,10 +102,15 @@ def ensure_runtime_schema() -> None:
         "blueprints": {
             "delivery_package": f"JSON NOT NULL DEFAULT {json_default}",
             "knowledge_profile": f"JSON NOT NULL DEFAULT {json_default}",
+            "operational_profile": f"JSON NOT NULL DEFAULT {json_default}",
+            "objective_contract": f"JSON NOT NULL DEFAULT {json_default}",
         },
         "product_build_runs_v1": {
             # Prevents re-generation of LEAN work stages after Blueprint Pro approval.
             "is_sealed": "BOOLEAN NOT NULL DEFAULT FALSE",
+        },
+        "construction_question_responses": {
+            "decision_context": f"JSON NOT NULL DEFAULT {json_default}",
         },
     }
 

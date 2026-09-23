@@ -613,10 +613,24 @@ def test_approval_gated_operator_requires_lookup_write_and_gate() -> None:
     candidate_map = {item.family_key: item for item in artifact.preflight.candidate_tool_families}
 
     assert artifact.preflight.case_classification == "approval_gated_operator"
-    assert set(recommended_map) == {"read_system_of_record", "approval_gate", "transactional_write"}
+    assert set(recommended_map) == {
+        "read_system_of_record",
+        "approval_gate",
+        "transactional_write",
+        "browser_observe",
+        "browser_execute",
+        "business_graph_query",
+        "business_policy_evaluation",
+        "action_verification",
+        "audit_event_write",
+    }
     assert "approval_gate" in recommended_map["transactional_write"].dependencies
     assert "read_system_of_record" in recommended_map["transactional_write"].dependencies
     assert candidate_map["transactional_write"].status == "required"
+    assert candidate_map["browser_automation"].status == "required"
+    assert candidate_map["business_graph"].status == "required"
+    assert candidate_map["policy_engine"].status == "required"
+    assert candidate_map["audit"].status == "required"
     assert artifact.needs_information == []
 
 

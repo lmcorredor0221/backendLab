@@ -339,6 +339,7 @@ MEMORY_LABELS = {
 AGENT_ARCHETYPE_LABELS = {
     "copilot_assistant": "Copiloto asistido",
     "workflow_operator": "Operador de workflow",
+    "business_ui_operator": "Operador de aplicaciones de negocio",
     "research_synthesizer": "Sintetizador de investigacion",
     "rag_knowledge_assistant": "Asistente RAG de conocimiento",
     "triage_router": "Router de triage",
@@ -483,6 +484,18 @@ def build_agent_archetype_catalog(
         text,
         ["aprob", "autorizar", "auditoria", "cumplimiento", "riesgo", "humano"],
     )
+    browser_ui_need = _contains_any(
+        text,
+        ["portal", "pantalla", "interfaz", "formulario", "backoffice", "web app", "aplicacion sin api", "sin api oficial"],
+    )
+    verification_need = _contains_any(
+        text,
+        ["verificar", "comprobar", "recibo", "numero de orden", "número de orden", "estado final", "evidencia"],
+    )
+    policy_need = _contains_any(
+        text,
+        ["descuento", "limite", "límite", "monto", "politica", "política", "permiso", "rol", "estado"],
+    )
 
     return [
         PatternCatalogEntry(
@@ -514,6 +527,22 @@ def build_agent_archetype_catalog(
                 + (16 if sequential_flow else 0)
                 + min(automation_count, 4) * 7
                 + (8 if scope_count >= 3 else 0)
+            ),
+        ),
+        PatternCatalogEntry(
+            family="agent_archetype",
+            key="business_ui_operator",
+            label=_label_for("business_ui_operator", AGENT_ARCHETYPE_LABELS),
+            summary="Opera una aplicacion de negocio como usuario entrenado, validando reglas, permisos, aprobaciones y evidencia antes de actuar.",
+            use_when=["Portal o backoffice sin API suficiente", "Escritura operativa con reglas", "Verificacion visible del resultado"],
+            tradeoffs=["Requiere separar observar de ejecutar", "Debe tener limites de aprobacion y auditoria antes de side effects"],
+            fit_score=_clamp_score(
+                10
+                + (34 if browser_ui_need else 0)
+                + (24 if write_need else 0)
+                + (12 if policy_need else 0)
+                + (10 if verification_need else 0)
+                + (8 if approval_need else 0)
             ),
         ),
         PatternCatalogEntry(

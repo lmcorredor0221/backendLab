@@ -79,6 +79,10 @@ from app.contracts.canonical_v1 import (
     LLMPolicyV1,
     MemoryContextBudgetV1,
     MemoryPolicyV1,
+    ObjectiveContractBundleV1,
+    ObjectiveContractV1,
+    ObjectiveSuccessCriterionV1,
+    ObjectiveTerminationConditionsV1,
     PromptArtifactV1,
     PromptPackOrigin,
     PromptPackV1,
@@ -108,6 +112,7 @@ from app.services.acp_construction_readiness import CONSTRUCTION_GAP_CATALOG
 from app.services.acp_validation import VALIDATION_ISSUE_CATALOG
 from app.services.blueprint_consistency_service import ensure_blueprint_consistency_report
 from app.services.llm_runtime.builder_contracts import RequirementsDefinitionOutput
+from app.services.objective_contracts import active_objective, build_objective_contract_bundle, objective_requires_runtime_loop
 from app.services.stage4_compiler import compile_stage4_artifacts
 
 KNOWLEDGE_KEYWORDS = (
@@ -205,6 +210,55 @@ def latest_blueprint_version(snapshot: SessionSnapshot) -> int | None:
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
+
+
+def _canonical_objective_contract(snapshot: SessionSnapshot) -> ObjectiveContractBundleV1:
+    bundle = build_objective_contract_bundle(snapshot)
+    objectives = [
+        ObjectiveContractV1(
+            objective_id=objective.objective_id,
+            level=objective.level,
+            parent_objective_id=objective.parent_objective_id,
+            statement=objective.statement,
+            owner=objective.owner,
+            status=objective.status,
+            source_refs=list(objective.source_refs),
+            confidence=objective.confidence,
+            success_criteria=[
+                ObjectiveSuccessCriterionV1(
+                    criterion_id=criterion.criterion_id,
+                    statement=criterion.statement,
+                    evidence_refs=list(criterion.evidence_refs),
+                    verification_method=criterion.verification_method,
+                )
+                for criterion in objective.success_criteria
+            ],
+            constraint_refs=list(objective.constraint_refs),
+            termination_conditions=ObjectiveTerminationConditionsV1(
+                success=list(objective.termination_conditions.success),
+                stop=list(objective.termination_conditions.stop),
+            ),
+            progress_signals=list(objective.progress_signals),
+            mutation_policy=objective.mutation_policy,
+            runtime_tracking=objective.runtime_tracking,
+            version=objective.version,
+        )
+        for objective in bundle.objectives
+    ]
+    return ObjectiveContractBundleV1(
+        objectives=objectives,
+        constraints=list(bundle.constraints),
+        source_refs=list(bundle.source_refs),
+        active_objective_id=bundle.active_objective_id,
+        policy_version=bundle.policy_version,
+    )
+
+
+def _active_canonical_objective(bundle: ObjectiveContractBundleV1) -> ObjectiveContractV1 | None:
+    for objective in bundle.objectives:
+        if objective.objective_id == bundle.active_objective_id:
+            return objective
+    return bundle.objectives[0] if bundle.objectives else None
 
 
 def _serialize_datetime(value: Any) -> str:
@@ -1594,6 +1648,7 @@ def build_blueprint_core(snapshot: SessionSnapshot, *, generated_at=None) -> Blu
     discovery = snapshot.discovery
     canvas = snapshot.canvas
     blueprint = snapshot.blueprint
+    objective_contract = _canonical_objective_contract(snapshot)
     success_criteria = _success_criteria(snapshot)
     assumptions = _normalized_items(snapshot.estimation_report.assumptions if snapshot.estimation_report is not None else [])
 
@@ -1623,6 +1678,7 @@ def build_blueprint_core(snapshot: SessionSnapshot, *, generated_at=None) -> Blu
                 discovery.mvp_definition.non_delegable_decisions if discovery is not None else []
             ),
         ),
+        objective_contract=objective_contract,
         behavior_spec=behavior_spec,
         heuristic_decision=heuristic_decision,
         tool_contracts=tool_contracts,
@@ -1796,6 +1852,13 @@ def _file_manifest(
             generated_from=["behavior-spec.v1", "llm-policy.v1", "heuristic-decision.v1"],
         ),
         ConstructionFileManifestEntry(
+            path="contracts/objective-contract.v1.json",
+            kind="json",
+            summary="Contrato de objetivos, criterios de exito, restricciones y condiciones de terminacion.",
+            source_contract="objective-contract.v1",
+            generated_from=["canvas", "discovery", "evaluation_dataset", "acp.questions"],
+        ),
+        ConstructionFileManifestEntry(
             path="contracts/evaluation-pack.v1.json",
             kind="json",
             summary="Acceptance cases y readouts de evaluacion.",
@@ -1922,6 +1985,7 @@ def build_construction_pack(snapshot: SessionSnapshot, *, generated_at=None) -> 
     heuristic_decision = stage4.heuristic_decision
     llm_policy = stage4.llm_policy
     prompt_pack = stage4.prompt_pack
+    objective_contract = _canonical_objective_contract(snapshot)
     evaluation_pack = build_evaluation_pack(snapshot, generated_at=generated_at)
     gaps = _readiness_gap_entries(snapshot, knowledge_contract)
     blocking_issues = [gap.summary for gap in gaps if gap.severity == "blocking"]
@@ -1965,6 +2029,7 @@ def build_construction_pack(snapshot: SessionSnapshot, *, generated_at=None) -> 
             schema_version="blueprint-core.v1",
             source_blueprint_version=latest_blueprint_version(snapshot),
         ),
+        objective_contract=objective_contract,
         components=_construction_components(snapshot, tool_contracts, knowledge_contract),
         topology=topology,
         multi_agent_benchmark=multi_agent_topology.benchmark if multi_agent_topology is not None else None,
@@ -2166,6 +2231,9 @@ def _acp_v2_runtime(construction_pack: ConstructionPackV1) -> AcpV2AgentRuntime:
     behavior = construction_pack.behavior_spec
     topology = behavior.multi_agent_topology
     state_machine = _acp_v2_runtime_state_machine(construction_pack)
+    objective = _active_canonical_objective(construction_pack.objective_contract)
+    active_goal = objective.statement if objective is not None and objective.statement else behavior.execution_pattern
+    active_objective_id = objective.objective_id if objective is not None else ""
 
     if topology is not None:
         agents = [
@@ -2173,6 +2241,7 @@ def _acp_v2_runtime(construction_pack: ConstructionPackV1) -> AcpV2AgentRuntime:
                 agent_key=agent.agent_key,
                 role=agent.role,
                 goal=agent.purpose,
+                objective_id=active_objective_id,
                 runtime_mode=agent.runtime_mode,
                 inputs=agent.input_contracts,
                 outputs=agent.output_contracts,
@@ -2240,7 +2309,8 @@ def _acp_v2_runtime(construction_pack: ConstructionPackV1) -> AcpV2AgentRuntime:
             AcpV2RuntimeAgent(
                 agent_key="primary_agent",
                 role="Agente principal",
-                goal=behavior.execution_pattern,
+                goal=active_goal,
+                objective_id=active_objective_id,
                 runtime_mode="single_agent",
                 inputs=["blueprint-core.v1", "prompt-pack.v1", "tool-contract.v1", "memory-policy.v1"],
                 outputs=list(behavior.outputs),
@@ -4176,6 +4246,7 @@ def build_agent_construction_package_v2(
     source_contracts = {
         "blueprint-core.v1": blueprint_core,
         "construction-pack.v1": construction_pack,
+        "objective-contract.v1": construction_pack.objective_contract,
         "prompt-pack.v1": construction_pack.prompt_pack,
         "evaluation-pack.v1": construction_pack.evaluation_pack,
         "memory-policy.v1": construction_pack.memory_policy,
@@ -4185,6 +4256,7 @@ def build_agent_construction_package_v2(
     manifest_entries = [
         _contract_entry("blueprint-core.v1", "contracts/blueprint-core.v1.json", source_contracts["blueprint-core.v1"]),
         _contract_entry("construction-pack.v1", "contracts/construction-pack.v1.json", source_contracts["construction-pack.v1"]),
+        _contract_entry("objective-contract.v1", "contracts/objective-contract.v1.json", source_contracts["objective-contract.v1"]),
         _contract_entry("prompt-pack.v1", "contracts/prompt-pack.v1.json", source_contracts["prompt-pack.v1"]),
         _contract_entry("evaluation-pack.v1", "contracts/evaluation-pack.v1.json", source_contracts["evaluation-pack.v1"]),
         _contract_entry("memory-policy.v1", "contracts/memory-policy.v1.json", source_contracts["memory-policy.v1"]),
@@ -4247,12 +4319,14 @@ def build_agent_construction_package_v2(
             "reasoning_pattern": construction_pack.topology.get("reasoning_pattern", ""),
             "workflow_template": construction_pack.topology.get("workflow_template", ""),
             "guardrails": blueprint_core.guardrails,
+            "objective_contract": blueprint_core.objective_contract.model_dump(mode="json"),
             "approvals": [approval.model_dump(mode="json") for approval in blueprint_core.approvals],
             "success_criteria": [criterion.model_dump(mode="json") for criterion in blueprint_core.success_criteria],
             "risks": [risk.model_dump(mode="json") for risk in blueprint_core.risks],
             "assumptions": blueprint_core.assumptions,
         },
         build_plan=build_plan,
+        objective_contract=construction_pack.objective_contract,
         agent_runtime=agent_runtime,
         implementation_decisions=implementation_decisions,
         workflows=workflows,
@@ -4745,6 +4819,7 @@ def build_contract_bundle(snapshot: SessionSnapshot, *, generated_at=None) -> di
 
     specialized = {
         "behavior-spec.v1": construction_pack.behavior_spec,
+        "objective-contract.v1": construction_pack.objective_contract,
         "tool-contract.v1": construction_pack.tool_contracts,
         "heuristic-decision.v1": construction_pack.heuristic_decision,
         "llm-policy.v1": construction_pack.llm_policy,

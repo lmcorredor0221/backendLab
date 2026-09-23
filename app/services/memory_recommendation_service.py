@@ -723,6 +723,76 @@ def _build_architecture_resolution(
     )
 
 
+def _build_operational_knowledge_layers(
+    *,
+    design_artifact: DesignRecommendationArtifact | None,
+    approved_tools_digest: ApprovedToolsDigest | None,
+) -> list[MemoryLayerDesign]:
+    selected_design = _selected_design(design_artifact)
+    profile = getattr(selected_design, "operational_profile", None)
+    profile_capabilities = set(getattr(profile, "required_capabilities", []) or [])
+    approved_tool_keys = set(approved_tools_digest.approved_tool_keys if approved_tools_digest is not None else [])
+    capabilities = profile_capabilities | approved_tool_keys
+    layers: list[MemoryLayerDesign] = []
+    if "business_graph_query" in capabilities or "business_graph" in getattr(profile, "knowledge_modes", []) or []:
+        layers.append(
+            MemoryLayerDesign(
+                layer_key="business_graph",
+                label="Grafo de negocio",
+                owner="business_architect",
+                summary="Entidades, roles, permisos, dependencias y relaciones estructuradas se consultan como grafo, no como texto suelto.",
+                stores=["graph_store_pending", "entity_relationship_refs"],
+                write_triggers=["cambio de permisos", "alta de entidad", "cambio de workflow"],
+                read_paths=["policy_evaluation", "planning_runtime", "approval_gate"],
+                compaction_policy="Persistir referencias y versiones de relaciones; no convertir el grafo completo en prompt.",
+                retention_policy="Versionar cambios estructurales y mantener auditoria por workspace.",
+            )
+        )
+    if "business_policy_evaluation" in capabilities:
+        layers.append(
+            MemoryLayerDesign(
+                layer_key="business_policy",
+                label="Reglas y politicas deterministicas",
+                owner="policy_owner",
+                summary="Limites, descuentos, estados y decisiones allow/deny/approval_required se mantienen como reglas versionadas.",
+                stores=["policy_registry", "policy_decision_log"],
+                write_triggers=["aprobacion de regla", "cambio de limite", "override autorizado"],
+                read_paths=["before_side_effect", "approval_gate", "evaluator"],
+                compaction_policy="Referenciar policy_key y version; evitar copiar reglas criticas dentro del objetivo.",
+                retention_policy="Retener versiones activas, superseded y evidencia de aprobacion segun politica de auditoria.",
+            )
+        )
+    if "action_verification" in capabilities or "audit_event_write" in capabilities:
+        layers.append(
+            MemoryLayerDesign(
+                layer_key="evidence_log",
+                label="Evidencia y verificacion",
+                owner="observability_owner",
+                summary="Capturas, recibos, estados finales y resultados de tools se guardan como evidencia referenciada.",
+                stores=["evidence_store", "audit_log", "verification_receipts"],
+                write_triggers=["post_action_verification", "approval_resolution", "policy_decision"],
+                read_paths=["evaluator", "recovery", "audit_review"],
+                compaction_policy="Guardar hashes, refs y resumen; no persistir datos sensibles crudos sin politica.",
+                retention_policy="Aplicar retencion por criticidad, sensibilidad y obligacion legal.",
+            )
+        )
+    if "browser_execute" in capabilities:
+        layers.append(
+            MemoryLayerDesign(
+                layer_key="objective_progress",
+                label="Progreso de objetivo operativo",
+                owner="agent_runtime",
+                summary="Estado versionado del objetivo, subobjetivos, criterios, progreso, ausencia de progreso y causa de terminacion.",
+                stores=["working_objective_state", "checkpoint_refs"],
+                write_triggers=["plan_step_completed", "verification_result", "replan", "stop_condition"],
+                read_paths=["planner", "executor", "evaluator", "recovery"],
+                compaction_policy="Compactar por criterio satisfecho o checkpoint estable.",
+                retention_policy="Retener hasta cierre del caso y exportar solo referencias necesarias al ACP.",
+            )
+        )
+    return layers
+
+
 def _map_critic_findings(critique: MemoryArchitectureCritiqueOutput | None) -> list[MemoryRecommendationFinding]:
     if critique is None:
         return []
@@ -1170,6 +1240,27 @@ def build_memory_recommendation_artifact(
             ]
         ),
     )
+    operational_knowledge_layers = _build_operational_knowledge_layers(
+        design_artifact=design_artifact,
+        approved_tools_digest=approved_tools_digest,
+    )
+    objective_memory_policy = (
+        {
+            "tracking": "required",
+            "state_store": "working_objective_state",
+            "evidence_store": "evidence_log",
+            "progress_compaction": "by_success_criterion",
+            "no_progress_guard": "stop_or_replan_after_configured_limit",
+        }
+        if any(layer.layer_key == "objective_progress" for layer in operational_knowledge_layers)
+        else {
+            "tracking": "not_required",
+            "state_store": "",
+            "evidence_store": "",
+            "progress_compaction": "",
+            "no_progress_guard": "",
+        }
+    )
     artifact = MemoryRecommendationArtifact(
         source_session_id=source_session_id,
         source_blueprint_version=source_blueprint_version,
@@ -1181,6 +1272,8 @@ def build_memory_recommendation_artifact(
         working_memory_design=working_memory_design,
         long_term_design=long_term_design,
         knowledge_design=knowledge_design,
+        operational_knowledge_layers=operational_knowledge_layers,
+        objective_memory_policy=objective_memory_policy,
         context_budget_plan=_build_context_budget_plan(
             knowledge_mode=knowledge_profile.mode.strip().lower(),
             definition_artifact=definition_artifact,
