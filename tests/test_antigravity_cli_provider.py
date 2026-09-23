@@ -7,6 +7,7 @@ import pytest
 
 from app.models import (
     AntigravityProviderConfig,
+    DiscoveryInput,
     LLMProviderKey,
     LLMRuntimeSettings,
 )
@@ -185,6 +186,31 @@ def test_provider_facade_unavailable():
     assert facade.can_attempt() is True
     assert facade.is_available() is False
 
-    from app.models import DiscoveryInput
     res = facade.normalize_discovery(DiscoveryInput())
     assert res.artifact is None
+
+
+def test_normalize_discovery_skips_agy_execution_for_sync_route():
+    settings = LLMRuntimeSettings(
+        active_provider=LLMProviderKey.antigravity_cli,
+        antigravity=AntigravityProviderConfig(
+            executable="agy",
+            executable_found=True,
+            model="gemini-3.6-flash",
+        ),
+    )
+    facade = AntigravityLocalBuilderService(settings)
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("normalize_discovery must not invoke agy synchronously")
+
+    facade.execution_service.execute_structured_prompt = fail_if_called  # type: ignore[method-assign]
+    with patch.object(facade, "is_available", side_effect=AssertionError("availability check should be skipped")):
+        res = facade.normalize_discovery(DiscoveryInput(problem_statement="Crear orden para ACME"))
+
+    assert res.artifact is None
+    assert res.warning is None
+    assert res.provider_key == LLMProviderKey.antigravity_cli.value
+    assert res.execution_backend == "antigravity_cli"
+    assert res.finish_reason == "skipped_sync_normalization"
+    assert res.schema_validation_status == "not_attempted"

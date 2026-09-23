@@ -572,7 +572,7 @@ def append_construction_readiness_gaps(
         for gap in gaps
         for assumption in gap.current_assumptions
     )
-    can_start_build = preview.validation.can_export_zip and blocking_gaps == 0 and open_questions == 0
+    can_start_build = preview.validation.can_export_zip and blocking_gaps == 0
     if can_start_build:
         overall_status = "ready_to_build"
         next_action = "start_agentic_build"
@@ -785,7 +785,7 @@ def overlay_construction_readiness(
 
     overall_status = base.overall_status
     next_recommended_action = base.next_recommended_action
-    can_start_build = validation_allows_build and blocking_gaps == 0 and open_questions == 0
+    can_start_build = validation_allows_build and blocking_gaps == 0
 
     if not validation_allows_build:
         overall_status = "blocked"
@@ -799,6 +799,9 @@ def overlay_construction_readiness(
             next_recommended_action = "regenerate_acp_with_answers"
         elif open_questions > 0:
             next_recommended_action = "resolve_blocking_construction_gaps"
+    elif can_start_build:
+        overall_status = "ready_to_build"
+        next_recommended_action = "start_agentic_build"
     else:
         overall_status = "needs_questions"
         if open_questions == 0 and has_answered_gap:

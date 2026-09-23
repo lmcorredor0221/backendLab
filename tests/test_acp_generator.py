@@ -261,7 +261,7 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
         item for item in preview.files if item.path == "ACP/construction-readiness/overview.yaml"
     )
     assert "construction_readiness:" in readiness_overview.content_text
-    assert "next_recommended_action: answer_open_questions" in readiness_overview.content_text
+    assert "next_recommended_action: start_agentic_build" in readiness_overview.content_text
     assert "question_outcomes:" in readiness_overview.content_text
     architecture_diagram = next(item for item in preview.files if item.path == "ACP/diagrams/Architecture.md")
     assert "## Mermaid" in architecture_diagram.content_text
@@ -293,8 +293,8 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert preview.validation.can_export_zip is True
     assert preview.validation.overall_status == "needs_review"
     assert preview.validation.completeness_percent > 0
-    assert preview.construction_readiness.overall_status == "needs_questions"
-    assert preview.construction_readiness.can_start_build is False
+    assert preview.construction_readiness.overall_status == "ready_to_build"
+    assert preview.construction_readiness.can_start_build is True
     assert preview.construction_readiness.blocking_gaps == 0
     assert preview.construction_readiness.open_questions >= 1
 
@@ -608,8 +608,8 @@ def test_record_acp_preview_artifacts_persists_preview_and_files() -> None:
     preview_record = next(item for item in persisted if item.artifact_kind == "acp_preview")
     assert preview_record.export_format == "json"
     assert preview_record.artifact_metadata["completeness_percent"] == preview.validation.completeness_percent
-    assert preview_record.artifact_metadata["construction_readiness_status"] == "needs_questions"
-    assert preview_record.artifact_metadata["can_start_build"] is False
+    assert preview_record.artifact_metadata["construction_readiness_status"] == "ready_to_build"
+    assert preview_record.artifact_metadata["can_start_build"] is True
     assert preview_record.artifact_metadata["blocking_gaps"] == 0
     assert preview_record.artifact_metadata["open_questions"] >= 1
     manifest_record = next(item for item in persisted if item.artifact_kind == "acp_manifest")

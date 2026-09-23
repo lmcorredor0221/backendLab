@@ -789,7 +789,11 @@ class BuilderProviderFacade:
                 decision=decision,
                 context_bundle=agy_context_bundle,
             )
-            if agy_result.artifact is not None or decision.fallback_provider is None:
+            if (
+                agy_result.artifact is not None
+                or decision.fallback_provider is None
+                or agy_result.finish_reason == "skipped_sync_normalization"
+            ):
                 return agy_result
             fallback_context_bundle = self._build_route_context_bundle(
                 context_bundle,

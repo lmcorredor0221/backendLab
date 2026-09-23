@@ -36,7 +36,6 @@ from app.services.llm_runtime.builder_contracts import (
     ValidationScenarioGenerationInput,
     ValidationScenarioSimulationInput,
     sanitize_canvas,
-    sanitize_discovery,
 )
 from app.services.llm_runtime.capability_registry import (
     BuilderCapability,
@@ -323,37 +322,15 @@ class AntigravityLocalBuilderService:
         *,
         context_bundle: StageContextBundle | None = None,
     ) -> LLMArtifactResult:
-        if not self.is_available():
-            return LLMArtifactResult(artifact=None, provider_key=LLMProviderKey.antigravity_cli.value)
-
-        schema_json = json.dumps(DiscoveryArtifact.model_json_schema(), ensure_ascii=True)
-        prompt = _localized_prompt(
-            "Devuelve exclusivamente un JSON valido que cumpla con el siguiente schema JSON:\n"
-            f"{schema_json}\n\n"
-            "Normaliza esta captura a un discovery estructurado para un builder Lean de agentes. "
-            "Usa solo hechos presentes en la entrada. Si un dato no esta claro, usa 'unknown'. "
-            "Para case_type usa solo: informacion, automatizacion, copiloto, operador_autonomo, sistema_multiagente. "
-            "Para autonomy_level usa solo: low, medium, high.\n\n"
-            f"INPUT:\n{json.dumps(payload.model_dump(mode='json'), ensure_ascii=True)}",
-            context_bundle,
+        spec = get_builder_capability_spec(BuilderCapability.normalize_discovery)
+        # normalize-discovery is a synchronous form commit path. Keep local CLI
+        # reasoning in durable stage operations and let skill_runtime use its
+        # deterministic fallback here so the UI never waits on a long agy run.
+        return replace(
+            self._base_result(BuilderCapability.normalize_discovery, spec),
+            execution_backend=AgentExecutionBackend.antigravity_cli.value,
+            finish_reason="skipped_sync_normalization",
         )
-        try:
-            parsed = self.execution_service.execute_structured_prompt(
-                task_kind="discovery_normalization",
-                prompt=prompt,
-                output_model=DiscoveryArtifact,
-            )
-            normalized = DiscoveryArtifact.model_validate(parsed.model_dump(mode="json"))
-            return LLMArtifactResult(
-                artifact=sanitize_discovery(normalized),
-                provider_key=LLMProviderKey.antigravity_cli.value,
-            )
-        except Exception:
-            return LLMArtifactResult(
-                artifact=None,
-                warning="Antigravity CLI no pudo normalizar discovery; se uso fallback deterministico.",
-                provider_key=LLMProviderKey.antigravity_cli.value,
-            )
 
     def build_canvas(
         self,

@@ -27,6 +27,7 @@ from app.models import (
     HandoffRecord,
     JourneyArtifactState,
     JourneyStageArtifactRecord,
+    MemoryRecommendationArtifact,
     ReviewState,
     SessionRecord,
     SessionSnapshot,
@@ -62,6 +63,7 @@ from app.services.acp_handoff_service import (
 )
 from app.services.commerce_service import resolve_access_request
 from app.services.lean_question_policy import filter_stage_question_texts
+from app.services.memory_recommendation_service import apply_memory_dependency_resolution
 from app.services.product_processing.contracts import ProductBuildProductKey
 from app.services.product_processing.persistence import (
     ProductBuildRunRecord,
@@ -410,7 +412,17 @@ def _build_suppression_matcher(db: Session, record: SessionRecord):
                     if k in {"question", "title"}:
                         suppressed_titles.add(val.lower())
 
+    def _is_open_memory_dependency_gap(item: AttentionItemV2) -> bool:
+        return (
+            item.type == "gap"
+            and item.stage == "memory"
+            and item.source.startswith("journey.")
+            and str(getattr(item.source_ref, "field_path", "") or "").strip() == "dependency_gaps"
+        )
+
     def is_suppressed(item: AttentionItemV2) -> bool:
+        if _is_open_memory_dependency_gap(item):
+            return False
         if item.key in suppressed_exact_keys:
             return True
 
@@ -632,6 +644,122 @@ def _decision_entries_from_payload(payload: dict, *keys: str) -> list[dict[str, 
     return entries
 
 
+def _dependency_gap_entries_from_payload(payload: dict) -> list[dict[str, Any]]:
+    raw = payload.get("dependency_gaps")
+    if raw is None:
+        return []
+    raw_items = raw if isinstance(raw, list) else [raw]
+    entries: list[dict[str, Any]] = []
+    for index, raw_item in enumerate(raw_items, start=1):
+        if isinstance(raw_item, dict):
+            entry = dict(raw_item)
+        else:
+            text = _text_from_entry(raw_item)
+            if not text:
+                continue
+            entry = {"gap_key": f"dependency_gap_{index}", "reason": text}
+        if str(entry.get("status") or "open").strip().lower() != "open":
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _memory_dependency_tool_key(value: dict[str, Any]) -> str:
+    capability_key = str(value.get("capability_key") or "").strip().lower()
+    if capability_key:
+        return capability_key
+    gap_key = str(value.get("gap_key") or "").strip().lower()
+    return gap_key.split(":", 1)[-1] if ":" in gap_key else gap_key
+
+
+def _memory_dependency_gap_options(tool_key: str, remediation_policy: str) -> list[dict[str, Any]]:
+    source_refs = ["memory.dependency_gaps", f"memory.tool_dependencies.{tool_key}"]
+    return [
+        {
+            "key": "defer_to_acp",
+            "label": "Diferir al ACP",
+            "description": (
+                "Mantener la necesidad trazada, sin agregar la tool al Blueprint hasta la implementacion."
+            ),
+            "impact": "Permite aprobar Memoria sin ejecutar ni habilitar salidas externas automaticamente.",
+            "example": f"{tool_key} se documenta como decision de implementacion.",
+            "recommended": remediation_policy in {"human_review", "implementation_pending"},
+            "confidence": 0.78,
+            "source_refs": source_refs,
+        },
+        {
+            "key": "exclude_from_mvp",
+            "label": "Excluir del MVP",
+            "description": "Declarar que la arquitectura de memoria no debe depender de esta capacidad en el alcance actual.",
+            "impact": "Reduce alcance y evita que Memoria bloquee por una tool que no hara parte del MVP.",
+            "example": f"{tool_key} queda fuera de la propuesta actual.",
+            "recommended": False,
+            "confidence": 0.62,
+            "source_refs": source_refs,
+        },
+    ]
+
+
+def _items_from_memory_dependency_gaps(
+    *,
+    dependency_gaps: list[dict[str, Any]],
+    product: str,
+    stage: str,
+    source: str,
+    artifact_id: str,
+    artifact_version: int | None,
+    href: str,
+    return_href: str,
+) -> list[AttentionItemV2]:
+    items: list[AttentionItemV2] = []
+    for index, gap in enumerate(dependency_gaps, start=1):
+        tool_key = _memory_dependency_tool_key(gap)
+        if not tool_key:
+            continue
+        gap_key = str(gap.get("gap_key") or f"memory_dependency:{tool_key}").strip()
+        reason = str(gap.get("reason") or "").strip()
+        remediation_policy = str(gap.get("remediation_policy") or "").strip().lower()
+        required = bool(gap.get("required", True))
+        human_review = remediation_policy in {"human_review", "implementation_pending"}
+        items.append(
+            create_attention_item_v2(
+                item_type="gap",
+                severity="blocking" if required else "warning",
+                product=product,
+                stage=stage,
+                source=source,
+                source_ref={
+                    "artifact_id": artifact_id,
+                    "artifact_version": artifact_version,
+                    "entity_id": gap_key or f"dependency_gap_{index}",
+                    "field_path": "dependency_gaps",
+                },
+                title=f"Falta decision sobre dependencia {tool_key}",
+                reason=reason or f"Memory declaro {tool_key} como dependencia requerida.",
+                impact=(
+                    "La dependencia requiere validacion humana antes de cerrar Memoria."
+                    if human_review
+                    else "La dependencia debe resolverse o diferirse antes de cerrar Memoria."
+                ),
+                consequence_if_unresolved=(
+                    "Memoria seguira bloqueada porque no puede asumir una tool no aprobada."
+                ),
+                action_kind="answer",
+                action_label="Resolver dependencia",
+                href=href,
+                return_href=return_href,
+                owner_role="business_owner",
+                options=_memory_dependency_gap_options(tool_key, remediation_policy),
+                suggested_answer=(
+                    f"Diferir {tool_key} al ACP para decidir canal, permisos y contrato "
+                    "durante implementacion."
+                ),
+                can_resolve_inline=True,
+            )
+        )
+    return items
+
+
 APPROVED_JOURNEY_ARTIFACT_STATES = {
     JourneyArtifactState.approved,
     JourneyArtifactState.approved_legacy,
@@ -725,7 +853,19 @@ def _items_from_journey_artifacts(
         warnings = list(artifact.warnings)
         warnings.extend(_list_from_payload(payload, "warnings"))
         gaps = _list_from_payload(payload, "gaps", "coverage_gaps")
+        dependency_gaps = _dependency_gap_entries_from_payload(payload)
+        missing_dependency_finding_keys = {
+            f"missing-tool:{tool_key}"
+            for tool_key in (_memory_dependency_tool_key(gap) for gap in dependency_gaps)
+            if tool_key
+        }
         decisions = _decision_entries_from_payload(payload, "critic_findings", "findings")
+        if missing_dependency_finding_keys:
+            decisions = [
+                decision
+                for decision in decisions
+                if str(decision.get("key") or "").strip().lower() not in missing_dependency_finding_keys
+            ]
         artifact_items = [
             *items_from_validation_issues(
                 validation_issues,
@@ -749,6 +889,16 @@ def _items_from_journey_artifacts(
                 gaps=gaps,
                 decisions=decisions,
                 warnings=warnings,
+            ),
+            *_items_from_memory_dependency_gaps(
+                dependency_gaps=dependency_gaps,
+                product=product,
+                stage=stage,
+                source=f"journey.{artifact.artifact_kind or stage}",
+                artifact_id=str(artifact.id),
+                artifact_version=artifact.version_number,
+                href=href,
+                return_href=href,
             ),
         ]
         items.extend(_filter_resolved_artifact_attention_items(artifact, artifact_items))
@@ -1513,6 +1663,30 @@ def _apply_journey_artifact_attention_resolution(
     raw_entity = item.source_ref.entity_id or ""
     if raw_entity and raw_entity in artifact.missing_information:
         artifact.missing_information = [entry for entry in artifact.missing_information if entry != raw_entity]
+    field_path = str(item.source_ref.field_path or "").strip()
+    if artifact.stage_key == "memory" and field_path == "dependency_gaps":
+        tool_key = raw_entity.split(":", 1)[-1] if ":" in raw_entity else raw_entity
+        try:
+            memory_artifact = MemoryRecommendationArtifact.model_validate(artifact.proposal_payload)
+            resolved_memory = apply_memory_dependency_resolution(
+                memory_artifact,
+                tool_key=tool_key,
+                action_kind=payload.action_kind,
+                selected_option_key=payload.selected_option_key,
+                resolution_note=payload.resolution_note or payload.answer_text,
+            )
+            artifact.proposal_payload = resolved_memory.model_dump(mode="json")
+            artifact.missing_information = list(resolved_memory.missing_information)
+            artifact.warnings = list(
+                dict.fromkeys(
+                    [
+                        *artifact.warnings,
+                        f"memory_dependency_resolved:{tool_key}",
+                    ]
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
     patch = dict(artifact.user_patch or {})
     resolutions = dict(patch.get("attention_resolutions") or {})
     resolutions[item.key] = {

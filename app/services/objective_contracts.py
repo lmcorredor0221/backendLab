@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 from app.models import (
     ConstructionQuestionResponseRecord,
@@ -16,6 +17,94 @@ from app.models import (
 OBJECTIVE_QUESTIONS_FLAG = "objective_questions_v1"
 OBJECTIVE_GATE_FLAG = "objective_gate_v1"
 OBJECTIVE_LOOP_FLAG = "objective_loop_v1"
+
+
+AGENT_OBJECTIVE_TEMPLATES: dict[str, tuple[dict[str, Any], ...]] = {
+    "supervisor_with_subagents": (
+        {
+            "agent_key": "supervisor",
+            "role": "supervisor",
+            "purpose": "Asignar especialistas, fusionar hallazgos y decidir cierre o remediacion.",
+            "success_signals": ["Despacha solo especialistas necesarios y conserva trazabilidad de handoffs."],
+            "output_contracts": ["orchestration_plan", "final_decision"],
+            "failure_mode": "Merge ambiguo o falta de ownership claro para cerrar.",
+            "timeout_policy": "SLA corto para despachar y SLA medio para consolidar findings.",
+            "side_effect_policy": "El supervisor no ejecuta side effects directos; solo autoriza handoffs y merge final.",
+        },
+        {
+            "agent_key": "evaluation_specialist",
+            "role": "specialist",
+            "purpose": "Revisar readiness, acceptance cases y gaps antes del cierre final.",
+            "success_signals": ["Expone gaps, score y recomendacion de readiness sin tocar estado externo."],
+            "output_contracts": ["evaluation_findings"],
+            "failure_mode": "Readiness ambigua o dataset insuficiente.",
+            "timeout_policy": "Timeout medio controlado por el supervisor.",
+            "side_effect_policy": "Solo lectura sobre evaluation-pack y prompt-pack.",
+        },
+        {
+            "agent_key": "risk_specialist",
+            "role": "specialist",
+            "purpose": "Validar tools, side effects, approvals y compensaciones antes de permitir promotion.",
+            "success_signals": ["Cada tool queda clasificada por riesgo, approval y compensacion."],
+            "output_contracts": ["risk_findings"],
+            "failure_mode": "Tool sin contrato, timeout o compensacion declarada.",
+            "timeout_policy": "Timeout corto por analisis de tool.",
+            "side_effect_policy": "Solo inspeccion contractual; no puede ejecutar side effects sobre sistemas externos.",
+        },
+        {
+            "agent_key": "artifact_specialist",
+            "role": "specialist",
+            "purpose": "Revisar coherencia de artefactos, prompts y handoffs tecnicos antes del export.",
+            "success_signals": ["Confirma presencia y coherencia de artefactos, prompts y handoffs."],
+            "output_contracts": ["artifact_findings"],
+            "failure_mode": "Prompts faltantes o paquete inconsistente.",
+            "timeout_policy": "Timeout corto de revision documental.",
+            "side_effect_policy": "Solo lectura sobre artefactos canonicamente exportados.",
+        },
+    ),
+    "router_parallel": (
+        {
+            "agent_key": "router",
+            "role": "router",
+            "purpose": "Clasificar el trabajo y derivarlo a una rama especializada sin ejecutar side effects.",
+            "success_signals": ["Selecciona solo ramas justificadas por el contrato."],
+            "output_contracts": ["route_plan"],
+            "failure_mode": "Ruta ambigua o conflicto entre ramas.",
+            "timeout_policy": "Timeout corto para clasificacion inicial.",
+            "side_effect_policy": "El router no ejecuta side effects.",
+        },
+        {
+            "agent_key": "retrieval_lane",
+            "role": "specialist",
+            "purpose": "Recuperar evidencia autorizada para la rama de knowledge o retrieval.",
+            "success_signals": ["Entrega evidencia citada o ausencia explicita de evidencia."],
+            "output_contracts": ["retrieval_findings"],
+            "failure_mode": "Respuesta sin grounding o falta de fuentes aprobadas.",
+            "timeout_policy": "Timeout medio para consultas paralelas.",
+            "side_effect_policy": "Solo lectura con evidencia citada.",
+        },
+        {
+            "agent_key": "tool_lane",
+            "role": "specialist",
+            "purpose": "Validar el contrato de una tool y devolver findings sin mezclarlo con retrieval.",
+            "success_signals": ["Cada tool queda evaluada con permisos, retries y side effects."],
+            "output_contracts": ["tool_findings"],
+            "failure_mode": "Tool sin contrato suficiente o con side effects no aislados.",
+            "timeout_policy": "Timeout medio por rama.",
+            "side_effect_policy": "Solo inspeccion contractual mientras la topologia siga planned_only.",
+        },
+        {
+            "agent_key": "aggregator",
+            "role": "aggregator",
+            "purpose": "Fusionar findings paralelos y preparar el cierre o remediacion.",
+            "success_signals": ["La fusion final identifica contradicciones y propone cierre seguro."],
+            "output_contracts": ["parallel_merge_report"],
+            "failure_mode": "Merge ambiguo o ramas inconsistentes.",
+            "timeout_policy": "Timeout corto al consolidar resultados.",
+            "side_effect_policy": "Sin side effects directos.",
+        },
+    ),
+}
 
 
 def _normalize(value: object) -> str:
@@ -41,6 +130,29 @@ def _slug(value: str, *, fallback: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
     normalized = normalized.strip("-")
     return normalized[:48] or fallback
+
+
+def _agent_value(agent_contract: Any, key: str, default: Any = "") -> Any:
+    if isinstance(agent_contract, dict):
+        return agent_contract.get(key, default)
+    return getattr(agent_contract, key, default)
+
+
+def _agent_contracts_from_snapshot(snapshot: SessionSnapshot) -> list[dict[str, Any]]:
+    architecture = ""
+    if snapshot.blueprint is not None:
+        architecture = _normalize(snapshot.blueprint.architecture)
+    return [dict(item) for item in AGENT_OBJECTIVE_TEMPLATES.get(architecture, ())]
+
+
+def _agent_label(agent_key: str) -> str:
+    return agent_key.replace("_", " ").replace("-", " ").strip().title() or "Agente"
+
+
+def _sentence_case_lower(value: str) -> str:
+    if not value:
+        return value
+    return value[:1].lower() + value[1:]
 
 
 def _feature_enabled(snapshot: SessionSnapshot, flag_key: str) -> bool:
@@ -184,6 +296,117 @@ def _base_objective(snapshot: SessionSnapshot) -> ObjectiveContract:
     )
 
 
+def _success_criteria_from_agent(
+    *,
+    agent_key: str,
+    success_signals: Sequence[Any],
+    statement: str,
+) -> list[ObjectiveSuccessCriterion]:
+    criteria = [
+        ObjectiveSuccessCriterion(
+            criterion_id=f"{_slug(agent_key, fallback='agent')}-signal-{index}",
+            statement=_normalize(signal),
+            evidence_refs=[f"behavior_spec.multi_agent_topology.agent_contracts.{agent_key}.success_signals"],
+            verification_method="agent_success_signal",
+        )
+        for index, signal in enumerate(success_signals, start=1)
+        if _normalize(signal)
+    ]
+    if criteria:
+        return criteria
+    return [
+        ObjectiveSuccessCriterion(
+            criterion_id=f"{_slug(agent_key, fallback='agent')}-verified-output",
+            statement=f"Existe evidencia verificable de que el subobjetivo se cumplio: {statement}",
+            evidence_refs=[f"behavior_spec.multi_agent_topology.agent_contracts.{agent_key}"],
+            verification_method="agent_output_evidence",
+        )
+    ]
+
+
+def _delegated_objectives_from_agent_contracts(
+    root_objective: ObjectiveContract,
+    agent_contracts: Sequence[Any],
+) -> list[ObjectiveContract]:
+    objectives: list[ObjectiveContract] = []
+    seen_ids: set[str] = {root_objective.objective_id}
+    for index, agent_contract in enumerate(agent_contracts, start=1):
+        agent_key = _normalize(_agent_value(agent_contract, "agent_key")) or f"agent_{index}"
+        purpose = _normalize(_agent_value(agent_contract, "purpose"))
+        if not purpose:
+            continue
+        role = _normalize(_agent_value(agent_contract, "role")) or "agent"
+        objective_id = f"{root_objective.objective_id}-{_slug(agent_key, fallback=f'agent-{index}')}"
+        if objective_id in seen_ids:
+            continue
+        seen_ids.add(objective_id)
+        success_signals = [
+            _normalize(item)
+            for item in (_agent_value(agent_contract, "success_signals", []) or [])
+            if _normalize(item)
+        ]
+        output_contracts = [
+            _normalize(item)
+            for item in (_agent_value(agent_contract, "output_contracts", []) or [])
+            if _normalize(item)
+        ]
+        failure_mode = _normalize(_agent_value(agent_contract, "failure_mode"))
+        timeout_policy = _normalize(_agent_value(agent_contract, "timeout_policy"))
+        side_effect_policy = _normalize(_agent_value(agent_contract, "side_effect_policy"))
+        statement = f"{_agent_label(agent_key)} debe {_sentence_case_lower(purpose.rstrip('.'))}."
+        criteria = _success_criteria_from_agent(
+            agent_key=agent_key,
+            success_signals=success_signals,
+            statement=statement,
+        )
+        objectives.append(
+            ObjectiveContract(
+                objective_id=objective_id,
+                level="delegated",
+                parent_objective_id=root_objective.objective_id,
+                statement=statement,
+                owner=agent_key,
+                status="inferred",
+                source_refs=_dedupe(
+                    [
+                        "blueprint.architecture",
+                        f"behavior_spec.multi_agent_topology.agent_contracts.{agent_key}",
+                    ]
+                ),
+                confidence=min(max(root_objective.confidence - 0.04, 0.45), 0.82),
+                success_criteria=criteria,
+                constraint_refs=_dedupe(
+                    [
+                        *root_objective.constraint_refs,
+                        side_effect_policy,
+                    ]
+                ),
+                termination_conditions=ObjectiveTerminationConditions(
+                    success=[f"{item.criterion_id} satisfied" for item in criteria],
+                    stop=_dedupe(
+                        [
+                            "parent_objective_rejected",
+                            "handoff_conflict",
+                            failure_mode,
+                            timeout_policy,
+                        ]
+                    ),
+                ),
+                progress_signals=_dedupe([*success_signals, *[f"emits:{item}" for item in output_contracts]]),
+                mutation_policy=(
+                    "human_approval_required"
+                    if "approval" in side_effect_policy.lower() or "aproba" in side_effect_policy.lower()
+                    else "bounded_replanning"
+                ),
+                runtime_tracking=(
+                    "required" if root_objective.runtime_tracking == "required" else "recommended"
+                ),
+                version=1,
+            )
+        )
+    return objectives
+
+
 def _decision_context(record: ConstructionQuestionResponseRecord) -> dict:
     return dict(record.decision_context or {})
 
@@ -218,16 +441,33 @@ def _apply_objective_response(objective: ObjectiveContract, record: Construction
 def build_objective_contract_bundle(
     snapshot: SessionSnapshot,
     response_records: list[ConstructionQuestionResponseRecord] | None = None,
+    agent_contracts: Sequence[Any] | None = None,
 ) -> ObjectiveContractBundle:
     base = _base_objective(snapshot)
-    objective = base
+    objectives = [
+        base,
+        *_delegated_objectives_from_agent_contracts(
+            base,
+            agent_contracts if agent_contracts is not None else _agent_contracts_from_snapshot(snapshot),
+        ),
+    ]
     for record in response_records or []:
-        objective = _apply_objective_response(objective, record)
+        objectives = [_apply_objective_response(objective, record) for objective in objectives]
+    constraints = _dedupe(
+        constraint
+        for objective in objectives
+        for constraint in objective.constraint_refs
+    )
+    source_refs = _dedupe(
+        source_ref
+        for objective in objectives
+        for source_ref in objective.source_refs
+    )
     return ObjectiveContractBundle(
-        objectives=[objective],
-        constraints=list(objective.constraint_refs),
-        source_refs=list(objective.source_refs),
-        active_objective_id=objective.objective_id,
+        objectives=objectives,
+        constraints=constraints,
+        source_refs=source_refs,
+        active_objective_id=base.objective_id,
     )
 
 

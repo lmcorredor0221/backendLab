@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 
 from app.diagnostics import normalize_autonomy_level
 from app.models import (
+    AgentExecutionBackend,
     ApprovedToolsDigest,
     ArtifactStatus,
     BlueprintArtifact,
@@ -27,6 +28,7 @@ from app.models import (
     EvaluationDatasetArtifact,
     EvaluationRubricArtifact,
     KnowledgeProfile,
+    LLMProviderKey,
     LLMRuntimeSettings,
     LLMContextTrace,
     MemoryRecommendationArtifact,
@@ -768,6 +770,7 @@ _LLM_PROVIDER_LABELS = {
     "openai": "OpenAI",
     "deepseek": "DeepSeek",
     "codex_local": "Codex local",
+    "antigravity_cli": "Antigravity CLI",
 }
 
 
@@ -775,6 +778,33 @@ def _append_warning(warnings: list[str], warning: str | None) -> None:
     token = (warning or "").strip()
     if token and token not in warnings:
         warnings.append(token)
+
+
+def _uses_antigravity_execution(runtime_settings: LLMRuntimeSettings | None) -> bool:
+    if runtime_settings is None:
+        return False
+    return (
+        runtime_settings.active_provider == LLMProviderKey.antigravity_cli
+        or runtime_settings.agent_execution_backend == AgentExecutionBackend.antigravity_cli
+    )
+
+
+def _skipped_antigravity_sync_normalization_result(runtime_settings: LLMRuntimeSettings) -> LLMArtifactResult:
+    return LLMArtifactResult(
+        artifact=None,
+        provider_key=LLMProviderKey.antigravity_cli.value,
+        execution_backend=AgentExecutionBackend.antigravity_cli.value,
+        execution_mode="primary",
+        route_reason=(
+            "normalize_discovery usa fallback deterministico por ser una ruta sincronica; "
+            "Antigravity se reserva para operaciones persistentes."
+        ),
+        capability_key="normalize_discovery",
+        model_name=runtime_settings.antigravity.model,
+        prompt_version="normalize_discovery.v1",
+        finish_reason="skipped_sync_normalization",
+        schema_validation_status="not_attempted",
+    )
 
 
 def _llm_evidence_detail(result: LLMArtifactResult, action: str) -> str:
@@ -1444,12 +1474,17 @@ def _run_discovery_skill(input_model: BaseModel, context: SkillRunContext) -> Sk
     payload = skill_input.payload
     input_dict = payload.model_dump(mode="json")
     missing_fields = find_missing_discovery_fields(input_dict)
-    llm_service = _builder_service_for_stage("discover", context.runtime_settings)
-    llm_result = (
-        llm_service.normalize_discovery(payload, context_bundle=context.stage_context)
-        if not missing_fields
-        else None
+    discovery_runtime_settings = resolve_runtime_settings_for_stage(
+        context.runtime_settings or load_llm_runtime_settings(),
+        stage_key="discover",
     )
+    if missing_fields:
+        llm_result = None
+    elif _uses_antigravity_execution(discovery_runtime_settings):
+        llm_result = _skipped_antigravity_sync_normalization_result(discovery_runtime_settings)
+    else:
+        llm_service = _builder_service_for_stage("discover", discovery_runtime_settings)
+        llm_result = llm_service.normalize_discovery(payload, context_bundle=context.stage_context)
 
     artifact = (
         llm_result.artifact

@@ -272,8 +272,8 @@ def test_acp_preview_uses_file_statuses_for_completeness_and_hashes() -> None:
     assert preview.files[0].status == "complete"
     assert preview.files[0].content_hash
     assert preview.files[1].status == "needs_review"
-    assert preview.construction_readiness.overall_status == "needs_questions"
-    assert preview.construction_readiness.can_start_build is False
+    assert preview.construction_readiness.overall_status == "ready_to_build"
+    assert preview.construction_readiness.can_start_build is True
     assert preview.construction_readiness.blocking_gaps == 0
     assert preview.construction_readiness.open_questions >= 1
-    assert preview.construction_readiness.next_recommended_action == "answer_open_questions"
+    assert preview.construction_readiness.next_recommended_action == "start_agentic_build"

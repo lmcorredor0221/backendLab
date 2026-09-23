@@ -13,7 +13,12 @@ from app.models import (
 )
 from app.services.blueprint_consistency_service import ensure_blueprint_consistency_report
 from app.services.acp_paths import ACP_CANONICAL_ENV_TEMPLATE_PATH, build_tool_contract_path_for_tool
-from app.services.objective_contracts import active_objective, build_objective_contract_bundle, objective_gate_enabled, objective_questions_enabled
+from app.services.objective_contracts import (
+    active_objective,
+    build_objective_contract_bundle,
+    objective_gate_enabled,
+    objective_questions_enabled,
+)
 
 
 INTERNAL_BUILDER_TOOL_NAMES = {
@@ -51,6 +56,7 @@ CONSTRUCTION_GAP_CATALOG: dict[str, dict[str, str]] = {
 }
 
 BLUEPRINT_HANDOFF_PROCESS_DEBT_ISSUE_KEYS = {
+    "memory_required_tool_dependency_missing",
     "tools_recommendation_stale",
     "memory_recommendation_stale",
     "estimate_stale",
@@ -169,76 +175,105 @@ def _collect_validation_gap(report: ACPValidationReport) -> ConstructionGapEntry
     )
 
 
+def _objective_validation_question(objective, *, is_active: bool, is_blocking: bool) -> ConstructionQuestionEntry:
+    subject_label = "objetivo operativo" if is_active else "subobjetivo operativo"
+    confirm_label = "Confirmar objetivo" if is_active else "Confirmar subobjetivo"
+    reject_label = "Rechazar objetivo" if is_active else "Rechazar subobjetivo"
+    reject_impact = (
+        "El runtime no debe activar Objective Loop hasta que exista un objetivo corregido o aprobado."
+        if is_active
+        else "El agente delegado no debe usar este subobjetivo hasta que exista una version corregida o aprobada."
+    )
+    return _question(
+        question_key=f"objective_validation:{objective.objective_id}:v{objective.version}",
+        question_text=f"Confirma o corrige el {subject_label} inferido para {objective.owner}: {objective.statement}",
+        rationale=(
+            "El objetivo se usara para alinear prompts, criterios de exito, condiciones de terminacion y seguimiento "
+            "de progreso del agente."
+        ),
+        purpose="Validar el Objective Contract dentro del ACP sin crear un mecanismo nuevo de interaccion.",
+        expected_answer_format="Selecciona confirmar/rechazar o escribe la version corregida en una frase verificable.",
+        target_owner=objective.owner or "business_owner",
+        blocking=is_blocking,
+        options=[
+            ConstructionQuestionOption(
+                key="confirm",
+                label=confirm_label,
+                description="Mantener la formulacion inferida como contrato activo.",
+                impact="El ACP puede usar este contrato para prompts, criterios y seguimiento de progreso.",
+                example=objective.statement,
+                recommended=True,
+                confidence=objective.confidence,
+                source_refs=list(objective.source_refs),
+            ),
+            ConstructionQuestionOption(
+                key="reject",
+                label=reject_label,
+                description="Marcar la formulacion inferida como no valida para este alcance.",
+                impact=reject_impact,
+                example="El objetivo no corresponde al proceso real que queremos construir.",
+            ),
+        ],
+        question_kind="objective_validation",
+        subject_type="objective" if is_active else "subobjective",
+        subject_id=objective.objective_id,
+        allowed_decisions=["confirm", "correct", "reject"],
+        answer_semantics="update_objective_contract",
+        contract_version=objective.version,
+    )
+
+
 def _collect_objective_validation_gap(snapshot: SessionSnapshot) -> ConstructionGapEntry | None:
     if not objective_questions_enabled(snapshot):
         return None
     bundle = build_objective_contract_bundle(snapshot)
-    objective = active_objective(bundle)
-    if objective is None or objective.status != "inferred":
+    active = active_objective(bundle)
+    inferred_objectives = [objective for objective in bundle.objectives if objective.status == "inferred"]
+    if active is None or not inferred_objectives:
         return None
+    active_objective_id = active.objective_id
     is_blocking = objective_gate_enabled(snapshot)
-    question_key = f"objective_validation:{objective.objective_id}:v{objective.version}"
     summary = (
-        "LAB infirio un objetivo operativo para alimentar prompts, criterios de cierre y posible Objective Loop. "
-        "Antes de usarlo como contrato de ejecucion, el usuario debe validarlo o corregirlo."
+        "LAB infirio el objetivo operativo y los subobjetivos de los agentes propuestos para alimentar prompts, "
+        "criterios de cierre y posible Objective Loop. Antes de usarlos como contrato de ejecucion, el usuario "
+        "debe validarlos o corregirlos desde Responder preguntas."
     )
+    questions = [
+        _objective_validation_question(
+            objective,
+            is_active=objective.objective_id == active_objective_id,
+            is_blocking=is_blocking and objective.objective_id == active_objective_id,
+        )
+        for objective in inferred_objectives
+    ]
     return _gap(
         gap_key="objective_contract_validation",
-        title="Validar el objetivo operativo del agente",
+        title="Validar objetivos y subobjetivos operativos",
         domain="objectives",
         severity="blocking" if is_blocking else "warning",
         blocking_stage="acp_questions_resolution",
         summary=summary,
         evidence_paths=["contracts/objective-contract.v1.json", "ACP/objectives/objective-contract.yaml"],
-        source_sections=list(objective.source_refs),
+        source_sections=sorted({source for objective in inferred_objectives for source in objective.source_refs}),
         current_assumptions=[
-            f"Objetivo inferido: {objective.statement}",
-            f"Confianza de inferencia: {objective.confidence:.2f}",
+            *[
+                f"Objetivo inferido: {objective.statement}"
+                for objective in inferred_objectives
+                if objective.objective_id == active_objective_id
+            ],
+            *[
+                f"Subobjetivo inferido para {objective.owner}: {objective.statement}"
+                for objective in inferred_objectives
+                if objective.objective_id != active_objective_id
+            ],
+            f"Contratos pendientes de validacion: {len(inferred_objectives)}",
         ],
         closure_criteria=[
             "Confirmar que el objetivo representa lo que el agente debe perseguir.",
-            "Corregir el objetivo si la formulacion no es precisa.",
-            "Rechazar el objetivo para impedir que alimente Objective Loop o runtime operacional sin revision.",
+            "Confirmar o corregir los subobjetivos de cada agente delegado.",
+            "Rechazar cualquier objetivo o subobjetivo que no deba alimentar prompts, Objective Loop o runtime operacional.",
         ],
-        questions=[
-            _question(
-                question_key=question_key,
-                question_text=f"Confirma o corrige el objetivo operativo inferido: {objective.statement}",
-                rationale=(
-                    "El objetivo se usara para alinear prompts, criterios de exito, condiciones de terminacion y seguimiento "
-                    "de progreso del agente."
-                ),
-                purpose="Validar el Objective Contract dentro del ACP sin crear un mecanismo nuevo de interaccion.",
-                expected_answer_format="Selecciona confirmar/rechazar o escribe el objetivo corregido en una frase verificable.",
-                target_owner=objective.owner or "business_owner",
-                blocking=is_blocking,
-                options=[
-                    ConstructionQuestionOption(
-                        key="confirm",
-                        label="Confirmar objetivo",
-                        description="Mantener el objetivo inferido como contrato activo.",
-                        impact="El ACP puede usar este objetivo para prompts, criteria y seguimiento de progreso.",
-                        example=objective.statement,
-                        recommended=True,
-                        confidence=objective.confidence,
-                        source_refs=list(objective.source_refs),
-                    ),
-                    ConstructionQuestionOption(
-                        key="reject",
-                        label="Rechazar objetivo",
-                        description="Marcar el objetivo como no valido para este alcance.",
-                        impact="El runtime no debe activar Objective Loop hasta que exista un objetivo corregido o aprobado.",
-                        example="El objetivo no corresponde al proceso real que queremos construir.",
-                    ),
-                ],
-                question_kind="objective_validation",
-                subject_type="objective",
-                subject_id=objective.objective_id,
-                allowed_decisions=["confirm", "correct", "reject"],
-                answer_semantics="update_objective_contract",
-                contract_version=objective.version,
-            )
-        ],
+        questions=questions,
     )
 
 
@@ -780,7 +815,7 @@ def build_initial_construction_readiness(
     blocking_gaps = sum(1 for item in gaps if item.severity == "blocking" and item.status not in {"answered", "resolved"})
     open_questions = sum(len(item.questions) for item in gaps if item.status == "open")
     assumptions = _flatten_assumptions(gaps)
-    can_start_build = validation.can_export_zip and blocking_gaps == 0 and open_questions == 0
+    can_start_build = validation.can_export_zip and blocking_gaps == 0
 
     if can_start_build:
         overall_status = "ready_to_build"

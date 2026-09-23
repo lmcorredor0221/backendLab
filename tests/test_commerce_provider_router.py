@@ -24,11 +24,13 @@ from app.models import (
     CommercialCheckoutSessionRequest,
     CommercialDebtRecord,
     CommercialDebtStatus,
+    CommercialEntitlementStatus,
     CommercialEntitlementRecord,
     CommercialPackageCatalogUpsertRequest,
     CommercialOrderRecord,
     CommercialOrderStatus,
     CommercialPaymentRecord,
+    CommercialPaymentStatus,
     CommercialTier,
     HotmartPaymentLinkRecord,
     HotmartPaymentLinkResponse,
@@ -47,7 +49,6 @@ from app.services.commerce_provider_router import (
     normalize_commerce_payment_provider,
 )
 from app.services.commerce_service import (
-    CheckoutAvailableForAccessRequestError,
     complete_checkout_session,
     create_checkout_session,
     request_access,
@@ -1193,7 +1194,7 @@ def test_legacy_session_commercial_access_routes_to_checkout_when_external_payme
     assert db_session.exec(select(CommercialAccessRequestRecord)).all() == []
 
 
-def test_access_request_is_not_created_when_external_payment_flow_is_active(
+def test_access_request_is_created_when_external_payment_flow_is_active(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1203,21 +1204,23 @@ def test_access_request_is_not_created_when_external_payment_flow_is_active(
     user, _customer_workspace, record = _seed_checkout_context(db_session)
     _configure_mercadopago_orders_ready(db_session, platform_workspace, platform_admin)
 
-    with pytest.raises(CheckoutAvailableForAccessRequestError, match="checkout"):
-        request_access(
-            db_session,
-            payload=AccessRequestCreateRequest(
-                session_id=record.id,
-                capability="blueprint.download",
-                reason="Quiero Blueprint Pro",
-            ),
-            record=record,
-            current_user=user,
-            product_key="blueprint_pro",
-            target_tier=CommercialTier.blueprint_pro,
-        )
+    response = request_access(
+        db_session,
+        payload=AccessRequestCreateRequest(
+            session_id=record.id,
+            capability="blueprint.download",
+            reason="Quiero Blueprint Pro",
+        ),
+        record=record,
+        current_user=user,
+        product_key="blueprint_pro",
+        target_tier=CommercialTier.blueprint_pro,
+    )
 
-    assert db_session.exec(select(CommercialAccessRequestRecord)).all() == []
+    access_request = db_session.exec(select(CommercialAccessRequestRecord)).one()
+    assert response.status == CommercialAccessRequestStatus.pending
+    assert access_request.product_key == "blueprint_pro"
+    assert access_request.status == CommercialAccessRequestStatus.pending
 
 
 def test_checkout_without_provider_prefers_ready_platform_mercadopago_configuration(
@@ -1528,6 +1531,205 @@ def test_mercadopago_webhook_order_processed_uses_common_fulfillment_and_dedupes
     assert webhook_event.signature_validated is True
     assert webhook_event.processing_status == "processed"
     assert webhook_event.retries == 2
+
+
+def test_mercadopago_webhook_retries_failed_event_and_auto_approves_access_request(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FlakyMercadoPagoClient(FakeMercadoPagoClient):
+        get_calls = 0
+
+        def get_order(self, *, access_token: str, order_id: str) -> dict[str, object]:
+            self.__class__.get_calls += 1
+            if self.__class__.get_calls == 1:
+                raise MercadoPagoApiError(
+                    "temporary_provider_error",
+                    "Mercado Pago temporary outage.",
+                    http_status=503,
+                    payload={"message": "try again"},
+                )
+            return self.__class__.order_payload
+
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="mercadopago",
+            idempotency_key=f"{record.id}:mercadopago-retry-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    order = db_session.get(CommercialOrderRecord, response.order_id)
+    assert order is not None
+    pending_request = CommercialAccessRequestRecord(
+        workspace_id=workspace.id,
+        session_id=record.id,
+        requester_user_id=user.id,
+        capability="blueprint.download",
+        product_key="blueprint_pro",
+        target_tier=CommercialTier.blueprint_pro,
+        reason="Solicitud creada antes de confirmar pago",
+        status=CommercialAccessRequestStatus.pending,
+    )
+    db_session.add(pending_request)
+    db_session.flush()
+    FlakyMercadoPagoClient.get_calls = 0
+    FlakyMercadoPagoClient.order_payload = {
+        "id": "mp_order_retry",
+        "status": "processed",
+        "status_detail": "accredited",
+        "total_paid_amount": "199000.00",
+        "currency": "COP",
+        "external_reference": order.checkout_ref,
+        "transactions": {
+            "payments": [
+                {
+                    "id": "mp_pay_retry",
+                    "amount": "199000.00",
+                    "paid_amount": "199000.00",
+                    "status": "processed",
+                    "status_detail": "accredited",
+                }
+            ]
+        },
+    }
+    payload = {"id": "evt_mp_retry_1", "type": "order", "data": {"id": "mp_order_retry"}}
+    raw_body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = sign_mercadopago_webhook(
+        data_id="mp_order_retry",
+        request_id="req_mp_retry",
+        timestamp="1700000000",
+        signing_secret="mp_whsec_test",
+    )
+    headers = {
+        "x-request-id": "req_mp_retry",
+        "x-signature": f"ts=1700000000,v1={signature}",
+    }
+
+    first_attempt = process_mercadopago_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers=headers,
+        query_params={"data.id": "mp_order_retry", "type": "order"},
+        url_secret="url_secret",
+        environment="sandbox",
+        client_factory=FlakyMercadoPagoClient,
+    )
+    second_attempt = process_mercadopago_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers=headers,
+        query_params={"data.id": "mp_order_retry", "type": "order"},
+        url_secret="url_secret",
+        environment="sandbox",
+        client_factory=FlakyMercadoPagoClient,
+    )
+    db_session.commit()
+
+    db_session.refresh(order)
+    db_session.refresh(pending_request)
+    webhook_event = db_session.exec(
+        select(CommerceProviderWebhookEventRecord).where(CommerceProviderWebhookEventRecord.provider_key == "mercadopago")
+    ).one()
+    payment = db_session.exec(select(CommercialPaymentRecord).where(CommercialPaymentRecord.order_id == order.id)).one()
+
+    assert first_attempt.processing_status == "failed"
+    assert second_attempt.processing_status == "processed"
+    assert second_attempt.duplicate is True
+    assert webhook_event.retries == 1
+    assert webhook_event.processing_status == "processed"
+    assert webhook_event.error_code == ""
+    assert webhook_event.payload_redacted["_lab_reprocessed_from_status"] == "failed"
+    assert order.status == CommercialOrderStatus.paid
+    assert payment.status == CommercialPaymentStatus.succeeded
+    assert pending_request.status == CommercialAccessRequestStatus.approved
+
+
+def test_mercadopago_webhook_refunded_processed_order_does_not_grant_access(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, workspace, record = _seed_checkout_context(db_session)
+    _configure_mercadopago(db_session, workspace, user)
+    monkeypatch.setattr(MercadoPagoPaymentProvider, "client_factory", FakeMercadoPagoClient)
+    response = create_checkout_session(
+        db_session,
+        payload=CommercialCheckoutSessionRequest(
+            session_id=record.id,
+            product_key="blueprint_pro",
+            provider="mercadopago",
+            idempotency_key=f"{record.id}:mercadopago-refund-provider",
+        ),
+        record=record,
+        current_user=user,
+        base_url="http://localhost:3200",
+    )
+    order = db_session.get(CommercialOrderRecord, response.order_id)
+    assert order is not None
+    FakeMercadoPagoClient.order_payload = {
+        "id": "mp_order_refund",
+        "status": "processed",
+        "status_detail": "accredited",
+        "total_paid_amount": "199000.00",
+        "currency": "COP",
+        "external_reference": order.checkout_ref,
+        "transactions": {
+            "payments": [
+                {
+                    "id": "mp_pay_refund",
+                    "amount": "199000.00",
+                    "paid_amount": "199000.00",
+                    "status": "processed",
+                    "status_detail": "accredited",
+                }
+            ],
+            "refunds": [{"id": "refund_1", "amount": "199000.00"}],
+        },
+    }
+    payload = {"id": "evt_mp_refund_1", "type": "order", "data": {"id": "mp_order_refund"}}
+    raw_body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = sign_mercadopago_webhook(
+        data_id="mp_order_refund",
+        request_id="req_mp_refund",
+        timestamp="1700000000",
+        signing_secret="mp_whsec_test",
+    )
+    headers = {
+        "x-request-id": "req_mp_refund",
+        "x-signature": f"ts=1700000000,v1={signature}",
+    }
+
+    webhook_response = process_mercadopago_webhook(
+        db_session,
+        raw_body=raw_body,
+        request_headers=headers,
+        query_params={"data.id": "mp_order_refund", "type": "order"},
+        url_secret="url_secret",
+        environment="sandbox",
+        client_factory=FakeMercadoPagoClient,
+    )
+    db_session.commit()
+
+    db_session.refresh(order)
+    payment = db_session.exec(select(CommercialPaymentRecord).where(CommercialPaymentRecord.order_id == order.id)).one()
+    entitlements = db_session.exec(
+        select(CommercialEntitlementRecord).where(CommercialEntitlementRecord.order_id == order.id)
+    ).all()
+
+    assert webhook_response.processing_status == "processed"
+    assert webhook_response.message == "Mercado Pago revocation event processed."
+    assert order.status == CommercialOrderStatus.refunded
+    assert payment.status == CommercialPaymentStatus.refunded
+    assert payment.metadata_payload["refund_amount_cents"] == 19_900_000
+    assert entitlements == []
+    assert record.commercial_tier == CommercialTier.blueprint
 
 
 def test_mercadopago_webhook_rejects_invalid_signature(

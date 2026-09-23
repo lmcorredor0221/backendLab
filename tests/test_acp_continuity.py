@@ -367,7 +367,8 @@ def test_deferred_uncertainty_backlog_reaches_acp_as_a_ratifiable_assumption() -
         questions = build_construction_question_views(preview, preview_records)
         continuity_answers = build_continuity_answer_map(preview_records)
 
-    assert preview.construction_readiness.can_start_build is False
+    assert preview.construction_readiness.can_start_build is True
+    assert preview.construction_readiness.overall_status == "ready_to_build"
     assert preview.construction_readiness.open_questions == 1
     assert questions[0].question_key == backlog_question_key
     assert questions[0].status == "open"

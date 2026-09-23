@@ -9,11 +9,13 @@ from app.models import (
     BlueprintConsistencyIssue,
     BlueprintConsistencyReport,
     BlueprintTool,
+    FeatureFlagEntry,
     MemoryProfile,
     ReviewState,
     SessionCreateResponse,
     SessionSnapshot,
     SessionStage,
+    WorkspaceContract,
     utc_now,
 )
 from app.services.acp_construction_readiness import build_initial_construction_readiness
@@ -22,7 +24,9 @@ from app.services.acp_paths import ACP_CANONICAL_ENV_TEMPLATE_PATH, build_tool_c
 
 def build_snapshot(
     *,
+    architecture: str = "single_agent_with_skills",
     memory_strategy: str = "session_memory_with_checkpoints",
+    objective_questions: bool = False,
     storage_layers: list[str] | None = None,
     tools: list[BlueprintTool] | None = None,
 ) -> SessionSnapshot:
@@ -38,7 +42,7 @@ def build_snapshot(
             updated_at=now,
         ),
         blueprint=BlueprintArtifact(
-            architecture="single_agent_with_skills",
+            architecture=architecture,
             reasoning_pattern="Plan-and-Execute",
             memory_strategy=memory_strategy,
             tools=tools or [BlueprintTool(name="build_blueprint")],
@@ -52,6 +56,15 @@ def build_snapshot(
             ),
             guardrails=["No inventar datos"],
             narrative="ACP listo para validar continuidad constructiva.",
+        ),
+        workspace_contract=WorkspaceContract(
+            feature_flags=[
+                FeatureFlagEntry(
+                    key="objective_questions_v1",
+                    enabled=objective_questions,
+                    stage_hint="acp",
+                )
+            ]
         ),
     )
 
@@ -126,8 +139,13 @@ def test_build_initial_construction_readiness_returns_ready_to_build_when_contra
     assert readiness.overall_status == "ready_to_build"
     assert readiness.can_start_build is True
     assert readiness.blocking_gaps == 0
-    assert readiness.open_questions == 0
-    assert readiness.gaps == []
+    assert readiness.open_questions == 9
+    assert {item.gap_key for item in readiness.gaps} == {
+        "knowledge_sources_missing",
+        "runtime_contract_incomplete",
+        "deployment_target_unknown",
+    }
+    assert all(item.severity == "warning" for item in readiness.gaps)
     assert readiness.next_recommended_action == "start_agentic_build"
 
 
@@ -147,6 +165,14 @@ def test_blueprint_handoff_process_debt_does_not_become_acp_blocker() -> None:
                         affected_stage_keys=["tools"],
                     ),
                     BlueprintConsistencyIssue(
+                        issue_key="memory_required_tool_dependency_missing",
+                        severity="blocking",
+                        category="tools_to_memory",
+                        title="Memory depende de tools no aprobadas",
+                        detail="Dependencias faltantes: outbound_notification",
+                        affected_stage_keys=["tools", "memory"],
+                    ),
+                    BlueprintConsistencyIssue(
                         issue_key="validate_source_stage_drift:memory",
                         severity="blocking",
                         category="memory_to_validate",
@@ -157,6 +183,7 @@ def test_blueprint_handoff_process_debt_does_not_become_acp_blocker() -> None:
                 ],
                 blocking_issues=[
                     "La recomendacion de herramientas esta desactualizada.",
+                    "Dependencias faltantes: outbound_notification",
                     "Validate referencia una version previa de Memory.",
                 ],
             )
@@ -174,7 +201,7 @@ def test_blueprint_handoff_process_debt_does_not_become_acp_blocker() -> None:
     assert not any(item.gap_key == "cross_stage_consistency_drift" for item in readiness.gaps)
 
 
-def test_build_initial_construction_readiness_requires_answers_when_only_warning_gaps_remain() -> None:
+def test_build_initial_construction_readiness_allows_build_when_only_warning_gaps_remain() -> None:
     files = build_complete_acp_files()
     files[0] = build_file(
         "ACP/knowledge/sources.yaml",
@@ -195,14 +222,15 @@ def test_build_initial_construction_readiness_requires_answers_when_only_warning
         build_valid_validation_report(),
     )
 
-    assert readiness.overall_status == "needs_questions"
-    assert readiness.can_start_build is False
+    assert readiness.overall_status == "ready_to_build"
+    assert readiness.can_start_build is True
     assert readiness.blocking_gaps == 0
-    assert readiness.open_questions == 6
-    assert readiness.next_recommended_action == "answer_open_questions"
+    assert readiness.open_questions == 9
+    assert readiness.next_recommended_action == "start_agentic_build"
     assert {item.gap_key for item in readiness.gaps} == {
         "knowledge_sources_missing",
         "runtime_contract_incomplete",
+        "deployment_target_unknown",
     }
 
 
@@ -253,10 +281,11 @@ def test_build_initial_construction_readiness_blocks_on_validation_deployment_ru
     assert readiness.overall_status == "blocked"
     assert readiness.can_start_build is False
     assert readiness.blocking_gaps == 1
-    assert readiness.open_questions == 7
+    assert readiness.open_questions == 10
     assert readiness.next_recommended_action == "resolve_blocking_construction_gaps"
     assert set(gap_map) == {
         "acp_package_validation_blocked",
+        "knowledge_sources_missing",
         "runtime_contract_incomplete",
         "deployment_target_unknown",
         "external_api_contracts_missing",
@@ -297,3 +326,30 @@ def test_acp_questions_are_non_blocking_and_rich_in_options() -> None:
             assert opt.description != ""
             assert opt.impact != ""
             assert opt.example != ""
+
+
+def test_objective_questions_include_agent_subobjectives_when_enabled() -> None:
+    readiness = build_initial_construction_readiness(
+        build_snapshot(
+            architecture="supervisor_with_subagents",
+            objective_questions=True,
+        ),
+        build_complete_acp_files(),
+        build_valid_validation_report(),
+    )
+
+    gap = next(item for item in readiness.gaps if item.gap_key == "objective_contract_validation")
+    questions = gap.questions
+
+    assert gap.severity == "warning"
+    assert all(question.blocking is False for question in questions)
+    assert len(questions) == 5
+    assert {question.subject_type for question in questions} == {"objective", "subobjective"}
+    assert {
+        question.target_owner for question in questions if question.subject_type == "subobjective"
+    } == {
+        "supervisor",
+        "evaluation_specialist",
+        "risk_specialist",
+        "artifact_specialist",
+    }

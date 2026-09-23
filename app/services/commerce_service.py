@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import timedelta
+from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
@@ -1723,32 +1724,39 @@ def _sync_blueprint_pro_build_after_access_approval(
     session_record: SessionRecord,
     access_request: CommercialAccessRequestRecord,
     source: str,
+    background_tasks: Any | None = None,
 ) -> None:
     if access_request.product_key != "blueprint_pro":
         return
 
     from app.services.product_processing.contracts import ProductBuildProductKey
     from app.services.product_processing.product_build_orchestrator import (
-        ProductBuildOrchestrationOptions,
-        ensure_product_build_orchestration,
+        enqueue_product_build_processing,
+        run_product_build_processing,
     )
 
     stage_val = getattr(session_record.current_stage, "value", str(session_record.current_stage or "discover"))
-    ensure_product_build_orchestration(
+    run, _, queued_now = enqueue_product_build_processing(
         db,
         record=session_record,
         product_key=ProductBuildProductKey.blueprint_pro,
         current_user=None,
-        options=ProductBuildOrchestrationOptions(
-            current_stage=stage_val,
-            execute_jobs=True,
-            allow_llm=True,
-            activation_payload={
-                "source": source,
-                "access_request_id": str(access_request.id),
-            },
-        ),
+        allow_llm=True,
+        activation_payload={
+            "source": source,
+            "access_request_id": str(access_request.id),
+        },
+        catalog_stage_override=stage_val,
     )
+    if not queued_now or run is None:
+        return
+    bind = db.get_bind()
+    if background_tasks is not None:
+        background_tasks.add_task(run_product_build_processing, run.id, bind)
+        return
+    db.commit()
+    run_product_build_processing(run.id, bind)
+    db.expire_all()
 
 
 def create_access_request(
@@ -1757,6 +1765,7 @@ def create_access_request(
     workspace_id: UUID,
     request: AccessRequestCreateRequest,
     current_user: UserRecord,
+    background_tasks: Any | None = None,
 ) -> AccessRequestResponse:
     from app.services.commercial_access import CAPABILITY_POLICIES
 
@@ -1769,14 +1778,6 @@ def create_access_request(
     membership = get_membership(db, session_record, current_user)
     if membership is None:
         raise PermissionError("Workspace membership is required.")
-    provider_key = _checkout_provider_for_access_request(
-        db,
-        record=session_record,
-        current_user=current_user,
-        product_key=policy.product,
-    )
-    if provider_key:
-        raise CheckoutAvailableForAccessRequestError(product_key=policy.product, provider_key=provider_key)
     blocked_by_open_debt = has_open_commercial_debt(
         db,
         workspace_id=workspace_id,
@@ -1850,6 +1851,7 @@ def create_access_request(
         access_request=record,
         session_record=session_record,
         actor_user=current_user,
+        background_tasks=background_tasks,
     )
     if record.status == CommercialAccessRequestStatus.pending and has_open_commercial_debt(
         db,
@@ -1877,15 +1879,8 @@ def request_access(
     current_user: UserRecord,
     product_key: str,
     target_tier: CommercialTier,
+    background_tasks: Any | None = None,
 ) -> AccessRequestResponse:
-    provider_key = _checkout_provider_for_access_request(
-        db,
-        record=record,
-        current_user=current_user,
-        product_key=product_key,
-    )
-    if provider_key:
-        raise CheckoutAvailableForAccessRequestError(product_key=product_key, provider_key=provider_key)
     blocked_by_open_debt = has_open_commercial_debt(
         db,
         workspace_id=record.workspace_id,
@@ -1959,6 +1954,7 @@ def request_access(
         access_request=access_request,
         session_record=record,
         actor_user=current_user,
+        background_tasks=background_tasks,
     )
     if access_request.status == CommercialAccessRequestStatus.pending and has_open_commercial_debt(
         db,
@@ -1985,6 +1981,7 @@ def _auto_approve_access_request_from_workspace_balance(
     session_record: SessionRecord,
     actor_user: UserRecord | None,
     approval_mode: str = "workspace_quota_balance",
+    background_tasks: Any | None = None,
 ) -> bool:
     if access_request.status != CommercialAccessRequestStatus.pending:
         return False
@@ -2109,6 +2106,7 @@ def _auto_approve_access_request_from_workspace_balance(
         session_record=session_record,
         access_request=access_request,
         source=f"access_request_auto_approved:{approval_mode}",
+        background_tasks=background_tasks,
     )
     if access_request.product_key == "acp":
         from app.services.acp_handoff_service import finalize_blueprint_for_acp_handoff

@@ -26,6 +26,8 @@ def _is_basic_blueprint_noise(item: AttentionItemV2) -> bool:
         return False
     if item.type in _BASIC_SURFACED_TYPES:
         return False
+    if _is_memory_dependency_gap(item):
+        return False
     if item.type == "approval":
         entity_id = getattr(item.source_ref, "entity_id", "") or ""
         field_path = getattr(item.source_ref, "field_path", "") or ""
@@ -186,6 +188,16 @@ def _is_derived_promotion_blocker(item: AttentionItemV2) -> bool:
     return "policy_key=promotion_blockers" in refs and "blueprint_readiness=blocked" in refs
 
 
+def _is_memory_dependency_gap(item: AttentionItemV2) -> bool:
+    field_path = getattr(item.source_ref, "field_path", "") or ""
+    return (
+        item.type == "gap"
+        and item.stage == "memory"
+        and item.source.startswith("journey.")
+        and field_path == "dependency_gaps"
+    )
+
+
 def _is_actionable_blueprint_blocker(item: AttentionItemV2) -> bool:
     return item.product == "blueprint" and item.severity == "blocking" and item.source != "governance_policy"
 
@@ -203,6 +215,8 @@ def _suppress_derived_promotion_blockers(items: list[AttentionItemV2], *, is_pro
 
 def _is_lab_operational_debt(item: AttentionItemV2) -> bool:
     """Identifica deuda operativa interna de LAB que no debe transferirse al usuario en fase ACP."""
+    if _is_memory_dependency_gap(item):
+        return False
     # 1. Gaps originados por artefactos de validacion/simulacion interna de LAB
     if item.source == "journey.validation_simulation_artifact":
         return True

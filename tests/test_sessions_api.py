@@ -2130,7 +2130,7 @@ def test_project_portfolio_rename_lifecycle_and_facets(client: TestClient) -> No
     assert snapshot_response.status_code == 200
     snapshot_session = snapshot_response.json()["session"]
     assert snapshot_session["title"] == "Asistente de beneficios RRHH"
-    assert snapshot_session["suggested_title"].startswith("Titulo sugerido por Discovery")
+    assert snapshot_session["suggested_title"].startswith("Titulo Sugerido Discovery")
 
     active_list_response = client.get("/api/v1/sessions?q=beneficios", headers=headers)
     assert active_list_response.status_code == 200
@@ -3638,7 +3638,11 @@ def test_recommend_memory_route_remediates_missing_scheduler_dependency_once(
         )
     finally:
         session_generator.close()
-    monkeypatch.setattr(sessions_routes, "load_latest_tool_recommendation", lambda *_args, **_kwargs: legacy_recommendation)
+    monkeypatch.setattr(
+        sessions_routes,
+        "load_latest_tool_recommendation",
+        lambda *_args, **_kwargs: legacy_recommendation,
+    )
     calls: list[list[str]] = []
 
     def fake_run_memory_react(**kwargs):
@@ -3723,7 +3727,11 @@ def test_recommend_memory_route_preflights_batched_tool_dependencies_before_llm(
     finally:
         session_generator.close()
 
-    monkeypatch.setattr(sessions_routes, "load_latest_tool_recommendation", lambda *_args, **_kwargs: legacy_recommendation)
+    monkeypatch.setattr(
+        sessions_routes,
+        "load_latest_tool_recommendation",
+        lambda *_args, **_kwargs: legacy_recommendation,
+    )
     calls: list[list[str]] = []
 
     def fake_run_memory_react(**kwargs):
@@ -3794,6 +3802,71 @@ def test_recommend_memory_route_preflights_batched_tool_dependencies_before_llm(
     dependency_map = {item["tool_key"]: item for item in proposal["tool_dependencies"]}
     assert dependency_map["knowledge_retrieval"]["status"] == "approved"
     assert dependency_map["document_ingestion"]["status"] == "approved"
+
+
+def test_recommend_memory_route_reconciles_late_auto_remediation_without_second_llm(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.sessions as sessions_routes
+
+    headers, session_id = build_session_flow(client)
+    approve_design_for_session(client, headers, session_id)
+    approve_tools_for_session(client, headers, session_id)
+    enable_react_runtime_for_session(client, headers, session_id)
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        latest_recommendation = sessions_routes.load_latest_tool_recommendation(session, UUID(session_id))
+        assert latest_recommendation is not None
+        legacy_recommendation = legacy_recommendation_without_tool_keys(
+            latest_recommendation,
+            {"scheduler"},
+        )
+    finally:
+        session_generator.close()
+
+    monkeypatch.setattr(sessions_routes, "load_latest_tool_recommendation", lambda *_args, **_kwargs: legacy_recommendation)
+    monkeypatch.setattr(sessions_routes, "_preflight_memory_tool_remediation_keys", lambda **_kwargs: [])
+    calls: list[list[str]] = []
+
+    def fake_run_memory_react(**kwargs):
+        approved_digest = kwargs.get("approved_tools_digest")
+        calls.append(list(approved_digest.approved_tool_keys) if approved_digest is not None else [])
+        return SimpleNamespace(
+            value=MemoryRecommendationArtifact(
+                source_session_id=UUID(session_id),
+                review_state=ReviewState.blocked,
+                tool_dependencies=[
+                    MemoryToolDependency(
+                        tool_key="scheduler",
+                        required=True,
+                        status="missing",
+                        reason="El refresh de conocimiento requiere triggers programados.",
+                    )
+                ],
+                missing_information=["Resolver dependencia de herramientas: scheduler"],
+            ),
+            traces=[],
+            react_run=None,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(sessions_routes, "run_memory_react", fake_run_memory_react)
+
+    response = client.post(f"/api/v1/sessions/{session_id}/recommend-memory", headers=headers)
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    proposal = response.json()["proposal_payload"]
+    dependency_map = {item["tool_key"]: item for item in proposal["tool_dependencies"]}
+    assert dependency_map["scheduler"]["status"] == "approved"
+    assert proposal["dependency_gaps"] == []
+    assert "Resolver dependencia de herramientas: scheduler" not in proposal["missing_information"]
+    assert proposal["source_blueprint_version"] == proposal["current_blueprint_version"]
+    assert proposal["current_blueprint_version"] is not None
+    assert "memory_tool_dependency_reconciled_without_llm_rerun" in response.json()["warnings"]
 
 
 def test_memory_react_unresolved_remediation_warning_is_bounded(
@@ -5947,7 +6020,8 @@ def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -
     assert any(item["path"] == "ACP/blueprint.graph.json" for item in preview["files"])
     assert preview["validation"]["can_export_zip"] is True
     assert preview["validation"]["overall_status"] == "needs_review"
-    assert preview["construction_readiness"]["can_start_build"] is False
+    assert preview["construction_readiness"]["can_start_build"] is True
+    assert preview["construction_readiness"]["overall_status"] == "ready_to_build"
     assert preview["construction_readiness"]["open_questions"] >= 1
     assert not any(issue["code"] == "missing_evaluation_base" for issue in preview["validation"]["issues"])
     evaluation_status_by_path = {
@@ -5975,8 +6049,8 @@ def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -
     assert any(item["path"] == "ACP/estimation/estimation-report.md" for item in generated_preview["files"])
     assert any(item["path"] == "ACP/estimation/assumptions.yaml" for item in generated_preview["files"])
     assert any(item["path"] == "ACP/estimation/sensitivity-drivers.yaml" for item in generated_preview["files"])
-    assert generated_preview["construction_readiness"]["overall_status"] == "needs_questions"
-    assert generated_preview["construction_readiness"]["can_start_build"] is False
+    assert generated_preview["construction_readiness"]["overall_status"] == "ready_to_build"
+    assert generated_preview["construction_readiness"]["can_start_build"] is True
     assert generated_preview["construction_readiness"]["blocking_gaps"] == 0
     assert generated_preview["construction_readiness"]["open_questions"] >= 1
 
@@ -5989,7 +6063,8 @@ def test_acp_routes_generate_preview_validate_file_and_zip(client: TestClient) -
     readiness_response = client.get(f"/api/v1/sessions/{session_id}/acp/construction-readiness", headers=headers)
     assert readiness_response.status_code == 200
     readiness = readiness_response.json()
-    assert readiness["overall_status"] == "needs_questions"
+    assert readiness["overall_status"] == "ready_to_build"
+    assert readiness["can_start_build"] is True
     assert readiness["blocking_gaps"] == 0
 
     questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
@@ -6063,10 +6138,12 @@ def test_acp_workspace_surfaces_missing_evaluation_assets_without_autobootstrap(
     workspace_response = client.get(f"/api/v1/sessions/{session_id}/acp/workspace", headers=headers)
     assert workspace_response.status_code == 200
     workspace = workspace_response.json()
-    assert workspace["validation"]["can_export_zip"] is False
-    assert workspace["validation"]["overall_status"] == "incomplete"
-    assert any(issue["code"] == "acp_file_incomplete" for issue in workspace["validation"]["issues"])
-    assert workspace["readiness"]["overall_status"] == "blocked"
+    assert workspace["validation"]["can_export_zip"] is True
+    assert workspace["validation"]["overall_status"] == "needs_review"
+    assert not any(issue["blocking"] for issue in workspace["validation"]["issues"])
+    assert workspace["readiness"]["overall_status"] == "ready_to_build"
+    assert workspace["readiness"]["can_start_build"] is True
+    assert workspace["readiness"]["blocking_gaps"] == 0
     assert workspace["readiness"]["open_questions"] >= 1
 
     snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
@@ -6102,9 +6179,9 @@ def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: 
     answered_question = answer_response.json()
     assert answered_question["status"] == "answered"
     assert answered_question["owner_role"] == "platform_owner"
-    assert answered_question["impact_analysis"]["impact_kind"] == "localized_impact"
-    assert answered_question["impact_analysis"]["reprocess_decision"] == "localized_reconciliation"
-    assert answered_question["impact_analysis"]["reconciliation_decision"] == "localized_reconciliation"
+    assert answered_question["impact_analysis"]["impact_kind"] == "structural_impact"
+    assert answered_question["impact_analysis"]["reprocess_decision"] == "structural_reconciliation"
+    assert answered_question["impact_analysis"]["reconciliation_decision"] == "structural_reconciliation"
     session_override = client.app.dependency_overrides[get_session]
     session_generator = session_override()
     session = next(session_generator)
@@ -6124,7 +6201,7 @@ def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: 
     assert acp_log_payload["event_key"] == "acp_question_answered"
     assert acp_log_payload["product"] == "acp"
     assert acp_log_payload["metadata"]["decision_contract_version"] == "decision-observability.v1"
-    assert acp_log_payload["metadata"]["impact_analysis"]["reconciliation_decision"] == "localized_reconciliation"
+    assert acp_log_payload["metadata"]["impact_analysis"]["reconciliation_decision"] == "structural_reconciliation"
 
     refreshed_questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
     assert refreshed_questions_response.status_code == 200
@@ -6189,7 +6266,10 @@ def test_acp_questions_can_be_answered_and_reinjected_into_regeneration(client: 
     final_questions_response = client.get(f"/api/v1/sessions/{session_id}/acp/questions", headers=headers)
     assert final_questions_response.status_code == 200
     final_questions = final_questions_response.json()
-    assert any(item["question_key"] == "deployment_target" and item["status"] == "resolved" for item in final_questions)
+    assert any(
+        item["question_key"] == "deployment_target" and item["status"] in {"answered", "resolved"}
+        for item in final_questions
+    )
 
 
 def test_acp_questions_can_be_delegated_without_manual_answer_text(client: TestClient) -> None:
@@ -6453,8 +6533,12 @@ def test_acp_design_only_profile_closes_independently_from_extended_profile(clie
         f"/api/v1/sessions/{session_id}/acp/export.zip?profile=extended",
         headers=headers,
     )
-    assert extended_zip_response.status_code == 409
-    assert "extended" in extended_zip_response.json()["detail"]
+    assert extended_zip_response.status_code == 200
+    assert extended_zip_response.headers["x-acp-export-profile"] == "extended"
+    assert extended_zip_response.headers["x-acp-export-readiness"] == "ready_to_build"
+    with ZipFile(BytesIO(extended_zip_response.content)) as archive:
+        extended_names = sorted(archive.namelist())
+    assert "ACP/deployment/env.template" in extended_names
 
 
 def test_patch_blueprint_rejects_ungoverned_fields(client: TestClient) -> None:

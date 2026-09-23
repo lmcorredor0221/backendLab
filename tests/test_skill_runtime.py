@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from app.models import (
+    AgentExecutionBackend,
     BlueprintArtifact,
     CanvasArtifact,
     DesignAlternative,
@@ -338,6 +339,37 @@ def test_stage_runtime_surfaces_llm_trace_for_all_builder_stages(monkeypatch) ->
     assert recommendation_envelope.llm_trace.provider_key == "openai"
     assert recommendation_envelope.llm_trace.context_used_sources[0]["key"] == "tool_recommendation_case"
     assert recommendation_traces[0].llm_trace is not None
+
+
+def test_discovery_stage_skips_provider_for_antigravity_sync_normalization(monkeypatch) -> None:
+    runtime_settings = load_llm_runtime_settings().model_copy(
+        update={
+            "active_provider": LLMProviderKey.antigravity_cli,
+            "agent_execution_backend": AgentExecutionBackend.antigravity_cli,
+        }
+    )
+
+    def fail_if_provider_is_built(stage_key, runtime_settings=None):
+        del stage_key, runtime_settings
+        raise AssertionError("normalize_discovery must not build a provider for Antigravity sync normalization")
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        fail_if_provider_is_built,
+    )
+
+    discovery_envelope, discovery_traces = run_discovery_stage(
+        complete_discovery_input(),
+        runtime_settings=runtime_settings,
+    )
+
+    assert isinstance(discovery_envelope.data, DiscoveryArtifact)
+    assert discovery_envelope.warnings == []
+    assert discovery_envelope.llm_trace is not None
+    assert discovery_envelope.llm_trace.provider_key == LLMProviderKey.antigravity_cli.value
+    assert discovery_envelope.llm_trace.execution_backend == AgentExecutionBackend.antigravity_cli.value
+    assert discovery_envelope.llm_trace.finish_reason == "skipped_sync_normalization"
+    assert discovery_traces[0].llm_trace is not None
 
 
 def test_builder_service_for_stage_uses_runtime_loader_when_context_missing(monkeypatch) -> None:

@@ -39,6 +39,7 @@ SUCCESS_DETAILS = {"accredited"}
 PENDING_STATUSES = {"action_required", "authorized", "created", "in_process", "pending", "processing"}
 FAILED_STATUSES = {"cancelled", "canceled", "declined", "expired", "failed", "rejected"}
 REVOCATION_STATUSES = {"chargeback", "charged_back", "partially_refunded", "refunded"}
+RETRYABLE_PROCESSING_STATUSES = {"failed", "unresolved"}
 
 
 def process_mercadopago_webhook(
@@ -83,6 +84,7 @@ def process_mercadopago_webhook(
         provided=url_secret,
     )
 
+    retrying_existing_event = False
     if webhook_event is not None:
         webhook_event.retries += 1
         webhook_event.signature_validated = webhook_event.signature_validated or (signature_validated and url_secret_validated)
@@ -95,37 +97,57 @@ def process_mercadopago_webhook(
         session.flush()
         if not signature_validated or not url_secret_validated:
             raise PermissionError("Invalid Mercado Pago webhook signature or URL secret.")
-        return CommerceProviderWebhookIngestResponse(
-            provider_key="mercadopago",
-            event_id=webhook_event.event_id,
-            event_type=webhook_event.event_type,
-            provider_resource_id=webhook_event.provider_resource_id,
-            processing_status=webhook_event.processing_status,
-            duplicate=True,
-            workspace_id=webhook_event.workspace_id,
-            order_id=webhook_event.order_id,
-            payment_id=webhook_event.payment_id,
-            message="Duplicate Mercado Pago webhook ignored.",
-        )
-
-    webhook_event = CommerceProviderWebhookEventRecord(
-        provider_key="mercadopago",
-        environment=env,
-        event_id=event_id,
-        event_type=event_type,
-        provider_resource_id=provider_resource_id,
-        workspace_id=workspace_id,
-        order_id=order.id if order is not None else None,
-        signature_validated=signature_validated and url_secret_validated,
-        processing_status="received",
-        payload_hash=payload_hash,
-        payload_redacted={
+        if webhook_event.processing_status not in RETRYABLE_PROCESSING_STATUSES:
+            return CommerceProviderWebhookIngestResponse(
+                provider_key="mercadopago",
+                event_id=webhook_event.event_id,
+                event_type=webhook_event.event_type,
+                provider_resource_id=webhook_event.provider_resource_id,
+                processing_status=webhook_event.processing_status,
+                duplicate=True,
+                workspace_id=webhook_event.workspace_id,
+                order_id=webhook_event.order_id,
+                payment_id=webhook_event.payment_id,
+                message="Duplicate Mercado Pago webhook ignored.",
+            )
+        previous_status = webhook_event.processing_status
+        retrying_existing_event = True
+        webhook_event.environment = env
+        webhook_event.provider_resource_id = provider_resource_id or webhook_event.provider_resource_id
+        webhook_event.workspace_id = workspace_id or webhook_event.workspace_id
+        webhook_event.order_id = order.id if order is not None else webhook_event.order_id
+        webhook_event.processing_status = "received"
+        webhook_event.error_code = ""
+        webhook_event.error_message = ""
+        webhook_event.processed_at = None
+        webhook_event.payload_hash = payload_hash
+        webhook_event.payload_redacted = {
             **redact_payload(payload),
             "_lab_request_headers_redacted": redact_headers(request_headers),
-        },
-    )
-    session.add(webhook_event)
-    session.flush()
+            "_lab_reprocessed_from_status": previous_status,
+        }
+        session.add(webhook_event)
+        session.flush()
+
+    if webhook_event is None:
+        webhook_event = CommerceProviderWebhookEventRecord(
+            provider_key="mercadopago",
+            environment=env,
+            event_id=event_id,
+            event_type=event_type,
+            provider_resource_id=provider_resource_id,
+            workspace_id=workspace_id,
+            order_id=order.id if order is not None else None,
+            signature_validated=signature_validated and url_secret_validated,
+            processing_status="received",
+            payload_hash=payload_hash,
+            payload_redacted={
+                **redact_payload(payload),
+                "_lab_request_headers_redacted": redact_headers(request_headers),
+            },
+        )
+        session.add(webhook_event)
+        session.flush()
 
     if not signature_validated or not url_secret_validated:
         webhook_event.processing_status = "rejected"
@@ -152,7 +174,11 @@ def process_mercadopago_webhook(
             webhook_event.processed_at = utc_now()
             session.add(webhook_event)
             session.flush()
-            return _response_from_event(webhook_event, message=webhook_event.error_message)
+            return _response_from_event(
+                webhook_event,
+                message=webhook_event.error_message,
+                duplicate=retrying_existing_event,
+            )
         client = client_factory(
             MercadoPagoClientConfig(
                 api_base_url=_api_base_url_for_workspace(session, workspace_id=workspace_id, environment=env),
@@ -169,7 +195,11 @@ def process_mercadopago_webhook(
             webhook_event.processed_at = utc_now()
             session.add(webhook_event)
             session.flush()
-            return _response_from_event(webhook_event, message=webhook_event.error_message)
+            return _response_from_event(
+                webhook_event,
+                message=webhook_event.error_message,
+                duplicate=retrying_existing_event,
+            )
         metadata = _extract_metadata(confirmed_data)
         order = _resolve_order(session, data=confirmed_data, metadata=metadata, provider_resource_id=provider_resource_id) or order
         if order is not None:
@@ -184,14 +214,18 @@ def process_mercadopago_webhook(
         webhook_event.processed_at = utc_now()
         session.add(webhook_event)
         session.flush()
-        return _response_from_event(webhook_event, message=webhook_event.error_message)
+        return _response_from_event(
+            webhook_event,
+            message=webhook_event.error_message,
+            duplicate=retrying_existing_event,
+        )
 
     order_status = _extract_order_status(confirmed_data)
     status_detail = _extract_status_detail(confirmed_data)
     status_markers = {order_status, status_detail}
     provider_payment_id = _extract_provider_payment_id(confirmed_data, fallback=provider_resource_id or event_id)
-    if _is_successful_order(confirmed_data, order_status=order_status, status_detail=status_detail):
-        result = apply_provider_payment_success(
+    if status_markers & REVOCATION_STATUSES or _has_refunds_or_chargebacks(confirmed_data):
+        result = apply_provider_payment_revocation(
             session,
             order=order,
             event=ProviderPaymentEvent(
@@ -209,8 +243,11 @@ def process_mercadopago_webhook(
                     "refund_amount_cents": _extract_refund_amount_cents(confirmed_data, fallback_cents=order.total_cents),
                 },
             ),
+            payment_status=CommercialPaymentStatus.refunded,
+            order_status=CommercialOrderStatus.refunded,
+            entitlement_status=CommercialEntitlementStatus.refunded,
             actor_user_id=order.buyer_user_id,
-            event_key="mercadopago_order_processed",
+            event_key="mercadopago_order_revoked",
             source="mercadopago_webhook",
         )
         webhook_event.payment_id = result.payment.id
@@ -218,21 +255,14 @@ def process_mercadopago_webhook(
         webhook_event.processed_at = utc_now()
         session.add(webhook_event)
         session.flush()
-        return CommerceProviderWebhookIngestResponse(
-            provider_key="mercadopago",
-            event_id=event_id,
-            event_type=event_type,
-            provider_resource_id=provider_resource_id,
-            processing_status="processed",
-            workspace_id=workspace_id,
-            order_id=order.id,
-            payment_id=result.payment.id,
-            entitlement_id=result.entitlement.id if result.entitlement is not None else None,
-            message="Mercado Pago processed order recorded.",
+        return _response_from_event(
+            webhook_event,
+            message="Mercado Pago revocation event processed.",
+            duplicate=retrying_existing_event,
         )
 
-    if status_markers & REVOCATION_STATUSES or _has_refunds_or_chargebacks(confirmed_data):
-        result = apply_provider_payment_revocation(
+    if _is_successful_order(confirmed_data, order_status=order_status, status_detail=status_detail):
+        result = apply_provider_payment_success(
             session,
             order=order,
             event=ProviderPaymentEvent(
@@ -249,11 +279,8 @@ def process_mercadopago_webhook(
                     "mercadopago_status_detail": status_detail,
                 },
             ),
-            payment_status=CommercialPaymentStatus.refunded,
-            order_status=CommercialOrderStatus.refunded,
-            entitlement_status=CommercialEntitlementStatus.refunded,
             actor_user_id=order.buyer_user_id,
-            event_key="mercadopago_order_revoked",
+            event_key="mercadopago_order_processed",
             source="mercadopago_webhook",
         )
         webhook_event.payment_id = result.payment.id
@@ -261,7 +288,19 @@ def process_mercadopago_webhook(
         webhook_event.processed_at = utc_now()
         session.add(webhook_event)
         session.flush()
-        return _response_from_event(webhook_event, message="Mercado Pago revocation event processed.")
+        return CommerceProviderWebhookIngestResponse(
+            provider_key="mercadopago",
+            event_id=event_id,
+            event_type=event_type,
+            provider_resource_id=provider_resource_id,
+            processing_status="processed",
+            duplicate=retrying_existing_event,
+            workspace_id=workspace_id,
+            order_id=order.id,
+            payment_id=result.payment.id,
+            entitlement_id=result.entitlement.id if result.entitlement is not None else None,
+            message="Mercado Pago processed order recorded.",
+        )
 
     if status_markers & FAILED_STATUSES and order.status == CommercialOrderStatus.pending:
         order.status = CommercialOrderStatus.failed
@@ -272,13 +311,18 @@ def process_mercadopago_webhook(
     webhook_event.processed_at = utc_now()
     session.add(webhook_event)
     session.flush()
-    return _response_from_event(webhook_event, message="Mercado Pago webhook recorded without granting access.")
+    return _response_from_event(
+        webhook_event,
+        message="Mercado Pago webhook recorded without granting access.",
+        duplicate=retrying_existing_event,
+    )
 
 
 def _response_from_event(
     event: CommerceProviderWebhookEventRecord,
     *,
     message: str,
+    duplicate: bool = False,
 ) -> CommerceProviderWebhookIngestResponse:
     return CommerceProviderWebhookIngestResponse(
         provider_key=event.provider_key,
@@ -289,6 +333,7 @@ def _response_from_event(
         workspace_id=event.workspace_id,
         order_id=event.order_id,
         payment_id=event.payment_id,
+        duplicate=duplicate,
         message=message,
     )
 
@@ -375,7 +420,7 @@ def _extract_status_detail(data: dict[str, Any]) -> str:
 
 def _is_successful_order(data: dict[str, Any], *, order_status: str, status_detail: str) -> bool:
     status_markers = {order_status, status_detail}
-    if status_markers & REVOCATION_STATUSES or status_markers & FAILED_STATUSES:
+    if status_markers & REVOCATION_STATUSES or status_markers & FAILED_STATUSES or _has_refunds_or_chargebacks(data):
         return False
     if order_status in SUCCESS_STATUSES or status_detail in SUCCESS_DETAILS:
         return True

@@ -228,7 +228,11 @@ from app.services.design_recommendation_service import (
     downgrade_design_recommendation_to_legacy,
 )
 from app.services.journey_stage_migration import JourneyStageMigrationService
-from app.services.memory_recommendation_service import build_memory_recommendation_artifact
+from app.services.memory_recommendation_service import (
+    apply_memory_dependency_resolutions_from_user_patch,
+    build_memory_recommendation_artifact,
+    reconcile_memory_artifact_with_approved_tools,
+)
 from app.services.memory_rollout import FEATURE_FLAG_MEMORY_HYBRID_EXTENDED_JOURNEY
 from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
 from app.services.llm_runtime.stage_context_service import StageContextService
@@ -8530,61 +8534,28 @@ def recommend_memory_route(
                 }
             )
             session_snapshot = build_snapshot(db, record)
-            resume_state_after_tools_remediation = initial_react_state
-            if resume_state_after_tools_remediation is None and react_run is not None:
-                resume_state_after_tools_remediation = react_run.state
-            if resume_state_after_tools_remediation is not None:
-                resume_state_after_tools_remediation = resume_state_after_tools_remediation.model_copy(
-                    update={
-                        "status": "running",
-                        "iteration": 0,
-                        "llm_calls": 0,
-                        "token_usage": 0,
-                        "last_action": "",
-                        "last_observation": {},
-                        "last_evaluation": {},
-                        "resume_action": "recommend_memory_architecture",
-                        "resume_scope": "stage",
-                        "updated_at": utc_now(),
-                    }
-                )
-            (
-                remediated_artifact,
-                remediated_traces,
-                remediated_react_run,
-                remediated_react_runtime_warnings,
-            ) = _execute_memory_runtime(
-                session_id=session_id,
-                workspace_id=record.workspace_id,
-                discovery=discovery,
-                canvas=canvas,
-                blueprint=blueprint,
-                definition_artifact=definition_artifact,
-                design_artifact=design_artifact,
+            artifact = reconcile_memory_artifact_with_approved_tools(
+                artifact,
                 approved_tools_digest=latest_recommendation.approved_tools_digest,
-                tools_artifact=latest_recommendation,
+                blueprint=blueprint,
                 session_snapshot=session_snapshot,
-                instructions=request_payload.instructions,
-                blueprint_version_number=blueprint_version_number,
-                source_stage_versions=source_stage_versions,
-                runtime_settings=runtime_settings,
-                proposal_stage_context=proposal_stage_context,
-                critique_stage_context=critique_stage_context,
-                initial_state=resume_state_after_tools_remediation,
-                react_enabled=react_enabled,
+            ).model_copy(
+                update={
+                    "source_stage_versions": source_stage_versions,
+                    "source_blueprint_version": blueprint_version_number,
+                    "current_blueprint_version": blueprint_version_number,
+                }
             )
-            artifact = remediated_artifact
-            traces = [*traces, *remediated_traces]
             unresolved_after_remediation = _unresolved_remediated_memory_tool_keys(
                 artifact,
                 added_tool_keys,
             )
-            react_run = remediated_react_run
             react_runtime_warnings = list(
                 dict.fromkeys(
                     [
                         *react_runtime_warnings,
                         f"memory_tool_dependency_remediated:{','.join(added_tool_keys)}",
+                        "memory_tool_dependency_reconciled_without_llm_rerun",
                         *(
                             [
                                 "memory_tool_dependency_unresolved_after_single_batch:"
@@ -8593,7 +8564,6 @@ def recommend_memory_route(
                             if unresolved_after_remediation
                             else []
                         ),
-                        *remediated_react_runtime_warnings,
                     ]
                 )
             )
@@ -8766,14 +8736,18 @@ def _preserve_reviewed_memory_fields(
     *,
     original_payload: dict,
     refreshed_artifact: MemoryRecommendationArtifact,
+    original_user_patch: dict | None = None,
 ) -> MemoryRecommendationArtifact:
     try:
         original_artifact = MemoryRecommendationArtifact.model_validate(original_payload)
     except Exception:  # noqa: BLE001
-        return refreshed_artifact
+        return apply_memory_dependency_resolutions_from_user_patch(
+            refreshed_artifact,
+            user_patch=original_user_patch,
+        )
 
     reviewed_summary = original_artifact.summary.strip()
-    return refreshed_artifact.model_copy(
+    preserved = refreshed_artifact.model_copy(
         update={
             "summary": reviewed_summary or refreshed_artifact.summary,
             "open_questions": _merge_memory_strings(
@@ -8792,6 +8766,10 @@ def _preserve_reviewed_memory_fields(
             ),
         },
         deep=True,
+    )
+    return apply_memory_dependency_resolutions_from_user_patch(
+        preserved,
+        user_patch=original_user_patch,
     )
 
 
@@ -8881,6 +8859,7 @@ def approve_memory_profile_route(
             refreshed_artifact = _preserve_reviewed_memory_fields(
                 original_payload=memory_payload,
                 refreshed_artifact=refreshed_artifact,
+                original_user_patch=latest_memory_artifact.user_patch,
             )
             try:
                 proposal_service.patch(

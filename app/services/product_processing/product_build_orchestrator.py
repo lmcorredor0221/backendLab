@@ -307,6 +307,7 @@ def enqueue_product_build_processing(
     current_user: UserRecord | None = None,
     mode: ProductBuildProcessingQueueMode | str = ProductBuildProcessingQueueMode.process_pending,
     allow_llm: bool = False,
+    activation_payload: dict[str, Any] | None = None,
     catalog_stage_override: str | None = None,
 ) -> tuple[ProductBuildRunRecord | None, ProductBuildStatus, bool]:
     normalized_product_key = _normalize_product_key(product_key)
@@ -343,7 +344,7 @@ def enqueue_product_build_processing(
             current_user=current_user,
             execute_jobs=False,
             allow_llm=allow_llm,
-            activation_payload={"source": f"product_build_queue:{resolved_mode.value}"},
+            activation_payload=activation_payload or {"source": f"product_build_queue:{resolved_mode.value}"},
             catalog_stage_override=catalog_stage_override or "package",
         )
     else:
@@ -355,6 +356,7 @@ def enqueue_product_build_processing(
             options=ProductBuildOrchestrationOptions(
                 current_stage=catalog_stage_override or "",
                 allow_llm=allow_llm,
+                activation_payload=activation_payload,
             ),
             catalog_stage_override=catalog_stage_override,
         )

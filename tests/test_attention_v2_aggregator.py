@@ -29,6 +29,12 @@ from app.models import (
     JourneyArtifactState,
     JourneyStageArtifactEntry,
     JourneyStageArtifactRecord,
+    MemoryDependencyGap,
+    MemoryDryCompileStatus,
+    MemoryRecommendationArtifact,
+    MemoryRecommendationFinding,
+    MemoryToolDependency,
+    ReviewState,
     SessionCreateResponse,
     SessionRecord,
     SessionSnapshot,
@@ -60,6 +66,7 @@ from app.services.attention_service import (
     build_attention_metrics_v2,
     build_attention_response_v2,
 )
+from app.services.stage_proposal_service import _memory_approval_blocking_issues
 from app.services.auth_service import hash_password
 from app.services.product_processing import (
     ProductBuildLifecycle,
@@ -69,6 +76,7 @@ from app.services.product_processing import (
     sync_premium_enrichment_product_run,
     upsert_product_build_step,
 )
+from app.services.product_processing.persistence import UncertaintyBacklogRecord
 from tests.api_testkit import TEST_EMAIL, TEST_PASSWORD, build_test_client
 
 
@@ -153,6 +161,68 @@ def _snapshot(record: SessionRecord) -> SessionSnapshot:
             created_at=now,
             updated_at=now,
         )
+    )
+
+
+def _memory_dependency_payload() -> dict:
+    artifact = MemoryRecommendationArtifact(
+        summary="Memoria con dependencia saliente pendiente de decision humana.",
+        tool_dependencies=[
+            MemoryToolDependency(
+                tool_key="outbound_notification",
+                required=True,
+                status="missing",
+                reason="Memory declaro outbound_notification como dependencia requerida durante su ejecucion.",
+            )
+        ],
+        dependency_gaps=[
+            MemoryDependencyGap(
+                gap_key="memory_dependency:outbound_notification",
+                capability_key="outbound_notification",
+                required=True,
+                status="open",
+                remediation_policy="human_review",
+                batch_key="memory_tools_dependency_batch",
+                candidate_pattern_id="candidate_tool_pattern:outbound_notification",
+                reason="Memory declaro outbound_notification como dependencia requerida durante su ejecucion.",
+                source_refs=["memory.tool_dependencies", "approved_tools_digest"],
+            )
+        ],
+        critic_findings=[
+            MemoryRecommendationFinding(
+                finding_key="missing-tool:outbound_notification",
+                title="Dependencia de tool no aprobada",
+                detail="La estrategia de memoria requiere outbound_notification y no esta aprobada en Herramientas.",
+                severity="blocking",
+                category="compatibility",
+                suggested_action="Ajusta Tools o simplifica la estrategia de memoria.",
+            )
+        ],
+        dry_compile_status=MemoryDryCompileStatus(status="ready", summary="Dry compile OK."),
+        review_state=ReviewState.blocked,
+    )
+    return artifact.model_dump(mode="json")
+
+
+def _journey_entry_from_record(artifact: JourneyStageArtifactRecord) -> JourneyStageArtifactEntry:
+    return JourneyStageArtifactEntry(
+        id=artifact.id,
+        workspace_id=artifact.workspace_id,
+        session_id=artifact.session_id,
+        artifact_kind=artifact.artifact_kind,
+        stage_key=artifact.stage_key,
+        version_number=artifact.version_number,
+        state=artifact.state,
+        source_action=artifact.source_action,
+        proposal_payload=artifact.proposal_payload,
+        user_patch=artifact.user_patch,
+        source_stage_versions=artifact.source_stage_versions,
+        schema_version=artifact.schema_version,
+        missing_information=artifact.missing_information,
+        warnings=artifact.warnings,
+        stale_reasons=artifact.stale_reasons,
+        created_at=artifact.created_at,
+        updated_at=artifact.updated_at,
     )
 
 
@@ -254,6 +324,156 @@ def test_stage_payload_maps_guided_questions_to_attention_options() -> None:
     assert items[0].options[0].key == "support_lead"
     assert items[0].options[0].recommended is True
     assert items[0].source_ref.entity_id == "owner_policy"
+
+
+def test_attention_surfaces_memory_dependency_gap_as_resolvable_decision() -> None:
+    session = _create_memory_engine_session()
+    try:
+        user, workspace, record = _seed_minimal_records(session)
+        now = utc_now()
+        artifact = JourneyStageArtifactRecord(
+            workspace_id=workspace.id,
+            session_id=record.id,
+            artifact_kind="memory_recommendation_artifact",
+            stage_key="memory",
+            version_number=1,
+            state=JourneyArtifactState.generated,
+            source_action="recommend_memory",
+            proposal_payload=_memory_dependency_payload(),
+            schema_version="memory-recommendation.v1",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(artifact)
+        session.add(
+            UncertaintyBacklogRecord(
+                workspace_id=workspace.id,
+                session_id=record.id,
+                uncertainty_key="memory:open_questions:1:retention-policy",
+                product_mode="basic_free",
+                source_stage="memory",
+                disposition="defer",
+                status="deferred",
+                title="Pregunta vieja de Memoria diferida",
+                source_refs=["open_questions"],
+            )
+        )
+        session.commit()
+        session.refresh(artifact)
+        snapshot = _snapshot(record)
+        snapshot.journey_latest_artifacts = {"memory": _journey_entry_from_record(artifact)}
+
+        response = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=CommercialAccessSnapshotV2(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                user_id=user.id,
+                tier=CommercialTier.blueprint,
+            ),
+            current_stage="memory",
+        )
+
+        item = next(
+            entry
+            for entry in response.items
+            if entry.source_ref.field_path == "dependency_gaps"
+            and entry.source_ref.entity_id == "memory_dependency:outbound_notification"
+        )
+        assert item.action.kind == "answer"
+        assert item.action.can_resolve_inline is True
+        assert item.action.label == "Resolver dependencia"
+        assert {option.key for option in item.options} == {"defer_to_acp", "exclude_from_mvp"}
+        assert not any(
+            entry.type == "decision"
+            and entry.source_ref.entity_id == "missing-tool:outbound_notification"
+            for entry in response.items
+        )
+    finally:
+        session.close()
+
+
+def test_attention_memory_dependency_resolution_defers_gap_and_unblocks_memory_approval() -> None:
+    session = _create_memory_engine_session()
+    try:
+        user, workspace, record = _seed_minimal_records(session)
+        now = utc_now()
+        artifact = JourneyStageArtifactRecord(
+            workspace_id=workspace.id,
+            session_id=record.id,
+            artifact_kind="memory_recommendation_artifact",
+            stage_key="memory",
+            version_number=1,
+            state=JourneyArtifactState.generated,
+            source_action="recommend_memory",
+            proposal_payload=_memory_dependency_payload(),
+            schema_version="memory-recommendation.v1",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(artifact)
+        session.commit()
+        session.refresh(artifact)
+        snapshot = _snapshot(record)
+        snapshot.journey_latest_artifacts = {"memory": _journey_entry_from_record(artifact)}
+        access = CommercialAccessSnapshotV2(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            user_id=user.id,
+            tier=CommercialTier.blueprint,
+        )
+        before = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+            current_stage="memory",
+        )
+        item = next(entry for entry in before.items if entry.source_ref.field_path == "dependency_gaps")
+
+        result = apply_attention_action_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+            current_user=user,
+            item_key=item.key,
+            payload=AttentionActionRequestV2(
+                action_kind="answer",
+                selected_option_key="defer_to_acp",
+                idempotency_key="defer-outbound-notification-memory",
+            ),
+        )
+        session.commit()
+        refreshed = session.get(JourneyStageArtifactRecord, artifact.id)
+        assert refreshed is not None
+        memory = MemoryRecommendationArtifact.model_validate(refreshed.proposal_payload)
+        dependency = next(entry for entry in memory.tool_dependencies if entry.tool_key == "outbound_notification")
+
+        assert result.status == "applied"
+        assert dependency.required is True
+        assert dependency.status == "deferred"
+        assert memory.dependency_gaps[0].status == "deferred"
+        assert _memory_approval_blocking_issues(memory, CommercialTier.blueprint) == []
+
+        snapshot_after = _snapshot(record)
+        snapshot_after.journey_latest_artifacts = {"memory": _journey_entry_from_record(refreshed)}
+        after = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot_after,
+            readiness=ConstructionReadinessReport(),
+            access=access,
+            current_stage="memory",
+        )
+        assert item.key not in {entry.key for entry in after.items}
+    finally:
+        session.close()
 
 
 def test_blueprint_pro_hides_validation_missing_information_until_acp() -> None:

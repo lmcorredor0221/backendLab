@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from app.models import (
     AgentExecutionBackend,
+    AntigravityProviderConfig,
     BlueprintArtifact,
     CanvasArtifact,
     CodexLocalCostPolicy,
@@ -327,6 +328,66 @@ def test_facade_falls_back_to_native_provider_when_codex_primary_fails() -> None
     assert "fallback lateral" in (result.warning or "").lower()
     assert deepseek_service.calls["normalize_discovery"] == 1
     assert codex_service.calls["normalize_discovery"] == 1
+
+
+def test_facade_does_not_fallback_when_antigravity_skips_sync_normalization() -> None:
+    runtime_settings = build_runtime_settings(
+        active_provider=LLMProviderKey.deepseek,
+        backend=AgentExecutionBackend.antigravity_cli,
+    ).model_copy(
+        update={
+            "antigravity_cli": AntigravityProviderConfig(
+                executable="agy",
+                model="gemini-3.6-flash",
+                primary_agents=["normalize_discovery"],
+                available=True,
+                executable_found=True,
+            )
+        }
+    )
+    skipped_result = LLMArtifactResult(
+        artifact=None,
+        provider_key=LLMProviderKey.antigravity_cli.value,
+        execution_backend=AgentExecutionBackend.antigravity_cli.value,
+        finish_reason="skipped_sync_normalization",
+    )
+    deepseek_service = FakeBuilderService(
+        provider_key="deepseek",
+        discovery_result=LLMArtifactResult(artifact=sample_discovery_artifact()),
+        canvas_result=LLMArtifactResult(artifact=sample_canvas_artifact()),
+        narrative_result=LLMArtifactResult(artifact=BlueprintNarrativeOutput(narrative="DeepSeek")),
+    )
+    agy_service = FakeBuilderService(
+        provider_key="antigravity_cli",
+        discovery_result=skipped_result,
+        canvas_result=LLMArtifactResult(artifact=sample_canvas_artifact()),
+        narrative_result=LLMArtifactResult(artifact=BlueprintNarrativeOutput(narrative="Antigravity")),
+    )
+    facade = BuilderProviderFacade(
+        runtime_settings,
+        openai_service=FakeBuilderService(
+            provider_key="openai",
+            discovery_result=LLMArtifactResult(artifact=sample_discovery_artifact()),
+            canvas_result=LLMArtifactResult(artifact=sample_canvas_artifact()),
+            narrative_result=LLMArtifactResult(artifact=BlueprintNarrativeOutput(narrative="OpenAI")),
+        ),
+        deepseek_service=deepseek_service,
+        codex_service=FakeBuilderService(
+            provider_key="codex_local",
+            discovery_result=LLMArtifactResult(artifact=sample_discovery_artifact()),
+            canvas_result=LLMArtifactResult(artifact=sample_canvas_artifact()),
+            narrative_result=LLMArtifactResult(artifact=BlueprintNarrativeOutput(narrative="Codex")),
+        ),
+        antigravity_service=agy_service,
+    )
+
+    result = facade.normalize_discovery(sample_discovery_input())
+
+    assert result.artifact is None
+    assert result.provider_key == LLMProviderKey.antigravity_cli.value
+    assert result.finish_reason == "skipped_sync_normalization"
+    assert agy_service.calls["normalize_discovery"] == 1
+    assert deepseek_service.calls["normalize_discovery"] == 0
 
 
 def test_facade_promotes_codex_from_shadow_when_primary_provider_fails() -> None:

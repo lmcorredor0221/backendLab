@@ -618,6 +618,17 @@ def _memory_dependency_remediation_policy(tool_key: str) -> str:
     return "implementation_pending"
 
 
+def _dependency_missing_info_key(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    prefix = "resolver dependencia de herramientas:"
+    lowered = normalized.lower()
+    if not lowered.startswith(prefix):
+        return ""
+    return normalized[len(prefix):].strip().lower()
+
+
 def _build_dependency_gaps(
     dependencies: list[MemoryToolDependency],
 ) -> list[MemoryDependencyGap]:
@@ -645,6 +656,242 @@ def _build_dependency_gaps(
             )
         )
     return gaps
+
+
+def _normalize_memory_tool_key(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _memory_dependency_resolution_decision(
+    *,
+    action_kind: str = "",
+    selected_option_key: str = "",
+) -> str:
+    option = str(selected_option_key or "").strip().lower()
+    if option in {"exclude_from_mvp", "mark_not_required", "reject_dependency"}:
+        return "exclude_from_mvp"
+    if option in {"defer_to_acp", "defer_dependency", "implementation_pending"}:
+        return "defer_to_acp"
+    if str(action_kind or "").strip().lower() == "defer":
+        return "defer_to_acp"
+    return "defer_to_acp"
+
+
+def _memory_dependency_resolution_note(*, decision: str, tool_key: str, resolution_note: str = "") -> str:
+    note = str(resolution_note or "").strip()
+    if note:
+        return note
+    if decision == "exclude_from_mvp":
+        return (
+            f"Decision humana: {tool_key} queda fuera del MVP de memoria; "
+            "la estrategia debe operar sin esa dependencia."
+        )
+    return (
+        f"Decision humana: {tool_key} se difiere al ACP/implementacion y no bloquea "
+        "la aprobacion funcional de Memoria."
+    )
+
+
+def _remove_memory_dependency_text_item(item: str, tool_key: str) -> bool:
+    normalized_tool = _normalize_memory_tool_key(tool_key)
+    if not normalized_tool:
+        return False
+    dependency_key = _dependency_missing_info_key(item)
+    if dependency_key and dependency_key == normalized_tool:
+        return True
+    normalized_item = str(item or "").strip().lower()
+    return "resolver dependencia de herramientas:" in normalized_item and normalized_tool in normalized_item
+
+
+def _memory_dependency_dry_compile_status(
+    status: MemoryDryCompileStatus,
+    *,
+    tool_key: str,
+) -> MemoryDryCompileStatus:
+    normalized_tool = _normalize_memory_tool_key(tool_key)
+    if not normalized_tool:
+        return status
+    blocking_issues = [
+        issue
+        for issue in status.blocking_issues
+        if normalized_tool not in str(issue or "").strip().lower()
+    ]
+    if status.status == "blocked" and not blocking_issues:
+        return status.model_copy(
+            update={
+                "status": "pending",
+                "summary": (
+                    "Compilacion seca pendiente tras resolver una dependencia de memoria "
+                    "mediante decision humana trazada."
+                ),
+                "blocking_issues": [],
+            }
+        )
+    if len(blocking_issues) != len(status.blocking_issues):
+        return status.model_copy(update={"blocking_issues": blocking_issues})
+    return status
+
+
+def apply_memory_dependency_resolution(
+    artifact: MemoryRecommendationArtifact,
+    *,
+    tool_key: str,
+    action_kind: str = "",
+    selected_option_key: str = "",
+    resolution_note: str = "",
+) -> MemoryRecommendationArtifact:
+    normalized_tool = _normalize_memory_tool_key(tool_key)
+    if not normalized_tool:
+        return artifact
+
+    decision = _memory_dependency_resolution_decision(
+        action_kind=action_kind,
+        selected_option_key=selected_option_key,
+    )
+    dependency_status = "not_required" if decision == "exclude_from_mvp" else "deferred"
+    dependency_required = decision != "exclude_from_mvp"
+    note = _memory_dependency_resolution_note(
+        decision=decision,
+        tool_key=normalized_tool,
+        resolution_note=resolution_note,
+    )
+
+    updated_dependencies: list[MemoryToolDependency] = []
+    matched_dependency = False
+    for dependency in artifact.tool_dependencies:
+        dependency_key = _normalize_memory_tool_key(dependency.tool_key)
+        if dependency_key != normalized_tool:
+            updated_dependencies.append(dependency)
+            continue
+        matched_dependency = True
+        reason = dependency.reason.strip()
+        if note and note not in reason:
+            reason = f"{reason} {note}".strip()
+        updated_dependencies.append(
+            dependency.model_copy(
+                update={
+                    "tool_key": normalized_tool,
+                    "required": dependency_required,
+                    "status": dependency_status,
+                    "reason": reason,
+                    "capabilities": _dedupe(
+                        [
+                            *dependency.capabilities,
+                            f"memory_dependency_resolution:{decision}",
+                        ]
+                    ),
+                }
+            )
+        )
+    if not matched_dependency:
+        updated_dependencies.append(
+            MemoryToolDependency(
+                tool_key=normalized_tool,
+                required=dependency_required,
+                status=dependency_status,
+                reason=note,
+                capabilities=[f"memory_dependency_resolution:{decision}"],
+            )
+        )
+
+    gap_status = "resolved" if decision == "exclude_from_mvp" else "deferred"
+    updated_gaps: list[MemoryDependencyGap] = []
+    matched_gap = False
+    for gap in artifact.dependency_gaps:
+        capability_key = _normalize_memory_tool_key(gap.capability_key)
+        gap_tool_key = _normalize_memory_tool_key(gap.gap_key.split(":", 1)[-1] if ":" in gap.gap_key else gap.gap_key)
+        if capability_key != normalized_tool and gap_tool_key != normalized_tool:
+            updated_gaps.append(gap)
+            continue
+        matched_gap = True
+        reason = gap.reason.strip()
+        if note and note not in reason:
+            reason = f"{reason} {note}".strip()
+        updated_gaps.append(
+            gap.model_copy(
+                update={
+                    "status": gap_status,
+                    "reason": reason,
+                    "source_refs": _dedupe([*gap.source_refs, "attention.resolution"]),
+                }
+            )
+        )
+    if not matched_gap:
+        updated_gaps.append(
+            MemoryDependencyGap(
+                gap_key=f"memory_dependency:{normalized_tool}",
+                capability_key=normalized_tool,
+                required=dependency_required,
+                status=gap_status,  # type: ignore[arg-type]
+                remediation_policy="human_review",
+                reason=note,
+                source_refs=["attention.resolution"],
+            )
+        )
+
+    missing_information = [
+        item
+        for item in artifact.missing_information
+        if not _remove_memory_dependency_text_item(item, normalized_tool)
+    ]
+    critic_findings = [
+        item
+        for item in artifact.critic_findings
+        if not (
+            str(item.finding_key or "").strip().lower() == f"missing-tool:{normalized_tool}"
+            or (
+                str(item.finding_key or "").strip().lower().startswith("missing-tool:")
+                and normalized_tool in str(item.finding_key or "").strip().lower()
+            )
+        )
+    ]
+    dry_compile_status = _memory_dependency_dry_compile_status(
+        artifact.dry_compile_status,
+        tool_key=normalized_tool,
+    )
+    open_dependency_gaps = [gap.gap_key for gap in updated_gaps if gap.status == "open"]
+    resolved = artifact.model_copy(
+        update={
+            "tool_dependencies": updated_dependencies,
+            "dependency_gaps": updated_gaps,
+            "missing_information": missing_information,
+            "critic_findings": critic_findings,
+            "dry_compile_status": dry_compile_status,
+            "architecture_resolution": artifact.architecture_resolution.model_copy(
+                update={"dependency_gaps": open_dependency_gaps}
+            ),
+        }
+    )
+    return auto_reconcile_memory_artifact(resolved)
+
+
+def apply_memory_dependency_resolutions_from_user_patch(
+    artifact: MemoryRecommendationArtifact,
+    *,
+    user_patch: dict[str, Any] | None = None,
+) -> MemoryRecommendationArtifact:
+    resolutions = dict((user_patch or {}).get("attention_resolutions") or {})
+    resolved = artifact
+    for raw_resolution in resolutions.values():
+        if not isinstance(raw_resolution, dict):
+            continue
+        source_ref = raw_resolution.get("source_ref") or {}
+        if not isinstance(source_ref, dict):
+            continue
+        if str(source_ref.get("field_path") or "").strip() != "dependency_gaps":
+            continue
+        entity_id = str(source_ref.get("entity_id") or "").strip()
+        tool_key = entity_id.split(":", 1)[-1] if ":" in entity_id else entity_id
+        if not tool_key:
+            continue
+        resolved = apply_memory_dependency_resolution(
+            resolved,
+            tool_key=tool_key,
+            action_kind=str(raw_resolution.get("action_kind") or ""),
+            selected_option_key=str(raw_resolution.get("selected_option_key") or ""),
+            resolution_note=str(raw_resolution.get("resolution_note") or raw_resolution.get("answer_text") or ""),
+        )
+    return resolved
 
 
 def _memory_mode_for_artifact(artifact: MemoryRecommendationArtifact) -> str:
@@ -1364,6 +1611,105 @@ def build_memory_recommendation_artifact(
     )
     return auto_reconcile_memory_artifact(
         artifact,
+        blueprint=blueprint,
+        approved_tools_digest=approved_tools_digest,
+    )
+
+
+def reconcile_memory_artifact_with_approved_tools(
+    artifact: MemoryRecommendationArtifact,
+    *,
+    approved_tools_digest: ApprovedToolsDigest | None = None,
+    blueprint: BlueprintArtifact | None = None,
+    session_snapshot: SessionSnapshot | None = None,
+) -> MemoryRecommendationArtifact:
+    """Update Memory's dependency view after deterministic Tools remediation.
+
+    Memory may discover an internal tool dependency after the expensive LLM pass.
+    Once Tools has been remediated, the Memory artifact can be reconciled from the
+    canonical digest instead of launching a second provider run.
+    """
+
+    approved_tool_keys: set[str] = set()
+    if approved_tools_digest is not None:
+        approved_tool_keys.update(
+            str(item or "").strip().lower()
+            for item in approved_tools_digest.approved_tool_keys
+        )
+    if blueprint is not None:
+        approved_tool_keys.update(
+            str(item.name or "").strip().lower()
+            for item in blueprint.tools
+            if item.name
+        )
+    approved_tool_keys.discard("")
+    if not approved_tool_keys:
+        return auto_reconcile_memory_artifact(
+            artifact,
+            blueprint=blueprint,
+            approved_tools_digest=approved_tools_digest,
+        )
+
+    updated_dependencies: list[MemoryToolDependency] = []
+    reconciled_keys: set[str] = set()
+    for dependency in artifact.tool_dependencies:
+        tool_key = str(dependency.tool_key or "").strip().lower()
+        if tool_key in approved_tool_keys and str(dependency.status or "").strip().lower() != "approved":
+            reconciled_keys.add(tool_key)
+            updated_dependencies.append(
+                dependency.model_copy(
+                    update={
+                        "tool_key": tool_key,
+                        "status": "approved",
+                        "reason": _coalesce(
+                            dependency.reason,
+                            fallback=f"{tool_key} fue aprobado en Tools y reconciliado antes de publicar Memoria.",
+                        ),
+                        "capabilities": _dedupe(
+                            [
+                                *dependency.capabilities,
+                                "memory_tools_dependency_reconciled",
+                            ]
+                        ),
+                    }
+                )
+            )
+            continue
+        updated_dependencies.append(dependency)
+
+    dependency_gaps = _build_dependency_gaps(updated_dependencies)
+    missing_information = [
+        item
+        for item in artifact.missing_information
+        if _dependency_missing_info_key(item) not in reconciled_keys
+    ]
+    critic_findings = [
+        item
+        for item in artifact.critic_findings
+        if not (
+            str(item.finding_key or "").strip().lower().startswith("missing-tool:")
+            and str(item.finding_key or "").split(":", 1)[-1].strip().lower() in reconciled_keys
+        )
+    ]
+    dry_compile_status = (
+        _build_dry_compile_status(session_snapshot, artifact)
+        if session_snapshot is not None
+        else artifact.dry_compile_status
+    )
+    reconciled = artifact.model_copy(
+        update={
+            "tool_dependencies": updated_dependencies,
+            "dependency_gaps": dependency_gaps,
+            "missing_information": missing_information,
+            "critic_findings": critic_findings,
+            "dry_compile_status": dry_compile_status,
+            "architecture_resolution": artifact.architecture_resolution.model_copy(
+                update={"dependency_gaps": [gap.gap_key for gap in dependency_gaps]}
+            ),
+        }
+    )
+    return auto_reconcile_memory_artifact(
+        reconciled,
         blueprint=blueprint,
         approved_tools_digest=approved_tools_digest,
     )

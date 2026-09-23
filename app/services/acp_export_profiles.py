@@ -124,14 +124,11 @@ def _rebuild_readiness(
 ) -> ConstructionReadinessReport:
     blocking_gaps = sum(1 for item in gaps if item.severity == "blocking")
     open_questions = sum(len(item.questions) for item in gaps if item.status == "open")
-    can_start_build = validation.can_export_zip and blocking_gaps == 0 and open_questions == 0
+    can_start_build = validation.can_export_zip and blocking_gaps == 0
 
     if not validation.can_export_zip or blocking_gaps > 0:
         overall_status = "blocked"
         next_action = "resolve_blocking_construction_gaps"
-    elif open_questions > 0:
-        overall_status = "needs_questions"
-        next_action = "answer_open_questions"
     else:
         overall_status = "ready_to_build"
         next_action = "start_agentic_build"
