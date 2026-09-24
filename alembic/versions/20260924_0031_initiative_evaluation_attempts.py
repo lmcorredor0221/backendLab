@@ -106,6 +106,26 @@ def upgrade() -> None:
         "initiative_evaluation_attempts",
         ["language"],
     )
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("ALTER TABLE initiative_evaluation_attempts ENABLE ROW LEVEL SECURITY")
+        op.execute(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'luism_corredor_lab') THEN
+                    GRANT USAGE ON SCHEMA public TO luism_corredor_lab;
+                    GRANT SELECT, INSERT, UPDATE, DELETE ON public.initiative_evaluation_attempts TO luism_corredor_lab;
+                    CREATE POLICY initiative_evaluation_attempts_backend_access
+                        ON public.initiative_evaluation_attempts
+                        FOR ALL
+                        TO luism_corredor_lab
+                        USING (true)
+                        WITH CHECK (true);
+                END IF;
+            END
+            $$;
+            """
+        )
 
 
 def downgrade() -> None:
