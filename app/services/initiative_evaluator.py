@@ -55,7 +55,8 @@ DIMENSIONS_META = {
 
 # Obvious non-agent keywords for 0-token heuristic rejection
 NON_AGENT_PATTERNS = [
-    r"\b(calculadora|sumar|restar|multiplicar|division|promedio)\b",
+    r"\b(calculadora|sumar|restar|multiplicar)\b",
+    r"\b(calcular|calculo|c[aá]lculo)\s+(?:el\s+|la\s+|un\s+|una\s+)?(?:promedio|media|total|subtotal|porcentaje)\b",
     r"\b(formulario estatico|landing page estatica|html basico|pagina web simple)\b",
     r"\b(crud basico|tabla de base de datos fija|guardar en base de datos)\b",
     r"\b(cron job simple|backup diario|copia de seguridad fija|exportar csv fijo)\b",
@@ -72,15 +73,15 @@ HIGH_AGENT_PATTERNS = [
 OPERATIONAL_SIGNAL_PATTERNS: dict[str, str] = {
     "has_browser_ui": (
         r"(portal|pantalla|interfaz|formulario|backoffice|web app|aplicaci[oó]n sin api|sin api oficial|"
-        r"sin endpoint|como usuario|crm|erp|sistema web|m[oó]dulo de ventas)"
+        r"sin endpoint|como usuario|\bcrm\b|\berp\b|sistema web|m[oó]dulo de ventas)"
     ),
     "has_operational_write": (
-        r"(crear|registrar|actualizar|guardar|enviar|aprobar|cargar|emitir|confirmar|generar|"
-        r"create|register|update|save|send|approve|submit|upload)"
+        r"(crear|registrar|actualizar|guardar|enviar|cargar|emitir|confirmar|generar|"
+        r"create|register|update|save|send|submit|upload)"
     ),
     "has_vector_knowledge": (
         r"(manual|manuales|procedimiento|procedimientos|faq|faqs|documentaci[oó]n|documentos|"
-        r"pol[ií]ticas textuales|runbook|knowledge base|base de conocimiento)"
+        r"pol[ií]ticas?|pol[ií]ticas textuales|runbook|knowledge base|base de conocimiento|fuentes?)"
     ),
     "has_business_graph": (
         r"(roles?|clientes?|entidades|dependencias|permisos|relaciones|workflow|m[oó]dulos?|"
@@ -134,6 +135,37 @@ def _is_operational_ui_case(signals: dict[str, bool]) -> bool:
             or signals.get("has_verification")
         )
     )
+
+
+def _is_pure_script_case(text: str, *, is_operational_case: bool) -> bool:
+    if is_operational_case:
+        return False
+
+    lowered = text.lower()
+    deterministic_markers = [
+        r"\bfijo\b",
+        r"\bfixed\b",
+        r"\bformula\b",
+        r"\bestatico\b",
+        r"\bstatic\b",
+        r"\bsiempre igual\b",
+        r"\balways the same\b",
+        r"\bexcel simple\b",
+        r"\bcron\b",
+        r"\bbasic crud\b",
+    ]
+    calculation_markers = [
+        r"\bcalculadora\b",
+        r"\bsumar\b",
+        r"\brestar\b",
+        r"\bmultiplicar\b",
+        r"\bdivision\b",
+        r"\bcalcular\s+(?:el\s+|la\s+|un\s+|una\s+)?(?:promedio|media|total|subtotal|porcentaje)\b",
+        r"\bcalculo\s+(?:de\s+)?(?:promedio|media|total|subtotal|porcentaje)\b",
+        r"\bc[aá]lculo\s+(?:de\s+)?(?:promedio|media|total|subtotal|porcentaje)\b",
+    ]
+
+    return any(re.search(pattern, lowered) for pattern in deterministic_markers + calculation_markers)
 
 
 def _build_operational_profile(signals: dict[str, bool], *, lang: str) -> InitiativeOperationalProfile | None:
@@ -219,25 +251,22 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
 
     # Analyze signals across ES, EN, PT
     has_unstructured = bool(re.search(
-        r"(document|documento|pdf|contrato|contract|texto|text|email|mensaje|message|imagen|image|audio|factura|invoice|soporte|support|ticket|cliente|customer|natural|conversaci|conversat|doc|inconsistenc|revis|parse)",
+        r"(document|documento|pdf|contrato|contract|texto|text|email|mensaje|message|imagen|image|audio|factura|invoice|soporte|support|ticket|cliente|customer|natural|conversaci|conversat|doc|inconsistenc|revis|parse|faq|faqs|cv|feedback|brief|pregunta)",
         lowered,
     ))
     has_tools = bool(re.search(
-        r"(api|erp|crm|base de datos|database|sistema|system|webhook|herramienta|tool|consult|query|guardar|save|enviar|send|notificar|notify|buscar|search|integr|zendesk|sap|salesforce|postgres|sql)",
+        r"(api|\berp\b|\bcrm\b|base de datos|database|sistema|system|webhook|herramienta|tool|consult|query|guardar|save|enviar|send|notificar|notify|buscar|search|integr|zendesk|sap|salesforce|postgres|sql|fuente|fuentes|trazab|metrica|m[eé]trica|dashboard|bi|definicion|definici[oó]n|politica|pol[ií]tica|faq|faqs|conocimiento)",
         lowered,
     )) or is_operational_case
     has_multistep = bool(re.search(
-        r"(paso|step|proceso|process|flujo|flow|depend|evaluar|evaluat|orquest|orchestrat|valid|aprob|approv|decid|decision|compar|detect|correg|correct|escalat)",
+        r"(paso|step|proceso|process|flujo|flow|depend|evaluar|evaluat|orquest|orchestrat|valid|aprob|approv|decid|decision|compar|detect|correg|correct|escal|prepar|resum|explic|cite|citar|pida|pedir)",
         lowered,
     )) or is_operational_case
     has_hitl = bool(re.search(
-        r"(supervis|humano|human|aprobaci|approv|revis|review|alerta|alert|intervenci|intervent|riesgo|risk|sensible|sensitiv|hitl|copilot|copiloto)",
+        r"(supervis|humano|human|aprobaci|approv|revis|review|alerta|alert|intervenci|intervent|riesgo|risk|sensible|sensitiv|hitl|copilot|copiloto|baja confianza|low confidence)",
         lowered,
     )) or operational_signals.get("has_approval", False) or operational_signals.get("has_policy_rules", False)
-    is_pure_script = bool(re.search(
-        r"(fijo|fixed|calculo|calculat|formula|estatico|static|siempre igual|always the same|excel simple|cron|sumar|restar|multiplicar|division|promedio|basic crud)",
-        lowered,
-    )) and not is_operational_case
+    is_pure_script = _is_pure_script_case(text, is_operational_case=is_operational_case)
 
     # Calculate dimension scores (0-100)
     score_d1 = 85 if has_unstructured else (62 if is_operational_case and operational_signals.get("has_policy_rules") else 35)
@@ -333,7 +362,7 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
             "not_recommended": "Esta iniciativa se resuelve mejor con código determinista, RPA o software tradicional. Un agente agregaría costo y latencia innecesarios.",
         }
         archetypes = {
-            "viable": "Agente operador de aplicaciones" if is_operational_case else ("Copiloto HITL y Orquestrador de Sistemas" if has_tools else "Agente de Análisis y Razonamiento Documental"),
+            "viable": "Agente operador de aplicaciones" if is_operational_case else ("Copiloto HITL y Orquestador de Sistemas" if has_tools else "Agente de Análisis y Razonamiento Documental"),
             "partially_viable": "Agente Asistido de Tareas",
             "not_recommended": None,
         }
