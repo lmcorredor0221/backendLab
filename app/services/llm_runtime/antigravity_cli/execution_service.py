@@ -290,6 +290,7 @@ class AgyExecutionService:
             "run_id": payload.get("run_id"),
             "task_kind": payload.get("task_kind"),
             "status": payload.get("status"),
+            "started_at": payload.get("started_at"),
             "finished_at": payload.get("finished_at"),
             "selected_model": payload.get("selected_model"),
             "attempted_models": payload.get("attempted_models", []),
@@ -297,7 +298,9 @@ class AgyExecutionService:
             "error_code": payload.get("error_code"),
             "recoverable": payload.get("recoverable"),
             "exit_code": payload.get("returncode"),
+            "metrics": metrics,
             "duration_ms": metrics.get("duration_ms"),
+            "queue_wait_ms": metrics.get("queue_wait_ms"),
         }
 
     # ------------------------------------------------------------------

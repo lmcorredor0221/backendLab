@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 import json
 from typing import Any
 
@@ -74,6 +74,18 @@ def _capability_policy_payload(spec: BuilderCapabilitySpec) -> dict[str, object]
 def _localized_prompt(prompt: str, context_bundle: StageContextBundle | None) -> str:
     language = get_effective_language(context_bundle.effective_language if context_bundle is not None else None)
     return apply_agent_language_directive(prompt, language)
+
+
+def _audit_int(audit: dict[str, Any], key: str) -> int:
+    metrics = audit.get("metrics", {})
+    if is_dataclass(metrics):
+        metrics = asdict(metrics)
+    if not isinstance(metrics, dict):
+        metrics = {}
+    try:
+        return max(0, int(metrics.get(key, audit.get(key, 0)) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class CodexLocalBuilderService:
@@ -262,9 +274,8 @@ class CodexLocalBuilderService:
             },
         )
         usage = normalize_cli_usage(audit, prompt_text=prompt_text, output_text=output_text)
-        metrics = audit.get("metrics", {}) if isinstance(audit.get("metrics"), dict) else {}
-        duration_ms = int(metrics.get("duration_ms", 0) or 0)
-        queue_wait_ms = int(metrics.get("queue_wait_ms", 0) or 0)
+        duration_ms = _audit_int(audit, "duration_ms")
+        queue_wait_ms = _audit_int(audit, "queue_wait_ms")
         attempts = audit.get("attempts", [])
         retry_count = max(0, len(attempts) - 1) if isinstance(attempts, list) else 0
         enriched = replace(

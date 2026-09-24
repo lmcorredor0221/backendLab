@@ -148,6 +148,32 @@ def test_antigravity_cli_records_successful_cli_audit_as_estimated_usage() -> No
     assert record.total_tokens > 0
 
 
+def test_antigravity_cli_accepts_flattened_last_known_metrics() -> None:
+    engine, session_factory = build_session_factory()
+    service = AntigravityLocalBuilderService(
+        build_runtime_settings(),
+        finops_session_factory=session_factory,
+        finops_ledger_service=LLMUsageLedgerService(),
+    )
+    audit = build_audit_payload(
+        run_id="agy-run-flat",
+        metrics={},
+        duration_ms=4200,
+        queue_wait_ms=17,
+    )
+    service.execution_service = FakeAgyExecutionService(audit=audit)
+
+    result = service.define_requirements(build_requirements_input(), context_bundle=build_stage_context())
+
+    with Session(engine) as db:
+        record = db.get(LLMUsageLedgerRecord, result.usage_record_id)
+
+    assert record is not None
+    assert record.request_id == "agy-run-flat"
+    assert record.duration_ms == 4200
+    assert record.queue_wait_ms == 17
+
+
 def test_antigravity_cli_records_failed_cli_audit() -> None:
     engine, session_factory = build_session_factory()
     service = AntigravityLocalBuilderService(

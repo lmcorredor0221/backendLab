@@ -150,6 +150,32 @@ def test_codex_local_records_successful_cli_audit_as_estimated_usage() -> None:
     assert record.total_tokens > 0
 
 
+def test_codex_local_accepts_flattened_last_known_metrics() -> None:
+    engine, session_factory = build_session_factory()
+    service = CodexLocalBuilderService(
+        build_runtime_settings(),
+        finops_session_factory=session_factory,
+        finops_ledger_service=LLMUsageLedgerService(),
+    )
+    audit = build_audit_payload(
+        run_id="codex-run-flat",
+        metrics={},
+        duration_ms=2800,
+        queue_wait_ms=19,
+    )
+    service.execution_service = FakeCodexExecutionService(audit=audit)
+
+    result = service.define_requirements(build_requirements_input(), context_bundle=build_stage_context())
+
+    with Session(engine) as db:
+        record = db.get(LLMUsageLedgerRecord, result.usage_record_id)
+
+    assert record is not None
+    assert record.request_id == "codex-run-flat"
+    assert record.duration_ms == 2800
+    assert record.queue_wait_ms == 19
+
+
 def test_codex_local_records_failed_cli_audit() -> None:
     engine, session_factory = build_session_factory()
     service = CodexLocalBuilderService(
