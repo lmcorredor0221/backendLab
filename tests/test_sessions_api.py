@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from io import BytesIO
 from collections.abc import Generator
 from pathlib import Path
@@ -34,6 +35,7 @@ from app.models import (
     ReviewState,
     RuntimeCatalogEntryRecord,
     OpportunityRecord,
+    OperationalCapabilityProfile,
     SessionRecord,
     JourneyArtifactState,
     JourneyStageArtifactRecord,
@@ -2369,6 +2371,87 @@ def test_normalize_discovery_can_update_existing_opportunity_with_operational_pr
     discovery = snapshot_response.json()["discovery"]
     assert discovery["problem_statement"] == payload["problem_statement"]
     assert "operational_profile" in discovery
+
+
+def test_discover_approval_projects_operational_profile_to_canonical_record(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OperationalProfileDriftBuilder(FakeLLMTraceBuilderService):
+        def normalize_discovery(self, payload, *, context_bundle=None) -> LLMArtifactResult:
+            result = super().normalize_discovery(payload, context_bundle=context_bundle)
+            artifact = result.artifact.model_copy(
+                update={
+                    "operational_profile": OperationalCapabilityProfile(
+                        interaction_channels=["normalize-channel"],
+                        action_capabilities=["normalize-action"],
+                    )
+                }
+            )
+            return replace(result, artifact=artifact)
+
+        def analyze_discovery(self, payload, *, context_bundle=None) -> LLMArtifactResult:
+            result = super().analyze_discovery(payload, context_bundle=context_bundle)
+            candidate = result.artifact.normalized_discovery_candidate.model_copy(
+                update={
+                    "operational_profile": OperationalCapabilityProfile(
+                        interaction_channels=["approved-channel"],
+                        action_capabilities=["approved-action"],
+                        required_controls=["approved-control"],
+                        confidence=0.91,
+                    )
+                }
+            )
+            artifact = result.artifact.model_copy(update={"normalized_discovery_candidate": candidate})
+            return replace(result, artifact=artifact)
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: OperationalProfileDriftBuilder(),
+    )
+    headers = auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    normalize_response = client.post(
+        f"/api/v1/sessions/{session_id}/normalize-discovery",
+        headers=headers,
+        json=complete_discovery_payload(),
+    )
+    assert normalize_response.status_code == 200
+
+    analyze_response = client.post(
+        f"/api/v1/sessions/{session_id}/analyze-discovery",
+        headers=headers,
+        json=complete_discovery_payload(),
+    )
+    assert analyze_response.status_code == 200
+    discover_artifact = analyze_response.json()
+
+    approve_response = client.post(
+        f"/api/v1/sessions/{session_id}/journey/discover/artifacts/{discover_artifact['id']}/approve",
+        headers=headers,
+        json={"note": "Aprobar Discover enriquecido."},
+    )
+    assert approve_response.status_code == 200
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        opportunity = session.exec(
+            select(OpportunityRecord).where(OpportunityRecord.session_id == UUID(session_id))
+        ).first()
+        assert opportunity is not None
+        assert opportunity.operational_profile["interaction_channels"] == ["approved-channel"]
+        assert opportunity.operational_profile["action_capabilities"] == ["approved-action"]
+        assert opportunity.operational_profile["required_controls"] == ["approved-control"]
+    finally:
+        session_generator.close()
+
+    canvas_response = client.post(f"/api/v1/sessions/{session_id}/build-canvas", headers=headers)
+    assert canvas_response.status_code == 200
 
 
 def test_approving_discover_and_define_advances_session_stage(

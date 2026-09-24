@@ -844,6 +844,7 @@ class StageProposalService:
             record.constraints = list(artifact.constraints)
             record.operational_baseline = artifact.operational_baseline.model_dump(mode="json")
             record.mvp_definition = artifact.mvp_definition.model_dump(mode="json")
+            record.operational_profile = artifact.operational_profile.model_dump(mode="json")
             record.case_type = artifact.case_type
             record.value_statement = artifact.value_statement
             record.updated_at = utc_now()
