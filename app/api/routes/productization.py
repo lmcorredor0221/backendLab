@@ -999,5 +999,6 @@ def get_diagram_catalog_v2_route(
 @router.post("/evaluate-initiative", response_model=InitiativeEvaluationResponse)
 def evaluate_initiative_route(
     request: InitiativeEvaluationRequest,
+    db: Session = Depends(get_session),
 ) -> InitiativeEvaluationResponse:
-    return evaluate_initiative_service(request)
+    return evaluate_initiative_service(request, db=db)

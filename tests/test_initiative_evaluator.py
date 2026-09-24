@@ -1,7 +1,7 @@
 from __future__ import annotations
+from sqlmodel import SQLModel, Session, create_engine, select
 
-import pytest
-from app.models import InitiativeEvaluationRequest
+from app.models import InitiativeEvaluationAttemptRecord, InitiativeEvaluationRequest
 from app.services.initiative_evaluator import evaluate_initiative_service
 
 
@@ -54,3 +54,44 @@ def test_evaluate_multilingual_support_portuguese():
     assert res.is_viable is True
     assert "Candidato" in res.verdict_title
     assert res.dimensions[0].dimension_name == "Ambiguidade e Raciocínio Não Estruturado"
+
+
+def test_evaluate_persists_examples_and_deduplicates_repeated_ideas():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    idea = (
+        "Queremos que un agente use un portal interno para crear ordenes, consultar manuales, "
+        "validar descuentos y pedir aprobacion humana cuando supere el limite."
+    )
+
+    with Session(engine) as db:
+        first = evaluate_initiative_service(
+            InitiativeEvaluationRequest(
+                initiative_text=idea,
+                language="es",
+                input_type="example",
+                example_id="business-portal",
+            ),
+            db=db,
+        )
+        second = evaluate_initiative_service(
+            InitiativeEvaluationRequest(
+                initiative_text=f"  {idea}  ",
+                language="es",
+                input_type="custom",
+            ),
+            db=db,
+        )
+
+        rows = db.exec(select(InitiativeEvaluationAttemptRecord)).all()
+
+    assert first.is_repeat is False
+    assert first.repeat_count == 1
+    assert second.is_repeat is True
+    assert second.repeat_count == 2
+    assert second.evaluation_id == first.evaluation_id
+    assert len(rows) == 1
+    assert rows[0].submission_count == 2
+    assert rows[0].example_submission_count == 1
+    assert rows[0].custom_submission_count == 1
+    assert rows[0].example_id == "business-portal"

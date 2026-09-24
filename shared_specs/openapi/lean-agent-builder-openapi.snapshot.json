@@ -17920,6 +17920,30 @@
             "description": "Idioma preferido para la respuesta (es, en, pt).",
             "title": "Language",
             "type": "string"
+          },
+          "input_type": {
+            "default": "custom",
+            "description": "Origen del texto evaluado: escrito por el usuario o cargado desde un ejemplo del landing.",
+            "enum": [
+              "custom",
+              "example"
+            ],
+            "title": "Input Type",
+            "type": "string"
+          },
+          "example_id": {
+            "default": "",
+            "description": "Identificador estable del ejemplo usado cuando input_type=example.",
+            "maxLength": 100,
+            "title": "Example Id",
+            "type": "string"
+          },
+          "source": {
+            "default": "landing_validator",
+            "description": "Superficie que origino la evaluacion.",
+            "maxLength": 100,
+            "title": "Source",
+            "type": "string"
           }
         },
         "required": [
@@ -17952,6 +17976,16 @@
             "default": "",
             "title": "Evaluation Id",
             "type": "string"
+          },
+          "is_repeat": {
+            "default": false,
+            "title": "Is Repeat",
+            "type": "boolean"
+          },
+          "repeat_count": {
+            "default": 1,
+            "title": "Repeat Count",
+            "type": "integer"
           },
           "is_viable": {
             "title": "Is Viable",

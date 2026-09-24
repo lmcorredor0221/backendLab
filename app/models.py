@@ -1103,6 +1103,44 @@ class MarketingAnalyticsOutboxRecord(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, nullable=False)
 
 
+class InitiativeEvaluationAttemptRecord(SQLModel, table=True):
+    __tablename__ = "initiative_evaluation_attempts"
+    __table_args__ = (
+        UniqueConstraint("input_hash", name="uq_initiative_evaluation_attempts_input_hash"),
+        UniqueConstraint("evaluation_id", name="uq_initiative_evaluation_attempts_evaluation_id"),
+        Index("ix_initiative_evaluation_attempts_created_at", "created_at"),
+        Index("ix_initiative_evaluation_attempts_example_id", "example_id"),
+        Index("ix_initiative_evaluation_attempts_input_type", "input_type"),
+        Index("ix_initiative_evaluation_attempts_last_seen_at", "last_seen_at"),
+        Index("ix_initiative_evaluation_attempts_source", "source"),
+        Index("ix_initiative_evaluation_attempts_verdict", "verdict_badge"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    evaluation_id: str = Field(default="", nullable=False)
+    input_hash: str = Field(default="", nullable=False)
+    normalized_text: str = Field(default="", sa_column=Column(String(4000), nullable=False))
+    initiative_text: str = Field(default="", sa_column=Column(String(4000), nullable=False))
+    language: str = Field(default="es", index=True, nullable=False)
+    input_type: str = Field(default="custom", nullable=False)
+    example_id: str = Field(default="", nullable=False)
+    source: str = Field(default="landing_validator", nullable=False)
+    readiness_score: int = Field(default=0, nullable=False)
+    verdict_badge: str = Field(default="", nullable=False)
+    suggested_archetype: str = Field(default="", nullable=False)
+    suggested_tier: str = Field(default="", nullable=False)
+    operational_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    result_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    token_usage: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    submission_count: int = Field(default=1, nullable=False)
+    example_submission_count: int = Field(default=0, nullable=False)
+    custom_submission_count: int = Field(default=0, nullable=False)
+    first_seen_at: datetime = Field(default_factory=utc_now, nullable=False)
+    last_seen_at: datetime = Field(default_factory=utc_now, nullable=False)
+    created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, nullable=False)
+
+
 class CommercialQuotaProductConfigRecord(SQLModel, table=True):
     __tablename__ = "commercial_quota_product_configs"
     __table_args__ = (UniqueConstraint("product_key", name="uq_commercial_quota_product_config_product_key"),)
@@ -8455,6 +8493,20 @@ class InitiativeEvaluationRequest(ContractModel):
     language: str = PydanticField(default="es", description="Idioma preferido para la respuesta (es, en, pt).")
     business_context: str | None = PydanticField(default=None, max_length=1000)
     expected_users: str | None = PydanticField(default=None, max_length=500)
+    input_type: Literal["custom", "example"] = PydanticField(
+        default="custom",
+        description="Origen del texto evaluado: escrito por el usuario o cargado desde un ejemplo del landing.",
+    )
+    example_id: str = PydanticField(
+        default="",
+        max_length=100,
+        description="Identificador estable del ejemplo usado cuando input_type=example.",
+    )
+    source: str = PydanticField(
+        default="landing_validator",
+        max_length=100,
+        description="Superficie que origino la evaluacion.",
+    )
 
 
 class InitiativeDimensionScore(ContractModel):
@@ -8495,3 +8547,5 @@ class InitiativeEvaluationResponse(ContractModel):
     token_usage: dict[str, int] = PydanticField(default_factory=dict)
     evaluation_id: str = ""
     operational_profile: InitiativeOperationalProfile | None = None
+    is_repeat: bool = False
+    repeat_count: int = 1

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import re
 from time import monotonic
 from typing import Any
 from uuid import uuid4
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import Session, select
 
 from app.core.config import get_settings
 from app.models import (
@@ -12,10 +17,15 @@ from app.models import (
     InitiativeAlternativeRecommendation,
     InitiativeDimensionScore,
     InitiativeEvaluationRequest,
+    InitiativeEvaluationAttemptRecord,
     InitiativeOperationalProfile,
     InitiativeEvaluationResponse,
+    utc_now,
 )
 from app.services.agent_i18n import apply_agent_language_directive, get_effective_language
+
+
+logger = logging.getLogger(__name__)
 
 
 # 5 Dimension definitions
@@ -95,6 +105,15 @@ def _evaluate_heuristic_pre_filter(text: str) -> tuple[bool, str]:
         if re.search(pattern, lowered):
             return True, "deterministic_rejection"
     return False, "requires_llm_or_heuristic_scoring"
+
+
+def _normalize_initiative_text(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _initiative_input_hash(text: str) -> str:
+    normalized = _normalize_initiative_text(text)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _detect_operational_signals(text: str) -> dict[str, bool]:
@@ -468,13 +487,105 @@ def _deterministic_evaluation(request: InitiativeEvaluationRequest) -> Initiativ
     )
 
 
-def evaluate_initiative_service(request: InitiativeEvaluationRequest) -> InitiativeEvaluationResponse:
+def _persist_evaluation_attempt(
+    db: Session,
+    request: InitiativeEvaluationRequest,
+    result: InitiativeEvaluationResponse,
+) -> InitiativeEvaluationResponse:
+    normalized_text = _normalize_initiative_text(request.initiative_text)
+    input_hash = _initiative_input_hash(request.initiative_text)
+    now = utc_now()
+    input_type = request.input_type or "custom"
+    example_id = (request.example_id or "").strip()[:100]
+    source = (request.source or "landing_validator").strip()[:100]
+    operational_profile = (
+        result.operational_profile.model_dump(mode="json")
+        if result.operational_profile is not None
+        else {}
+    )
+    suggested_tier = result.suggested_tier.value if isinstance(result.suggested_tier, CommercialTier) else (result.suggested_tier or "")
+
+    existing = db.exec(
+        select(InitiativeEvaluationAttemptRecord).where(
+            InitiativeEvaluationAttemptRecord.input_hash == input_hash,
+        )
+    ).first()
+
+    if existing is not None:
+        result.evaluation_id = existing.evaluation_id
+        result.is_repeat = True
+        result.repeat_count = existing.submission_count + 1
+        result_payload = result.model_dump(mode="json")
+        existing.initiative_text = request.initiative_text.strip()
+        existing.normalized_text = normalized_text
+        existing.language = get_effective_language(request.language)
+        existing.input_type = input_type
+        existing.example_id = example_id or existing.example_id
+        existing.source = source
+        existing.readiness_score = result.readiness_score
+        existing.verdict_badge = result.verdict_badge
+        existing.suggested_archetype = result.suggested_archetype or ""
+        existing.suggested_tier = suggested_tier
+        existing.operational_profile = operational_profile
+        existing.result_payload = result_payload
+        existing.token_usage = dict(result.token_usage)
+        existing.submission_count += 1
+        existing.example_submission_count += 1 if input_type == "example" else 0
+        existing.custom_submission_count += 1 if input_type == "custom" else 0
+        existing.last_seen_at = now
+        existing.updated_at = now
+        db.add(existing)
+    else:
+        result.is_repeat = False
+        result.repeat_count = 1
+        result_payload = result.model_dump(mode="json")
+        db.add(
+            InitiativeEvaluationAttemptRecord(
+                evaluation_id=result.evaluation_id,
+                input_hash=input_hash,
+                normalized_text=normalized_text,
+                initiative_text=request.initiative_text.strip(),
+                language=get_effective_language(request.language),
+                input_type=input_type,
+                example_id=example_id,
+                source=source,
+                readiness_score=result.readiness_score,
+                verdict_badge=result.verdict_badge,
+                suggested_archetype=result.suggested_archetype or "",
+                suggested_tier=suggested_tier,
+                operational_profile=operational_profile,
+                result_payload=result_payload,
+                token_usage=dict(result.token_usage),
+                submission_count=1,
+                example_submission_count=1 if input_type == "example" else 0,
+                custom_submission_count=1 if input_type == "custom" else 0,
+                first_seen_at=now,
+                last_seen_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    db.commit()
+    return result
+
+
+def evaluate_initiative_service(
+    request: InitiativeEvaluationRequest,
+    db: Session | None = None,
+) -> InitiativeEvaluationResponse:
     """Main evaluation service using heuristic pre-filter and token-optimized structured pipeline."""
     start_time = monotonic()
-    is_immediate_rejection, _ = _evaluate_heuristic_pre_filter(request.initiative_text)
+    _is_immediate_rejection, _ = _evaluate_heuristic_pre_filter(request.initiative_text)
     
     # 0-token immediate path
     result = _deterministic_evaluation(request)
     elapsed_ms = int((monotonic() - start_time) * 1000)
     result.token_usage["latency_ms"] = max(1, elapsed_ms)
+    if db is not None:
+        try:
+            result = _persist_evaluation_attempt(db, request, result)
+        except SQLAlchemyError:
+            db.rollback()
+            logger.warning("Could not persist initiative evaluation attempt.", exc_info=True)
     return result
