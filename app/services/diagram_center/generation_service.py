@@ -32,7 +32,7 @@ from app.services.openai_builder import build_builder_service
 
 
 MAX_CONTEXT_ITEMS = 36
-MAX_CONTEXT_CHARS_PER_ITEM = 24000
+MAX_CONTEXT_CHARS_PER_ITEM = 4000
 RESOLVED_INPUT_EVIDENCE_LIMIT = 16000
 
 _REQUIRED_INPUT_MATCHERS: dict[str, dict[str, set[str]]] = {
@@ -694,7 +694,7 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
         # P2 guardrail: detect excessively large payloads before hitting provider.
         # The builder compresses source_context before sending, but this catches regressions
         # or bypass paths that could exceed provider context windows (DeepSeek ~64k, OpenAI ~128k tokens).
-        _PAYLOAD_CHAR_LIMIT = 320_000  # ~80k tokens — well below any provider limit
+        _PAYLOAD_CHAR_LIMIT = 600_000  # ~150k tokens — well below any provider limit
         try:
             _payload_chars = len(json.dumps(generation_input.model_dump(mode="json"), ensure_ascii=True, default=str))
             if _payload_chars > _PAYLOAD_CHAR_LIMIT:
