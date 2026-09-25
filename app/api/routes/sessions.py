@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
-from app.db import get_session
+from app.db import commit_without_expiring, get_session
 from app.models import (
     ACPFileEntry,
     ACPPreview,
@@ -361,6 +361,12 @@ def utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _close_transaction_before_runtime(db: Session) -> None:
+    """Release the connection before a provider/runtime call starts."""
+
+    commit_without_expiring(db)
+
+
 def _is_stage_answer_inference_enabled(db: Session, *, workspace_id: UUID) -> bool:
     return is_feature_flag_enabled(
         db,
@@ -521,6 +527,25 @@ def ensure_commercial_capability(
     if violation is None:
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=violation.message)
+
+
+def ensure_acp_validation_access(
+    record: SessionRecord,
+    *,
+    db: Session,
+    current_user: UserRecord,
+) -> None:
+    context = resolve_session_entitlement_context(db, record, current_user)
+    violation = validate_capability(record.commercial_tier, "acp.download", context=context)
+    if violation is None:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Validate is part of ACP. Activate ACP access before running validation. "
+            f"{violation.message}"
+        ),
+    )
 
 
 def build_approval_entry(record: ApprovalGateRecord) -> ApprovalGateEntry:
@@ -1065,7 +1090,7 @@ def _sync_estimate_journey_after_generation(
 ) -> None:
     is_ready = status_value == ArtifactStatus.ready
     target_state = JourneyStateKey.blueprint_free_ready if is_ready else JourneyStateKey.estimate
-    target_substate = JourneyStateSubstate.completed if is_ready else JourneyStateSubstate.waiting_user
+    target_substate = JourneyStateSubstate.running if is_ready else JourneyStateSubstate.waiting_user
     transition_journey_state(
         db,
         record=record,
@@ -1075,7 +1100,7 @@ def _sync_estimate_journey_after_generation(
         actor_type="user" if actor_user_id is not None else "system",
         actor_user_id=actor_user_id,
         reason=(
-            "Estimate genero el Blueprint Free listo para revision comercial."
+            "Estimate genero el Blueprint Free en proceso de generacion de artefactos y diagramas."
             if is_ready
             else "Estimate fue generado y requiere revision antes de cerrar Blueprint Free."
         ),
@@ -4023,6 +4048,11 @@ def approve_stage_artifact_route(
 ) -> JourneyStageArtifactEntry:
     record = get_or_404(db, session_id, current_user.id)
     if str(stage_key or "").strip().lower() == "validate":
+        ensure_acp_validation_access(
+            record,
+            db=db,
+            current_user=current_user,
+        )
         _ensure_validate_evidence_exists(
             db,
             record=record,
@@ -4616,6 +4646,7 @@ def normalize_discovery_route(
         effective_language=current_user.preferred_language,
         task_source_keys=["discovery_capture"],
     )
+    _close_transaction_before_runtime(db)
     envelope, traces = run_discovery_stage(
         payload,
         runtime_settings=runtime_settings,
@@ -4683,6 +4714,8 @@ def analyze_discovery_route(
         record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
     )
     answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    _close_transaction_before_runtime(db)
 
     def run_discovery_analysis_capability() -> ReactCapabilityOutput:
         analysis_value, trace_items = run_discovery_analysis_stage(
@@ -4703,7 +4736,7 @@ def analyze_discovery_route(
             token_usage=token_usage,
         )
 
-    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+    if react_enabled:
         try:
             react_execution = run_callable_react(
                 stage="discover",
@@ -4874,6 +4907,7 @@ def build_canvas_route(
         effective_language=current_user.preferred_language,
         task_source_keys=["normalized_discovery"],
     )
+    _close_transaction_before_runtime(db)
     envelope, traces = run_canvas_stage(
         approved_discovery,
         runtime_settings=runtime_settings,
@@ -4951,6 +4985,7 @@ def define_requirements_route(
             effective_language=current_user.preferred_language,
             task_source_keys=["normalized_discovery"],
         )
+        _close_transaction_before_runtime(db)
         canvas_envelope, canvas_traces = run_canvas_stage(
             approved_discovery,
             runtime_settings=runtime_settings,
@@ -4985,6 +5020,7 @@ def define_requirements_route(
         if react_enabled and resume_checkpoint_id
         else None
     )
+    _close_transaction_before_runtime(db)
     if react_enabled:
         try:
             react_execution = run_define_react(
@@ -5186,6 +5222,7 @@ def _execute_propose_design(
         record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
     )
     answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
+    _close_transaction_before_runtime(db)
     if react_enabled:
         try:
             react_execution = run_design_react(
@@ -5576,7 +5613,6 @@ def _update_stage_operation(
         operation.expires_at = _operation_expires_at(now, action=operation.action)
     db.add(operation)
     db.commit()
-    db.refresh(operation)
 
 
 def _requeue_stage_operation(
@@ -5658,6 +5694,17 @@ def _build_stage_operation_response(
         updated_at=operation.updated_at,
         completed_at=operation.completed_at,
     )
+
+
+def _build_stage_operation_response_and_release(
+    db: Session,
+    *,
+    session_record: SessionRecord,
+    operation: StageOperationRecord,
+) -> StageOperationResponse:
+    response = _build_stage_operation_response(db, session_record=session_record, operation=operation)
+    db.rollback()
+    return response
 
 
 def _get_or_create_stage_operation(
@@ -6118,6 +6165,7 @@ def _raise_if_stage_operation_cancelled(
 ) -> None:
     db.refresh(operation)
     if operation.cancel_requested_at is None:
+        db.rollback()
         return
     _update_stage_operation(
         db,
@@ -6213,12 +6261,15 @@ def _stage_operation_requires_user_input(
 
 
 def _run_propose_design_operation(operation_id: UUID, bind) -> None:
-    with Session(bind) as db:
+    with Session(bind, expire_on_commit=False) as db:
         operation = db.get(StageOperationRecord, operation_id)
         if operation is None:
             return
-        record = db.get(SessionRecord, operation.session_id)
-        user = db.get(UserRecord, operation.user_id)
+        session_id = operation.session_id
+        user_id = operation.user_id
+        request_payload = dict(operation.request_payload or {})
+        record = db.get(SessionRecord, session_id)
+        user = db.get(UserRecord, user_id)
         if record is None or user is None:
             _update_stage_operation(
                 db,
@@ -6267,7 +6318,7 @@ def _run_propose_design_operation(operation_id: UUID, bind) -> None:
                 current_step="queued",
                 detail="Preparando contexto aprobado de Discover, Define y memoria de largo plazo.",
             )
-            payload = DesignProposalRequest.model_validate(operation.request_payload or {})
+            payload = DesignProposalRequest.model_validate(request_payload)
             artifact = _execute_propose_design(
                 db,
                 record=record,
@@ -6303,7 +6354,7 @@ def _run_propose_design_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_blueprint,
                 status_value=ArtifactStatus.failed,
                 message="propose_design_async_failed",
@@ -6327,7 +6378,7 @@ def _run_propose_design_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_blueprint,
                 status_value=ArtifactStatus.failed,
                 message="propose_design_async_failed",
@@ -6341,12 +6392,15 @@ def _run_propose_design_operation(operation_id: UUID, bind) -> None:
 
 
 def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
-    with Session(bind) as db:
+    with Session(bind, expire_on_commit=False) as db:
         operation = db.get(StageOperationRecord, operation_id)
         if operation is None:
             return
-        record = db.get(SessionRecord, operation.session_id)
-        user = db.get(UserRecord, operation.user_id)
+        session_id = operation.session_id
+        user_id = operation.user_id
+        request_payload = dict(operation.request_payload or {})
+        record = db.get(SessionRecord, session_id)
+        user = db.get(UserRecord, user_id)
         if record is None or user is None:
             _update_stage_operation(
                 db,
@@ -6360,7 +6414,7 @@ def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
 
         try:
             _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
-            payload = DiscoveryInput.model_validate(operation.request_payload or {})
+            payload = DiscoveryInput.model_validate(request_payload)
             _update_stage_operation(
                 db,
                 operation,
@@ -6368,7 +6422,8 @@ def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
                 current_step="normalize",
                 detail="Estructurando contexto y guardando Discovery antes del analisis.",
             )
-            normalize_discovery_route(operation.session_id, payload, db=db, current_user=user)
+            _close_transaction_before_runtime(db)
+            normalize_discovery_route(session_id, payload, db=db, current_user=user)
             _raise_if_stage_operation_cancelled(db, operation, current_step="normalize")
             _update_stage_operation(
                 db,
@@ -6377,7 +6432,8 @@ def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
                 current_step="analysis",
                 detail="Analizando necesidad, alcance MVP y gaps con el runtime configurado.",
             )
-            artifact = analyze_discovery_route(operation.session_id, payload, db=db, current_user=user)
+            _close_transaction_before_runtime(db)
+            artifact = analyze_discovery_route(session_id, payload, db=db, current_user=user)
             _complete_stage_operation_with_artifact(
                 db,
                 operation,
@@ -6400,7 +6456,7 @@ def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.normalize_discovery,
                 status_value=ArtifactStatus.failed,
                 message="analyze_discovery_async_failed",
@@ -6424,7 +6480,7 @@ def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.normalize_discovery,
                 status_value=ArtifactStatus.failed,
                 message="analyze_discovery_async_failed",
@@ -6438,12 +6494,14 @@ def _run_analyze_discovery_operation(operation_id: UUID, bind) -> None:
 
 
 def _run_define_requirements_operation(operation_id: UUID, bind) -> None:
-    with Session(bind) as db:
+    with Session(bind, expire_on_commit=False) as db:
         operation = db.get(StageOperationRecord, operation_id)
         if operation is None:
             return
-        record = db.get(SessionRecord, operation.session_id)
-        user = db.get(UserRecord, operation.user_id)
+        session_id = operation.session_id
+        user_id = operation.user_id
+        record = db.get(SessionRecord, session_id)
+        user = db.get(UserRecord, user_id)
         if record is None or user is None:
             _update_stage_operation(
                 db,
@@ -6464,7 +6522,8 @@ def _run_define_requirements_operation(operation_id: UUID, bind) -> None:
                 current_step="canvas",
                 detail="Construyendo Canvas desde el Discover aprobado.",
             )
-            build_canvas_route(operation.session_id, db=db, current_user=user)
+            _close_transaction_before_runtime(db)
+            build_canvas_route(session_id, db=db, current_user=user)
             _raise_if_stage_operation_cancelled(db, operation, current_step="canvas")
             _update_stage_operation(
                 db,
@@ -6473,7 +6532,8 @@ def _run_define_requirements_operation(operation_id: UUID, bind) -> None:
                 current_step="requirements",
                 detail="Generando requerimientos, criterios y riesgos funcionales.",
             )
-            artifact = define_requirements_route(operation.session_id, db=db, current_user=user)
+            _close_transaction_before_runtime(db)
+            artifact = define_requirements_route(session_id, db=db, current_user=user)
             _complete_stage_operation_with_artifact(
                 db,
                 operation,
@@ -6496,7 +6556,7 @@ def _run_define_requirements_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_canvas,
                 status_value=ArtifactStatus.failed,
                 message="define_requirements_async_failed",
@@ -6520,7 +6580,7 @@ def _run_define_requirements_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_canvas,
                 status_value=ArtifactStatus.failed,
                 message="define_requirements_async_failed",
@@ -6534,12 +6594,15 @@ def _run_define_requirements_operation(operation_id: UUID, bind) -> None:
 
 
 def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
-    with Session(bind) as db:
+    with Session(bind, expire_on_commit=False) as db:
         operation = db.get(StageOperationRecord, operation_id)
         if operation is None:
             return
-        record = db.get(SessionRecord, operation.session_id)
-        user = db.get(UserRecord, operation.user_id)
+        session_id = operation.session_id
+        user_id = operation.user_id
+        request_payload = dict(operation.request_payload or {})
+        record = db.get(SessionRecord, session_id)
+        user = db.get(UserRecord, user_id)
         if record is None or user is None:
             _update_stage_operation(
                 db,
@@ -6553,7 +6616,7 @@ def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
 
         try:
             _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
-            payload = ToolRecommendationRequest.model_validate(operation.request_payload or {})
+            payload = ToolRecommendationRequest.model_validate(request_payload)
             _update_stage_operation(
                 db,
                 operation,
@@ -6569,7 +6632,8 @@ def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
                 current_step="recommendation",
                 detail="Generando set minimo, cobertura y decisiones de Herramientas.",
             )
-            recommend_tools_route(operation.session_id, payload, db=db, current_user=user)
+            _close_transaction_before_runtime(db)
+            recommend_tools_route(session_id, payload, db=db, current_user=user)
             _raise_if_stage_operation_cancelled(db, operation, current_step="recommendation")
             artifact = StageProposalService().latest(db, session_record=record, stage_key="tools")
             if artifact is None:
@@ -6596,7 +6660,7 @@ def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_blueprint,
                 status_value=ArtifactStatus.failed,
                 message="recommend_tools_async_failed",
@@ -6620,7 +6684,7 @@ def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_blueprint,
                 status_value=ArtifactStatus.failed,
                 message="recommend_tools_async_failed",
@@ -6634,12 +6698,15 @@ def _run_recommend_tools_operation(operation_id: UUID, bind) -> None:
 
 
 def _run_recommend_memory_operation(operation_id: UUID, bind) -> None:
-    with Session(bind) as db:
+    with Session(bind, expire_on_commit=False) as db:
         operation = db.get(StageOperationRecord, operation_id)
         if operation is None:
             return
-        record = db.get(SessionRecord, operation.session_id)
-        user = db.get(UserRecord, operation.user_id)
+        session_id = operation.session_id
+        user_id = operation.user_id
+        request_payload = dict(operation.request_payload or {})
+        record = db.get(SessionRecord, session_id)
+        user = db.get(UserRecord, user_id)
         if record is None or user is None:
             _update_stage_operation(
                 db,
@@ -6653,7 +6720,7 @@ def _run_recommend_memory_operation(operation_id: UUID, bind) -> None:
 
         try:
             _raise_if_stage_operation_cancelled(db, operation, current_step="queued")
-            payload = MemoryRecommendationRequest.model_validate(operation.request_payload or {})
+            payload = MemoryRecommendationRequest.model_validate(request_payload)
             _update_stage_operation(
                 db,
                 operation,
@@ -6669,7 +6736,8 @@ def _run_recommend_memory_operation(operation_id: UUID, bind) -> None:
                 current_step="profile",
                 detail="Generando arquitectura de memoria, fuentes y reglas de gobernanza.",
             )
-            artifact = recommend_memory_route(operation.session_id, payload, db=db, current_user=user)
+            _close_transaction_before_runtime(db)
+            artifact = recommend_memory_route(session_id, payload, db=db, current_user=user)
             _complete_stage_operation_with_artifact(
                 db,
                 operation,
@@ -6692,7 +6760,7 @@ def _run_recommend_memory_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_blueprint,
                 status_value=ArtifactStatus.failed,
                 message="recommend_memory_async_failed",
@@ -6716,7 +6784,7 @@ def _run_recommend_memory_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=SessionStage.build_blueprint,
                 status_value=ArtifactStatus.failed,
                 message="recommend_memory_async_failed",
@@ -6730,12 +6798,14 @@ def _run_recommend_memory_operation(operation_id: UUID, bind) -> None:
 
 
 def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
-    with Session(bind) as db:
+    with Session(bind, expire_on_commit=False) as db:
         operation = db.get(StageOperationRecord, operation_id)
         if operation is None:
             return
-        record = db.get(SessionRecord, operation.session_id)
-        user = db.get(UserRecord, operation.user_id)
+        session_id = operation.session_id
+        user_id = operation.user_id
+        record = db.get(SessionRecord, session_id)
+        user = db.get(UserRecord, user_id)
         if record is None or user is None:
             _update_stage_operation(
                 db,
@@ -6765,16 +6835,17 @@ def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
                 detail="Calculando esfuerzo, riesgo, ROI y politica de avance al paquete.",
             )
             background_tasks = BackgroundTasks()
+            _close_transaction_before_runtime(db)
             generate_estimation_report_route(
-                operation.session_id,
+                session_id,
                 background_tasks=background_tasks,
                 db=db,
                 current_user=user,
             )
             persisted_report = load_latest_persisted_estimation_report(
                 db,
-                operation.session_id,
-                current_blueprint_version_number=latest_blueprint_version_number(db, operation.session_id),
+                session_id,
+                current_blueprint_version_number=latest_blueprint_version_number(db, session_id),
             )
             if persisted_report is None:
                 raise RuntimeError("Estimate operation completed without a persisted estimation artifact.")
@@ -6793,7 +6864,7 @@ def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
                     db.rollback()
                     write_log(
                         db,
-                        session_id=operation.session_id,
+                        session_id=session_id,
                         stage=record.current_stage,
                         status_value=ArtifactStatus.ready,
                         message="generate_estimation_report_async_post_tasks_failed",
@@ -6818,7 +6889,7 @@ def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=record.current_stage,
                 status_value=ArtifactStatus.failed,
                 message="generate_estimation_report_async_failed",
@@ -6842,7 +6913,7 @@ def _run_generate_estimation_report_operation(operation_id: UUID, bind) -> None:
             )
             write_log(
                 db,
-                session_id=operation.session_id,
+                session_id=session_id,
                 stage=record.current_stage,
                 status_value=ArtifactStatus.failed,
                 message="generate_estimation_report_async_failed",
@@ -6931,7 +7002,7 @@ def start_propose_design_route(
     )
     if created:
         _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/analyze-discovery/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -6958,7 +7029,7 @@ def start_analyze_discovery_route(
     )
     if created:
         _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/define-requirements/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -6983,7 +7054,7 @@ def start_define_requirements_route(
     )
     if created:
         _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/recommend-tools/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -7010,7 +7081,7 @@ def start_recommend_tools_route(
     )
     if created:
         _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/recommend-memory/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -7037,7 +7108,7 @@ def start_recommend_memory_route(
     )
     if created:
         _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/estimate/start", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -7062,7 +7133,7 @@ def start_generate_estimation_report_route(
     )
     if created:
         _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 def _get_stage_operation_or_404(
@@ -7102,7 +7173,7 @@ def get_current_stage_operation_route(
         _recover_stale_stage_operation(db, op)
     live_active = next((op for op in active_operations if _is_operation_active(op)), None)
     if live_active is not None:
-        return _build_stage_operation_response(db, session_record=record, operation=live_active)
+        return _build_stage_operation_response_and_release(db, session_record=record, operation=live_active)
 
     # 2. Otherwise return the latest operation for the requested stage or action
     statement = select(StageOperationRecord).where(
@@ -7120,6 +7191,7 @@ def get_current_stage_operation_route(
         ).all()
     )
     if not operations:
+        db.rollback()
         return None
 
     for operation in operations:
@@ -7127,7 +7199,11 @@ def get_current_stage_operation_route(
         _complete_paused_stage_operation_if_resolved(db, operation)
 
     active_operation = next((operation for operation in operations if _is_operation_active(operation)), None)
-    return _build_stage_operation_response(db, session_record=record, operation=active_operation or operations[0])
+    return _build_stage_operation_response_and_release(
+        db,
+        session_record=record,
+        operation=active_operation or operations[0],
+    )
 
 
 @router.post("/{session_id}/stage-operations/{operation_id}/cancel", response_model=StageOperationResponse)
@@ -7142,7 +7218,7 @@ def cancel_stage_operation_route(
     _recover_stale_stage_operation(db, operation)
 
     if operation.status in STAGE_OPERATION_TERMINAL_STATUSES:
-        return _build_stage_operation_response(db, session_record=record, operation=operation)
+        return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
     now = utc_now()
     operation.cancel_requested_at = operation.cancel_requested_at or now
@@ -7161,7 +7237,7 @@ def cancel_stage_operation_route(
     db.add(operation)
     db.commit()
     db.refresh(operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/stage-operations/{operation_id}/retry", response_model=StageOperationResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -7176,10 +7252,10 @@ def retry_stage_operation_route(
     operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
     _recover_stale_stage_operation(db, operation)
     if _complete_paused_stage_operation_if_resolved(db, operation):
-        return _build_stage_operation_response(db, session_record=record, operation=operation)
+        return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
     if _is_operation_active(operation):
-        return _build_stage_operation_response(db, session_record=record, operation=operation)
+        return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
     if operation.status == StageOperationStatus.completed:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Completed stage operations cannot be retried.")
     if operation.action not in {
@@ -7210,7 +7286,7 @@ def retry_stage_operation_route(
     db.commit()
     db.refresh(operation)
     _add_stage_operation_background_task(background_tasks, bind=db.get_bind(), operation=operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/stage-operations/{operation_id}/recover", response_model=StageOperationResponse)
@@ -7223,7 +7299,7 @@ def recover_stage_operation_route(
     record = get_or_404(db, session_id, current_user.id)
     operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
     _recover_stale_stage_operation(db, operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.get("/{session_id}/stage-operations/{operation_id}", response_model=StageOperationResponse)
@@ -7236,7 +7312,7 @@ def get_stage_operation_route(
     record = get_or_404(db, session_id, current_user.id)
     operation = _get_stage_operation_or_404(db, operation_id=operation_id, record=record, session_id=session_id)
     _recover_stale_stage_operation(db, operation)
-    return _build_stage_operation_response(db, session_record=record, operation=operation)
+    return _build_stage_operation_response_and_release(db, session_record=record, operation=operation)
 
 
 @router.post("/{session_id}/build-blueprint", response_model=BlueprintEnvelope)
@@ -7300,6 +7376,7 @@ def build_blueprint_route(
         task_source_keys=["narrative_discovery", "narrative_canvas", "narrative_blueprint"],
         allow_second_page=True,
     )
+    _close_transaction_before_runtime(db)
     envelope, traces = run_blueprint_stage(
         discovery_artifact,
         canvas_artifact,
@@ -7388,6 +7465,7 @@ def enrich_blueprint_route(
         task_source_keys=["narrative_discovery", "narrative_canvas", "narrative_blueprint"],
         allow_second_page=True,
     )
+    _close_transaction_before_runtime(db)
     envelope, traces = run_enrich_stage(
         hydrate_blueprint(blueprint),
         hydrate_discovery(opportunity),
@@ -7701,6 +7779,7 @@ def recommend_tools_route(
         stage_key="tools",
         resume_checkpoint_id=request_payload.resume_checkpoint_id,
     )
+    _close_transaction_before_runtime(db)
     envelope, traces, react_run, react_runtime_warnings = _execute_tools_runtime(
         session_id=session_id,
         workspace_id=record.workspace_id,
@@ -8464,6 +8543,7 @@ def recommend_memory_route(
         resume_checkpoint_id=request_payload.resume_checkpoint_id,
     )
     session_snapshot = build_snapshot(db, record)
+    _close_transaction_before_runtime(db)
     artifact, traces, react_run, react_runtime_warnings = _execute_memory_runtime(
         session_id=session_id,
         workspace_id=record.workspace_id,
@@ -8908,6 +8988,7 @@ def generate_validation_scenarios_route(
 ) -> JourneyStageArtifactEntry:
     record = get_or_404(db, session_id, current_user.id)
     JourneyStageMigrationService().backfill_session(db, session_record=record)
+    ensure_acp_validation_access(record, db=db, current_user=current_user)
     proposal_service = StageProposalService()
     latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
     latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
@@ -8963,7 +9044,10 @@ def generate_validation_scenarios_route(
     }
     react_run = None
     react_runtime_warnings: list[str] = []
-    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+    session_snapshot = build_snapshot(db, record)
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    _close_transaction_before_runtime(db)
+    if react_enabled:
         try:
             react_execution = run_validation_spec_react(
                 session_id=session_id,
@@ -8972,7 +9056,7 @@ def generate_validation_scenarios_route(
                 canvas=canvas,
                 blueprint=blueprint,
                 definition_artifact=definition_artifact,
-                session_snapshot=build_snapshot(db, record),
+                session_snapshot=session_snapshot,
                 blueprint_version_number=blueprint_version_number,
                 source_stage_versions=source_stage_versions,
                 instructions=payload.instructions if payload is not None else "",
@@ -8992,7 +9076,7 @@ def generate_validation_scenarios_route(
                 canvas=canvas,
                 blueprint=blueprint,
                 definition_artifact=definition_artifact,
-                session_snapshot=build_snapshot(db, record),
+                session_snapshot=session_snapshot,
                 blueprint_version_number=blueprint_version_number,
                 source_stage_versions=source_stage_versions,
                 instructions=payload.instructions if payload is not None else "",
@@ -9005,7 +9089,7 @@ def generate_validation_scenarios_route(
             canvas=canvas,
             blueprint=blueprint,
             definition_artifact=definition_artifact,
-            session_snapshot=build_snapshot(db, record),
+            session_snapshot=session_snapshot,
             blueprint_version_number=blueprint_version_number,
             source_stage_versions=source_stage_versions,
             instructions=payload.instructions if payload is not None else "",
@@ -9105,6 +9189,7 @@ def approve_validation_scenarios_route(
     current_user: UserRecord = Depends(get_current_user),
 ) -> SessionSnapshot:
     record = get_or_404(db, session_id, current_user.id)
+    ensure_acp_validation_access(record, db=db, current_user=current_user)
     _ensure_validate_evidence_exists(
         db,
         record=record,
@@ -9169,6 +9254,7 @@ def run_validation_simulation_route(
 ) -> SimulationRunRecord:
     record = get_or_404(db, session_id, current_user.id)
     JourneyStageMigrationService().backfill_session(db, session_record=record)
+    ensure_acp_validation_access(record, db=db, current_user=current_user)
     proposal_service = StageProposalService()
     latest_validate_artifact = proposal_service.latest(db, session_record=record, stage_key="validate")
     specification = resolve_validation_specification_from_stage_artifact(latest_validate_artifact)
@@ -9224,7 +9310,9 @@ def run_validation_simulation_route(
             summary="Validate ejecuto la simulacion con eventos y condiciones de fallo trazables.",
         )
 
-    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    _close_transaction_before_runtime(db)
+    if react_enabled:
         try:
             react_execution = run_callable_react(
                 stage="validate",
@@ -9318,6 +9406,7 @@ def inject_validation_event_route(
 ) -> SimulationRunRecord:
     record = get_or_404(db, session_id, current_user.id)
     JourneyStageMigrationService().backfill_session(db, session_record=record)
+    ensure_acp_validation_access(record, db=db, current_user=current_user)
     proposal_service = StageProposalService()
     latest_validate_artifact = proposal_service.latest(db, session_record=record, stage_key="validate")
     specification = resolve_validation_specification_from_stage_artifact(latest_validate_artifact)
@@ -9480,6 +9569,7 @@ def judge_validation_run_route(
 ) -> SimulationRunRecord:
     record = get_or_404(db, session_id, current_user.id)
     JourneyStageMigrationService().backfill_session(db, session_record=record)
+    ensure_acp_validation_access(record, db=db, current_user=current_user)
     proposal_service = StageProposalService()
     latest_validate_artifact = proposal_service.latest(db, session_record=record, stage_key="validate")
     specification = resolve_validation_specification_from_stage_artifact(latest_validate_artifact)
@@ -9668,7 +9758,9 @@ def evaluate_blueprint_route(
         record.commercial_tier if record.commercial_tier is not None else CommercialTier.blueprint
     )
     answer_inference_enabled = _is_stage_answer_inference_enabled(db, workspace_id=record.workspace_id)
-    if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
+    react_enabled = is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id)
+    _close_transaction_before_runtime(db)
+    if react_enabled:
         react_execution = run_evaluation_react(
             session_id=session_id,
             workspace_id=record.workspace_id,
@@ -9837,6 +9929,7 @@ def generate_estimation_report_route(
                 report=estimation_report,
                 stage_context=stage_context,
                 runtime_settings=runtime_settings,
+                before_runtime=lambda: _close_transaction_before_runtime(db),
             )
             return ReactCapabilityOutput(
                 value=analysis_value,
@@ -9871,6 +9964,7 @@ def generate_estimation_report_route(
             report=estimation_report,
             stage_context=stage_context,
             runtime_settings=runtime_settings,
+            before_runtime=lambda: _close_transaction_before_runtime(db),
         )
     deterministic_inputs = build_estimation_deterministic_inputs(
         db,
@@ -9905,7 +9999,9 @@ def generate_estimation_report_route(
         if proposal.proposed_score_delta != 0 or proposal.proposed_uncertainty_band_delta != 0:
             next_action = "review_estimation_adjustment"
     if estimation_report.package_policy.preliminary:
-        next_action = "close_validate_before_package"
+        context = resolve_session_entitlement_context(db, record, current_user)
+        acp_violation = validate_capability(record.commercial_tier, "acp.download", context=context)
+        next_action = "close_validate_before_package" if acp_violation is None else "request_acp_access_before_validate"
     envelope = EstimationEnvelope(
         status=status_value,
         stage=record.current_stage,
@@ -10005,8 +10101,10 @@ def generate_estimation_report_route(
         )
     except Exception:
         pass
-    db.commit()
-    return envelope.model_copy(update={"stage": record.current_stage, "status": record.status})
+    response_stage = next_stage
+    response_status = status_value
+    commit_without_expiring(db)
+    return envelope.model_copy(update={"stage": response_stage, "status": response_status})
 
 
 @router.post("/{session_id}/estimate/analysis-decision", response_model=EstimationEnvelope)

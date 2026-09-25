@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -10,6 +11,7 @@ from uuid import UUID, uuid4
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from app.core.config import get_settings
 from app.db import engine
 from app.models import CommercialTier, SessionRecord, UserRecord, WorkspaceRole, utc_now
 from app.services.commerce_service import role_for_user, tier_rank
@@ -55,7 +57,8 @@ QUEUE_ELIGIBLE_STATES = {"pending", "stale"}
 QUEUE_RETRY_ONLY_STATES = {"error", "requires_attention"}
 QUEUE_ACTIVE_STATUSES = {"queued", "running"}
 MAX_PROCESSING_ATTEMPTS = 2
-ORPHANED_JOB_TIMEOUT = timedelta(minutes=5)
+ORPHANED_JOB_TIMEOUT = timedelta(minutes=15)
+MAX_PRODUCT_BUILD_BATCH_SIZE = 3
 
 JobRunner = Callable[[Session, DeliverableGenerationTask], tuple[DeliverableGenerationJobRecord, DeliverableGenerationResult | None]]
 
@@ -532,7 +535,8 @@ def run_product_build_processing(
     run_id: UUID,
     database_engine: Engine | None = None,
 ) -> None:
-    with Session(database_engine or engine) as db:
+    resolved_engine = database_engine or engine
+    with Session(resolved_engine) as db:
         run = db.get(ProductBuildRunRecord, run_id)
         if run is None:
             return
@@ -576,7 +580,7 @@ def run_product_build_processing(
             run=run,
             status="running",
             current_deliverable_key="",
-            summary=f"Procesando {len(selected_keys)} entregables de forma secuencial.",
+            summary=_processing_batch_summary(total_count=len(selected_keys), batch_size=_product_build_batch_size(db.get_bind())),
         )
         update_product_build_run_state(
             db,
@@ -586,21 +590,17 @@ def run_product_build_processing(
         )
         db.commit()
 
-        failed_keys: list[str] = []
-        for position, item in enumerate(ordered_items, start=1):
-            ok = _process_single_queue_item(
-                db,
-                run=run,
-                record=record,
-                item=item,
-                items_by_key=items_by_key,
-                allow_llm=bool(queue_checkpoint.get("allow_llm")),
-                phase="initial",
-                position=position,
-                total_count=len(selected_keys),
-            )
-            if not ok:
-                failed_keys.append(item.key)
+        failed_keys = _process_queue_items_in_batches(
+            db,
+            database_engine=resolved_engine,
+            run=run,
+            record=record,
+            ordered_items=ordered_items,
+            items_by_key=items_by_key,
+            allow_llm=bool(queue_checkpoint.get("allow_llm")),
+            phase="initial",
+            total_count=len(selected_keys),
+        )
 
         retry_items = _topologically_sort_items([items_by_key[key] for key in failed_keys if key in items_by_key])
         _update_processing_queue_checkpoint(
@@ -615,21 +615,17 @@ def run_product_build_processing(
         )
         db.commit()
 
-        remaining_failures: list[str] = []
-        for position, item in enumerate(retry_items, start=1):
-            ok = _process_single_queue_item(
-                db,
-                run=run,
-                record=record,
-                item=item,
-                items_by_key=items_by_key,
-                allow_llm=bool(queue_checkpoint.get("allow_llm")),
-                phase="retry",
-                position=position,
-                total_count=len(retry_items),
-            )
-            if not ok:
-                remaining_failures.append(item.key)
+        remaining_failures = _process_queue_items_in_batches(
+            db,
+            database_engine=resolved_engine,
+            run=run,
+            record=record,
+            ordered_items=retry_items,
+            items_by_key=items_by_key,
+            allow_llm=bool(queue_checkpoint.get("allow_llm")),
+            phase="retry",
+            total_count=len(retry_items),
+        )
 
         terminal_queue_status = "completed_with_errors" if remaining_failures else "completed"
         _update_processing_queue_checkpoint(
@@ -667,6 +663,26 @@ def _normalize_product_key(product_key: ProductBuildProductKey | str) -> Product
 
 def _normalize_queue_mode(mode: ProductBuildProcessingQueueMode | str) -> ProductBuildProcessingQueueMode:
     return mode if isinstance(mode, ProductBuildProcessingQueueMode) else ProductBuildProcessingQueueMode(str(mode))
+
+
+def _product_build_batch_size(bind: Any = None) -> int:
+    if bind is not None:
+        url = getattr(bind, "url", None)
+        if url is not None and getattr(url, "drivername", "").startswith("sqlite"):
+            db_name = getattr(url, "database", None)
+            if not db_name or db_name == ":memory:":
+                return 1
+    try:
+        configured = int(getattr(get_settings(), "product_build_batch_size", 1) or 1)
+    except (TypeError, ValueError):
+        configured = 1
+    return max(1, min(MAX_PRODUCT_BUILD_BATCH_SIZE, configured))
+
+
+def _processing_batch_summary(*, total_count: int, batch_size: int) -> str:
+    if batch_size <= 1:
+        return f"Procesando {total_count} entregables de forma secuencial."
+    return f"Procesando {total_count} entregables en lotes de hasta {batch_size}."
 
 
 def _run_idempotency_key(*, record: SessionRecord, product_key: ProductBuildProductKey, explicit_key: str) -> str:
@@ -1119,6 +1135,145 @@ def _topologically_sort_items(items: list[DeliverableCatalogItem]) -> list[Deliv
     return ordered
 
 
+def _next_ready_batch(
+    db: Session,
+    *,
+    run: ProductBuildRunRecord,
+    remaining_items: list[DeliverableCatalogItem],
+    items_by_key: dict[str, DeliverableCatalogItem],
+    batch_size: int,
+) -> list[DeliverableCatalogItem]:
+    ready: list[DeliverableCatalogItem] = []
+    for item in remaining_items:
+        if _dependency_error_for_item(db, run=run, item=item, items_by_key=items_by_key) is not None:
+            continue
+        ready.append(item)
+        if len(ready) >= batch_size:
+            break
+    if ready:
+        return ready
+    return remaining_items[:1]
+
+
+def _process_queue_item_in_new_session(
+    *,
+    database_engine: Engine,
+    run_id: UUID,
+    item: DeliverableCatalogItem,
+    items_by_key: dict[str, DeliverableCatalogItem],
+    allow_llm: bool,
+    phase: str,
+    position: int,
+    total_count: int,
+) -> tuple[str, bool]:
+    with Session(database_engine) as worker_db:
+        run = worker_db.get(ProductBuildRunRecord, run_id)
+        if run is None:
+            return item.key, False
+        record = worker_db.get(SessionRecord, run.session_id)
+        if record is None or record.workspace_id != run.workspace_id:
+            return item.key, False
+        ok = _process_single_queue_item(
+            worker_db,
+            run=run,
+            record=record,
+            item=item,
+            items_by_key=items_by_key,
+            allow_llm=allow_llm,
+            phase=phase,
+            position=position,
+            total_count=total_count,
+            update_queue_checkpoint=False,
+        )
+        return item.key, ok
+
+
+def _process_queue_items_in_batches(
+    db: Session,
+    *,
+    database_engine: Engine,
+    run: ProductBuildRunRecord,
+    record: SessionRecord,
+    ordered_items: list[DeliverableCatalogItem],
+    items_by_key: dict[str, DeliverableCatalogItem],
+    allow_llm: bool,
+    phase: str,
+    total_count: int,
+) -> list[str]:
+    if not ordered_items:
+        return []
+    batch_size = _product_build_batch_size(db.get_bind())
+    positions = {item.key: index for index, item in enumerate(ordered_items, start=1)}
+    failed_keys: list[str] = []
+    remaining_items = list(ordered_items)
+
+    while remaining_items:
+        run = db.get(ProductBuildRunRecord, run.id)
+        if run is None:
+            failed_keys.extend(item.key for item in remaining_items)
+            break
+        batch = _next_ready_batch(
+            db,
+            run=run,
+            remaining_items=remaining_items,
+            items_by_key=items_by_key,
+            batch_size=batch_size,
+        )
+        batch_keys = {item.key for item in batch}
+        _update_processing_queue_checkpoint(
+            db,
+            run=run,
+            status="running",
+            current_deliverable_key=", ".join(item.key for item in batch),
+            summary=(
+                f"Procesando lote de {len(batch)} de {total_count} entregables."
+                if batch_size > 1
+                else f"Procesando {positions[batch[0].key]} de {total_count}: {batch[0].title}."
+            ),
+        )
+        db.commit()
+
+        if batch_size <= 1:
+            item = batch[0]
+            ok = _process_single_queue_item(
+                db,
+                run=run,
+                record=record,
+                item=item,
+                items_by_key=items_by_key,
+                allow_llm=allow_llm,
+                phase=phase,
+                position=positions[item.key],
+                total_count=total_count,
+            )
+            if not ok:
+                failed_keys.append(item.key)
+        else:
+            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                futures = [
+                    executor.submit(
+                        _process_queue_item_in_new_session,
+                        database_engine=database_engine,
+                        run_id=run.id,
+                        item=item,
+                        items_by_key=items_by_key,
+                        allow_llm=allow_llm,
+                        phase=phase,
+                        position=positions[item.key],
+                        total_count=total_count,
+                    )
+                    for item in batch
+                ]
+                for future in as_completed(futures):
+                    item_key, ok = future.result()
+                    if not ok:
+                        failed_keys.append(item_key)
+            db.expire_all()
+
+        remaining_items = [item for item in remaining_items if item.key not in batch_keys]
+    return failed_keys
+
+
 def _process_single_queue_item(
     db: Session,
     *,
@@ -1130,14 +1285,16 @@ def _process_single_queue_item(
     phase: str,
     position: int,
     total_count: int,
+    update_queue_checkpoint: bool = True,
 ) -> bool:
-    _update_processing_queue_checkpoint(
-        db,
-        run=run,
-        status="running",
-        current_deliverable_key=item.key,
-        summary=f"Procesando {position} de {total_count}: {item.title}.",
-    )
+    if update_queue_checkpoint:
+        _update_processing_queue_checkpoint(
+            db,
+            run=run,
+            status="running",
+            current_deliverable_key=item.key,
+            summary=f"Procesando {position} de {total_count}: {item.title}.",
+        )
     step = _step_record(db, run=run, deliverable_key=item.key)
     existing_attempt_count = int((step.checkpoint_payload or {}).get("attempt_count") or 0) if step is not None else 0
     if item.deliverable_type.value == "diagram" and not allow_llm:
@@ -1175,12 +1332,13 @@ def _process_single_queue_item(
         },
         error_payload={},
     )
-    update_product_build_run_state(
-        db,
-        run=run,
-        lifecycle=ProductBuildLifecycle.running,
-        checkpoint_payload=run.checkpoint_payload,
-    )
+    if update_queue_checkpoint:
+        update_product_build_run_state(
+            db,
+            run=run,
+            lifecycle=ProductBuildLifecycle.running,
+            checkpoint_payload=run.checkpoint_payload,
+        )
     db.commit()
 
     dependency_error = _dependency_error_for_item(db, run=run, item=item, items_by_key=items_by_key)
@@ -1519,16 +1677,34 @@ def _recover_orphaned_processing_queue(db: Session, *, run: ProductBuildRunRecor
         )
 
     cutoff = utc_now() - ORPHANED_JOB_TIMEOUT
-    stale_steps = [step for step in active_steps if _active_queue_step_updated_at(db, step=step) <= cutoff]
+    in_flight_steps = [
+        step
+        for step in active_steps
+        if str(step.status or "").strip().lower() in {"running", "generating"}
+    ]
+    if in_flight_steps:
+        if any(_active_queue_step_updated_at(db, step=step) > cutoff for step in in_flight_steps):
+            return False
+        stale_steps = [step for step in in_flight_steps if _active_queue_step_updated_at(db, step=step) <= cutoff]
+    else:
+        all_steps = list_product_build_steps(db, run_id=run.id)
+        latest_activity = max(
+            [step.updated_at for step in all_steps if step is not None and step.updated_at is not None],
+            default=run.updated_at,
+        )
+        if latest_activity and latest_activity > cutoff:
+            return False
+        stale_steps = active_steps
+
     if not stale_steps:
         return False
 
     return _mark_queue_steps_as_orphaned(
         db,
         run=run,
-        active_steps=active_steps,
+        active_steps=stale_steps,
         summary=(
-            f"Se detectaron {len(active_steps)} jobs interrumpidos. "
+            f"Se detectaron {len(stale_steps)} jobs interrumpidos. "
             "No se reintentaron automáticamente para preservar idempotencia y control de costos."
         ),
     )

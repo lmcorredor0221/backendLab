@@ -24,15 +24,22 @@ def _build_engine_kwargs():
         "pool_pre_ping": True,
     }
     parsed = make_url(settings.database_url)
-    if not parsed.drivername.startswith("sqlite") and (parsed.host or "").strip().lower() not in {"127.0.0.1", "localhost"}:
+    if parsed.drivername.startswith("sqlite"):
+        return kwargs
+
+    host = (parsed.host or "").strip().lower()
+    explicit_pool_config = settings.database_pool_size is not None or settings.database_max_overflow is not None
+    if host in {"127.0.0.1", "localhost"} and not explicit_pool_config:
+        return kwargs
+
+    if not parsed.drivername.startswith("sqlite"):
         kwargs.update(
             {
-                # Shared remote databases need modest headroom because the browser
-                # routinely fans out auth, snapshot, attention, and export calls.
-                # Defaults raised to 10+20 to handle concurrent request fans.
+                # Keep per-process defaults conservative; product generation should
+                # release DB connections while waiting on external LLM providers.
                 # Override via DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW env vars.
-                "pool_size": settings.database_pool_size if settings.database_pool_size is not None else 10,
-                "max_overflow": settings.database_max_overflow if settings.database_max_overflow is not None else 20,
+                "pool_size": settings.database_pool_size if settings.database_pool_size is not None else 5,
+                "max_overflow": settings.database_max_overflow if settings.database_max_overflow is not None else 5,
                 "pool_timeout": settings.database_pool_timeout_seconds,
                 "pool_recycle": settings.database_pool_recycle_seconds,
                 "pool_use_lifo": True,
@@ -43,6 +50,20 @@ def _build_engine_kwargs():
 
 settings = get_settings()
 engine = create_engine(settings.database_url, **_build_engine_kwargs())
+
+
+def commit_without_expiring(session: Session) -> None:
+    """Commit while preserving already-loaded ORM state for provider/runtime gaps."""
+
+    previous_expire_on_commit = session.expire_on_commit
+    session.expire_on_commit = False
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.expire_on_commit = previous_expire_on_commit
 
 
 def _json_default_literal(dialect_name: str) -> str:
@@ -200,4 +221,8 @@ def create_db_and_tables() -> None:
 
 def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
-        yield session
+        try:
+            yield session
+        finally:
+            if session.in_transaction():
+                session.rollback()

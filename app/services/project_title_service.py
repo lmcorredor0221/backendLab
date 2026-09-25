@@ -91,7 +91,6 @@ _TITLE_RULES: tuple[tuple[tuple[tuple[str, ...], ...], dict[str, str]], ...] = (
         ),
         {"es": "Correos a Excel", "en": "Email to Excel", "pt": "E-mails Excel"},
     ),
-    ((("contrato", "contratos", "contract", "contracts", "politica", "politicas"),), {"es": "Contratos IA", "en": "AI Contracts", "pt": "Contratos IA"}),
     (
         (
             ("cliente", "clientes", "customer", "customers"),
@@ -99,6 +98,7 @@ _TITLE_RULES: tuple[tuple[tuple[tuple[str, ...], ...], dict[str, str]], ...] = (
         ),
         {"es": "Soporte Clientes", "en": "Customer Support", "pt": "Suporte Clientes"},
     ),
+    ((("contrato", "contratos", "contract", "contracts", "politica", "politicas"),), {"es": "Contratos IA", "en": "AI Contracts", "pt": "Contratos IA"}),
     ((("venta", "ventas", "sales", "venda", "vendas", "pipeline"),), {"es": "Ventas IA", "en": "AI Sales", "pt": "Vendas IA"}),
     ((("demanda", "demand", "forecast", "prevision", "previsao"),), {"es": "Demanda IA", "en": "AI Demand", "pt": "Demanda IA"}),
     ((("ticket", "tickets", "incidente", "incidentes", "it", "ti"),), {"es": "Soporte TI", "en": "IT Support", "pt": "Suporte TI"}),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy.pool import StaticPool
@@ -14,6 +15,7 @@ from app.models import (
     WorkspaceMembershipRecord,
     WorkspaceRecord,
     WorkspaceRole,
+    utc_now,
 )
 from app.services.auth_service import hash_password
 from app.services.deliverable_catalog import build_deliverable_catalog_response
@@ -147,6 +149,287 @@ def test_product_build_status_hides_legacy_run_activity_when_product_is_locked()
     assert status.lifecycle == ProductBuildLifecycle.not_purchased
     assert status.entitlement.purchase_required is True
     assert status.current_activity is None
+
+
+def test_product_build_status_counts_only_running_items_as_processing() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        run = ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro.value,
+            product_mode=ProductProcessingMode.premium_enrichment.value,
+            entitlement_tier=CommercialTier.blueprint_pro.value,
+            access_state="allowed",
+            lifecycle=ProductBuildLifecycle.running.value,
+            progress_percent=25,
+            completed_units=1,
+            total_units=4,
+            idempotency_key=f"eov3-blueprint-pro-queue-{uuid4()}",
+            checkpoint_payload={
+                "processing_queue": {
+                    "queue_id": "queue-blueprint-pro",
+                    "mode": "process_pending",
+                    "status": "running",
+                    "selected_deliverable_keys": ["architecture.spec", "diagram.knowledge_graph"],
+                    "summary": "Procesando fixture.",
+                }
+            },
+            created_by_user_id=user.id,
+        )
+        db.add(run)
+        db.flush()
+        db.add(
+            ProductBuildStepRecord(
+                run_id=run.id,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                step_key="deliverable:architecture.spec",
+                stage_key="design",
+                deliverable_key="architecture.spec",
+                status="queued",
+                sequence=1,
+                progress_percent=10,
+                checkpoint_payload={"title": "Arquitectura"},
+            )
+        )
+        db.add(
+            ProductBuildStepRecord(
+                run_id=run.id,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                step_key="deliverable:diagram.knowledge_graph",
+                stage_key="design",
+                deliverable_key="diagram.knowledge_graph",
+                status="generating",
+                sequence=2,
+                progress_percent=55,
+                checkpoint_payload={"title": "Knowledge graph"},
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+        )
+
+    assert status.processing_queue is not None
+    assert status.processing_queue.processing_count == 1
+    assert status.processing_queue.pending_count == 1
+
+
+def test_product_build_status_projects_stale_active_queue_as_recoverable_without_mutating() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        stale_at = utc_now() - timedelta(minutes=20)
+        run = ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro.value,
+            product_mode=ProductProcessingMode.premium_enrichment.value,
+            entitlement_tier=CommercialTier.blueprint_pro.value,
+            access_state="allowed",
+            lifecycle=ProductBuildLifecycle.running.value,
+            progress_percent=84,
+            completed_units=3,
+            total_units=4,
+            idempotency_key=f"eov3-blueprint-pro-stale-{uuid4()}",
+            checkpoint_payload={
+                "processing_queue": {
+                    "queue_id": "queue-blueprint-pro-stale",
+                    "mode": "process_pending",
+                    "status": "running",
+                    "selected_deliverable_keys": ["diagram.knowledge_graph"],
+                    "summary": "Procesando fixture stale.",
+                }
+            },
+            created_by_user_id=user.id,
+        )
+        db.add(run)
+        db.flush()
+        step = ProductBuildStepRecord(
+            run_id=run.id,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            step_key="deliverable:diagram.knowledge_graph",
+            stage_key="design",
+            deliverable_key="diagram.knowledge_graph",
+            status="generating",
+            sequence=1,
+            progress_percent=55,
+            checkpoint_payload={"title": "Knowledge graph"},
+            updated_at=stale_at,
+        )
+        db.add(step)
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+        )
+        db.expire_all()
+        persisted_run = db.get(ProductBuildRunRecord, run.id)
+        persisted_step = db.get(ProductBuildStepRecord, step.id)
+
+    assert status.lifecycle == ProductBuildLifecycle.requires_attention
+    assert status.last_error is not None
+    assert status.last_error.code == "processing_queue_possibly_interrupted"
+    assert status.last_error.retry_action_key == "retry_failed"
+    assert persisted_run is not None
+    assert persisted_run.lifecycle == ProductBuildLifecycle.running.value
+    assert persisted_step is not None
+    assert persisted_step.status == "generating"
+
+
+def test_product_build_status_does_not_mark_queue_interrupted_when_in_flight_step_is_active() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    stale_at = utc_now() - timedelta(minutes=20)
+    recent_at = utc_now() - timedelta(seconds=30)
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        run = ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro.value,
+            product_mode=ProductProcessingMode.premium_enrichment.value,
+            lifecycle=ProductBuildLifecycle.running.value,
+            idempotency_key=f"eov3-blueprint-pro-active-{uuid4()}",
+            checkpoint_payload={
+                "processing_queue": {
+                    "queue_id": "queue-blueprint-pro-active",
+                    "mode": "process_pending",
+                    "status": "running",
+                    "selected_deliverable_keys": ["diagram.knowledge_graph", "diagram.architecture_c4"],
+                    "summary": "Procesando fixture activo.",
+                }
+            },
+            created_by_user_id=user.id,
+        )
+        db.add(run)
+        db.flush()
+        # Step 1 is in-flight and recent (30s ago)
+        step_active = ProductBuildStepRecord(
+            run_id=run.id,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            step_key="deliverable:diagram.knowledge_graph",
+            stage_key="design",
+            deliverable_key="diagram.knowledge_graph",
+            status="generating",
+            sequence=1,
+            progress_percent=55,
+            checkpoint_payload={"title": "Knowledge graph"},
+            updated_at=recent_at,
+        )
+        # Step 2 is queued from 10 minutes ago
+        step_queued = ProductBuildStepRecord(
+            run_id=run.id,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            step_key="deliverable:diagram.architecture_c4",
+            stage_key="design",
+            deliverable_key="diagram.architecture_c4",
+            status="queued",
+            sequence=2,
+            progress_percent=0,
+            checkpoint_payload={"title": "Architecture C4"},
+            updated_at=stale_at,
+        )
+        db.add(step_active)
+        db.add(step_queued)
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+        )
+
+    # Should remain running, not requires_attention!
+    assert status.lifecycle == ProductBuildLifecycle.running
+    assert status.last_error is None
+
+
+def test_product_build_status_projects_recoverable_run_error_as_retry_action() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        run = ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro.value,
+            product_mode=ProductProcessingMode.premium_enrichment.value,
+            entitlement_tier=CommercialTier.blueprint_pro.value,
+            access_state="allowed",
+            lifecycle=ProductBuildLifecycle.running.value,
+            progress_percent=32,
+            completed_units=3,
+            total_units=4,
+            idempotency_key=f"eov3-blueprint-pro-recoverable-{uuid4()}",
+            checkpoint_payload={
+                "processing_queue": {
+                    "queue_id": "queue-blueprint-pro-recoverable",
+                    "mode": "retry_failed",
+                    "status": "running",
+                    "selected_deliverable_keys": ["diagram.knowledge_graph"],
+                }
+            },
+            error_payload={
+                "code": "processing_queue_orphaned",
+                "title": "El procesamiento fue interrumpido",
+                "message": "Algunos entregables requieren un reintento controlado.",
+                "retry_action_key": "retry_failed",
+                "trace_refs": ["diagram.knowledge_graph"],
+            },
+            created_by_user_id=user.id,
+        )
+        db.add(run)
+        db.flush()
+        db.add(
+            ProductBuildStepRecord(
+                run_id=run.id,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                step_key="deliverable:diagram.knowledge_graph",
+                stage_key="design",
+                deliverable_key="diagram.knowledge_graph",
+                status="generating",
+                sequence=1,
+                progress_percent=55,
+                checkpoint_payload={"title": "Knowledge graph"},
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+        )
+
+    assert status.lifecycle == ProductBuildLifecycle.requires_attention
+    assert status.last_error is not None
+    assert status.last_error.code == "processing_queue_orphaned"
+    assert status.actions
+    assert status.actions[0].action_key == "retry_failed"
+    assert status.actions[0].state.value == "recommended"
 
 
 def test_blueprint_pro_treats_deferred_basic_uncertainty_as_non_blocking() -> None:

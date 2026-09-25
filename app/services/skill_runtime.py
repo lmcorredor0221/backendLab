@@ -1526,20 +1526,23 @@ def _run_discovery_analysis_skill(input_model: BaseModel, context: SkillRunConte
     missing_fields = find_missing_discovery_fields(payload.model_dump(mode="json"))
     candidate = _fallback_discovery_artifact_from_payload(payload)
     llm_service = _builder_service_for_stage("discover", context.runtime_settings)
-    llm_result = llm_service.analyze_discovery(
-        DiscoveryAnalysisInput(
-            discovery_capture=payload,
-            analysis_goal=(
-                "Separar hechos, ambiguedades, riesgos y datos sensibles para Discover. Formular preguntas solo "
-                "cuando sean indispensables para entender problema, usuario, proceso actual, resultado esperado "
-                "o restricciones de negocio inmediatas. Inferir o diferir preguntas de Tools, Memory, Design "
-                "tecnico, infraestructura, contratos, despliegue y ACP."
+    llm_result = None
+    llm_available = bool(llm_service.can_attempt() and llm_service.is_available())
+    if llm_available:
+        llm_result = llm_service.analyze_discovery(
+            DiscoveryAnalysisInput(
+                discovery_capture=payload,
+                analysis_goal=(
+                    "Separar hechos, ambiguedades, riesgos y datos sensibles para Discover. Formular preguntas solo "
+                    "cuando sean indispensables para entender problema, usuario, proceso actual, resultado esperado "
+                    "o restricciones de negocio inmediatas. Inferir o diferir preguntas de Tools, Memory, Design "
+                    "tecnico, infraestructura, contratos, despliegue y ACP."
+                ),
+                known_gaps=list(missing_fields),
+                source_refs=["session.discovery_draft"],
             ),
-            known_gaps=list(missing_fields),
-            source_refs=["session.discovery_draft"],
-        ),
-        context_bundle=context.stage_context,
-    )
+            context_bundle=context.stage_context,
+        )
 
     artifact = (
         llm_result.artifact
@@ -1561,6 +1564,8 @@ def _run_discovery_analysis_skill(input_model: BaseModel, context: SkillRunConte
     warnings = []
     if missing_fields:
         warnings.append("El discovery aun tiene campos criticos sin confirmar; la propuesta queda abierta para revision.")
+    if not llm_available:
+        warnings.append("El proveedor LLM no esta disponible; se uso fallback deterministico para Discovery Analysis.")
     if llm_result is not None:
         _append_warning(warnings, llm_result.warning)
     evidence = [EvidenceItem(source=EvidenceSource.form_input, detail="Discovery analizado a partir del borrador actual")]

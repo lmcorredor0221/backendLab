@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import BackgroundTasks
 from sqlmodel import Session
 
+from app.db import commit_without_expiring
 from app.models import (
     CommercialTier,
     SessionRecord,
@@ -48,6 +49,48 @@ from app.services.blueprint_commercial_result_service import (
 
 BLUEPRINT_COMMERCIAL_RESULT_ACTION = "prepare_blueprint_commercial_result"
 BLUEPRINT_BASIC_DIAGRAM_QUEUE_PRIORITY = ("agent_orchestration",)
+
+
+def is_blueprint_basic_completed(db: Session, *, record: SessionRecord) -> tuple[bool, str]:
+    if record.workspace_id is None:
+        return False, "La sesion no tiene un workspace asociado."
+
+    from app.services.product_processing.product_build_status_service import build_product_build_status
+
+    status = build_product_build_status(
+        db,
+        record=record,
+        product_key=ProductBuildProductKey.blueprint_basic,
+    )
+    if status.lifecycle == ProductBuildLifecycle.completed:
+        return True, ""
+
+    if status.lifecycle in {
+        ProductBuildLifecycle.queued,
+        ProductBuildLifecycle.preparing,
+        ProductBuildLifecycle.running,
+    }:
+        return (
+            False,
+            "El Blueprint Free aun se encuentra en procesamiento. Debe completarse antes de solicitar o activar Blueprint Pro.",
+        )
+
+    if status.lifecycle == ProductBuildLifecycle.requires_attention:
+        return (
+            False,
+            "El Blueprint Free requiere atencion o revision antes de poder avanzar a Blueprint Pro.",
+        )
+
+    if status.lifecycle == ProductBuildLifecycle.error:
+        return (
+            False,
+            "El procesamiento del Blueprint Free presento un error. Debe resolverse antes de avanzar a Blueprint Pro.",
+        )
+
+    return (
+        False,
+        f"El Blueprint Free no esta completado (estado actual: {status.lifecycle.value}). Debe completarse antes de avanzar a Blueprint Pro.",
+    )
 
 
 def _is_blueprint_basic_auto_deliverable(entry) -> bool:
@@ -272,7 +315,7 @@ def prepare_blueprint_basic_commercial_result(
                 background_tasks.add_task(run_generation_job, job.id, db.get_bind())
             else:
                 run_generation_job(job.id, db_session=db)
-    db.commit()
+    commit_without_expiring(db)
     write_log(
         db,
         session_id=record.id,
@@ -302,8 +345,10 @@ def prepare_blueprint_basic_commercial_result(
         current_user=current_user,
         options=ProductBuildOrchestrationOptions(current_stage="estimate"),
     )
-    db.commit()
+    commit_without_expiring(db)
     refreshed_snapshot = build_snapshot(db, record, current_user=current_user)
+    if db.in_transaction():
+        db.rollback()
     return refreshed_snapshot, status
 
 

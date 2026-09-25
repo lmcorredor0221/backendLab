@@ -1881,6 +1881,16 @@ def request_access(
     target_tier: CommercialTier,
     background_tasks: Any | None = None,
 ) -> AccessRequestResponse:
+    if product_key == "blueprint_pro":
+        from app.services.product_processing.blueprint_basic_service import is_blueprint_basic_completed
+        is_ready, block_reason = is_blueprint_basic_completed(db, record=record)
+        if not is_ready:
+            from fastapi import HTTPException, status as http_status
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=block_reason,
+            )
+
     blocked_by_open_debt = has_open_commercial_debt(
         db,
         workspace_id=record.workspace_id,
@@ -1987,6 +1997,11 @@ def _auto_approve_access_request_from_workspace_balance(
         return False
     if access_request.product_key not in {"blueprint_pro", "acp"}:
         return False
+    if access_request.product_key == "blueprint_pro":
+        from app.services.product_processing.blueprint_basic_service import is_blueprint_basic_completed
+        is_ready, _ = is_blueprint_basic_completed(db, record=session_record)
+        if not is_ready:
+            return False
     if has_open_commercial_debt(
         db,
         workspace_id=access_request.workspace_id,

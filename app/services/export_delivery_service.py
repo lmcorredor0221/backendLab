@@ -27,7 +27,9 @@ from app.models import (
 from app.services.acp_zip_export import build_acp_zip
 from app.services.blueprint_zip_export import build_blueprint_zip
 from app.services.commerce_service import record_commercial_event
+from app.services.product_processing.contracts import ProductBuildLifecycle, ProductBuildProductKey
 from app.services.product_processing.journey_state_machine_service import transition_for_export_ready
+from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,10 @@ EXPORT_DEFINITIONS: tuple[ExportDefinition, ...] = (
         file_extension="zip",
     ),
 )
+
+
+class ExportReadinessError(ValueError):
+    """Raised when entitlement exists but technical build evidence is not terminal."""
 
 
 def _definition(artifact_kind: str) -> ExportDefinition:
@@ -661,6 +667,49 @@ def _conformance_errors(definition: ExportDefinition, preview: ACPPreview) -> li
     return errors
 
 
+def _blueprint_pro_export_gate_errors(db: Session, *, record: SessionRecord) -> list[str]:
+    run = db.exec(
+        select(ProductBuildRunRecord)
+        .where(
+            ProductBuildRunRecord.workspace_id == record.workspace_id,
+            ProductBuildRunRecord.session_id == record.id,
+            ProductBuildRunRecord.product_key == ProductBuildProductKey.blueprint_pro.value,
+        )
+        .order_by(ProductBuildRunRecord.updated_at.desc())
+    ).first()
+    if run is None:
+        return ["Blueprint Pro aun no tiene una generacion tecnica registrada para exportar."]
+
+    errors: list[str] = []
+    if str(run.lifecycle or "") != ProductBuildLifecycle.completed.value:
+        errors.append(f"Blueprint Pro sigue en estado tecnico {run.lifecycle}.")
+
+    queue = (run.checkpoint_payload or {}).get("processing_queue")
+    if isinstance(queue, dict) and str(queue.get("status") or "").lower() in {"queued", "running"}:
+        errors.append("La cola de Blueprint Pro sigue activa.")
+
+    steps = db.exec(
+        select(ProductBuildStepRecord).where(ProductBuildStepRecord.run_id == run.id)
+    ).all()
+    non_terminal_steps = [
+        step.deliverable_key or step.step_key
+        for step in steps
+        if str(step.status or "").lower() not in {"available", "completed", "skipped"}
+    ]
+    if non_terminal_steps:
+        preview = ", ".join(str(value) for value in non_terminal_steps[:4])
+        errors.append(f"Blueprint Pro aun tiene entregables no terminales: {preview}.")
+    return errors
+
+
+def _ensure_export_generation_allowed(db: Session, *, record: SessionRecord, definition: ExportDefinition) -> None:
+    if definition.product_key != ProductBuildProductKey.blueprint_pro.value:
+        return
+    gate_errors = _blueprint_pro_export_gate_errors(db, record=record)
+    if gate_errors:
+        raise ExportReadinessError("; ".join(gate_errors))
+
+
 def _run_export_generation(
     db: Session,
     *,
@@ -670,10 +719,11 @@ def _run_export_generation(
     current_user: UserRecord,
     snapshot: SessionSnapshot,
     preview: ACPPreview,
-    ) -> None:
+) -> None:
     conformance_errors = _conformance_errors(definition, preview)
     if conformance_errors:
         raise ValueError("; ".join(conformance_errors))
+    _ensure_export_generation_allowed(db, record=record, definition=definition)
 
     export_bytes = _payload_for_definition(definition, db=db, snapshot=snapshot, preview=preview)
     job.checksum_sha256 = hashlib.sha256(export_bytes).hexdigest()
@@ -722,6 +772,7 @@ def _rerun_existing_export_job(
     regeneration_reasons: list[str] | None = None,
 ) -> None:
     now = utc_now()
+    _ensure_export_generation_allowed(db, record=record, definition=definition)
     auto_regeneration_count = int(job.metadata_payload.get("auto_regeneration_count", 0) or 0) + 1
     _apply_job_contract(
         job,
@@ -822,6 +873,7 @@ def create_export_job(
         return _serialize_job(existing)
 
     now = utc_now()
+    _ensure_export_generation_allowed(db, record=record, definition=definition)
     file_name = _expected_file_name(record=record, definition=definition)
     job = ExportJobRecord(
         workspace_id=record.workspace_id,
@@ -918,6 +970,7 @@ def retry_export_job_response(
     if not _capability_allowed(access, definition.required_capability):
         raise PermissionError(f"Export requires capability {definition.required_capability}.")
     _refresh_ready_export_job(db, job)
+    _ensure_export_generation_allowed(db, record=record, definition=definition)
 
     retry_count = int(job.metadata_payload.get("retry_count", 0) or 0) + 1
     job.metadata_payload = {**job.metadata_payload, "retry_count": retry_count, "last_retry_at": utc_now().isoformat()}

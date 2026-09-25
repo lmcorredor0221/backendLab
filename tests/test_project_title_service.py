@@ -17,6 +17,15 @@ def test_project_title_localizes_fallback_and_aliases() -> None:
     assert generate_commercial_project_title("", language="en") == "AI Project"
 
 
+def test_project_title_prefers_customer_support_when_contracts_are_context_only() -> None:
+    title = generate_commercial_project_title(
+        "Automatizar soporte al cliente: leer correos, consultar contratos y politicas internas, proponer respuestas con aprobacion humana.",
+        language="es",
+    )
+
+    assert title == "Soporte Clientes"
+
+
 def test_project_title_compacts_generic_problem() -> None:
     title = generate_commercial_project_title(
         "Necesito automatizar la revisión diaria de reportes operativos internos con aprobaciones.",

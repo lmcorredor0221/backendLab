@@ -822,7 +822,7 @@ def _substate_for_state(
         JourneyStateKey.acp_access_pending,
     }:
         return JourneyStateSubstate.waiting_dependency
-    if state_key in {JourneyStateKey.blueprint_free_ready, JourneyStateKey.completed}:
+    if state_key == JourneyStateKey.completed:
         return JourneyStateSubstate.completed
     if overview.blocking_attention_count > 0:
         return JourneyStateSubstate.blocked
@@ -831,6 +831,10 @@ def _substate_for_state(
     if overview.active_operation is not None or (target_product is not None and target_product.active_operation is not None):
         return JourneyStateSubstate.running
     if target_product is not None and target_product.lifecycle in ACTIVE_LIFECYCLES:
+        return JourneyStateSubstate.running
+    if state_key == JourneyStateKey.blueprint_free_ready:
+        if target_product is not None and target_product.lifecycle == ProductBuildLifecycle.completed:
+            return JourneyStateSubstate.completed
         return JourneyStateSubstate.running
     if target_product is not None and target_product.lifecycle == ProductBuildLifecycle.completed:
         return JourneyStateSubstate.completed
@@ -845,8 +849,12 @@ def _progress_for_state(
 ) -> int:
     if state_key in WORK_STAGE_KEYS:
         return overview.current_stage.progress_percent
-    if state_key in {JourneyStateKey.blueprint_free_ready, JourneyStateKey.completed}:
+    if state_key == JourneyStateKey.completed:
         return 100
+    if state_key == JourneyStateKey.blueprint_free_ready:
+        if target_product is not None:
+            return target_product.progress_percent
+        return 0
     if target_product is not None:
         return target_product.progress_percent
     return 0

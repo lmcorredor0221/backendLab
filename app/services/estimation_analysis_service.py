@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from time import perf_counter
 from uuid import UUID
 
@@ -482,6 +483,7 @@ def run_estimation_analysis(
     report: EstimationReportArtifact,
     stage_context: StageContextBundle | None = None,
     runtime_settings: LLMRuntimeSettings | None = None,
+    before_runtime: Callable[[], None] | None = None,
 ) -> tuple[EstimationAnalysisArtifact, skill_runtime.SkillExecutionTrace]:
     workspace_summary, workspace_benchmarks, calibration_sample_size = _build_workspace_calibration_summary(session, snapshot)
     input_payload = EstimationRiskAnalysisInput(
@@ -496,6 +498,9 @@ def run_estimation_analysis(
         ],
         source_refs=["session.blueprint", "session.estimation_report", "workspace.calibration_dashboard"],
     )
+
+    if before_runtime is not None:
+        before_runtime()
 
     started = perf_counter()
     warnings: list[str] = []

@@ -17,6 +17,8 @@ from app.models import (
     DesignRecommendationArtifact,
     DiscoveryArtifact,
     EstimationMaturityStage,
+    EstimationAnalysisArtifact,
+    EstimationReportArtifact,
     EvaluationDatasetArtifact,
     EvaluationDatasetCase,
     EvaluationRunEntry,
@@ -38,8 +40,9 @@ from app.models import (
     ArtifactStatus,
     utc_now,
 )
-from app.services.estimation_analysis_service import _build_validation_summary
+from app.services.estimation_analysis_service import _build_validation_summary, run_estimation_analysis
 from app.services.estimation_service import build_estimation_report
+from app.services.llm_runtime.builder_contracts import LLMArtifactResult
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
 
 
@@ -70,6 +73,50 @@ def test_build_validation_summary_uses_existing_simulation_status_fields() -> No
     summary = _build_validation_summary(snapshot)
 
     assert "Simulation run: status=ready overall=pass" in summary
+
+
+def test_run_estimation_analysis_releases_transaction_before_llm(monkeypatch) -> None:
+    events: list[str] = []
+
+    class FakeBuilder:
+        def analyze_estimation_risks(self, payload, *, context_bundle=None):
+            del payload, context_bundle
+            events.append("llm")
+            assert events == ["before_runtime", "llm"]
+            return LLMArtifactResult(artifact=EstimationAnalysisArtifact(summary="Analisis generado."))
+
+    monkeypatch.setattr(
+        "app.services.estimation_analysis_service.skill_runtime._builder_service_for_stage",
+        lambda stage, runtime_settings=None: FakeBuilder(),
+    )
+    snapshot = SessionSnapshot(
+        session=SessionCreateResponse(
+            id=uuid4(),
+            title="Estimate sin transaccion larga",
+            status=ArtifactStatus.ready,
+            current_stage=SessionStage.post_validation,
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+    )
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        analysis, trace = run_estimation_analysis(
+            session,
+            snapshot=snapshot,
+            report=EstimationReportArtifact(),
+            before_runtime=lambda: events.append("before_runtime"),
+        )
+
+    assert analysis.summary == "Analisis generado."
+    assert trace.skill_key == "estimation_risk_analysis_skill"
+    assert events == ["before_runtime", "llm"]
 
 
 def test_build_estimation_report_returns_deterministic_comparative_projection() -> None:

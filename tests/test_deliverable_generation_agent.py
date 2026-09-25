@@ -170,6 +170,35 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
     assert artifact.source_action == "deliverable_generation_agent"
 
 
+def test_generation_service_marks_job_error_when_llm_executor_raises() -> None:
+    with _session() as db:
+        task = _task(context={"summary": "Contexto suficiente para intentar LLM."}).model_copy(
+            update={
+                "deliverable_key": "definition.acceptance_trace",
+                "current_stage": "define",
+                "tier": CommercialTier.blueprint_pro,
+                "allow_llm": True,
+            }
+        )
+
+        def failing_executor(*_args, **_kwargs):
+            raise RuntimeError("provider unavailable")
+
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            run_deliverable_generation_task(db, task, llm_executor=failing_executor)
+
+        job = db.exec(
+            select(DeliverableGenerationJobRecord).where(
+                DeliverableGenerationJobRecord.workspace_id == task.workspace_id,
+                DeliverableGenerationJobRecord.idempotency_key == task.idempotency_key,
+            )
+        ).one()
+
+    assert job.status == "error"
+    assert job.error_code == "RuntimeError"
+    assert job.completed_at is not None
+
+
 def test_generation_service_respects_paused_prompt_policy() -> None:
     with _session() as db:
         entry = get_registry_entry("discovery.analysis")

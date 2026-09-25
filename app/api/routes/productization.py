@@ -79,6 +79,7 @@ from app.services.commercial_access import build_commercial_access_snapshot_v2, 
 from app.services.commercial_observability_service import build_commercial_audit_report
 from app.services.diagram_catalog_service import build_diagram_catalog
 from app.services.export_delivery_service import (
+    ExportReadinessError,
     build_export_catalog,
     cancel_export_job_response,
     create_export_job,
@@ -409,6 +410,18 @@ def post_product_build_action_route(
                 ),
             )
 
+    if (
+        product_key == ProductBuildProductKey.blueprint_pro
+        and payload.action in {"start", "resume", "retry", "process_pending", "retry_failed"}
+    ):
+        from app.services.product_processing.blueprint_basic_service import is_blueprint_basic_completed
+        is_ready, block_reason = is_blueprint_basic_completed(db, record=record)
+        if not is_ready:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Blueprint Free debe estar completado antes de procesar Blueprint Pro: {block_reason}",
+            )
+
     if payload.action in {"process_pending", "retry_failed"}:
         run, status, queued_now = enqueue_product_build_processing(
             db,
@@ -670,6 +683,8 @@ def create_export_job_route(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ExportReadinessError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     db.commit()

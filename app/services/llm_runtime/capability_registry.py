@@ -567,10 +567,10 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
             "dentro del mismo pool y message_flow entre pools; no sustituyas BPMN por un grafo dirigido genérico."
         ),
         output_model=StructuredDiagramModel,
-        preferred_model="reasoning",
+        preferred_model="fast",
         llm_required=True,
         critic_required=False,
-        timeout_ms=120000,
+        timeout_ms=180000,
         max_retries=1,
         fallback_policy="fail_visible_without_synthetic_diagram",
     ),

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
+import threading
+import time
 from uuid import uuid4
 
 import pytest
@@ -45,6 +48,10 @@ from app.services.product_processing.product_build_run_service import (
 
 def _engine():
     return create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+
+
+def _file_engine(tmp_path):
+    return create_engine(f"sqlite:///{tmp_path / 'product-build-batch.db'}", connect_args={"check_same_thread": False})
 
 
 def _seed_session(db: Session, *, tier: CommercialTier = CommercialTier.blueprint) -> tuple[UserRecord, SessionRecord]:
@@ -347,7 +354,7 @@ def test_enqueue_product_build_processing_persists_queue_selection() -> None:
         assert persisted_run is not None
         selected_keys = (persisted_run.checkpoint_payload or {}).get("processing_queue", {}).get("selected_deliverable_keys", [])
         assert queued_item.key in selected_keys
-        assert "diagram.solution_architecture" in selected_keys
+        assert "diagram.architecture_overview" in selected_keys
         selected_steps = [
             step
             for step in list_product_build_steps(db, run_id=run_id)
@@ -568,6 +575,99 @@ def test_run_product_build_processing_retries_failed_items_once(monkeypatch: pyt
         for step in steps
         if not str(step.deliverable_key or "").startswith("diagram.")
     )
+
+
+def test_run_product_build_processing_uses_configured_batches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    engine = _file_engine(tmp_path)
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "app.services.product_processing.product_build_orchestrator.get_settings",
+        lambda: SimpleNamespace(product_build_batch_size=3),
+    )
+    concurrency_lock = threading.Lock()
+    active_workers = 0
+    max_active_workers = 0
+
+    def fake_process_single_queue_item(
+        db: Session,
+        *,
+        run: ProductBuildRunRecord,
+        record: SessionRecord,
+        item,
+        items_by_key,
+        allow_llm: bool,
+        phase: str,
+        position: int,
+        total_count: int,
+        update_queue_checkpoint: bool = True,
+    ) -> bool:
+        nonlocal active_workers, max_active_workers
+        with concurrency_lock:
+            active_workers += 1
+            max_active_workers = max(max_active_workers, active_workers)
+        try:
+            time.sleep(0.05)
+            upsert_product_build_step(
+                db,
+                run=run,
+                step_key=f"deliverable:{item.key}",
+                status="available",
+                stage_key=item.stage,
+                deliverable_key=item.key,
+                sequence=position,
+                progress_percent=100,
+                checkpoint_payload={
+                    "queue_selected": True,
+                    "attempt_count": 1,
+                    "job_source": "test_batch_worker",
+                },
+                error_payload={},
+            )
+            db.commit()
+            return True
+        finally:
+            with concurrency_lock:
+                active_workers -= 1
+
+    monkeypatch.setattr(
+        "app.services.product_processing.product_build_orchestrator._process_single_queue_item",
+        fake_process_single_queue_item,
+    )
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        run, _, queued_now = enqueue_product_build_processing(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            mode="process_pending",
+            allow_llm=True,
+            catalog_stage_override="package",
+        )
+        assert run is not None
+        assert queued_now is True
+        selected_count = len((run.checkpoint_payload or {}).get("processing_queue", {}).get("selected_deliverable_keys", []))
+        assert selected_count >= 3
+        db.commit()
+
+        run_product_build_processing(run.id, engine)
+        db.expire_all()
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+
+    assert max_active_workers > 1
+    assert max_active_workers <= 3
+    assert status.processing_queue is not None
+    assert status.processing_queue.status == "completed"
 
 
 def test_process_single_queue_item_sends_approved_context_to_deliverable_runner(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -978,7 +1078,7 @@ def test_reconcile_marks_started_stale_diagram_job_as_orphaned() -> None:
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
-        stale_at = utc_now() - timedelta(minutes=10)
+        stale_at = utc_now() - timedelta(minutes=20)
         step = next(
             candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
         )
@@ -1078,7 +1178,7 @@ def test_ensure_product_build_orchestration_recovers_stale_processing_queue() ->
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
-        stale_at = utc_now() - timedelta(minutes=10)
+        stale_at = utc_now() - timedelta(minutes=20)
         step = next(
             candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
         )
@@ -1177,7 +1277,7 @@ def test_recover_orphaned_queue_uses_active_job_timestamp_even_when_step_was_ref
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
-        stale_at = utc_now() - timedelta(minutes=10)
+        stale_at = utc_now() - timedelta(minutes=20)
         step = next(
             candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
         )

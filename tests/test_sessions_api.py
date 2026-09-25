@@ -2134,6 +2134,32 @@ def test_project_portfolio_rename_lifecycle_and_facets(client: TestClient) -> No
     assert snapshot_session["title"] == "Asistente de beneficios RRHH"
     assert snapshot_session["suggested_title"].startswith("Titulo Sugerido Discovery")
 
+    analyze_response = client.post(
+        f"/api/v1/sessions/{session_id}/analyze-discovery",
+        headers=headers,
+        json={
+            **complete_discovery_payload(),
+            "problem_statement": "Automatizar soporte al cliente: leer correos, consultar contratos y politicas internas, proponer respuestas con aprobacion humana.",
+        },
+    )
+    assert analyze_response.status_code == 200
+    discover_artifact = analyze_response.json()
+    approve_response = client.post(
+        f"/api/v1/sessions/{session_id}/journey/discover/artifacts/{discover_artifact['id']}/approve",
+        headers=headers,
+        json={
+            "note": "Discovery aprobado sin reemplazar titulo manual.",
+            "decision_payload": {"approval_reason": "Cobertura de preservacion de titulo manual."},
+        },
+    )
+    assert approve_response.status_code == 200
+    approved_snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert approved_snapshot_response.status_code == 200
+    approved_session = approved_snapshot_response.json()["session"]
+    assert approved_session["title"] == "Asistente de beneficios RRHH"
+    assert approved_session["suggested_title"] == "Soporte Clientes"
+    assert approved_session["title_source"] == "manual"
+
     active_list_response = client.get("/api/v1/sessions?q=beneficios", headers=headers)
     assert active_list_response.status_code == 200
     active_payload = active_list_response.json()
@@ -4255,6 +4281,7 @@ def test_validate_simulation_flow_generates_runs_judgement_and_preserves_hard_fa
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_session(client, headers, session_id)
     approve_memory_for_session(client, headers, session_id)
+    upgrade_session_tier(client, headers, session_id)
 
     generate_response = client.post(
         f"/api/v1/sessions/{session_id}/generate-validation-scenarios",
@@ -4515,7 +4542,6 @@ def test_generate_estimation_report_advances_ready_sessions_to_ready_for_export_
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_session(client, headers, session_id)
     approve_memory_for_session(client, headers, session_id)
-    approve_validate_for_session(client, headers, session_id)
 
     captured: dict[str, object] = {}
 
@@ -4587,7 +4613,6 @@ def test_generate_estimation_report_marks_journey_waiting_review_when_estimate_n
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_session(client, headers, session_id)
     approve_memory_for_session(client, headers, session_id)
-    approve_validate_for_session(client, headers, session_id)
 
     def force_needs_review(report, *, analysis, decision=None):
         del decision
@@ -4595,9 +4620,9 @@ def test_generate_estimation_report_marks_journey_waiting_review_when_estimate_n
             update={
                 "analysis": analysis,
                 "package_policy": EstimationPackagePolicyState(
-                    preliminary=False,
+                    preliminary=True,
                     can_continue_to_package=False,
-                    package_block_reasons=["manual_review_required"],
+                    package_block_reasons=["manual_review_required", "validate_required"],
                     commercial_blocked=False,
                 ),
             }
@@ -4611,6 +4636,7 @@ def test_generate_estimation_report_marks_journey_waiting_review_when_estimate_n
 
     assert payload["status"] == "needs_review"
     assert payload["stage"] == "post_validation"
+    assert payload["next_action"] == "request_acp_access_before_validate"
 
     overview_response = client.get(f"/api/v1/sessions/{session_id}/product-journey-overview", headers=headers)
     assert overview_response.status_code == 200
@@ -6487,6 +6513,7 @@ def test_package_preview_and_canonical_exports_detect_consistency_drift_against_
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_session(client, headers, session_id)
     approve_memory_for_session(client, headers, session_id)
+    upgrade_session_tier(client, headers, session_id)
     approve_validate_for_session(client, headers, session_id)
 
     drift_response = client.patch(
@@ -6538,7 +6565,6 @@ def test_blueprint_professional_markdown_export_includes_consistency_and_decisio
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_session(client, headers, session_id)
     approve_memory_for_session(client, headers, session_id)
-    approve_validate_for_session(client, headers, session_id)
     upgrade_session_tier(client, headers, session_id, tier="blueprint_pro")
 
     markdown_response = client.get(f"/api/v1/sessions/{session_id}/export/markdown", headers=headers)
@@ -6830,14 +6856,25 @@ def test_validate_approval_requires_persisted_validation_runs(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.skill_runtime._builder_service_for_stage",
-        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
-    )
     headers, session_id = build_session_flow(client)
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_session(client, headers, session_id)
     approve_memory_for_session(client, headers, session_id)
+
+    blocked_response = client.post(
+        f"/api/v1/sessions/{session_id}/generate-validation-scenarios",
+        headers=headers,
+        json={"instructions": "Validate no debe ejecutarse antes de activar ACP."},
+    )
+    assert blocked_response.status_code == 403
+    assert "Validate is part of ACP" in blocked_response.json()["detail"]
+
+    upgrade_session_tier(client, headers, session_id)
+
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
 
     generate_response = client.post(
         f"/api/v1/sessions/{session_id}/generate-validation-scenarios",
@@ -6922,3 +6959,50 @@ def test_acp_product_build_status_route_is_read_only_without_entitlement(
         session_generator.close()
 
     assert steps == []
+
+
+def test_acp_product_build_action_requires_completed_blueprint_pro(client: TestClient) -> None:
+    headers = auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+    upgrade_session_tier(client, headers, session_id, tier="acp")
+
+    session_override = client.app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        record = session.get(SessionRecord, UUID(session_id))
+        assert record is not None
+        session.add(
+            ProductBuildRunRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                product_key="blueprint_pro",
+                product_mode="premium_enrichment",
+                entitlement_tier="blueprint_pro",
+                access_state="allowed",
+                lifecycle="partial",
+                progress_percent=60,
+                completed_units=3,
+                total_units=5,
+                idempotency_key="seeded-pro-partial-before-acp",
+                created_by_user_id=record.user_id,
+            )
+        )
+        session.commit()
+    finally:
+        session_generator.close()
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/product-builds/acp/actions",
+        headers=headers,
+        json={
+            "action": "start",
+            "allow_llm": False,
+            "idempotency_key": "blocked-acp-before-pro-complete",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "Blueprint Pro" in response.json()["detail"]

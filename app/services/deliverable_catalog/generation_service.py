@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlmodel import Session, select
 
+from app.db import commit_without_expiring
 from app.models import ArtifactRegistryRecord, SessionStage, WorkspaceRole, utc_now
 from app.services.deliverable_catalog.contracts import (
     DeliverableGenerationResult,
@@ -268,8 +269,26 @@ def run_deliverable_generation_task(
     job.updated_at = utc_now()
     db.add(job)
     db.flush()
+    job_id = job.id
+    commit_without_expiring(db)
 
-    result = DeliverableGenerationAgent(llm_executor=llm_executor).run(entry=entry, prompt=prompt, task=task)
+    try:
+        result = DeliverableGenerationAgent(llm_executor=llm_executor).run(entry=entry, prompt=prompt, task=task)
+    except Exception as exc:
+        failed_job = db.get(DeliverableGenerationJobRecord, job_id)
+        if failed_job is not None:
+            failed_job.status = "error"
+            failed_job.error_code = type(exc).__name__
+            failed_job.error_message = str(exc)[:700] or "La generacion fallo antes de producir resultado."
+            failed_job.completed_at = utc_now()
+            failed_job.updated_at = failed_job.completed_at
+            db.add(failed_job)
+            db.flush()
+        raise
+
+    job = db.get(DeliverableGenerationJobRecord, job_id)
+    if job is None:
+        raise LookupError("Deliverable generation job disappeared before result persistence")
     job.provider_key = result.provider_key
     job.model_name = result.model_name
     job.tokens_input = result.tokens_input

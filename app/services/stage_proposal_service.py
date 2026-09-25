@@ -37,6 +37,7 @@ from app.models import (
     JourneyStageDecisionRecord,
     MemoryRecommendationArtifact,
     OpportunityRecord,
+    ProjectTitleSource,
     ReviewState,
     SessionRecord,
     SessionStage,
@@ -849,7 +850,12 @@ class StageProposalService:
             record.value_statement = artifact.value_statement
             record.updated_at = utc_now()
             session.add(record)
-            session_record.title = generate_commercial_project_title(artifact.problem_statement) or session_record.title
+            suggested_title = generate_commercial_project_title(artifact.problem_statement) or session_record.title
+            session_record.suggested_title = suggested_title
+            title_source = getattr(session_record.title_source, "value", session_record.title_source)
+            if title_source != ProjectTitleSource.manual.value:
+                session_record.title = suggested_title
+                session_record.title_source = ProjectTitleSource.generated
             return {
                 "projected_artifact": "opportunity",
                 **projection_meta,

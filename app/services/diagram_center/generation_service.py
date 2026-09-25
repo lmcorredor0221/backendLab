@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 from sqlmodel import Session, func, select
 from sqlalchemy.engine import Engine
 
-from app.db import engine
+from app.db import commit_without_expiring, engine
 from app.models import ArtifactRegistryRecord, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord, UserRecord, utc_now
 from app.services.diagram_center.contracts import (
     DiagramGenerationInput,
@@ -48,6 +48,19 @@ _REQUIRED_INPUT_MATCHERS: dict[str, dict[str, set[str]]] = {
     "memory.strategy": {"artifact_keys": {"memory_recommendation_artifact"}, "stages": {"memory"}},
     "estimate.analysis": {"artifact_keys": {"estimation_report_artifact"}, "stages": {"estimate"}},
     "validation.scenarios": {"artifact_keys": {"evaluation_artifact"}, "stages": {"validate"}},
+    # Previously unmapped inputs — caused empty resolved_inputs[] for 7 diagrams:
+    # diagram.stakeholder_map
+    "discovery.stakeholder_inventory": {"artifact_keys": {"discovery_artifact", "discovery_analysis_artifact"}, "stages": {"discover"}},
+    # diagram.target_capabilities_map
+    "definition.requirements_brief": {"artifact_keys": {"definition_artifact", "canvas_artifact"}, "stages": {"define"}},
+    # diagram.sequence_diagram
+    "tools.contracts": {"artifact_keys": {"tool_recommendation_artifact"}, "stages": {"tools"}},
+    # diagram.memory_rag_architecture, diagram.knowledge_graph
+    "knowledge.contract": {"artifact_keys": {"memory_recommendation_artifact"}, "stages": {"memory"}},
+    # diagram.data_lineage_map
+    "estimate.comparison": {"artifact_keys": {"estimation_report_artifact"}, "stages": {"estimate"}},
+    # diagram.commercial_value_flow
+    "blueprint.professional_document": {"artifact_keys": {"estimation_report_artifact"}, "stages": {"estimate"}},
 }
 
 _REQUIRED_INPUT_FIELD_HINTS: dict[str, list[str]] = {
@@ -118,6 +131,13 @@ _REQUIRED_INPUT_FIELD_HINTS: dict[str, list[str]] = {
     ],
     "estimate.analysis": ["summary", "notes", "agentic", "recommendations", "risks", "assumptions"],
     "validation.scenarios": ["summary", "findings", "scenarios", "test_cases", "gaps"],
+    # Hints for newly mapped inputs:
+    "discovery.stakeholder_inventory": ["stakeholders", "actors", "owners", "systems_impacted", "summary", "facts"],
+    "definition.requirements_brief": ["summary", "functional_requirements", "business_rules", "acceptance_criteria"],
+    "tools.contracts": ["recommended_tools", "approved_tools_digest", "coverage_gaps", "design_role_coverage", "summary"],
+    "knowledge.contract": ["proposed_memory_profile", "knowledge_design", "context_budget_plan", "summary"],
+    "estimate.comparison": ["summary", "agentic", "recommendations", "risks", "assumptions"],
+    "blueprint.professional_document": ["summary", "agentic", "recommendations", "risks"],
 }
 
 
@@ -582,7 +602,7 @@ def run_generation_job(
     if db_session is not None:
         _run_generation_job_in_session(db_session, job_id)
         return
-    with Session(database_engine or engine) as db:
+    with Session(database_engine or engine, expire_on_commit=False) as db:
         _run_generation_job_in_session(db, job_id)
 
 
@@ -608,7 +628,8 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
     job.started_at = utc_now()
     job.updated_at = utc_now()
     db.add(job)
-    db.commit()
+    commit_without_expiring(db)
+    job_id = job.id
 
     try:
         prompt_spec = build_prompt_spec(entry, override=governance.prompt_override if governance else None)
@@ -670,14 +691,38 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
             stage=entry.stage,
             effective_language=effective_language,
         )
+        # P2 guardrail: detect excessively large payloads before hitting provider.
+        # The builder compresses source_context before sending, but this catches regressions
+        # or bypass paths that could exceed provider context windows (DeepSeek ~64k, OpenAI ~128k tokens).
+        _PAYLOAD_CHAR_LIMIT = 320_000  # ~80k tokens — well below any provider limit
+        try:
+            _payload_chars = len(json.dumps(generation_input.model_dump(mode="json"), ensure_ascii=True, default=str))
+            if _payload_chars > _PAYLOAD_CHAR_LIMIT:
+                _fail_job(
+                    db,
+                    job,
+                    "payload_size_exceeded",
+                    f"El payload del diagrama supera el limite seguro ({_payload_chars:,} chars > {_PAYLOAD_CHAR_LIMIT:,}). "
+                    "Reducir aprobados o verificar fugas en source_context.",
+                )
+                return
+        except Exception:
+            pass  # Do not block generation if the size check itself fails
+        commit_without_expiring(db)
         result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
+        retry_count = 0
         if result.artifact is None and result.failure_kind in {
             "provider_error",
             "schema_invalid",
             "schema_missing_output",
         }:
             result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
-            job.request_metadata = {**job.request_metadata, "retry_count": 1}
+            retry_count = 1
+        job = db.get(DiagramGenerationJobRecord, job_id)
+        if job is None:
+            return
+        if retry_count:
+            job.request_metadata = {**(job.request_metadata or {}), "retry_count": retry_count}
         job.provider_key = result.provider_key or runtime_settings.active_provider.value
         job.model_name = result.model_name or ""
         job.prompt_spec_version = result.prompt_version or str(prompt_spec["version"])
@@ -761,7 +806,11 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
                         ]
                     }
                 )
+                commit_without_expiring(db)
                 retry_result = provider.generate_diagram_model(corrected_generation_input, context_bundle=stage_context)
+                job = db.get(DiagramGenerationJobRecord, job_id)
+                if job is None:
+                    return
                 if retry_result.artifact is not None:
                     try:
                         if isinstance(retry_result.artifact, StructuredDiagramModel):

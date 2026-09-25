@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     database_max_overflow: int | None = None
     database_pool_timeout_seconds: int = 30
     database_pool_recycle_seconds: int = 1800
+    product_build_batch_size: int = 1
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3200", "http://127.0.0.1:3200"]
     )

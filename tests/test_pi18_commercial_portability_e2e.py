@@ -147,6 +147,7 @@ def complete_agent_design_flow(client: TestClient, headers: dict[str, str], sess
     approve_design_for_session(client, headers, session_id)
     approve_tools_for_pi18(client, headers, session_id)
     approve_memory_for_session(client, headers, session_id)
+    upgrade_session_tier(client, headers, session_id)
     approve_validate_for_session(client, headers, session_id)
     bootstrap_evaluation_response = client.post(
         f"/api/v1/sessions/{session_id}/evaluation/bootstrap",

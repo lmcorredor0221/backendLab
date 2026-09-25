@@ -23,7 +23,7 @@ from app.services.product_processing import (
     ProductProcessingMode,
     build_product_journey_overview,
 )
-from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.product_processing.persistence import ProductBuildRunRecord, UncertaintyBacklogRecord
 
 
 def _engine():
@@ -144,6 +144,35 @@ def test_product_journey_overview_exposes_validate_state_for_acp() -> None:
     assert overview.journey_state_machine is not None
     assert overview.journey_state_machine.current.state_key.value == "validate"
     assert overview.journey_state_machine.current.href.endswith("/acp?step=validate")
+
+
+def test_product_journey_overview_does_not_recommend_acp_until_blueprint_pro_is_complete() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        db.add(
+            ProductBuildRunRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                product_key=ProductBuildProductKey.blueprint_pro.value,
+                product_mode=ProductProcessingMode.premium_enrichment.value,
+                entitlement_tier=CommercialTier.blueprint_pro.value,
+                access_state="allowed",
+                lifecycle="partial",
+                progress_percent=60,
+                completed_units=3,
+                total_units=5,
+                idempotency_key=f"blueprint-pro-partial:{record.id}",
+            )
+        )
+        db.commit()
+
+        overview = build_product_journey_overview(db, record=record, current_user=user)
+
+    assert overview.recommended_next_action is not None
+    assert overview.recommended_next_action.product_key != ProductBuildProductKey.acp
 
 
 def test_product_journey_overview_prioritizes_blocking_attention_over_upsell() -> None:

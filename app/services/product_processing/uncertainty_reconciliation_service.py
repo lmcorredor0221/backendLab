@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from uuid import UUID
 
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from app.core.config import get_settings
 from app.models import CommercialTier, utc_now
 from app.services.deliverable_catalog.contracts import DeliverableGenerationTask, DeliverableRegenerationScope
 from app.services.deliverable_catalog.dependency_service import (
@@ -12,6 +15,7 @@ from app.services.deliverable_catalog.dependency_service import (
     resolve_regeneration_scope,
 )
 from app.services.deliverable_catalog.generation_service import run_deliverable_generation_task
+from app.services.deliverable_catalog.registry_service import get_registry_entry
 from app.services.product_processing.contracts import ProductProcessingMode
 from app.services.product_processing.persistence import UncertaintyBacklogRecord
 
@@ -26,6 +30,7 @@ STAGE_DEPENDENCY_KEY = {
     "validate": "validation.scenarios",
     "package": "package.manifest",
 }
+MAX_RECONCILIATION_BATCH_SIZE = 3
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,94 @@ def build_uncertainty_reconciliation_plan(record: UncertaintyBacklogRecord) -> U
     )
 
 
+def _reconciliation_batch_size() -> int:
+    try:
+        configured = int(getattr(get_settings(), "product_build_batch_size", 1) or 1)
+    except (TypeError, ValueError):
+        configured = 1
+    return max(1, min(MAX_RECONCILIATION_BATCH_SIZE, configured))
+
+
+def _dependencies_ready_for_reconciliation(
+    deliverable_key: str,
+    *,
+    queue_keys: set[str],
+    completed_keys: set[str],
+) -> bool:
+    entry = get_registry_entry(deliverable_key)
+    if entry is None:
+        return True
+    for dependency_key in entry.dependency_policy.depends_on:
+        normalized = str(dependency_key or "").strip()
+        if normalized in queue_keys and normalized not in completed_keys:
+            return False
+    return True
+
+
+def _next_reconciliation_batch(
+    queue: list[str],
+    *,
+    processed_keys: set[str],
+    completed_keys: set[str],
+    batch_size: int,
+) -> list[str]:
+    queue_keys = set(queue)
+    remaining = [key for key in queue if key not in processed_keys]
+    ready = [
+        key
+        for key in remaining
+        if _dependencies_ready_for_reconciliation(key, queue_keys=queue_keys, completed_keys=completed_keys)
+    ]
+    if ready:
+        return ready[:batch_size]
+    return remaining[:1]
+
+
+def _run_reconciliation_generation(
+    *,
+    database_engine: Engine,
+    workspace_id: UUID,
+    session_id: UUID,
+    source_stage: str,
+    title: str,
+    reason: str,
+    impact: str,
+    deliverable_key: str,
+    product_mode: str,
+    tier: CommercialTier,
+    idempotency_key: str,
+    actor_user_id: UUID,
+    answer: str,
+    changed_dependency_keys: list[str],
+    allow_llm: bool,
+) -> tuple[str, str, str]:
+    with Session(database_engine) as worker_db:
+        job, _ = run_deliverable_generation_task(
+            worker_db,
+            DeliverableGenerationTask(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                deliverable_key=deliverable_key,
+                product_mode=product_mode,
+                current_stage=source_stage or "package",
+                tier=tier,
+                idempotency_key=idempotency_key,
+                requested_by_user_id=actor_user_id,
+                context_payload={
+                    "summary": title,
+                    "resolved_answer": answer,
+                    "reason": reason,
+                    "impact": impact,
+                },
+                approved_context_refs=changed_dependency_keys,
+                allow_llm=allow_llm,
+                max_iterations=5,
+            ),
+        )
+        worker_db.commit()
+        return deliverable_key, str(job.id), str(job.status or "")
+
+
 def execute_uncertainty_reconciliation(
     db: Session,
     *,
@@ -177,6 +270,7 @@ def execute_uncertainty_reconciliation(
     record.updated_at = utc_now()
     db.add(record)
     db.flush()
+    db.commit()
 
     regenerated: list[str] = []
     job_ids: list[str] = []
@@ -193,35 +287,82 @@ def execute_uncertainty_reconciliation(
         )
         stale_keys = stale_report.stale_deliverable_keys
         superseded_count = stale_report.superseded_uncertainty_count
-        for deliverable_key in queue:
-            try:
-                job, _ = run_deliverable_generation_task(
-                    db,
-                    DeliverableGenerationTask(
+        batch_size = _reconciliation_batch_size()
+        processed_keys: set[str] = set()
+        completed_keys: set[str] = set()
+        database_engine = db.get_bind()
+        while len(processed_keys) < len(queue):
+            batch = _next_reconciliation_batch(
+                queue,
+                processed_keys=processed_keys,
+                completed_keys=completed_keys,
+                batch_size=batch_size,
+            )
+            if batch_size <= 1:
+                deliverable_key = batch[0]
+                try:
+                    _, job_id, job_status = _run_reconciliation_generation(
+                        database_engine=database_engine,
                         workspace_id=record.workspace_id,
                         session_id=record.session_id,
+                        source_stage=record.source_stage,
+                        title=record.title,
+                        reason=record.reason,
+                        impact=record.impact,
                         deliverable_key=deliverable_key,
                         product_mode=product_mode,
-                        current_stage=record.source_stage or "package",
                         tier=tier,
                         idempotency_key=f"{idempotency_prefix}:{record.id}:{deliverable_key}",
-                        requested_by_user_id=actor_user_id,
-                        context_payload={
-                            "summary": record.title,
-                            "resolved_answer": answer,
-                            "reason": record.reason,
-                            "impact": record.impact,
-                        },
-                        approved_context_refs=plan.changed_dependency_keys,
+                        actor_user_id=actor_user_id,
+                        answer=answer,
+                        changed_dependency_keys=plan.changed_dependency_keys,
                         allow_llm=allow_llm,
-                        max_iterations=5,
-                    ),
-                )
-                regenerated.append(deliverable_key)
-                job_ids.append(str(job.id))
-                status_by_key[deliverable_key] = job.status
-            except (LookupError, PermissionError, ValueError) as exc:
-                status_by_key[deliverable_key] = f"skipped:{exc}"
+                    )
+                    job_ids.append(job_id)
+                    status_by_key[deliverable_key] = job_status
+                    if job_status == "available":
+                        regenerated.append(deliverable_key)
+                        completed_keys.add(deliverable_key)
+                except (LookupError, PermissionError, ValueError) as exc:
+                    status_by_key[deliverable_key] = f"skipped:{exc}"
+                processed_keys.add(deliverable_key)
+                continue
+
+            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                futures = {
+                    executor.submit(
+                        _run_reconciliation_generation,
+                        database_engine=database_engine,
+                        workspace_id=record.workspace_id,
+                        session_id=record.session_id,
+                        source_stage=record.source_stage,
+                        title=record.title,
+                        reason=record.reason,
+                        impact=record.impact,
+                        deliverable_key=deliverable_key,
+                        product_mode=product_mode,
+                        tier=tier,
+                        idempotency_key=f"{idempotency_prefix}:{record.id}:{deliverable_key}",
+                        actor_user_id=actor_user_id,
+                        answer=answer,
+                        changed_dependency_keys=plan.changed_dependency_keys,
+                        allow_llm=allow_llm,
+                    ): deliverable_key
+                    for deliverable_key in batch
+                }
+                for future in as_completed(futures):
+                    deliverable_key = futures[future]
+                    try:
+                        _, job_id, job_status = future.result()
+                        job_ids.append(job_id)
+                        status_by_key[deliverable_key] = job_status
+                        if job_status == "available":
+                            regenerated.append(deliverable_key)
+                            completed_keys.add(deliverable_key)
+                    except (LookupError, PermissionError, ValueError) as exc:
+                        status_by_key[deliverable_key] = f"skipped:{exc}"
+                    finally:
+                        processed_keys.add(deliverable_key)
         status = "completed" if len(regenerated) == queue_total else "completed_with_errors"
 
     payload = dict(record.payload or {})

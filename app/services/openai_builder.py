@@ -1217,19 +1217,26 @@ def _compact_diagram_resolved_input(value: dict[str, Any]) -> dict[str, Any]:
         for item in evidence_items[:3]:
             if not isinstance(item, dict):
                 continue
+            content = item.get("content")
+            if isinstance(content, dict):
+                # Preserve full structured content up to 2400 chars.
+                # Previously only kept content["summary"] in 260 chars, losing blueprint
+                # details, tool lists and memory designs before reaching the LLM.
+                content_str = json.dumps(content, ensure_ascii=True, default=str)
+                compact_content: Any = content if len(content_str) <= 2400 else content_str[:2400]
+            else:
+                compact_content = _compact_text(content, limit=2400) if content is not None else ""
             compact_evidence.append(
                 {
                     "artifact_key": _compact_text(item.get("artifact_key", ""), limit=80),
                     "ref": _compact_text(item.get("ref", ""), limit=100),
-                    "summary": _compact_text(
-                        (item.get("content") or {}).get("summary", "") if isinstance(item.get("content"), dict) else "",
-                        limit=260,
-                    ),
+                    "content": compact_content,
                 }
             )
     return {
         "input_key": _compact_text(value.get("input_key", ""), limit=120),
         "status": _compact_text(value.get("status", ""), limit=40),
+        "brief": _compact_text(value.get("brief", ""), limit=360),
         "matched_artifact_keys": _compact_string_list(value.get("matched_artifact_keys", []), limit=6, item_limit=80)
         if isinstance(value.get("matched_artifact_keys"), list)
         else [],
@@ -1411,9 +1418,9 @@ def _serialize_capability_payload_for_api(payload: BaseModel) -> dict[str, Any]:
                 compact_context["approved_artifact_count"] = len(approved_artifacts)
                 compact_context["approved_artifact_summaries"] = [
                     _compact_diagram_approved_artifact(item)
-                    for item in approved_artifacts[:6]
+                    for item in approved_artifacts[:10]
                 ]
-                compact_context["omitted_approved_artifact_count"] = max(0, len(approved_artifacts) - 6)
+                compact_context["omitted_approved_artifact_count"] = max(0, len(approved_artifacts) - 10)
         if compact_context:
             serialized["source_context"] = compact_context
         serialized["context_brief"] = _compact_text(payload.context_brief, limit=520)

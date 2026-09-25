@@ -43,7 +43,8 @@ from app.models import (
 from app.services.auth_service import hash_password
 from app.services.commercial_access import build_commercial_access_snapshot_v2
 from app.services import export_delivery_service
-from app.services.product_processing.contracts import JourneyStateKey
+from app.services.product_processing.contracts import JourneyStateKey, ProductBuildLifecycle, ProductBuildProductKey
+from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 from app.services.diagram_center.persistence import DiagramVersionRecord
 from app.services.export_delivery_service import (
     create_export_job,
@@ -120,11 +121,58 @@ def _seed_user_and_session(
         )
         session.add(entitlement)
 
+    if tier == CommercialTier.blueprint_pro:
+        _seed_completed_blueprint_pro_run(session, user=user, record=record)
+
     session.commit()
     session.refresh(user)
     session.refresh(workspace)
     session.refresh(record)
     return user, workspace, record
+
+
+def _seed_completed_blueprint_pro_run(session: Session, *, user: UserRecord, record: SessionRecord) -> ProductBuildRunRecord:
+    run = ProductBuildRunRecord(
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        product_key=ProductBuildProductKey.blueprint_pro.value,
+        product_mode=ProductProcessingMode.premium_enrichment.value,
+        entitlement_tier=CommercialTier.blueprint_pro.value,
+        access_state="allowed",
+        lifecycle=ProductBuildLifecycle.completed.value,
+        progress_percent=100,
+        completed_units=1,
+        total_units=1,
+        idempotency_key=f"test-blueprint-pro:{record.id}",
+        checkpoint_payload={
+            "processing_queue": {
+                "queue_id": f"queue-{record.id}",
+                "mode": "process_pending",
+                "status": "completed",
+                "selected_deliverable_keys": ["architecture.spec"],
+                "summary": "Fixture Pro completado para export.",
+            }
+        },
+        created_by_user_id=user.id,
+        completed_at=utc_now(),
+    )
+    session.add(run)
+    session.flush()
+    session.add(
+        ProductBuildStepRecord(
+            run_id=run.id,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            step_key="deliverable:architecture.spec",
+            stage_key="design",
+            deliverable_key="architecture.spec",
+            status="available",
+            sequence=1,
+            progress_percent=100,
+        )
+    )
+    session.flush()
+    return run
 
 
 def _zip_members(raw_bytes: bytes) -> dict[str, bytes]:
@@ -196,6 +244,85 @@ def test_create_export_job_blueprint_professional(db_session: Session) -> None:
     assert "No hay decisiones delegadas" in governance_doc
     assert "ACP/runtime/" not in "\n".join(members)
     assert "ACP/manifest.json" not in "\n".join(members)
+
+
+def test_create_export_job_blueprint_professional_blocks_without_completed_product_run(db_session: Session) -> None:
+    user, _, record = _seed_user_and_session(db_session, tier=CommercialTier.blueprint_pro)
+    steps = db_session.exec(select(ProductBuildStepRecord).where(ProductBuildStepRecord.session_id == record.id)).all()
+    for step in steps:
+        db_session.delete(step)
+    runs = db_session.exec(select(ProductBuildRunRecord).where(ProductBuildRunRecord.session_id == record.id)).all()
+    for run in runs:
+        db_session.delete(run)
+    db_session.commit()
+
+    snapshot = build_snapshot(db_session, record, current_user=user)
+    preview = resolve_acp_preview(db_session, record)
+    access = build_commercial_access_snapshot_v2(db_session, record, current_user=user)
+
+    with pytest.raises(export_delivery_service.ExportReadinessError, match="generacion tecnica registrada"):
+        create_export_job(
+            db_session,
+            record=record,
+            current_user=user,
+            access=access,
+            snapshot=snapshot,
+            preview=preview,
+            payload=ExportJobCreateRequest(
+                artifact_kind="blueprint_professional",
+                profile="professional",
+                idempotency_key=f"{record.id}:blueprint-without-run",
+            ),
+        )
+
+    jobs = db_session.exec(select(ExportJobRecord).where(ExportJobRecord.session_id == record.id)).all()
+    assert jobs == []
+
+
+def test_create_export_job_blueprint_professional_blocks_active_product_run(db_session: Session) -> None:
+    user, _, record = _seed_user_and_session(db_session, tier=CommercialTier.blueprint_pro)
+    run = db_session.exec(select(ProductBuildRunRecord).where(ProductBuildRunRecord.session_id == record.id)).one()
+    run.lifecycle = ProductBuildLifecycle.running.value
+    run.progress_percent = 84
+    run.checkpoint_payload = {
+        **(run.checkpoint_payload or {}),
+        "processing_queue": {
+            "queue_id": "queue-active-pro",
+            "mode": "process_pending",
+            "status": "running",
+            "selected_deliverable_keys": ["architecture.spec", "diagram.knowledge_graph"],
+            "summary": "Fixture Pro activo.",
+        },
+    }
+    step = db_session.exec(select(ProductBuildStepRecord).where(ProductBuildStepRecord.run_id == run.id)).one()
+    step.status = "generating"
+    step.deliverable_key = "diagram.knowledge_graph"
+    step.step_key = "deliverable:diagram.knowledge_graph"
+    db_session.add(run)
+    db_session.add(step)
+    db_session.commit()
+
+    snapshot = build_snapshot(db_session, record, current_user=user)
+    preview = resolve_acp_preview(db_session, record)
+    access = build_commercial_access_snapshot_v2(db_session, record, current_user=user)
+
+    with pytest.raises(export_delivery_service.ExportReadinessError, match="sigue en estado tecnico running"):
+        create_export_job(
+            db_session,
+            record=record,
+            current_user=user,
+            access=access,
+            snapshot=snapshot,
+            preview=preview,
+            payload=ExportJobCreateRequest(
+                artifact_kind="blueprint_professional",
+                profile="professional",
+                idempotency_key=f"{record.id}:blueprint-active-run",
+            ),
+        )
+
+    jobs = db_session.exec(select(ExportJobRecord).where(ExportJobRecord.session_id == record.id)).all()
+    assert jobs == []
 
 
 def test_create_export_job_blueprint_professional_with_estimation_report(db_session: Session) -> None:

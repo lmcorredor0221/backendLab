@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Iterable
 
 from sqlmodel import Session, select
@@ -82,6 +83,7 @@ ACTIVE_JOB_STATES = {"queued", "generating", "updating", "running"}
 ERROR_JOB_STATES = {"error", "failed"}
 PROCESSING_STEP_ACTIVE_STATES = {"queued", "running", "generating"}
 PROCESSING_STEP_COMPLETED_STATES = {"available", "completed", "skipped"}
+POSSIBLY_INTERRUPTED_QUEUE_TIMEOUT = timedelta(minutes=15)
 CLOSED_UNCERTAINTY_STATUSES = {
     UncertaintyBacklogStatus.resolved.value,
     UncertaintyBacklogStatus.dismissed.value,
@@ -153,22 +155,40 @@ def build_product_build_status(
     )
     visible_run = None if entitlement.purchase_required else run
     visible_attention_items = [] if entitlement.purchase_required else attention_items
+    steps_by_key = _steps_by_key(db, visible_run)
+    queue_interruption_error = _build_queue_interruption_error(visible_run, steps_by_key)
     progress = _build_progress(visible_run, deliverables)
     lifecycle = _derive_lifecycle(visible_run, entitlement, deliverables, visible_attention_items)
+    last_error = queue_interruption_error or _build_last_error(visible_run, deliverables)
+    if queue_interruption_error is not None and lifecycle in {
+        ProductBuildLifecycle.queued,
+        ProductBuildLifecycle.preparing,
+        ProductBuildLifecycle.running,
+    }:
+        lifecycle = ProductBuildLifecycle.requires_attention
+    elif (
+        last_error is not None
+        and last_error.recoverable
+        and lifecycle
+        in {
+            ProductBuildLifecycle.queued,
+            ProductBuildLifecycle.preparing,
+            ProductBuildLifecycle.running,
+        }
+    ):
+        lifecycle = ProductBuildLifecycle.requires_attention
     current_activity = _build_current_activity(
         db,
         visible_run,
         [*product_jobs_by_key.values(), *diagram_jobs_by_deliverable_key.values()],
         lifecycle,
     )
-    steps_by_key = _steps_by_key(db, visible_run)
     processing_queue = _build_processing_queue(
         visible_run,
         deliverables=deliverables,
         jobs_by_key=steps_by_key,
     )
-    actions = _build_actions(meta, lifecycle, entitlement, record_id=str(record.id))
-    last_error = _build_last_error(visible_run, deliverables)
+    actions = _build_actions(meta, lifecycle, entitlement, record_id=str(record.id), last_error=last_error)
     stages = _build_stage_statuses(
         deliverables,
         visible_attention_items,
@@ -349,16 +369,14 @@ def _build_attention_items(
 ) -> list[ProductBuildAttentionItem]:
     items: list[ProductBuildAttentionItem] = []
     steps_by_key = _steps_by_key(db, run)
-    backlog = []
-    if meta.product_key != ProductBuildProductKey.blueprint_pro:
-        backlog = db.exec(
-            select(UncertaintyBacklogRecord).where(
-                UncertaintyBacklogRecord.workspace_id == record.workspace_id,
-                UncertaintyBacklogRecord.session_id == record.id,
-                UncertaintyBacklogRecord.product_mode.in_(_attention_product_modes(meta)),
-                UncertaintyBacklogRecord.status.notin_(list(CLOSED_UNCERTAINTY_STATUSES)),
-            )
-        ).all()
+    backlog = db.exec(
+        select(UncertaintyBacklogRecord).where(
+            UncertaintyBacklogRecord.workspace_id == record.workspace_id,
+            UncertaintyBacklogRecord.session_id == record.id,
+            UncertaintyBacklogRecord.product_mode.in_(_attention_product_modes(meta)),
+            UncertaintyBacklogRecord.status.notin_(list(CLOSED_UNCERTAINTY_STATUSES)),
+        )
+    ).all()
     for row in backlog:
         blocking = _uncertainty_blocks_product(row, meta)
         linked_step = _step_for_uncertainty(row, steps_by_key)
@@ -628,6 +646,7 @@ def _build_actions(
     entitlement: ProductBuildEntitlement,
     *,
     record_id: str,
+    last_error: ProductBuildRecoverableError | None = None,
 ) -> list[ProductBuildAction]:
     if entitlement.purchase_required:
         return [
@@ -641,6 +660,16 @@ def _build_actions(
             )
         ]
     if lifecycle == ProductBuildLifecycle.requires_attention:
+        if last_error is not None and last_error.recoverable and last_error.retry_action_key:
+            return [
+                ProductBuildAction(
+                    action_key=last_error.retry_action_key,
+                    label="Reintentar pendientes",
+                    state=ProductBuildActionState.recommended,
+                    reason=last_error.message,
+                    primary=True,
+                )
+            ]
         return [
             ProductBuildAction(
                 action_key="open_attention",
@@ -707,6 +736,61 @@ def _build_last_error(
     )
 
 
+def _build_queue_interruption_error(
+    run: ProductBuildRunRecord | None,
+    steps_by_key: dict[str, ProductBuildStepRecord],
+) -> ProductBuildRecoverableError | None:
+    if run is None:
+        return None
+    queue_checkpoint = (run.checkpoint_payload or {}).get("processing_queue")
+    if not isinstance(queue_checkpoint, dict):
+        return None
+    if str(queue_checkpoint.get("status") or "").strip().lower() not in {"queued", "running"}:
+        return None
+    selected_keys = [str(value) for value in queue_checkpoint.get("selected_deliverable_keys", []) if str(value or "").strip()]
+    active_steps = [
+        step
+        for key in selected_keys
+        if (step := steps_by_key.get(f"deliverable:{key}")) is not None
+        and str(step.status or "").strip().lower() in PROCESSING_STEP_ACTIVE_STATES
+    ]
+    if not active_steps:
+        return None
+    cutoff = utc_now() - POSSIBLY_INTERRUPTED_QUEUE_TIMEOUT
+    in_flight_steps = [
+        step
+        for step in active_steps
+        if str(step.status or "").strip().lower() in {"running", "generating"}
+    ]
+    if in_flight_steps:
+        if any(step.updated_at > cutoff for step in in_flight_steps):
+            return None
+        stale_steps = [step for step in in_flight_steps if step.updated_at <= cutoff]
+    else:
+        latest_activity = max(
+            [step.updated_at for step in steps_by_key.values() if step is not None and step.updated_at is not None],
+            default=run.updated_at,
+        )
+        if latest_activity and latest_activity > cutoff:
+            return None
+        stale_steps = active_steps
+
+    if not stale_steps:
+        return None
+    trace_refs = [str(step.deliverable_key or step.step_key) for step in stale_steps]
+    return ProductBuildRecoverableError(
+        code="processing_queue_possibly_interrupted",
+        title="El procesamiento podria estar interrumpido",
+        message=(
+            "La cola no registra actividad reciente. Puedes reintentar de forma controlada; "
+            "no se relanzara automaticamente para preservar costos e idempotencia."
+        ),
+        recoverable=True,
+        retry_action_key=ProductBuildProcessingQueueMode.retry_failed.value,
+        trace_refs=trace_refs,
+    )
+
+
 def _build_processing_queue(
     run: ProductBuildRunRecord | None,
     *,
@@ -764,8 +848,12 @@ def _build_processing_queue(
 
     completed_items = [item for item in queue_items if item.status == ProductBuildProcessingItemStatus.completed]
     failed_items = [item for item in queue_items if item.status == ProductBuildProcessingItemStatus.failed]
-    processing_count = sum(1 for item in queue_items if item.status in {ProductBuildProcessingItemStatus.queued, ProductBuildProcessingItemStatus.processing})
-    pending_count = sum(1 for item in queue_items if item.status == ProductBuildProcessingItemStatus.pending)
+    processing_count = sum(1 for item in queue_items if item.status == ProductBuildProcessingItemStatus.processing)
+    pending_count = sum(
+        1
+        for item in queue_items
+        if item.status in {ProductBuildProcessingItemStatus.pending, ProductBuildProcessingItemStatus.queued}
+    )
     retried_count = sum(1 for item in queue_items if item.retried)
     active = str(queue_checkpoint.get("status") or "").strip().lower() in {"queued", "running"}
     summary = str(queue_checkpoint.get("summary") or "").strip()
