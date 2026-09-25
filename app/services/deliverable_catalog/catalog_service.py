@@ -22,6 +22,10 @@ from app.services.deliverable_catalog.persistence import (
     DeliverableGovernanceRecord,
     DeliverableQualitySnapshotRecord,
 )
+from app.services.diagram_center.persistence import (
+    DiagramGenerationJobRecord,
+    DiagramVersionRecord,
+)
 from app.services.deliverable_catalog.policy_service import (
     deliverable_governance_entry,
     governance_audit_entry,
@@ -56,6 +60,43 @@ def _runtime_state_for_entry(
 ) -> tuple[bool, str, str]:
     if session_id is None:
         return False, "pending", "unknown"
+
+    if entry.deliverable_type == DeliverableType.diagram:
+        diagram_key = entry.deliverable_key.removeprefix("diagram.")
+        diagram_version = db.exec(
+            select(DiagramVersionRecord)
+            .where(
+                DiagramVersionRecord.session_id == session_id,
+                DiagramVersionRecord.diagram_key == diagram_key,
+            )
+            .order_by(DiagramVersionRecord.version_number.desc())
+        ).first()
+        diagram_job = db.exec(
+            select(DiagramGenerationJobRecord)
+            .where(
+                DiagramGenerationJobRecord.session_id == session_id,
+                DiagramGenerationJobRecord.diagram_key == diagram_key,
+            )
+            .order_by(DiagramGenerationJobRecord.updated_at.desc())
+        ).first()
+        quality = db.exec(
+            select(DeliverableQualitySnapshotRecord)
+            .where(
+                DeliverableQualitySnapshotRecord.session_id == session_id,
+                DeliverableQualitySnapshotRecord.deliverable_key == entry.deliverable_key,
+            )
+            .order_by(DeliverableQualitySnapshotRecord.created_at.desc())
+        ).first()
+        if diagram_version is not None:
+            generation_state = "available"
+        elif diagram_job is not None and diagram_job.status in ACTIVE_GENERATION_STATES:
+            generation_state = diagram_job.status
+        elif diagram_job is not None and diagram_job.status in {"error", "failed", "requires_attention"}:
+            generation_state = "error"
+        else:
+            generation_state = "pending"
+        quality_state = quality.state if quality is not None else ("passed" if diagram_version is not None else "unknown")
+        return diagram_version is not None, generation_state, quality_state
 
     artifact_keys = _artifact_keys_for_entry(entry)
     artifact = db.exec(

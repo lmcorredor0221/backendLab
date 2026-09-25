@@ -1086,8 +1086,6 @@ def _select_processing_items(
         state = _step_state_for_item(item, job, diagram_job=diagram_job, existing_step=existing_step)
         if state not in eligible_states:
             continue
-        if mode == ProductBuildProcessingQueueMode.retry_failed and _retry_budget_exhausted(existing_step):
-            continue
         if not (item.access.can_generate or item.access.can_regenerate):
             continue
         selected.append(item)
@@ -1664,14 +1662,19 @@ def _recover_orphaned_processing_queue(db: Session, *, run: ProductBuildRunRecor
         if step.deliverable_key in selected_keys and str(step.status or "") in QUEUE_ACTIVE_STEP_STATES
     ]
     if queue_status not in QUEUE_ACTIVE_STATUSES:
-        if not active_steps:
+        all_active_steps = [
+            step
+            for step in list_product_build_steps(db, run_id=run.id)
+            if str(step.status or "") in QUEUE_ACTIVE_STEP_STATES
+        ]
+        if not all_active_steps:
             return False
         return _mark_queue_steps_as_orphaned(
             db,
             run=run,
-            active_steps=active_steps,
+            active_steps=all_active_steps,
             summary=(
-                f"Se cerraron {len(active_steps)} entregables que seguian activos aunque la cola ya no estaba corriendo. "
+                f"Se cerraron {len(all_active_steps)} entregables que seguian activos aunque la cola ya no estaba corriendo. "
                 "No se reintentaron automaticamente para preservar idempotencia y control de costos."
             ),
         )
