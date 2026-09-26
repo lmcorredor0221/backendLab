@@ -90,6 +90,7 @@ from app.services.export_delivery_service import (
 from app.services.plan_access_service import build_workspace_commercial_summary
 from app.services.product_processing import (
     ProductBuildCommandRequest,
+    ProductBuildLifecycle,
     ProductBuildProductKey,
     ProductBuildStatus,
     ProductBuildTelemetryReport,
@@ -104,6 +105,7 @@ from app.services.product_processing import (
 
 router = APIRouter(prefix="/sessions", tags=["productization"])
 PRODUCT_SURFACE_STAGE = "package"
+ACP_MUTATION_ACTIONS = {"start", "resume", "retry", "process_pending", "retry_failed"}
 
 
 def _sync_authorized_access_requests(
@@ -136,6 +138,30 @@ def _context(
     readiness = build_construction_readiness_view(preview, response_records)
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     return snapshot, preview, readiness, access
+
+
+def _ensure_blueprint_pro_completed_for_acp_action(
+    db: Session,
+    *,
+    record: SessionRecord,
+    current_user: UserRecord,
+) -> None:
+    pro_status = build_product_build_status(
+        db,
+        record=record,
+        product_key=ProductBuildProductKey.blueprint_pro,
+        current_user=current_user,
+        catalog_stage_override=PRODUCT_SURFACE_STAGE,
+    )
+    if pro_status.lifecycle == ProductBuildLifecycle.completed:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "Blueprint Pro must be completed before starting ACP from the product flow. "
+            "Finish or recover Blueprint Pro first."
+        ),
+    )
 
 
 def _export_activity_title(job: ExportJobRecord) -> str:
@@ -386,6 +412,12 @@ def post_product_build_action_route(
     from app.services.product_processing.product_build_run_service import list_product_build_runs
 
     record = get_or_404(db, session_id, current_user.id)
+    if product_key == ProductBuildProductKey.acp and payload.action in ACP_MUTATION_ACTIONS:
+        _ensure_blueprint_pro_completed_for_acp_action(
+            db,
+            record=record,
+            current_user=current_user,
+        )
 
     # Block any mutation action on a sealed blueprint_pro run.
     # The run is sealed after the first successful generation triggered by the

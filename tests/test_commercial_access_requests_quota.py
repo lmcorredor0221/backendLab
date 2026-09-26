@@ -23,6 +23,7 @@ from app.models import (
 from app.services.auth_service import hash_password
 from app.services.commerce_service import close_pending_access_requests_after_authorization, request_access
 from app.services.commercial_quota_service import get_balance_snapshot, grant_balance_units, upsert_quota_product_config
+from app.services.product_processing.persistence import ProductBuildRunRecord
 from app.services.workspace_access import ensure_personal_workspace
 
 
@@ -55,6 +56,26 @@ def _seed_project_context(session: Session, *, email: str) -> tuple[UserRecord, 
     session.commit()
     session.refresh(record)
     return user, record
+
+
+def _mark_blueprint_free_completed(session: Session, record: SessionRecord, user: UserRecord) -> None:
+    session.add(
+        ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key="blueprint_basic",
+            product_mode="basic_free",
+            entitlement_tier="blueprint",
+            access_state="allowed",
+            lifecycle="completed",
+            progress_percent=100,
+            completed_units=1,
+            total_units=1,
+            idempotency_key=f"test-blueprint-basic-completed:{record.id}",
+            created_by_user_id=user.id,
+        )
+    )
+    session.commit()
 
 
 def test_request_access_auto_approves_when_workspace_has_available_balance() -> None:
@@ -124,6 +145,7 @@ def test_request_access_auto_approves_when_workspace_has_available_balance() -> 
 def test_request_access_stays_pending_when_workspace_has_no_available_balance() -> None:
     with _db_session() as session:
         user, record = _seed_project_context(session, email="quota-pending@leanbuilder.local")
+        _mark_blueprint_free_completed(session, record, user)
         upsert_quota_product_config(
             session,
             product_key="blueprint_pro",
