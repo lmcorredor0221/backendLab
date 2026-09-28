@@ -172,6 +172,7 @@ from app.services.acp_continuity import (
     overlay_construction_readiness,
     sync_construction_question_response_records,
 )
+from app.services.acp_construction_readiness import is_blueprint_handoff_process_debt_issue
 from app.services.acp_generator import generate_acp_preview
 from app.services.acp_validation import derive_acp_export_status, should_block_acp_export
 from app.services.acp_zip_export import build_acp_zip
@@ -1090,7 +1091,7 @@ def _sync_estimate_journey_after_generation(
 ) -> None:
     is_ready = status_value == ArtifactStatus.ready
     target_state = JourneyStateKey.blueprint_free_ready if is_ready else JourneyStateKey.estimate
-    target_substate = JourneyStateSubstate.running if is_ready else JourneyStateSubstate.waiting_user
+    target_substate = JourneyStateSubstate.completed if is_ready else JourneyStateSubstate.waiting_user
     transition_journey_state(
         db,
         record=record,
@@ -1397,6 +1398,26 @@ def acp_preview_supports_graph(preview: ACPPreview) -> bool:
     return has_graph_json and has_svg_exports
 
 
+def acp_preview_requires_policy_refresh(preview: ACPPreview, snapshot: SessionSnapshot) -> bool:
+    has_legacy_consistency_blocker = any(
+        gap.gap_key == "cross_stage_consistency_drift"
+        and gap.severity == "blocking"
+        and gap.status not in {"answered", "resolved", "waived"}
+        for gap in preview.construction_readiness.gaps
+    )
+    if not has_legacy_consistency_blocker:
+        return False
+
+    report = ensure_blueprint_consistency_report(snapshot)
+    actionable_issues = [
+        issue
+        for issue in report.issues
+        if not is_blueprint_handoff_process_debt_issue(issue.issue_key)
+        and issue.severity in {"blocking", "warning"}
+    ]
+    return not actionable_issues
+
+
 def ensure_acp_evaluation_seed_snapshot(
     session: Session,
     record: SessionRecord,
@@ -1468,7 +1489,12 @@ def resolve_acp_preview(
             extra_readiness_gaps,
         )
     preview = load_latest_persisted_acp_preview(session, record.id)
-    if preview is not None and acp_preview_supports_graph(preview) and not auto_bootstrapped:
+    if (
+        preview is not None
+        and acp_preview_supports_graph(preview)
+        and not auto_bootstrapped
+        and not acp_preview_requires_policy_refresh(preview, snapshot)
+    ):
         return preview
     return generate_acp_preview(
         snapshot,

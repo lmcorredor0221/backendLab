@@ -935,6 +935,12 @@ def upgrade_session_tier(client: TestClient, headers: dict[str, str], session_id
 
 
 class FakeLLMTraceBuilderService:
+    def can_attempt(self) -> bool:
+        return True
+
+    def is_available(self) -> bool:
+        return True
+
     def normalize_discovery(self, payload, *, context_bundle=None) -> LLMArtifactResult:
         del context_bundle
         artifact = build_discovery_artifact_from_payload(payload)
@@ -1699,6 +1705,12 @@ class RuntimeBoundBuilderService:
     def __init__(self, provider_key: str, sink: list[tuple[str, str]]) -> None:
         self.provider_key = provider_key
         self.sink = sink
+
+    def can_attempt(self) -> bool:
+        return True
+
+    def is_available(self) -> bool:
+        return True
 
     def normalize_discovery(self, payload, *, context_bundle=None) -> LLMArtifactResult:
         del context_bundle
@@ -2569,6 +2581,12 @@ def test_analyze_discovery_partial_draft_returns_questions_and_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class NoopAnalysisBuilderService:
+        def can_attempt(self) -> bool:
+            return False
+
+        def is_available(self) -> bool:
+            return False
+
         def analyze_discovery(self, payload, *, context_bundle=None):
             del payload, context_bundle
             return None
@@ -6552,12 +6570,19 @@ def test_package_preview_and_canonical_exports_detect_consistency_drift_against_
     acp_response = client.post(f"/api/v1/sessions/{session_id}/acp/generate", headers=headers)
     assert acp_response.status_code == 200
     acp_payload = acp_response.json()
-    assert acp_payload["construction_readiness"]["overall_status"] == "blocked"
-    assert any(item["gap_key"] == "cross_stage_consistency_drift" for item in acp_payload["construction_readiness"]["gaps"])
+    assert acp_payload["construction_readiness"]["overall_status"] == "ready_to_build"
+    assert not any(
+        item["gap_key"] == "cross_stage_consistency_drift"
+        for item in acp_payload["construction_readiness"]["gaps"]
+    )
     generated_paths = {item["path"] for item in acp_payload["files"]}
     assert "ACP/governance/consistency-report.json" in generated_paths
     assert "ACP/governance/approved-stage-lineage.yaml" in generated_paths
     assert "ACP/governance/journey-decisions.json" in generated_paths
+    handoff_closure = next(
+        item for item in acp_payload["files"] if item["path"] == "ACP/governance/blueprint-handoff-closure.yaml"
+    )
+    assert "design_blueprint_projection_drift:architecture" in handoff_closure["content_text"]
 
 
 def test_blueprint_professional_markdown_export_includes_consistency_and_decision_history(client: TestClient) -> None:

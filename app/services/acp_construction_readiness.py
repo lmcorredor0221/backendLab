@@ -62,6 +62,7 @@ BLUEPRINT_HANDOFF_PROCESS_DEBT_ISSUE_KEYS = {
     "estimate_stale",
 }
 BLUEPRINT_HANDOFF_PROCESS_DEBT_PREFIXES = (
+    "design_blueprint_projection_drift:",
     "validate_source_stage_drift:",
 )
 

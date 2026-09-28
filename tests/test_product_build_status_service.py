@@ -24,6 +24,7 @@ from app.services.deliverable_catalog.persistence import DeliverableGenerationJo
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord, UncertaintyBacklogRecord
 from app.services.product_processing import (
+    ProductBuildDeliverableState,
     ProductBuildLifecycle,
     ProductBuildProductKey,
     ProductProcessingMode,
@@ -624,6 +625,73 @@ def test_product_build_status_uses_active_diagram_job_as_current_activity() -> N
     assert status.current_activity is not None
     assert status.current_activity.label == "Generando diagrama"
     assert status.current_activity.detail == diagram_item.key
+
+
+def test_product_build_status_prefers_available_diagram_over_later_orphaned_queue_marker() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint_pro,
+            current_stage="package",
+        )
+        diagram_item = next(item for item in catalog.entries if item.deliverable_type.value == "diagram")
+        diagram_key = diagram_item.key.removeprefix("diagram.")
+        available_at = utc_now()
+        orphaned_at = available_at + timedelta(seconds=1)
+        db.add(
+            DiagramGenerationJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                diagram_key=diagram_key,
+                requested_by_user_id=user.id,
+                detail_level="standard",
+                reason="initial_generation",
+                idempotency_key=f"available-diagram-{uuid4()}",
+                status="available",
+                requested_at=available_at,
+                started_at=available_at,
+                completed_at=available_at,
+                updated_at=available_at,
+            )
+        )
+        db.add(
+            DiagramGenerationJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                diagram_key=diagram_key,
+                requested_by_user_id=user.id,
+                detail_level="standard",
+                reason="queue_recovery_marker",
+                idempotency_key=f"orphaned-diagram-{uuid4()}",
+                status="error",
+                error_code="processing_queue_orphaned",
+                error_message="La cola del product build finalizo con error antes de que este job arrancara.",
+                requested_at=orphaned_at,
+                completed_at=orphaned_at,
+                updated_at=orphaned_at,
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+        diagram_status = next(item for item in status.deliverables if item.deliverable_key == diagram_item.key)
+
+    assert diagram_status.state == ProductBuildDeliverableState.available
+    assert status.last_error is None
+    assert all(item.deliverable_key != diagram_item.key for item in status.attention.items)
 
 
 def test_product_build_status_allows_cumulative_product_surface_override() -> None:

@@ -21,6 +21,7 @@ from app.services.product_processing.contracts import (
     QuestionPolicyMode,
     UncertaintyDisposition,
 )
+from app.services.product_processing.persistence import ProductBuildStepRecord
 from app.services.stage5_service import FEATURE_FLAG_ESTIMATION, is_feature_flag_enabled
 
 
@@ -82,6 +83,23 @@ def _approved_journey_stages(db: Session, record: SessionRecord) -> set[str]:
         )
     ).all()
     return {row.stage_key for row in rows}
+
+
+def _completed_product_deliverable_stages(db: Session, record: SessionRecord) -> set[str]:
+    if record.workspace_id is None:
+        return set()
+    rows = db.exec(
+        select(ProductBuildStepRecord).where(
+            ProductBuildStepRecord.workspace_id == record.workspace_id,
+            ProductBuildStepRecord.session_id == record.id,
+            ProductBuildStepRecord.status.in_(("available", "completed", "skipped")),
+            ProductBuildStepRecord.deliverable_key.in_(("estimate.comparison",)),
+        )
+    ).all()
+    completed: set[str] = set()
+    if any(row.deliverable_key == "estimate.comparison" for row in rows):
+        completed.add("estimate")
+    return completed
 
 
 def _legacy_completed_stages(snapshot: SessionSnapshot | None) -> set[str]:
@@ -153,6 +171,7 @@ def build_acp_direct_resolution(
     completed = _dedupe(
         [
             *_approved_journey_stages(db, record),
+            *_completed_product_deliverable_stages(db, record),
             *_legacy_completed_stages(snapshot),
         ]
     )

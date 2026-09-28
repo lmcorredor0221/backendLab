@@ -84,6 +84,7 @@ ERROR_JOB_STATES = {"error", "failed"}
 PROCESSING_STEP_ACTIVE_STATES = {"queued", "running", "generating"}
 PROCESSING_STEP_COMPLETED_STATES = {"available", "completed", "skipped"}
 POSSIBLY_INTERRUPTED_QUEUE_TIMEOUT = timedelta(minutes=15)
+PROCESSING_QUEUE_ORPHANED_ERROR_CODE = "processing_queue_orphaned"
 CLOSED_UNCERTAINTY_STATUSES = {
     UncertaintyBacklogStatus.resolved.value,
     UncertaintyBacklogStatus.dismissed.value,
@@ -289,10 +290,7 @@ def _latest_jobs_by_key(db: Session, *, session_id) -> dict[str, DeliverableGene
         .where(DeliverableGenerationJobRecord.session_id == session_id)
         .order_by(DeliverableGenerationJobRecord.updated_at.desc())
     ).all()
-    by_key: dict[str, DeliverableGenerationJobRecord] = {}
-    for job in jobs:
-        by_key.setdefault(job.deliverable_key, job)
-    return by_key
+    return _latest_effective_jobs_by_key(jobs, key_attr="deliverable_key")
 
 
 def _latest_diagram_jobs_by_key(db: Session, *, session_id) -> dict[str, DiagramGenerationJobRecord]:
@@ -301,10 +299,30 @@ def _latest_diagram_jobs_by_key(db: Session, *, session_id) -> dict[str, Diagram
         .where(DiagramGenerationJobRecord.session_id == session_id)
         .order_by(DiagramGenerationJobRecord.updated_at.desc())
     ).all()
-    by_key: dict[str, DiagramGenerationJobRecord] = {}
+    return _latest_effective_jobs_by_key(jobs, key_attr="diagram_key")
+
+
+def _latest_effective_jobs_by_key(jobs: Iterable, *, key_attr: str):
+    by_key = {}
+    available_by_key = {}
     for job in jobs:
-        by_key.setdefault(job.diagram_key, job)
+        key = str(getattr(job, key_attr, "") or "")
+        if not key:
+            continue
+        by_key.setdefault(key, job)
+        if str(getattr(job, "status", "") or "") == "available":
+            available_by_key.setdefault(key, job)
+    for key, job in list(by_key.items()):
+        if _is_orphaned_queue_marker(job) and key in available_by_key:
+            by_key[key] = available_by_key[key]
     return by_key
+
+
+def _is_orphaned_queue_marker(job) -> bool:
+    return (
+        str(getattr(job, "status", "") or "") in ERROR_JOB_STATES
+        and str(getattr(job, "error_code", "") or "") == PROCESSING_QUEUE_ORPHANED_ERROR_CODE
+    )
 
 
 def _build_deliverable_status(
@@ -344,14 +362,14 @@ def _deliverable_state(
         return ProductBuildDeliverableState.locked
     if access_state == "quality_failed" or job_status in ERROR_JOB_STATES:
         return ProductBuildDeliverableState.error
-    if access_state == "available" or job_status == "available":
-        return ProductBuildDeliverableState.available
-    if access_state == "stale":
-        return ProductBuildDeliverableState.stale
     if job_status == "requires_attention":
         return ProductBuildDeliverableState.requires_attention
     if job_status in ACTIVE_JOB_STATES:
         return ProductBuildDeliverableState.generating if job_status in {"generating", "updating", "running"} else ProductBuildDeliverableState.queued
+    if access_state == "available" or job_status == "available":
+        return ProductBuildDeliverableState.available
+    if access_state == "stale":
+        return ProductBuildDeliverableState.stale
     if access_state in {"preview", "not_generated"}:
         return ProductBuildDeliverableState.pending
     return ProductBuildDeliverableState.pending

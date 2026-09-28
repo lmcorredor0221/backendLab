@@ -201,6 +201,41 @@ def test_blueprint_handoff_process_debt_does_not_become_acp_blocker() -> None:
     assert not any(item.gap_key == "cross_stage_consistency_drift" for item in readiness.gaps)
 
 
+def test_design_blueprint_projection_drift_is_traced_without_blocking_acp() -> None:
+    snapshot = build_snapshot().model_copy(
+        update={
+            "blueprint_consistency": BlueprintConsistencyReport(
+                overall_status=ReviewState.blocked,
+                summary="Design aprobado y Blueprint vigente difieren en arquitectura.",
+                issues=[
+                    BlueprintConsistencyIssue(
+                        issue_key="design_blueprint_projection_drift:architecture",
+                        severity="blocking",
+                        category="design_to_blueprint",
+                        title="Arquitectura actual desalineada del Design aprobado",
+                        detail="Blueprint tiene `single_agent_with_skills` pero Design aprobado proyecto `handoffs`.",
+                        affected_stage_keys=["design"],
+                    )
+                ],
+                blocking_issues=[
+                    "Blueprint tiene `single_agent_with_skills` pero Design aprobado proyecto `handoffs`."
+                ],
+            )
+        }
+    )
+
+    readiness = build_initial_construction_readiness(
+        snapshot,
+        build_complete_acp_files(),
+        build_valid_validation_report(),
+    )
+
+    assert readiness.overall_status == "ready_to_build"
+    assert readiness.can_start_build is True
+    assert readiness.blocking_gaps == 0
+    assert not any(item.gap_key == "cross_stage_consistency_drift" for item in readiness.gaps)
+
+
 def test_build_initial_construction_readiness_allows_build_when_only_warning_gaps_remain() -> None:
     files = build_complete_acp_files()
     files[0] = build_file(

@@ -96,11 +96,32 @@ def build_product_journey_overview(
             overview=overview,
             current_user=current_user,
         )
+    elif not _persisted_journey_state_matches_overview(journey_state, overview):
+        journey_state = build_journey_state_machine(
+            db,
+            record=record,
+            overview=overview,
+            current_user=current_user,
+            use_persisted=False,
+        )
     else:
         overview.current_stage = _current_stage_from_journey_state(journey_state)
         overview.source_contracts = sorted({*overview.source_contracts, "journey-state-persistence.v1"})
     overview.journey_state_machine = journey_state
     return overview
+
+
+def _persisted_journey_state_matches_overview(
+    journey_state: JourneyStateMachine,
+    overview: ProductJourneyOverview,
+) -> bool:
+    current = journey_state.current
+    current_issue_count = overview.blocking_attention_count + overview.technical_error_count
+    if current_issue_count > 0:
+        return True
+    if current.blocking or current.substate in {JourneyStateSubstate.blocked, JourneyStateSubstate.failed}:
+        return False
+    return True
 
 
 def _summarize_product(status: ProductBuildStatus) -> ProductJourneyProductSummary:

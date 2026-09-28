@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
+    CommercialTier,
     JourneyStateRecord,
     JourneyStateTransitionRecord,
     SessionRecord,
@@ -16,7 +17,7 @@ from app.models import (
     WorkspaceRole,
 )
 from app.services.auth_service import hash_password
-from app.services.product_processing.contracts import JourneyStateKey, JourneyStateSubstate
+from app.services.product_processing.contracts import JourneyStateKey, JourneyStateSubstate, ProductBuildLifecycle
 from app.services.product_processing.journey_state_machine_service import (
     initialize_journey_state,
     transition_journey_state,
@@ -126,6 +127,40 @@ def test_persisted_journey_state_is_authoritative_for_product_overview() -> None
     assert overview.journey_state_machine.current.href.endswith("/blueprint/pro")
     assert overview.current_stage.stage_key == "blueprint_pro"
     assert overview.current_stage.product_key.value == "blueprint_pro"
+
+
+def test_product_overview_projects_fresh_state_when_persisted_blocker_is_stale() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db)
+        record.commercial_tier = CommercialTier.acp
+        record.current_stage = SessionStage.post_validation
+        db.add(record)
+        db.commit()
+        initialize_journey_state(
+            db,
+            record=record,
+            state_key=JourneyStateKey.validate,
+            substate=JourneyStateSubstate.blocked,
+            actor_user_id=user.id,
+            correlation_id=f"stale-blocker:{record.id}",
+            blocking=True,
+            progress_percent=50,
+        )
+        db.commit()
+
+        overview = build_product_journey_overview(db, record=record, current_user=user)
+        persisted = db.exec(select(JourneyStateRecord).where(JourneyStateRecord.session_id == record.id)).one()
+
+    assert overview.blocking_attention_count == 0
+    assert overview.technical_error_count == 0
+    assert overview.current_stage.lifecycle != ProductBuildLifecycle.requires_attention
+    assert overview.journey_state_machine is not None
+    assert overview.journey_state_machine.state_source == "legacy_projection"
+    assert overview.journey_state_machine.current.blocking is False
+    assert persisted.blocking is True
 
 
 def test_legacy_overview_fallback_is_read_only_until_explicit_backfill() -> None:

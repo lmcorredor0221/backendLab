@@ -71,6 +71,15 @@ def _runtime_state_for_entry(
             )
             .order_by(DiagramVersionRecord.version_number.desc())
         ).first()
+        artifact_keys = _artifact_keys_for_entry(entry)
+        artifact = db.exec(
+            select(ArtifactRegistryRecord)
+            .where(
+                ArtifactRegistryRecord.session_id == session_id,
+                ArtifactRegistryRecord.artifact_key.in_(artifact_keys),
+            )
+            .order_by(ArtifactRegistryRecord.created_at.desc())
+        ).first()
         diagram_job = db.exec(
             select(DiagramGenerationJobRecord)
             .where(
@@ -87,7 +96,8 @@ def _runtime_state_for_entry(
             )
             .order_by(DeliverableQualitySnapshotRecord.created_at.desc())
         ).first()
-        if diagram_version is not None:
+        has_current_version = diagram_version is not None or artifact is not None
+        if has_current_version:
             generation_state = "available"
         elif diagram_job is not None and diagram_job.status in ACTIVE_GENERATION_STATES:
             generation_state = diagram_job.status
@@ -95,8 +105,8 @@ def _runtime_state_for_entry(
             generation_state = "error"
         else:
             generation_state = "pending"
-        quality_state = quality.state if quality is not None else ("passed" if diagram_version is not None else "unknown")
-        return diagram_version is not None, generation_state, quality_state
+        quality_state = quality.state if quality is not None else ("passed" if has_current_version else "unknown")
+        return has_current_version, generation_state, quality_state
 
     artifact_keys = _artifact_keys_for_entry(entry)
     artifact = db.exec(

@@ -92,10 +92,12 @@ def build_journey_state_machine(
     record: SessionRecord,
     overview: ProductJourneyOverview,
     current_user: UserRecord | None = None,
+    use_persisted: bool = True,
 ) -> JourneyStateMachine:
-    persisted = load_persisted_journey_state_machine(db, record=record)
-    if persisted is not None:
-        return persisted
+    if use_persisted:
+        persisted = load_persisted_journey_state_machine(db, record=record)
+        if persisted is not None:
+            return persisted
 
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     pending_requests = _pending_request_products(db, record=record)

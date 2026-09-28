@@ -290,6 +290,9 @@ def evaluate_diagram_quality(model: DiagramModel) -> DiagramQualityReport:
 
     score = 100 - (30 * len(errors)) - (8 * len(warnings))
     if _kind(model.diagram_key) == "agent_orchestration" and not errors and score < 90:
-        errors.append("Orquestacion agentiva no alcanzo el score minimo 90 para visualizacion principal.")
+        checks["agent_orchestration_meets_visual_score_target"] = False
+        warnings.append("Orquestacion agentiva no alcanzo el score recomendado 90 para visualizacion principal.")
         score = 100 - (30 * len(errors)) - (8 * len(warnings))
+    elif _kind(model.diagram_key) == "agent_orchestration":
+        checks["agent_orchestration_meets_visual_score_target"] = True
     return DiagramQualityReport(valid=not errors, score=max(0, score), errors=errors, warnings=warnings, checks=checks)

@@ -29,7 +29,7 @@ from app.services.product_processing import (
     list_product_build_runs,
     list_product_build_steps,
 )
-from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord, UncertaintyBacklogRecord
 from app.services.stage5_service import FEATURE_FLAG_ESTIMATION
 
 
@@ -150,6 +150,67 @@ def test_acp_direct_run_tracks_estimate_dependency_when_feature_is_enabled() -> 
         "validate",
     ]
     assert run.checkpoint_payload["acp_direct_resolution"]["justified_stage_keys"] == []
+
+
+def test_acp_direct_run_accepts_completed_estimate_deliverable_as_readiness_evidence() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_acp_session(db)
+        for stage in ("discover", "define", "design", "tools", "memory", "validate"):
+            _approve_stage(db, record, stage)
+        db.add(
+            RuntimeFeatureFlagRecord(
+                workspace_id=record.workspace_id,
+                flag_key=FEATURE_FLAG_ESTIMATION,
+                enabled=True,
+                description="Estimate habilitado para ACP.",
+                stage_hint="estimate",
+            )
+        )
+        pro_run = ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro.value,
+            product_mode="premium_enrichment",
+            entitlement_tier=CommercialTier.blueprint_pro.value,
+            access_state="allowed",
+            lifecycle=ProductBuildLifecycle.completed.value,
+            idempotency_key=f"test-pro:{record.id}",
+        )
+        db.add(pro_run)
+        db.flush()
+        db.add(
+            ProductBuildStepRecord(
+                run_id=pro_run.id,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                step_key="deliverable:estimate.comparison",
+                stage_key="estimate",
+                deliverable_key="estimate.comparison",
+                status="available",
+                sequence=1,
+                progress_percent=100,
+            )
+        )
+        db.commit()
+
+        status = ensure_acp_product_orchestration(db, record=record, current_user=user)
+        run = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.acp,
+        )[0]
+        estimate_step = next(
+            step for step in list_product_build_steps(db, run_id=run.id) if step.step_key == "acp_dependency:estimate"
+        )
+
+    assert status.lifecycle != ProductBuildLifecycle.requires_attention
+    assert estimate_step.status == "completed"
+    assert estimate_step.checkpoint_payload["completed"] is True
+    assert run.checkpoint_payload["acp_direct_resolution"]["missing_stage_keys"] == []
 
 
 def test_acp_direct_run_blocks_on_acp_questions_even_with_approved_stages() -> None:
