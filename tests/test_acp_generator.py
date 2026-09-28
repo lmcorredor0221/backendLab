@@ -217,6 +217,10 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "ACP/assets/acp-viewer.css" in paths
     assert "ACP/assets/acp-viewer.js" in paths
     assert "ACP/tools/external/tool-build-blueprint.yaml" in paths
+    assert "ACP/adapters/n8n.md" in paths
+    assert "ACP/adapters/make.md" in paths
+    assert "ACP/adapters/langgraph.md" in paths
+    assert "ACP/adapters/pure-code.md" in paths
     assert "ACP/memory/strategy.yaml" in paths
     assert "ACP/costs/operational-cost-estimate.json" in paths
     assert "ACP/costs/operational-cost-estimate.md" in paths
@@ -284,6 +288,12 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     navigation_manifest = next(item for item in preview.files if item.path == "ACP/navigation-manifest.v1.json")
     assert '"contract_version": "acp-navigation-manifest.v1"' in navigation_manifest.content_text
     assert '"storyline": [' in navigation_manifest.content_text
+    navigation_payload = json.loads(navigation_manifest.content_text)
+    selector = navigation_payload["implementation_cockpit"]["target_selector"]
+    target_keys = {item["target_key"] for item in selector["candidates"]}
+    assert {"pure-code", "openai-agents-sdk", "langgraph", "n8n", "make"} <= target_keys
+    assert any(item["target_key"] == "n8n" and item["orientation_only"] is True for item in selector["candidates"])
+    assert any(item["target_key"] == "make" and item["orientation_only"] is True for item in selector["candidates"])
     viewer = next(item for item in preview.files if item.path == "ACP/index.html")
     assert "ACP Viewer" in viewer.content_text
     assert "http://" not in viewer.content_text
@@ -372,6 +382,24 @@ def test_generate_acp_preview_publishes_deferred_decisions_without_using_them_as
     assert "reprocess_decision: delegated_to_implementation" in impact_log_file.content_text
     assert "question_key: deployment_target" not in open_questions_file.content_text
 
+    navigation_manifest = next(item for item in preview.files if item.path == "ACP/navigation-manifest.v1.json")
+    navigation_payload = json.loads(navigation_manifest.content_text)
+    cockpit = navigation_payload["implementation_cockpit"]
+    assert cockpit["prompt_policy"]["behavior"] == "MUST_PROMPT_USER_DURING_IMPLEMENTATION"
+    assert cockpit["prompt_policy"]["policy"] == "DO_NOT_ASSUME_SILENTLY"
+    assert any(
+        item["question_key"] == "deployment_target"
+        and item["source_file"] == "ACP/construction-readiness/deferred-decisions.yaml"
+        and item["must_prompt"] is True
+        for item in cockpit["decision_queue"]
+    )
+
+    viewer = next(item for item in preview.files if item.path == "ACP/index.html")
+    viewer_js = next(item for item in preview.files if item.path == "ACP/assets/acp-viewer.js")
+    assert "data-cockpit" in viewer.content_text
+    assert "renderCockpit" in viewer_js.content_text
+    assert "Implementation Target Selector" in viewer_js.content_text
+
 
 def test_generate_acp_preview_accepts_extra_backlog_readiness_gaps() -> None:
     session_id = uuid4()
@@ -422,6 +450,7 @@ def test_build_acp_zip_contains_construction_readiness_block() -> None:
 
     with ZipFile(BytesIO(zip_bytes)) as archive:
         names = sorted(archive.namelist())
+        members = {name: archive.read(name) for name in names}
 
     assert "ACP/construction-readiness/overview.yaml" in names
     assert "ACP/index.html" in names
@@ -435,6 +464,34 @@ def test_build_acp_zip_contains_construction_readiness_block() -> None:
     assert "ACP/svg/KnowledgeGraph.svg" in names
     assert "ACP/blueprint.graph.json" in names
     assert names.count("ACP/deployment/env.template") == 1
+
+    package_manifest = json.loads(members["manifest.json"].decode("utf-8"))
+    assert set(package_manifest["files"]).issubset(set(names))
+
+    navigation_manifest = json.loads(members["ACP/navigation-manifest.v1.json"].decode("utf-8"))
+    navigation_items = navigation_manifest["items"]
+    navigation_item_ids = {item["id"] for item in navigation_items}
+    assert all(item["path"] in names for item in navigation_items)
+    assert all(
+        related_file_id in navigation_item_ids
+        for chapter in navigation_manifest["storyline"]
+        for related_file_id in chapter["related_files"]
+    )
+
+    cockpit = navigation_manifest["implementation_cockpit"]
+    assert all(source_file in names for source_file in cockpit["source_files"])
+    assert all(card["source_file"] in names for card in cockpit["decision_queue"])
+
+    file_index = json.loads(members["ACP/conformance/file-index.json"].decode("utf-8"))
+    indexed_paths = [item["path"] for item in file_index["files"]]
+    assert set(indexed_paths).issubset(set(names))
+
+    checksum_paths = [
+        line.split("  ", 1)[1]
+        for line in members["ACP/conformance/checksums.sha256"].decode("utf-8").splitlines()
+        if "  " in line
+    ]
+    assert set(checksum_paths).issubset(set(names))
 
 
 def test_design_only_profile_filters_deployment_and_observability_from_preview_and_zip() -> None:

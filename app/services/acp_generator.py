@@ -1113,6 +1113,50 @@ def _build_adapter_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
                     "Se requiere mapear herramientas, handoffs y evaluaciones a codigo productivo.",
                 ],
             },
+            {
+                "target_key": "langgraph",
+                "label": "LangGraph",
+                "adapter_doc": "ACP/adapters/langgraph.md",
+                "launch_preference": "implementation_mapping",
+                "command_candidates": [],
+                "recommended_when": [
+                    "El ACP requiere flujo con estado, aprobaciones humanas, retries o memoria entre pasos.",
+                    "Existe `ACP/workflows/langgraph.json` como mapa inicial que debe revisarse antes de codificar.",
+                ],
+            },
+            {
+                "target_key": "pure-code",
+                "label": "Codigo puro",
+                "adapter_doc": "ACP/adapters/pure-code.md",
+                "launch_preference": "implementation_mapping",
+                "command_candidates": [],
+                "recommended_when": [
+                    "El equipo necesita control completo sobre runtime, seguridad, deployment y contratos API.",
+                    "Existen side effects, integraciones custom o politicas de aprobacion que no conviene ocultar en low-code.",
+                ],
+            },
+            {
+                "target_key": "n8n",
+                "label": "n8n",
+                "adapter_doc": "ACP/adapters/n8n.md",
+                "launch_preference": "orientation_only",
+                "command_candidates": [],
+                "recommended_when": [
+                    "El flujo puede expresarse como automatizacion por nodos con APIs HTTP y aprobaciones humanas claras.",
+                    "El ACP no requiere memoria compleja, estado durable fino ni politicas de runtime avanzadas.",
+                ],
+            },
+            {
+                "target_key": "make",
+                "label": "Make",
+                "adapter_doc": "ACP/adapters/make.md",
+                "launch_preference": "orientation_only",
+                "command_candidates": [],
+                "recommended_when": [
+                    "El caso se parece a una automatizacion SaaS lineal con triggers, acciones y pocas ramas.",
+                    "Las credenciales, endpoints y payloads estan confirmados antes de crear escenarios importables.",
+                ],
+            },
         ],
     }
     neutral_plan = "\n".join(
@@ -1205,6 +1249,51 @@ def _build_adapter_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             "- Evaluacion: convertir `ACP/evaluation/` en pruebas automatizadas.",
         ]
     )
+    langgraph = "\n".join(
+        [
+            "# Adapter: LangGraph",
+            "",
+            "Usa `ACP/workflows/langgraph.json` como mapa inicial, no como codigo final.",
+            "",
+            "Antes de implementar:",
+            "",
+            "1. Confirma `ACP/construction-readiness/overview.yaml`.",
+            "2. Cierra decisiones de memoria, runtime y side effects.",
+            "3. Revisa aprobaciones humanas en `ACP/tools/permissions.yaml`.",
+            "4. Traduce cada nodo a una funcion con estado, retries y compensacion verificables.",
+        ]
+    )
+    pure_code = "\n".join(
+        [
+            "# Adapter: Codigo puro",
+            "",
+            "Usa este target cuando el ACP requiera control completo de runtime, secretos, seguridad, integraciones o deployment.",
+            "",
+            "No empieces desde cero: implementa contra los contratos de `ACP/tools/`, `ACP/workflows/`, `ACP/runtime/`, `ACP/memory/` y `ACP/evaluation/`.",
+        ]
+    )
+    n8n = "\n".join(
+        [
+            "# Adapter: n8n",
+            "",
+            "Este adapter es orientativo. No crea workflows ni conecta cuentas reales.",
+            "",
+            "n8n puede ser viable cuando el flujo del ACP se expresa como nodos HTTP/SaaS, aprobaciones humanas claras y bajo requerimiento de memoria compleja.",
+            "",
+            "Antes de crear un workflow importable, confirma endpoints, auth, payloads, secretos, politica HITL y limites de runtime.",
+        ]
+    )
+    make = "\n".join(
+        [
+            "# Adapter: Make",
+            "",
+            "Este adapter es orientativo. No crea escenarios ni conecta cuentas reales.",
+            "",
+            "Make puede ser viable para automatizaciones lineales con triggers, acciones SaaS y pocas ramas de estado.",
+            "",
+            "Si el ACP requiere reasoning, memoria persistente, retries complejos o side effects gobernados, usa este target solo para subflujos acotados.",
+        ]
+    )
     return [
         build_acp_file_entry(
             path="ACP/adapters/adapter-registry.json",
@@ -1261,6 +1350,38 @@ def _build_adapter_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             format="markdown",
             source_sections=["runtime_targets", "tools", "memory", "knowledge"],
             content_text=serialize_markdown_document(agents_sdk),
+        ),
+        build_acp_file_entry(
+            path="ACP/adapters/langgraph.md",
+            domain="adapters",
+            title="LangGraph adapter",
+            format="markdown",
+            source_sections=["runtime_targets", "workflows", "memory"],
+            content_text=serialize_markdown_document(langgraph),
+        ),
+        build_acp_file_entry(
+            path="ACP/adapters/pure-code.md",
+            domain="adapters",
+            title="Pure code adapter",
+            format="markdown",
+            source_sections=["runtime_targets", "tools", "deployment"],
+            content_text=serialize_markdown_document(pure_code),
+        ),
+        build_acp_file_entry(
+            path="ACP/adapters/n8n.md",
+            domain="adapters",
+            title="n8n adapter",
+            format="markdown",
+            source_sections=["runtime_targets", "tools", "workflows"],
+            content_text=serialize_markdown_document(n8n),
+        ),
+        build_acp_file_entry(
+            path="ACP/adapters/make.md",
+            domain="adapters",
+            title="Make adapter",
+            format="markdown",
+            source_sections=["runtime_targets", "tools", "workflows"],
+            content_text=serialize_markdown_document(make),
         ),
     ]
 
@@ -2887,7 +3008,405 @@ def _acp_viewer_stage_for_path(path: str, domain: str) -> str:
     return "entry"
 
 
-def _build_acp_navigation_manifest(snapshot: SessionSnapshot, preview: ACPPreview) -> dict[str, Any]:
+def _implementation_prompt_moment(domain: str, blocking: bool, status: str) -> str:
+    if blocking:
+        return "before_build"
+    if status == "deferred":
+        return "during_implementation"
+    if domain in {"runtime", "deployment", "integrations", "tools", "knowledge", "memory"}:
+        return "before_target"
+    return "opening_review"
+
+
+def _implementation_urgency_label(prompt_moment: str) -> str:
+    labels = {
+        "before_build": "Bloquea construccion",
+        "before_target": "Resolver antes de elegir target",
+        "during_implementation": "Debe saltar durante implementacion",
+        "opening_review": "Revisar al abrir ACP",
+    }
+    return labels.get(prompt_moment, "Revisar")
+
+
+def _clamp_score(value: int) -> int:
+    return max(0, min(100, value))
+
+
+def _confidence_label(score: int) -> str:
+    if score >= 75:
+        return "alta"
+    if score >= 50:
+        return "media"
+    return "baja"
+
+
+def _target_candidate(
+    *,
+    target_key: str,
+    label: str,
+    score: int,
+    evidence: list[str],
+    warnings: list[str],
+    source_files: list[str],
+    adapter_doc: str,
+    orientation_only: bool = False,
+) -> dict[str, Any]:
+    normalized_score = _clamp_score(score)
+    return {
+        "target_key": target_key,
+        "label": label,
+        "confidence": _confidence_label(normalized_score),
+        "score": normalized_score,
+        "orientation_only": orientation_only,
+        "adapter_doc": adapter_doc,
+        "source_files": source_files,
+        "evidence": evidence[:5],
+        "warnings": warnings[:5],
+    }
+
+
+def _implementation_target_selector(snapshot: SessionSnapshot, preview: ACPPreview) -> dict[str, Any]:
+    blueprint = snapshot.blueprint
+    readiness = preview.construction_readiness
+    external_tools = _iter_external_tools(snapshot)
+    tool_count = len(blueprint.tools) if blueprint is not None else 0
+    external_tool_count = len(external_tools)
+    workflow_steps = len(blueprint.delivery_package.workflow_profile.steps) if blueprint is not None else 0
+    workflow_profile = blueprint.delivery_package.workflow_profile if blueprint is not None else None
+    approval_pause = bool(getattr(workflow_profile, "approval_pause", False))
+    retry_strategy = str(getattr(workflow_profile, "retry_strategy", "") or "")
+    memory_strategy = str(getattr(blueprint, "memory_strategy", "") or "").lower() if blueprint is not None else ""
+    reasoning_pattern = str(getattr(blueprint, "reasoning_pattern", "") or "").lower() if blueprint is not None else ""
+    architecture = str(getattr(blueprint, "architecture", "") or "").lower() if blueprint is not None else ""
+    has_memory = any(token in memory_strategy for token in ["memory", "persistent", "blackboard", "vector"])
+    has_complex_reasoning = any(token in reasoning_pattern for token in ["plan", "execute", "reflection", "supervisor"])
+    has_supervisor = "supervisor" in architecture
+    has_retries = bool(retry_strategy and retry_strategy.lower() not in {"none", "sin_definir", "needs_review"})
+    has_evaluation = any(item.path.startswith("ACP/evaluation/") for item in preview.files)
+    has_runtime_questions = any(gap.domain in {"runtime", "deployment", "integrations"} for gap in readiness.gaps)
+    has_open_questions = readiness.open_questions > 0 or readiness.blocking_gaps > 0
+    side_effect_like_tools = [
+        tool.name
+        for _, tool in external_tools
+        if any(token in tool.name.lower() for token in ["write", "create", "update", "delete", "notify", "send", "ingest"])
+    ]
+
+    shared_sources = [
+        "ACP/adapters/adapter-registry.json",
+        "ACP/construction-readiness/overview.yaml",
+        "ACP/tools/permissions.yaml",
+        "ACP/workflows/durable-workflow.yaml",
+        "ACP/runtime/config.yaml",
+    ]
+    general_warning = (
+        "Hay preguntas o decisiones pendientes; bajar confianza y resolver antes de bloquear target final."
+        if has_open_questions
+        else ""
+    )
+
+    candidates = [
+        _target_candidate(
+            target_key="defer-target",
+            label="Diferir decision final",
+            score=88 if has_open_questions else 25,
+            evidence=[
+                f"can_start_build={str(readiness.can_start_build).lower()}",
+                f"open_questions={readiness.open_questions}",
+                f"blocking_gaps={readiness.blocking_gaps}",
+            ],
+            warnings=[] if has_open_questions else ["El ACP ya permite seleccionar target con mayor confianza."],
+            source_files=[
+                "ACP/construction-readiness/overview.yaml",
+                "ACP/construction-readiness/open-questions.yaml",
+                "ACP/construction-readiness/deferred-decisions.yaml",
+            ],
+            adapter_doc="ACP/construction-readiness/resolution-workflow.yaml",
+            orientation_only=True,
+        ),
+        _target_candidate(
+            target_key="pure-code",
+            label="Codigo puro",
+            score=62
+            + (12 if external_tool_count else 0)
+            + (10 if side_effect_like_tools else 0)
+            + (8 if has_runtime_questions else 0)
+            + (8 if has_memory else 0)
+            - (10 if has_open_questions else 0),
+            evidence=[
+                f"{tool_count} herramientas definidas",
+                f"{external_tool_count} herramientas externas",
+                "Mayor control sobre runtime, secretos, side effects y deployment.",
+            ],
+            warnings=[item for item in [general_warning, "Requiere equipo tecnico e infraestructura."] if item],
+            source_files=shared_sources + ["ACP/adapters/pure-code.md"],
+            adapter_doc="ACP/adapters/pure-code.md",
+        ),
+        _target_candidate(
+            target_key="openai-agents-sdk",
+            label="OpenAI Agents SDK",
+            score=60
+            + (12 if tool_count else 0)
+            + (8 if has_evaluation else 0)
+            + (8 if has_complex_reasoning else 0)
+            - (10 if has_open_questions else 0),
+            evidence=[
+                "El ACP contiene prompts, tools y evaluacion mapeables a SDK.",
+                f"reasoning_pattern={reasoning_pattern or 'needs_review'}",
+                f"evaluation_present={str(has_evaluation).lower()}",
+            ],
+            warnings=[item for item in [general_warning, "Confirmar provider, modelos, secretos y deployment antes de codificar."] if item],
+            source_files=shared_sources + ["ACP/adapters/openai-agents-sdk.md"],
+            adapter_doc="ACP/adapters/openai-agents-sdk.md",
+        ),
+        _target_candidate(
+            target_key="langgraph",
+            label="LangGraph",
+            score=55
+            + (12 if workflow_steps >= 3 else 0)
+            + (10 if approval_pause else 0)
+            + (8 if has_retries else 0)
+            + (8 if has_memory else 0)
+            - (10 if has_open_questions else 0),
+            evidence=[
+                f"workflow_steps={workflow_steps}",
+                f"approval_pause={str(approval_pause).lower()}",
+                f"retry_strategy={retry_strategy or 'needs_review'}",
+            ],
+            warnings=[item for item in [general_warning, "Requiere modelar estado, retries y handoffs con disciplina tecnica."] if item],
+            source_files=shared_sources + ["ACP/workflows/langgraph.json", "ACP/adapters/langgraph.md"],
+            adapter_doc="ACP/adapters/langgraph.md",
+        ),
+        _target_candidate(
+            target_key="n8n",
+            label="n8n",
+            score=46
+            + (12 if external_tool_count else 0)
+            + (8 if approval_pause else 0)
+            - (12 if has_memory else 0)
+            - (10 if has_supervisor or has_complex_reasoning else 0)
+            - (12 if has_open_questions else 0),
+            evidence=[
+                "Viable para automatizaciones por nodos si APIs y aprobaciones estan claras.",
+                f"external_tools={external_tool_count}",
+                f"approval_pause={str(approval_pause).lower()}",
+            ],
+            warnings=[
+                item
+                for item in [
+                    general_warning,
+                    "No crear workflow real sin credenciales, endpoints, payloads y politica HITL confirmados.",
+                    "No ideal para memoria avanzada, estado fino o reasoning complejo.",
+                ]
+                if item
+            ],
+            source_files=shared_sources + ["ACP/adapters/n8n.md"],
+            adapter_doc="ACP/adapters/n8n.md",
+            orientation_only=True,
+        ),
+        _target_candidate(
+            target_key="make",
+            label="Make",
+            score=42
+            + (10 if external_tool_count else 0)
+            + (8 if workflow_steps <= 4 else 0)
+            - (12 if has_memory else 0)
+            - (10 if has_supervisor or has_complex_reasoning else 0)
+            - (12 if has_open_questions else 0),
+            evidence=[
+                "Viable para escenarios SaaS lineales y subflujos acotados.",
+                f"workflow_steps={workflow_steps}",
+                f"external_tools={external_tool_count}",
+            ],
+            warnings=[
+                item
+                for item in [
+                    general_warning,
+                    "Menos adecuado para agentes con retries complejos, memoria persistente o gobernanza avanzada.",
+                ]
+                if item
+            ],
+            source_files=shared_sources + ["ACP/adapters/make.md"],
+            adapter_doc="ACP/adapters/make.md",
+            orientation_only=True,
+        ),
+    ]
+    candidates = sorted(candidates, key=lambda item: int(item["score"]), reverse=True)
+    recommended = candidates[0] if candidates else {}
+    return {
+        "schema_version": "acp-implementation-target-selector.v1",
+        "source_files": shared_sources,
+        "recommended_target_key": recommended.get("target_key", ""),
+        "recommended_label": recommended.get("label", ""),
+        "confidence": recommended.get("confidence", "baja"),
+        "reason": (
+            "Diferir el target final hasta cerrar readiness."
+            if recommended.get("target_key") == "defer-target"
+            else "Target recomendado segun arquitectura, tools, workflow y readiness del ACP."
+        ),
+        "candidates": candidates,
+        "rules": [
+            "No generar proyectos reales en n8n o Make sin credenciales, permisos y confirmacion explicita.",
+            "No cambiar la arquitectura aprobada; el target materializa el ACP existente.",
+            "Si can_start_build=false, resolver o delegar explicitamente antes de bloquear target final.",
+        ],
+    }
+
+
+def _implementation_cockpit(
+    snapshot: SessionSnapshot,
+    preview: ACPPreview,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+) -> dict[str, Any]:
+    records = response_records or []
+    readiness = preview.construction_readiness
+    question_views = build_construction_question_views(preview, records)
+    deferred_decisions = build_deferred_construction_decision_backlog(preview, records)
+
+    decision_cards: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for question in question_views:
+        if question.status != "open":
+            continue
+        moment = _implementation_prompt_moment(question.domain, question.blocking, question.status)
+        key = f"open:{question.question_key}"
+        seen_keys.add(key)
+        decision_cards.append(
+            {
+                "key": key,
+                "question_key": question.question_key,
+                "status": "open",
+                "domain": question.domain or "general",
+                "question_text": question.question_text,
+                "target_owner": question.target_owner or "builder",
+                "source_file": "ACP/construction-readiness/open-questions.yaml",
+                "prompt_moment": moment,
+                "urgency_label": _implementation_urgency_label(moment),
+                "blocking": question.blocking,
+                "must_prompt": question.blocking or moment in {"before_target", "before_build"},
+                "impact_summary": (
+                    question.impact_analysis.impact_summary
+                    if question.impact_analysis is not None
+                    else question.rationale
+                ),
+                "impacted_artifacts": list(question.impacted_artifacts or [])[:6],
+                "option_count": len(question.options or []),
+            }
+        )
+
+    for item in deferred_decisions:
+        question_key = str(item.get("question_key") or "")
+        key = f"deferred:{question_key}"
+        if key in seen_keys:
+            continue
+        domain = str(item.get("domain") or "general")
+        moment = _implementation_prompt_moment(domain, False, "deferred")
+        decision_cards.append(
+            {
+                "key": key,
+                "question_key": question_key,
+                "status": "deferred_to_implementation",
+                "domain": domain,
+                "question_text": str(item.get("question_text") or ""),
+                "target_owner": str(item.get("target_owner") or "builder"),
+                "source_file": "ACP/construction-readiness/deferred-decisions.yaml",
+                "prompt_moment": moment,
+                "urgency_label": _implementation_urgency_label(moment),
+                "blocking": False,
+                "must_prompt": True,
+                "impact_summary": str(item.get("rationale") or "Decision delegada formalmente a implementacion."),
+                "impacted_artifacts": list((item.get("impacted_artifacts") or []))[:6],
+                "option_count": len(item.get("options") or []),
+            }
+        )
+
+    prompt_order = {
+        "before_build": 0,
+        "before_target": 1,
+        "during_implementation": 2,
+        "opening_review": 3,
+    }
+    decision_cards = sorted(
+        decision_cards,
+        key=lambda item: (
+            prompt_order.get(str(item.get("prompt_moment")), 9),
+            str(item.get("domain") or ""),
+            str(item.get("question_key") or ""),
+        ),
+    )
+
+    if readiness.can_start_build:
+        headline = "Listo para iniciar construccion"
+        recommended_action = "start_agentic_build"
+    elif readiness.blocking_gaps > 0:
+        headline = "Resolver bloqueos antes de construir"
+        recommended_action = "resolve_blocking_construction_gaps"
+    elif decision_cards:
+        headline = "Resolver decisiones antes de construir con confianza"
+        recommended_action = "answer_open_questions"
+    else:
+        headline = "Revisar supuestos antes de avanzar"
+        recommended_action = readiness.next_recommended_action
+
+    return {
+        "schema_version": "acp-implementation-cockpit.v1",
+        "source_files": [
+            "ACP/construction-readiness/overview.yaml",
+            "ACP/construction-readiness/open-questions.yaml",
+            "ACP/construction-readiness/deferred-decisions.yaml",
+            "ACP/construction-readiness/question-impact-log.yaml",
+            "ACP/construction-readiness/resolution-workflow.yaml",
+        ],
+        "readiness": {
+            "headline": headline,
+            "overall_status": readiness.overall_status,
+            "can_export_zip": preview.validation.can_export_zip,
+            "can_start_build": readiness.can_start_build,
+            "blocking_gaps": readiness.blocking_gaps,
+            "open_questions": readiness.open_questions,
+            "assumptions_count": readiness.assumptions_count,
+            "next_recommended_action": recommended_action,
+        },
+        "prompt_policy": {
+            "policy": "DO_NOT_ASSUME_SILENTLY",
+            "behavior": "MUST_PROMPT_USER_DURING_IMPLEMENTATION",
+            "summary": (
+                "Las preguntas abiertas o delegadas deben mostrarse antes de elegir target, "
+                "antes de construir o durante implementacion segun el dominio afectado."
+            ),
+        },
+        "decision_queue": decision_cards[:18],
+        "decision_queue_total": len(decision_cards),
+        "target_selector": _implementation_target_selector(snapshot, preview),
+        "interaction_rules": [
+            {
+                "moment": "opening_review",
+                "label": "Al abrir el ACP",
+                "rule": "Mostrar estado general, preguntas abiertas y decisiones delegadas sin bloquear la lectura inicial.",
+            },
+            {
+                "moment": "before_target",
+                "label": "Antes de elegir target",
+                "rule": "Pedir decisiones que afecten runtime, deployment, tools, memoria, conocimiento o integraciones.",
+            },
+            {
+                "moment": "before_build",
+                "label": "Antes de construir",
+                "rule": "Bloquear avance si la decision es marcada como bloqueante o impide can_start_build=true.",
+            },
+            {
+                "moment": "during_implementation",
+                "label": "Durante implementacion",
+                "rule": "Hacer saltar las decisiones delegadas justo cuando el builder toque el dominio afectado.",
+            },
+        ],
+    }
+
+
+def _build_acp_navigation_manifest(
+    snapshot: SessionSnapshot,
+    preview: ACPPreview,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for file in sorted(preview.files, key=lambda item: item.path):
         if file.path in {"ACP/index.html", "ACP/navigation-manifest.v1.json"} or file.path.startswith("ACP/assets/"):
@@ -2973,6 +3492,7 @@ def _build_acp_navigation_manifest(snapshot: SessionSnapshot, preview: ACPPrevie
         "validation_status": preview.validation.overall_status,
         "can_export_zip": preview.validation.can_export_zip,
         "construction_readiness": preview.construction_readiness.model_dump(mode="json"),
+        "implementation_cockpit": _implementation_cockpit(snapshot, preview, response_records),
         "storyline": chapters,
         "items": items,
     }
@@ -2980,7 +3500,7 @@ def _build_acp_navigation_manifest(snapshot: SessionSnapshot, preview: ACPPrevie
 
 def _acp_viewer_css() -> str:
     return """
-:root { color-scheme: light; --ink:#111827; --muted:#566174; --line:#d7deeb; --panel:#ffffff; --soft:#f4f7fb; --brand:#2f43bd; --accent:#2f7d52; --warn:#9a5a00; }
+:root { color-scheme: light; --ink:#111827; --muted:#566174; --line:#d7deeb; --panel:#ffffff; --soft:#f4f7fb; --brand:#2f43bd; --accent:#2f7d52; --warn:#9a5a00; --danger:#b42318; }
 * { box-sizing:border-box; }
 body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:linear-gradient(135deg,#fbfcff,#eef4ff); }
 a { color:inherit; }
@@ -2998,6 +3518,42 @@ a { color:inherit; }
 .hero { padding:28px; margin-bottom:22px; }
 .hero h1 { margin:0; font-size:34px; }
 .hero p,.chapter p { color:var(--muted); line-height:1.7; }
+.cockpit { margin-top:22px; border:1px solid var(--line); border-radius:8px; background:#fbfcff; overflow:hidden; }
+.cockpit-head { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(240px,.8fr); gap:16px; padding:18px; border-bottom:1px solid var(--line); }
+.cockpit h2 { margin:4px 0 8px; font-size:21px; line-height:1.2; }
+.cockpit p { margin:0; color:var(--muted); font-size:13px; line-height:1.55; }
+.cockpit-status { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.metric { border:1px solid var(--line); border-radius:8px; padding:10px; background:white; min-height:66px; }
+.metric strong { display:block; font-size:20px; line-height:1; }
+.metric span { display:block; margin-top:6px; color:var(--muted); font-size:11px; font-weight:850; text-transform:uppercase; letter-spacing:.08em; }
+.gate { display:inline-flex; width:max-content; max-width:100%; border-radius:999px; padding:6px 9px; font-size:12px; font-weight:900; background:#eaf7ef; color:var(--accent); }
+.gate.warn { background:#fff3df; color:var(--warn); }
+.gate.danger { background:#fff0f0; color:var(--danger); }
+.decision-queue { display:grid; gap:10px; padding:14px 18px 18px; }
+.decision-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; border:1px solid var(--line); border-radius:8px; background:white; padding:12px; }
+.decision-card h3 { margin:4px 0 6px; font-size:14px; line-height:1.35; }
+.decision-card p { font-size:12px; }
+.target-selector { padding:0 18px 18px; }
+.target-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+.target-head h3 { margin:0; font-size:15px; }
+.target-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+.target-card { border:1px solid var(--line); border-radius:8px; background:white; padding:12px; }
+.target-card.recommended { border-color:var(--brand); box-shadow:0 10px 22px rgba(47,67,189,.10); }
+.target-score { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+.target-score strong { font-size:14px; }
+.score { border-radius:999px; padding:5px 8px; background:#eaf0ff; color:var(--brand); font-size:12px; font-weight:900; }
+.target-card p { margin:0 0 8px; font-size:12px; color:var(--muted); line-height:1.45; }
+.target-card ul { margin:8px 0 0; padding-left:18px; color:var(--muted); font-size:12px; line-height:1.45; }
+.target-card a { display:inline-flex; margin-top:10px; border-radius:8px; background:var(--soft); color:var(--brand); padding:7px 9px; text-decoration:none; font-weight:850; font-size:12px; }
+.decision-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.tag { border-radius:999px; background:var(--soft); color:var(--muted); padding:5px 8px; font-size:11px; font-weight:850; }
+.tag.urgent { background:#fff3df; color:var(--warn); }
+.tag.blocking { background:#fff0f0; color:var(--danger); }
+.source-link { align-self:start; white-space:nowrap; border-radius:8px; background:var(--soft); color:var(--brand); padding:8px 10px; text-decoration:none; font-weight:850; font-size:12px; }
+.rules { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; padding:0 18px 18px; }
+.rule { border:1px solid var(--line); border-radius:8px; background:white; padding:10px; }
+.rule strong { display:block; font-size:12px; margin-bottom:4px; }
+.rule span { color:var(--muted); font-size:12px; line-height:1.45; }
 .chapter { padding:28px; }
 .eyebrow { color:var(--brand); font-size:12px; font-weight:900; letter-spacing:.18em; text-transform:uppercase; }
 .chapter h2 { margin:8px 0 12px; font-size:30px; }
@@ -3017,7 +3573,7 @@ a { color:inherit; }
 .controls { display:flex; justify-content:space-between; gap:12px; margin-top:24px; }
 .controls button { border:0; border-radius:14px; padding:12px 16px; background:var(--brand); color:white; font-weight:900; cursor:pointer; }
 .controls button.secondary { background:white; color:var(--brand); border:1px solid var(--line); }
-@media (max-width:860px){ .shell{grid-template-columns:1fr;} .sidebar{position:relative;height:auto;} .main{padding:18px;} .hero h1{font-size:28px;} }
+@media (max-width:860px){ .shell{grid-template-columns:1fr;} .sidebar{position:relative;height:auto;} .main{padding:18px;} .hero h1{font-size:28px;} .cockpit-head{grid-template-columns:1fr;} .decision-card{grid-template-columns:1fr;} .source-link{width:max-content;} }
 """.strip()
 
 
@@ -3027,9 +3583,88 @@ def _acp_viewer_js() -> str:
   const data = window.ACP_NAVIGATION_MANIFEST || {storyline:[], items:[]};
   const nav = document.querySelector('[data-nav]');
   const chapter = document.querySelector('[data-chapter]');
+  const cockpitNode = document.querySelector('[data-cockpit]');
   const search = document.querySelector('[data-search]');
   let current = 0;
   function esc(value){ return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+  function shortPath(path){ return String(path || '').replace(/^ACP\\//, ''); }
+  function gateClass(readiness){
+    if(readiness.can_start_build){ return 'gate'; }
+    if((readiness.blocking_gaps || 0) > 0){ return 'gate danger'; }
+    return 'gate warn';
+  }
+  function renderCockpit(){
+    if(!cockpitNode){ return; }
+    const cockpit = data.implementation_cockpit || {};
+    const readiness = cockpit.readiness || {};
+    const queue = cockpit.decision_queue || [];
+    const targetSelector = cockpit.target_selector || {};
+    const rules = cockpit.interaction_rules || [];
+    const queueTotal = cockpit.decision_queue_total || queue.length;
+    const sourceFiles = cockpit.source_files || [];
+    const visibleQueue = queue.slice(0, 6);
+    const statusText = readiness.can_start_build ? 'Construccion habilitada' : 'Decisiones pendientes';
+    const queueHtml = visibleQueue.length ? visibleQueue.map(item => {
+      const source = shortPath(item.source_file || 'ACP/construction-readiness/open-questions.yaml');
+      const tags = [
+        `<span class="tag urgent">${esc(item.urgency_label || 'Revisar')}</span>`,
+        `<span class="tag">${esc(item.domain || 'general')}</span>`,
+        `<span class="tag">${esc(item.target_owner || 'builder')}</span>`,
+      ];
+      if(item.blocking){ tags.unshift('<span class="tag blocking">Bloqueante</span>'); }
+      if(item.must_prompt){ tags.push('<span class="tag blocking">No asumir</span>'); }
+      return `<article class="decision-card">
+        <div>
+          <small>${esc(item.status || 'open')} · ${esc(item.prompt_moment || 'review')}</small>
+          <h3>${esc(item.question_text || item.question_key || 'Decision pendiente')}</h3>
+          <p>${esc(item.impact_summary || 'Revisar impacto en los artefactos fuente antes de implementar.')}</p>
+          <div class="decision-meta">${tags.join('')}</div>
+        </div>
+        <a class="source-link" href="${esc(source)}" target="_blank" rel="noreferrer">Fuente</a>
+      </article>`;
+    }).join('') : '<p>No hay preguntas abiertas ni decisiones delegadas en la cola de implementacion.</p>';
+    const rulesHtml = rules.map(rule => `<div class="rule"><strong>${esc(rule.label)}</strong><span>${esc(rule.rule)}</span></div>`).join('');
+    const targetCandidates = (targetSelector.candidates || []).slice(0, 6);
+    const targetHtml = targetCandidates.length ? `<div class="target-selector">
+      <div class="target-head">
+        <h3>Implementation Target Selector</h3>
+        <span class="gate ${targetSelector.recommended_target_key === 'defer-target' ? 'warn' : ''}">${esc(targetSelector.recommended_label || 'Sin recomendacion')} · ${esc(targetSelector.confidence || 'baja')}</span>
+      </div>
+      <p>${esc(targetSelector.reason || 'Recomendacion derivada de adapter registry, readiness, tools y workflows.')}</p>
+      <div class="target-grid">${targetCandidates.map(item => {
+        const doc = shortPath(item.adapter_doc || '');
+        const evidence = (item.evidence || []).slice(0, 3).map(value => `<li>${esc(value)}</li>`).join('');
+        const warnings = (item.warnings || []).slice(0, 2).map(value => `<li>${esc(value)}</li>`).join('');
+        const recommended = item.target_key === targetSelector.recommended_target_key;
+        return `<article class="target-card ${recommended ? 'recommended' : ''}">
+          <div class="target-score"><strong>${esc(item.label)}</strong><span class="score">${esc(item.score)} · ${esc(item.confidence)}</span></div>
+          <p>${esc(item.orientation_only ? 'Orientacion, no despliegue automatico.' : 'Target tecnico de implementacion.')}</p>
+          ${evidence ? `<ul>${evidence}</ul>` : ''}
+          ${warnings ? `<ul>${warnings}</ul>` : ''}
+          ${doc ? `<a href="${esc(doc)}" target="_blank" rel="noreferrer">Ver adapter</a>` : ''}
+        </article>`;
+      }).join('')}</div>
+    </div>` : '';
+    cockpitNode.innerHTML = `<section class="cockpit" aria-label="Implementation cockpit">
+      <div class="cockpit-head">
+        <div>
+          <span class="${gateClass(readiness)}">${esc(statusText)}</span>
+          <h2>${esc(readiness.headline || 'Estado de implementacion')}</h2>
+          <p>${esc((cockpit.prompt_policy || {}).summary || 'Las decisiones de implementacion se muestran desde los artefactos de readiness del ACP.')}</p>
+          <div class="decision-meta">${sourceFiles.slice(0, 4).map(path => `<span class="tag">${esc(shortPath(path))}</span>`).join('')}</div>
+        </div>
+        <div class="cockpit-status">
+          <div class="metric"><strong>${esc(readiness.can_start_build ? 'Si' : 'No')}</strong><span>Can start build</span></div>
+          <div class="metric"><strong>${esc(readiness.open_questions || 0)}</strong><span>Preguntas abiertas</span></div>
+          <div class="metric"><strong>${esc(readiness.blocking_gaps || 0)}</strong><span>Bloqueos</span></div>
+          <div class="metric"><strong>${esc(queueTotal)}</strong><span>Cards en cola</span></div>
+        </div>
+      </div>
+      <div class="decision-queue">${queueHtml}</div>
+      ${targetHtml}
+      <div class="rules">${rulesHtml}</div>
+    </section>`;
+  }
   function fileCard(item){
     const path = (item.path || '').replace(/^ACP\\//, '');
     const isSvg = path.endsWith('.svg');
@@ -3136,6 +3771,7 @@ def _acp_viewer_js() -> str:
       nav.querySelectorAll('button').forEach(btn => { btn.hidden = query && !btn.textContent.toLowerCase().includes(query); });
     });
   }
+  renderCockpit();
   render();
 })();
 """.strip()
@@ -3168,6 +3804,7 @@ def _build_acp_viewer_html(manifest: dict[str, Any]) -> str:
         <div class="eyebrow">ACP Viewer</div>
         <h1>De Blueprint aprobado a paquete implementable</h1>
         <p>Este viewer recorre el ACP como historia de implementacion: entrada aprobada, validacion, decisiones, especificacion, costos, readiness, package e implementacion.</p>
+        <div data-cockpit></div>
       </section>
       <section class="chapter" data-chapter aria-live="polite"></section>
     </main>
@@ -3178,8 +3815,12 @@ def _build_acp_viewer_html(manifest: dict[str, Any]) -> str:
 </html>"""
 
 
-def _build_acp_viewer_files(snapshot: SessionSnapshot, preview: ACPPreview) -> list[ACPFileEntry]:
-    manifest = _build_acp_navigation_manifest(snapshot, preview)
+def _build_acp_viewer_files(
+    snapshot: SessionSnapshot,
+    preview: ACPPreview,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+) -> list[ACPFileEntry]:
+    manifest = _build_acp_navigation_manifest(snapshot, preview, response_records)
     return [
         build_acp_file_entry(
             path="ACP/navigation-manifest.v1.json",
@@ -3814,7 +4455,7 @@ def generate_acp_files(
     acp_without_viewer = sorted(acp_without_conformance + conformance_files, key=lambda item: item.path)
     viewer_preview = build_acp_preview(snapshot, acp_without_viewer)
     viewer_preview = append_construction_readiness_gaps(viewer_preview, extra_readiness_gaps)
-    viewer_files = _build_acp_viewer_files(snapshot, viewer_preview)
+    viewer_files = _build_acp_viewer_files(snapshot, viewer_preview, response_records)
     return sorted(acp_without_viewer + viewer_files, key=lambda item: item.path)
 
 
