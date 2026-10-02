@@ -4,12 +4,29 @@ import json
 
 from sqlmodel import Session, select
 
-from app.models import ArtifactRegistryRecord, JourneyArtifactState, JourneyStageArtifactRecord, SessionRecord
+from app.models import (
+    ArtifactRegistryRecord,
+    ConstructionQuestionResponseRecord,
+    JourneyArtifactState,
+    JourneyStageArtifactRecord,
+    SessionRecord,
+)
+from app.services.deliverable_catalog.contracts import LEAN_STAGE_ORDER
 from app.services.deliverable_catalog.registry_service import get_registry_entry
 
 
 APPROVED_STATES = (JourneyArtifactState.approved, JourneyArtifactState.approved_legacy)
 MAX_CONTEXT_CHARS = 24_000
+_STAGE_KEYS = set(LEAN_STAGE_ORDER)
+_ACP_CONTEXT_STAGE_KEYS = {"validate", "package"}
+_ACP_CONTEXT_REFS = {"generated_acp_file", "generated_blueprint_export"}
+_SESSION_STAGE_ALIASES = {
+    "discovery": "discover",
+    "canvas": "define",
+    "blueprint": "design",
+    "latest_tool_recommendation": "tools",
+    "estimation_report": "estimate",
+}
 
 
 def build_approved_deliverable_context(
@@ -25,8 +42,12 @@ def build_approved_deliverable_context(
 
     context_policy = entry.context_policy
     requested_refs = list(dict.fromkeys([*context_policy.short_term_refs, *entry.dependency_policy.depends_on]))
-    stage_keys = {ref.removeprefix("session.") for ref in requested_refs if ref.startswith("session.")}
-    artifact_keys = {ref for ref in requested_refs if not ref.startswith("session.")}
+    stage_keys = {
+        stage_key
+        for ref in requested_refs
+        if (stage_key := _stage_key_from_context_ref(ref)) is not None
+    }
+    artifact_keys = {ref for ref in requested_refs if _stage_key_from_context_ref(ref) is None}
 
     approved_records = db.exec(
         select(JourneyStageArtifactRecord)
@@ -41,16 +62,7 @@ def build_approved_deliverable_context(
         if artifact.stage_key in stage_keys and artifact.stage_key not in latest_by_stage:
             latest_by_stage[artifact.stage_key] = artifact
 
-    registry_records = []
-    if artifact_keys:
-        registry_records = db.exec(
-            select(ArtifactRegistryRecord)
-            .where(
-                ArtifactRegistryRecord.session_id == record.id,
-                ArtifactRegistryRecord.artifact_key.in_(tuple(artifact_keys)),
-            )
-            .order_by(ArtifactRegistryRecord.artifact_key.asc(), ArtifactRegistryRecord.created_at.desc())
-        ).all()
+    registry_records = _load_registry_records_for_refs(db, record=record, artifact_keys=artifact_keys)
 
     refs: list[str] = []
     stages: dict[str, object] = {}
@@ -69,7 +81,8 @@ def build_approved_deliverable_context(
 
     seen_artifact_keys: set[str] = set()
     for artifact in registry_records:
-        if artifact.artifact_key in seen_artifact_keys:
+        artifact_context_key = _artifact_context_key(artifact)
+        if artifact_context_key in seen_artifact_keys:
             continue
         value, size = _bounded_value(
             {"content": artifact.content_text, "metadata": artifact.artifact_metadata},
@@ -77,19 +90,30 @@ def build_approved_deliverable_context(
         )
         if size <= 0:
             continue
-        seen_artifact_keys.add(artifact.artifact_key)
-        artifacts[artifact.artifact_key] = value
+        seen_artifact_keys.add(artifact_context_key)
+        artifacts[artifact_context_key] = value
         used += size
         refs.append(f"artifact:{artifact.id}")
 
     if not refs:
-        return _build_snapshot_fallback_context(
+        snapshot_context, snapshot_refs = _build_snapshot_fallback_context(
             db,
             record=record,
             deliverable_key=deliverable_key,
             requested_refs=requested_refs,
             max_context_tokens=context_policy.max_context_tokens,
         )
+        if snapshot_refs:
+            return snapshot_context, snapshot_refs
+        if _needs_acp_package_context(deliverable_key=deliverable_key, requested_refs=requested_refs, stage_keys=stage_keys):
+            return _build_acp_package_fallback_context(
+                db,
+                record=record,
+                deliverable_key=deliverable_key,
+                requested_refs=requested_refs,
+                max_context_tokens=context_policy.max_context_tokens,
+            )
+        return {}, []
 
     return (
         {
@@ -102,6 +126,168 @@ def build_approved_deliverable_context(
                 "max_context_tokens": context_policy.max_context_tokens,
             },
             "approved_context": {"stages": stages, "artifacts": artifacts},
+        },
+        refs,
+    )
+
+
+def _stage_key_from_context_ref(ref: str) -> str | None:
+    normalized = str(ref or "").strip()
+    if normalized.startswith("stage."):
+        candidate = normalized.removeprefix("stage.")
+    elif normalized.startswith("session."):
+        candidate = normalized.removeprefix("session.")
+    else:
+        return None
+    candidate = _SESSION_STAGE_ALIASES.get(candidate, candidate)
+    return candidate if candidate in _STAGE_KEYS else None
+
+
+def _load_registry_records_for_refs(
+    db: Session,
+    *,
+    record: SessionRecord,
+    artifact_keys: set[str],
+) -> list[ArtifactRegistryRecord]:
+    if not artifact_keys:
+        return []
+
+    candidates = db.exec(
+        select(ArtifactRegistryRecord)
+        .where(ArtifactRegistryRecord.session_id == record.id)
+        .order_by(ArtifactRegistryRecord.created_at.desc())
+    ).all()
+    selected: list[ArtifactRegistryRecord] = []
+    seen: set[str] = set()
+    for artifact in candidates:
+        aliases = _artifact_aliases(artifact)
+        if not aliases.intersection(artifact_keys):
+            continue
+        context_key = _artifact_context_key(artifact)
+        if context_key in seen:
+            continue
+        seen.add(context_key)
+        selected.append(artifact)
+    return selected
+
+
+def _artifact_aliases(artifact: ArtifactRegistryRecord) -> set[str]:
+    aliases = {str(artifact.artifact_key or "").strip()}
+    metadata = artifact.artifact_metadata or {}
+    for key in ("deliverable_key", "artifact_key", "catalog_key"):
+        value = metadata.get(key)
+        if value is not None:
+            aliases.add(str(value).strip())
+    return {alias for alias in aliases if alias}
+
+
+def _artifact_context_key(artifact: ArtifactRegistryRecord) -> str:
+    metadata = artifact.artifact_metadata or {}
+    for key in ("deliverable_key", "artifact_key", "catalog_key"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+    return str(artifact.artifact_key or "").strip()
+
+
+def _needs_acp_package_context(
+    *,
+    deliverable_key: str,
+    requested_refs: list[str],
+    stage_keys: set[str],
+) -> bool:
+    if stage_keys.intersection(_ACP_CONTEXT_STAGE_KEYS):
+        return True
+    if set(requested_refs).intersection(_ACP_CONTEXT_REFS):
+        return True
+    return deliverable_key.startswith(("acp.", "validation.", "evaluation."))
+
+
+def _build_acp_package_fallback_context(
+    db: Session,
+    *,
+    record: SessionRecord,
+    deliverable_key: str,
+    requested_refs: list[str],
+    max_context_tokens: int,
+) -> tuple[dict[str, object], list[str]]:
+    """Build ACP construction context from generated product artifacts and resolved questions."""
+
+    budget = min(MAX_CONTEXT_CHARS, max(1_000, int(max_context_tokens or 5_000) * 4))
+    used = 0
+    refs: list[str] = []
+    artifacts: dict[str, object] = {}
+    questions: list[dict[str, object]] = []
+
+    artifact_records = db.exec(
+        select(ArtifactRegistryRecord)
+        .where(ArtifactRegistryRecord.session_id == record.id)
+        .order_by(ArtifactRegistryRecord.created_at.desc())
+    ).all()
+    seen_artifact_keys: set[str] = set()
+    for artifact in artifact_records:
+        context_key = _artifact_context_key(artifact)
+        if context_key in seen_artifact_keys:
+            continue
+        value, size = _bounded_value(
+            {"content": artifact.content_text, "metadata": artifact.artifact_metadata},
+            budget - used,
+        )
+        if size <= 0:
+            break
+        seen_artifact_keys.add(context_key)
+        artifacts[context_key] = value
+        used += size
+        refs.append(f"artifact:{artifact.id}")
+
+    question_records = db.exec(
+        select(ConstructionQuestionResponseRecord)
+        .where(ConstructionQuestionResponseRecord.session_id == record.id)
+        .order_by(ConstructionQuestionResponseRecord.updated_at.desc())
+    ).all()
+    for question in question_records:
+        value, size = _bounded_value(
+            {
+                "question_key": question.question_key,
+                "gap_key": question.gap_key,
+                "gap_title": question.gap_title,
+                "domain": question.domain,
+                "question_text": question.question_text,
+                "rationale": question.rationale,
+                "expected_answer_format": question.expected_answer_format,
+                "target_owner": question.target_owner,
+                "blocking": question.blocking,
+                "status": question.status,
+                "answer_text": question.answer_text,
+                "owner_role": question.owner_role,
+                "impacted_artifacts": question.impacted_artifacts,
+                "decision_context": question.decision_context,
+            },
+            budget - used,
+        )
+        if size <= 0:
+            break
+        questions.append(value if isinstance(value, dict) else {"value": value})
+        used += size
+        refs.append(f"acp-question:{question.id}")
+
+    if not refs:
+        return {}, []
+
+    return (
+        {
+            "summary": f"Contexto ACP consolidado para {deliverable_key}.",
+            "project_title": record.title,
+            "deliverable_key": deliverable_key,
+            "context_policy": {
+                "retrieval_strategy": "acp_package_context_from_product_artifacts_and_readiness_questions",
+                "requested_refs": requested_refs,
+                "max_context_tokens": max_context_tokens,
+            },
+            "approved_context": {
+                "artifacts": artifacts,
+                "construction_questions": questions,
+            },
         },
         refs,
     )

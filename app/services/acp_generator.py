@@ -537,6 +537,7 @@ def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
         "├── knowledge/                # Fuentes documentales, embeddings e ingestión",
         "├── tools/                    # Contratos tipados y permisos de herramientas",
         "├── workflows/                # Máquinas de estado y grafos ejecutables",
+        "├── construction-readiness/   # Guía paso a paso, preguntas, gaps y decisiones",
         "├── prompts/                  # Prompts de roles (planner, evaluator, system, skills)",
         "├── adapters/                 # Guías de configuración para Cursor, Codex y Claude Code",
         "├── conformance/              # Reglas de validación y linters de construcción",
@@ -549,9 +550,10 @@ def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
         "",
         "## 3. Recorrido recomendado",
         "1. Abre `ACP/index.html` para recorrer la historia de implementación.",
-        "2. Usa `ACP/IMPLEMENTATION_GUIDE.md` como contrato rector para Codex, Cursor, Antigravity, Claude Code u otra herramienta agentica.",
-        "3. Revisa `ACP/construction-readiness/open-questions.yaml` y `ACP/construction-readiness/deferred-decisions.yaml` antes de modificar artefactos.",
-        "4. Consulta `ACP/costs/operational-cost-estimate.md` para entender supuestos de operación y consumo.",
+        "2. Lee `ACP/construction-readiness/construction-guide.md` como guía paso a paso antes de construir.",
+        "3. Usa `ACP/IMPLEMENTATION_GUIDE.md` como contrato rector para Codex, Cursor, Antigravity, Claude Code u otra herramienta agentica.",
+        "4. Revisa `ACP/construction-readiness/open-questions.yaml` y `ACP/construction-readiness/deferred-decisions.yaml` antes de modificar artefactos.",
+        "5. Consulta `ACP/costs/operational-cost-estimate.md` para entender supuestos de operación y consumo.",
         "",
         "## 4. Instrucciones de Arranque y Asistencia con IDEs",
         "### Aceleración con Herramientas Agénticas:",
@@ -1965,6 +1967,636 @@ def _build_tools_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     return files
 
 
+def _tool_connector_slug(tool: Any, index: int) -> str:
+    registered_ref = str(getattr(tool, "registered_api_ref", "") or "").strip()
+    source = registered_ref.rsplit("/", 1)[-1] if registered_ref else str(getattr(tool, "name", "") or "")
+    return _slugify(source, default=f"tool-{index}")
+
+
+def _tool_contract_ref(tool: Any, index: int) -> str:
+    tool_type = getattr(tool, "tool_type", "external") or "external"
+    return build_tool_contract_path(str(getattr(tool, "name", "") or ""), index, tool_type=tool_type)
+
+
+def _tool_secret_key(tool: Any, index: int) -> str:
+    return _tool_connector_slug(tool, index).replace("-", "_").upper()
+
+
+def _tool_permission_mode(tool: Any) -> str:
+    return "write" if getattr(tool, "has_side_effects", False) else "read"
+
+
+def _tool_connector_profile_payload(tool: Any, index: int) -> dict[str, Any]:
+    slug = _tool_connector_slug(tool, index)
+    security_config = getattr(tool, "security_config", {}) or {}
+    auth_scheme = str(security_config.get("auth_scheme") or security_config.get("type") or "").strip()
+    expected_auth_schemes = [auth_scheme] if auth_scheme else ["bearer", "api_key", "oauth2", "basic", "service_account", "custom"]
+    return {
+        "schema_version": "tool-connector-profile.v1",
+        "connector_key": slug,
+        "label": getattr(tool, "name", "") or f"Tool {index}",
+        "source_tool_contract": _tool_contract_ref(tool, index),
+        "tool_type": getattr(tool, "tool_type", "external") or "external",
+        "provider_model": {
+            "known_provider_required": False,
+            "custom_provider_supported": True,
+            "registered_api_ref": getattr(tool, "registered_api_ref", "") or "",
+            "supported_binding_types": ["rest_api", "webhook", "database", "low_code_adapter", "custom"],
+        },
+        "contract_surface": {
+            "purpose": getattr(tool, "purpose", "") or "",
+            "permission_mode": _tool_permission_mode(tool),
+            "inputs": getattr(tool, "request_schema", {}) or {item: {"type": "string", "required": False} for item in getattr(tool, "inputs", [])},
+            "outputs": getattr(tool, "response_schema", {}) or {item: {"type": "string"} for item in getattr(tool, "outputs", [])},
+            "when_to_use": getattr(tool, "when_to_use", "") or "",
+        },
+        "configuration_schema": {
+            "required_fields": ["binding_type", "environment", "base_url_ref", "auth_secret_ref", "enabled_actions"],
+            "expected_auth_schemes": expected_auth_schemes,
+            "secret_policy": "references_only_no_plaintext_values",
+            "environment_specific_bindings": True,
+        },
+        "governance": {
+            "risk_level": getattr(tool, "risk_level", "") or "needs_review",
+            "requires_approval": bool(getattr(tool, "requires_approval", False)),
+            "approval_reason": getattr(tool, "approval_reason", "") or "",
+            "allowed_roles": list(getattr(tool, "permissions", []) or []),
+            "side_effects": bool(getattr(tool, "has_side_effects", False)),
+            "retry_policy": getattr(tool, "retry_strategy", "") or "needs_review",
+            "timeout_policy": getattr(tool, "timeout_policy", "30s") or "30s",
+            "failure_mode": getattr(tool, "failure_mode", "") or "",
+            "compensation_strategy": getattr(tool, "compensation_strategy", "") or "",
+        },
+    }
+
+
+def _tool_binding_payload(tool: Any, index: int, environment: str) -> dict[str, Any]:
+    slug = _tool_connector_slug(tool, index)
+    secret_key = _tool_secret_key(tool, index)
+    tool_name = getattr(tool, "name", "") or f"tool_{index}"
+    return {
+        "schema_version": "tool-environment-binding.v1",
+        "environment": environment,
+        "connector_key": slug,
+        "tool_name": tool_name,
+        "source_tool_contract": _tool_contract_ref(tool, index),
+        "binding": {
+            "binding_type": "needs_review",
+            "provider": "custom_or_client_specific",
+            "base_url_ref": f"env:{secret_key}_{environment.upper()}_BASE_URL",
+            "auth_secret_ref": f"secret:{secret_key}_{environment.upper()}_AUTH",
+            "webhook_secret_ref": f"secret:{secret_key}_{environment.upper()}_WEBHOOK_SECRET",
+            "enabled_actions": [tool_name],
+            "client_owned_contract": True,
+        },
+        "approval_overrides": {
+            "requires_approval": bool(getattr(tool, "requires_approval", False)),
+            "side_effects": bool(getattr(tool, "has_side_effects", False)),
+            "approval_reason": getattr(tool, "approval_reason", "") or "",
+            "production_write_actions_require_named_owner": bool(getattr(tool, "has_side_effects", False)),
+        },
+        "validation": {
+            "smoke_test_ref": f"ACP/tools/tests/{slug}-smoke-test.yaml",
+            "contract_must_match_blueprint_tool": True,
+            "fail_closed_when_binding_missing": environment == "production",
+        },
+        "notes": [
+            "Completar este binding con el contrato real del cliente antes de activar la tool.",
+            "No almacenar secretos planos en el ACP; usar referencias de entorno o vault.",
+        ],
+    }
+
+
+def _tool_smoke_test_payload(tool: Any, index: int) -> dict[str, Any]:
+    slug = _tool_connector_slug(tool, index)
+    return {
+        "schema_version": "tool-smoke-test.v1",
+        "connector_key": slug,
+        "tool_name": getattr(tool, "name", "") or f"tool_{index}",
+        "source_tool_contract": _tool_contract_ref(tool, index),
+        "checks": [
+            {"check": "binding_resolves", "description": "El binding del entorno existe y apunta a referencias, no secretos planos."},
+            {"check": "auth_reference_resolves", "description": "La referencia de autenticacion existe en el runtime o vault seleccionado."},
+            {"check": "endpoint_reachable", "description": "El endpoint o adaptador responde dentro del timeout definido."},
+            {"check": "input_schema_validates", "description": "Los inputs enviados cumplen el contrato de la tool."},
+            {"check": "output_schema_validates", "description": "La respuesta puede mapearse al contrato esperado."},
+            {"check": "approval_gate_enforced", "description": "Las acciones con side effects no corren sin aprobacion cuando aplica."},
+            {"check": "fallback_path_available", "description": "Existe salida de error, compensacion o escalamiento humano."},
+        ],
+        "expected_result": "ready_for_environment_activation_after_all_checks_pass",
+    }
+
+
+def _build_tool_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    blueprint = snapshot.blueprint
+    if blueprint is None or not blueprint.tools:
+        return []
+
+    catalog_items: list[dict[str, Any]] = []
+    files: list[ACPFileEntry] = []
+    for index, tool in enumerate(blueprint.tools, start=1):
+        slug = _tool_connector_slug(tool, index)
+        catalog_items.append(
+            {
+                "connector_key": slug,
+                "tool_name": getattr(tool, "name", "") or f"tool_{index}",
+                "profile_ref": f"ACP/tools/connectors/{slug}.yaml",
+                "contract_ref": _tool_contract_ref(tool, index),
+                "sandbox_binding_ref": f"ACP/tools/bindings/{slug}.sandbox.yaml",
+                "production_binding_ref": f"ACP/tools/bindings/{slug}.production.yaml",
+                "smoke_test_ref": f"ACP/tools/tests/{slug}-smoke-test.yaml",
+                "custom_provider_supported": True,
+                "requires_approval": bool(getattr(tool, "requires_approval", False)),
+                "side_effects": bool(getattr(tool, "has_side_effects", False)),
+            }
+        )
+        files.append(
+            build_acp_file_entry(
+                path=f"ACP/tools/connectors/{slug}.yaml",
+                domain="tools",
+                title=f"Connector profile: {getattr(tool, 'name', '') or slug}",
+                format="yaml",
+                source_sections=["blueprint.tools", "tool_contracts", "client_integrations"],
+                content_text=serialize_yaml_document(_tool_connector_profile_payload(tool, index)),
+                warnings=["Perfil generico: completar proveedor, autenticacion y acciones segun la herramienta real del cliente."],
+            )
+        )
+        for environment in ("sandbox", "production"):
+            files.append(
+                build_acp_file_entry(
+                    path=f"ACP/tools/bindings/{slug}.{environment}.yaml",
+                    domain="tools",
+                    title=f"{environment.title()} binding: {getattr(tool, 'name', '') or slug}",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "runtime_secrets", "deployment_environment"],
+                    content_text=serialize_yaml_document(_tool_binding_payload(tool, index, environment)),
+                    warnings=["Binding pendiente de completar con referencias reales del entorno antes de activar la tool."],
+                )
+            )
+        files.append(
+            build_acp_file_entry(
+                path=f"ACP/tools/tests/{slug}-smoke-test.yaml",
+                domain="tools",
+                title=f"Smoke test: {getattr(tool, 'name', '') or slug}",
+                format="yaml",
+                source_sections=["blueprint.tools", "evaluation", "release_readiness"],
+                content_text=serialize_yaml_document(_tool_smoke_test_payload(tool, index)),
+            )
+        )
+
+    catalog_payload = {
+        "schema_version": "tool-connector-catalog.v1",
+        "custom_client_tools_supported": True,
+        "known_connectors_are_examples_not_limits": True,
+        "items": catalog_items,
+    }
+    files.insert(
+        0,
+        build_acp_file_entry(
+            path="ACP/tools/connectors/catalog.yaml",
+            domain="tools",
+            title="Tool connector catalog",
+            format="yaml",
+            source_sections=["blueprint.tools", "tool_contracts"],
+            content_text=serialize_yaml_document(catalog_payload),
+        ),
+    )
+    return files
+
+
+def _flow_node(
+    node_id: str,
+    *,
+    label: str,
+    node_type: str,
+    layer: str,
+    state: str,
+    x: int,
+    y: int,
+    description: str,
+    source_files: list[str],
+    metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": node_id,
+        "label": label,
+        "type": node_type,
+        "layer": layer,
+        "state": state,
+        "x": x,
+        "y": y,
+        "description": description,
+        "source_files": source_files,
+        "metrics": metrics or {},
+    }
+
+
+def _flow_edge(
+    source: str,
+    target: str,
+    relation: str,
+    *,
+    label: str,
+    mode: str = "normal",
+) -> dict[str, Any]:
+    return {
+        "source": source,
+        "target": target,
+        "relation": relation,
+        "label": label,
+        "mode": mode,
+    }
+
+
+def _agent_flow_map_payload(snapshot: SessionSnapshot) -> dict[str, Any]:
+    blueprint = snapshot.blueprint
+    discovery = snapshot.discovery
+    canvas = snapshot.canvas
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    tool_items = list(enumerate(blueprint.tools, start=1)) if blueprint is not None else []
+    workflow_steps = blueprint.delivery_package.workflow_profile.steps if blueprint is not None else []
+    has_knowledge = bool(
+        blueprint is not None
+        and (
+            blueprint.knowledge_profile.mode
+            or blueprint.knowledge_profile.sources
+            or blueprint.knowledge_profile.ingestion_policy.allowed_file_types
+        )
+    )
+    has_memory = bool(blueprint is not None and (blueprint.memory_profile.storage_layers or blueprint.memory_strategy))
+    requires_approval = any(bool(getattr(tool, "requires_approval", False) or getattr(tool, "has_side_effects", False)) for _, tool in tool_items)
+
+    nodes.append(
+        _flow_node(
+            "user_channel",
+            label=(discovery.current_user if discovery and discovery.current_user else "Usuario / canal"),
+            node_type="entry",
+            layer="experience",
+            state="defined",
+            x=6,
+            y=48,
+            description="Punto de entrada de la solicitud o evento del usuario.",
+            source_files=["ACP/business/lean-canvas.yaml", "ACP/manifest.yaml"],
+        )
+    )
+    nodes.append(
+        _flow_node(
+            "agent_core",
+            label=snapshot.session.title or "Agent core",
+            node_type="agent",
+            layer="runtime",
+            state="defined",
+            x=24,
+            y=48,
+            description="Nucleo del agente definido por el Blueprint aprobado.",
+            source_files=["ACP/manifest.yaml", "ACP/architecture/topology.yaml"],
+            metrics={"workflow_steps": len(workflow_steps), "tools": len(tool_items)},
+        )
+    )
+    nodes.append(
+        _flow_node(
+            "planner",
+            label=(blueprint.reasoning_pattern if blueprint and blueprint.reasoning_pattern else "Planner"),
+            node_type="reasoning",
+            layer="cognition",
+            state="defined",
+            x=42,
+            y=25,
+            description="Planifica la siguiente accion respetando guardrails, objetivo y workflow.",
+            source_files=["ACP/cognition/reasoning.yaml", "ACP/cognition/planner.yaml", "ACP/workflows/state-machine.yaml"],
+        )
+    )
+    if has_knowledge:
+        nodes.append(
+            _flow_node(
+                "rag",
+                label="RAG / conocimiento",
+                node_type="rag",
+                layer="knowledge",
+                state="defined",
+                x=60,
+                y=18,
+                description="Recupera evidencia y contexto antes de responder o llamar tools.",
+                source_files=["ACP/knowledge/sources.yaml", "ACP/knowledge/ingestion.yaml", "ACP/knowledge/embeddings.yaml"],
+            )
+        )
+    if has_memory:
+        nodes.append(
+            _flow_node(
+                "memory",
+                label=blueprint.memory_profile.strategy or blueprint.memory_strategy or "Memoria",
+                node_type="memory",
+                layer="memory",
+                state="defined",
+                x=60,
+                y=48,
+                description="Conserva estado, checkpoints y recuperacion segun politica aprobada.",
+                source_files=["ACP/memory/strategy.yaml", "ACP/memory/retrieval.yaml", "ACP/memory/lifecycle.yaml"],
+                metrics={"layers": len(blueprint.memory_profile.storage_layers) if blueprint else 0},
+            )
+        )
+
+    tool_y_positions = [30, 50, 70, 20, 82]
+    for offset, (index, tool) in enumerate(tool_items[:5]):
+        slug = _tool_connector_slug(tool, index)
+        side_effects = bool(getattr(tool, "has_side_effects", False))
+        needs_approval = bool(getattr(tool, "requires_approval", False) or side_effects)
+        nodes.append(
+            _flow_node(
+                f"tool_{slug}",
+                label=getattr(tool, "name", "") or f"Tool {index}",
+                node_type="tool",
+                layer="tools",
+                state="approval_required" if needs_approval else "needs_binding",
+                x=76,
+                y=tool_y_positions[offset % len(tool_y_positions)],
+                description=getattr(tool, "purpose", "") or "Tool definida en el Blueprint.",
+                source_files=[
+                    _tool_contract_ref(tool, index),
+                    f"ACP/tools/connectors/{slug}.yaml",
+                    f"ACP/tools/bindings/{slug}.production.yaml",
+                    f"ACP/tools/tests/{slug}-smoke-test.yaml",
+                ],
+                metrics={
+                    "risk_level": getattr(tool, "risk_level", "") or "needs_review",
+                    "side_effects": side_effects,
+                    "requires_approval": needs_approval,
+                },
+            )
+        )
+
+    if requires_approval:
+        nodes.append(
+            _flow_node(
+                "human_approval",
+                label="Handoff / approval",
+                node_type="approval",
+                layer="governance",
+                state="approval_required",
+                x=76,
+                y=88,
+                description="Pausa humana para side effects, decisiones delegadas o aprobaciones de produccion.",
+                source_files=["ACP/governance/approval-matrix.yaml", "ACP/governance/decision-policy.yaml", "ACP/tools/permissions.yaml"],
+            )
+        )
+    nodes.append(
+        _flow_node(
+            "fallbacks",
+            label="Fallbacks",
+            node_type="fallback",
+            layer="governance",
+            state="fallback_available" if blueprint is not None else "defined",
+            x=91,
+            y=78,
+            description="Rutas alternativas, pausa de agente o escalamiento ante fallo.",
+            source_files=["ACP/governance/control-plane.yaml", "ACP/ops/runbooks/fallback-and-incident-response.md"],
+        )
+    )
+    nodes.append(
+        _flow_node(
+            "finops",
+            label="FinOps",
+            node_type="finops",
+            layer="costs",
+            state="defined",
+            x=42,
+            y=82,
+            description="Controla presupuesto, umbrales y sensibilidad de costo operativo.",
+            source_files=["ACP/finops/budget-policy.yaml", "ACP/costs/operational-cost-estimate.json"],
+        )
+    )
+    nodes.append(
+        _flow_node(
+            "observability",
+            label="Observabilidad",
+            node_type="observability",
+            layer="observability",
+            state="defined",
+            x=60,
+            y=82,
+            description="Emite eventos, metricas, alertas y trazas para auditoria.",
+            source_files=["ACP/observability/event-model.yaml", "ACP/observability/metrics.yaml", "ACP/observability/alerts.yaml"],
+        )
+    )
+    nodes.append(
+        _flow_node(
+            "output",
+            label=(canvas.success_metric if canvas and canvas.success_metric else "Respuesta / accion final"),
+            node_type="output",
+            layer="experience",
+            state="defined",
+            x=93,
+            y=48,
+            description="Salida esperada del agente segun objetivo, workflow y deliverables.",
+            source_files=["ACP/README.md", "ACP/workflows/durable-workflow.yaml", "ACP/evaluation/golden-dataset.json"],
+        )
+    )
+
+    node_ids = {node["id"] for node in nodes}
+    edges.append(_flow_edge("user_channel", "agent_core", "receives_request", label="solicitud"))
+    edges.append(_flow_edge("agent_core", "planner", "plans", label="plan"))
+    if "rag" in node_ids:
+        edges.append(_flow_edge("planner", "rag", "retrieves_context", label="evidencia"))
+        edges.append(_flow_edge("rag", "planner", "grounds", label="contexto"))
+    if "memory" in node_ids:
+        edges.append(_flow_edge("planner", "memory", "reads_memory", label="estado"))
+        edges.append(_flow_edge("memory", "planner", "returns_memory", label="checkpoint"))
+    for index, tool in tool_items[:5]:
+        slug = _tool_connector_slug(tool, index)
+        tool_id = f"tool_{slug}"
+        if tool_id not in node_ids:
+            continue
+        edges.append(_flow_edge("planner", tool_id, "calls_tool", label="tool call"))
+        if bool(getattr(tool, "requires_approval", False) or getattr(tool, "has_side_effects", False)) and "human_approval" in node_ids:
+            edges.append(_flow_edge(tool_id, "human_approval", "requires_approval", label="approval", mode="approval"))
+            edges.append(_flow_edge("human_approval", tool_id, "approves", label="ok", mode="approval"))
+        edges.append(_flow_edge(tool_id, "observability", "emits_event", label="eventos"))
+        edges.append(_flow_edge(tool_id, "fallbacks", "falls_back_to", label="fallo", mode="fallback"))
+        edges.append(_flow_edge(tool_id, "output", "returns_output", label="resultado"))
+    edges.append(_flow_edge("planner", "finops", "tracks_cost", label="costo"))
+    edges.append(_flow_edge("planner", "observability", "emits_event", label="traza"))
+    edges.append(_flow_edge("planner", "output", "returns_output", label="respuesta"))
+    edges.append(_flow_edge("fallbacks", "output", "returns_output", label="handoff"))
+
+    return {
+        "schema_version": "agent-flow-map.v1",
+        "title": "Mapa vivo del agente",
+        "source_files": [
+            "ACP/blueprint.graph.json",
+            "ACP/workflows/langgraph.json",
+            "ACP/tools/connectors/catalog.yaml",
+            "ACP/governance/control-plane.yaml",
+            "ACP/observability/event-model.yaml",
+        ],
+        "modes": ["design", "simulation", "operations"],
+        "layers": ["experience", "runtime", "cognition", "knowledge", "memory", "tools", "governance", "costs", "observability"],
+        "states": ["defined", "needs_binding", "sandbox_ready", "production_ready", "live", "degraded", "blocked", "fallback_available", "approval_required"],
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _agent_flow_map_scenarios(payload: dict[str, Any]) -> dict[str, Any]:
+    node_ids = {str(node.get("id")) for node in payload.get("nodes", [])}
+    steps = [
+        {"step": "request_received", "node_id": "user_channel", "event": "agent.started", "caption": "Entra una solicitud o evento."},
+        {"step": "plan_next_action", "node_id": "planner", "event": "decision.requested", "caption": "El planner decide que contexto y acciones necesita."},
+    ]
+    if "rag" in node_ids:
+        steps.append({"step": "retrieve_context", "node_id": "rag", "event": "knowledge.retrieved", "caption": "RAG aporta evidencia antes de actuar."})
+    if "memory" in node_ids:
+        steps.append({"step": "read_memory", "node_id": "memory", "event": "memory.read", "caption": "La memoria recupera estado y checkpoints."})
+    first_tool = next((node_id for node_id in node_ids if node_id.startswith("tool_")), "")
+    if first_tool:
+        steps.append({"step": "call_tool", "node_id": first_tool, "event": "tool.call.started", "caption": "La tool se evalua contra contrato, binding y policy."})
+    if "human_approval" in node_ids:
+        steps.append({"step": "approval_gate", "node_id": "human_approval", "event": "approval.requested", "caption": "La accion sensible espera aprobacion humana."})
+    steps.extend(
+        [
+            {"step": "track_cost", "node_id": "finops", "event": "budget.threshold_checked", "caption": "FinOps controla costo y limites."},
+            {"step": "emit_observability", "node_id": "observability", "event": "tool.call.completed", "caption": "La consola registra eventos y trazas."},
+            {"step": "return_output", "node_id": "output", "event": "agent.completed", "caption": "El agente devuelve respuesta, accion o handoff."},
+        ]
+    )
+    return {
+        "schema_version": "agent-flow-simulation-scenarios.v1",
+        "scenarios": [
+            {
+                "scenario_key": "happy_path_with_governance",
+                "label": "Flujo gobernado",
+                "offline_simulation_only": True,
+                "steps": steps,
+            },
+            {
+                "scenario_key": "fallback_path",
+                "label": "Fallo con fallback",
+                "offline_simulation_only": True,
+                "steps": [
+                    {"step": "tool_fails", "node_id": first_tool or "planner", "event": "tool.call.failed", "caption": "Una tool falla o no tiene binding valido."},
+                    {"step": "activate_fallback", "node_id": "fallbacks", "event": "fallback.activated", "caption": "Se activa fallback, pausa o escalamiento humano."},
+                    {"step": "return_safe_output", "node_id": "output", "event": "agent.completed", "caption": "El flujo termina sin ejecutar side effects no autorizados."},
+                ],
+            },
+        ],
+    }
+
+
+def _build_agent_flow_map_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    payload = _agent_flow_map_payload(snapshot)
+    scenarios = _agent_flow_map_scenarios(payload)
+    manifest = {
+        "schema_version": "agent-flow-map-manifest.v1",
+        "viewer_chapter": "flow-map",
+        "offline_first": True,
+        "runtime_execution": False,
+        "data_ref": "ACP/ops/agent-flow-map/flow-map-data.json",
+        "scenario_ref": "ACP/ops/agent-flow-map/simulation-scenarios.json",
+        "source_files": payload["source_files"],
+        "modes": payload["modes"],
+    }
+    state_policy = {
+        "schema_version": "agent-flow-node-state-policy.v1",
+        "states": {
+            "defined": "Existe en el ACP.",
+            "needs_binding": "Requiere binding de entorno antes de produccion.",
+            "sandbox_ready": "Listo para prueba controlada.",
+            "production_ready": "Listo para aprobacion final.",
+            "live": "Activo en runtime.",
+            "degraded": "Activo con alerta o incidente.",
+            "blocked": "No debe activarse.",
+            "fallback_available": "Tiene ruta alternativa definida.",
+            "approval_required": "Requiere aprobacion humana.",
+        },
+        "hard_rules": [
+            "El mapa no ejecuta tools reales.",
+            "El mapa no almacena secretos.",
+            "Cada nodo debe enlazar a fuentes ACP.",
+            "La simulacion debe ser offline y no modificar arquitectura aprobada.",
+        ],
+    }
+    interaction_model = {
+        "schema_version": "agent-flow-interaction-model.v1",
+        "controls": ["mode_switch", "play_pause", "speed", "layer_filter", "node_detail"],
+        "node_click_behavior": "open_detail_panel_with_source_links",
+        "mode_behavior": {
+            "design": "mostrar arquitectura y responsabilidades",
+            "simulation": "animar flujo de informacion sin ejecucion real",
+            "operations": "resaltar readiness, bindings, approvals, fallbacks y eventos",
+        },
+    }
+    readme = "\n".join(
+        [
+            "# Interactive Agent Flow Map",
+            "",
+            "Este mapa vivo forma parte del ACP descargable. Es una simulacion visual offline derivada de contratos reales.",
+            "",
+            "## No ejecuta runtime",
+            "",
+            "La animacion no llama herramientas, no lee secretos y no activa produccion. Solo explica flujo, estados y evidencia.",
+            "",
+            "## Fuentes principales",
+            "",
+            "- `ACP/blueprint.graph.json`",
+            "- `ACP/workflows/langgraph.json`",
+            "- `ACP/tools/connectors/catalog.yaml`",
+            "- `ACP/governance/control-plane.yaml`",
+            "- `ACP/observability/event-model.yaml`",
+        ]
+    )
+    return [
+        build_acp_file_entry(
+            path="ACP/ops/agent-flow-map/flow-map-manifest.json",
+            domain="governance",
+            title="Agent flow map manifest",
+            format="json",
+            source_sections=["blueprint", "tool_contracts", "runtime", "governance", "observability"],
+            content_text=serialize_json_document(manifest),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/agent-flow-map/flow-map-data.json",
+            domain="governance",
+            title="Agent flow map data",
+            format="json",
+            source_sections=["blueprint", "workflows", "tools", "memory", "knowledge", "governance"],
+            content_text=serialize_json_document(payload),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/agent-flow-map/simulation-scenarios.json",
+            domain="governance",
+            title="Agent flow map simulation scenarios",
+            format="json",
+            source_sections=["workflows", "tools", "observability", "governance"],
+            content_text=serialize_json_document(scenarios),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/agent-flow-map/node-state-policy.yaml",
+            domain="governance",
+            title="Agent flow node state policy",
+            format="yaml",
+            source_sections=["governance", "tool_contracts", "runtime"],
+            content_text=serialize_yaml_document(state_policy),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/agent-flow-map/interaction-model.yaml",
+            domain="governance",
+            title="Agent flow interaction model",
+            format="yaml",
+            source_sections=["governance", "viewer", "operations"],
+            content_text=serialize_yaml_document(interaction_model),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/agent-flow-map/README.md",
+            domain="governance",
+            title="Interactive Agent Flow Map README",
+            format="markdown",
+            source_sections=["governance", "viewer"],
+            content_text=serialize_markdown_document(readme),
+        ),
+    ]
+
+
 def _build_workflow_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     blueprint = snapshot.blueprint
     if blueprint is None:
@@ -2454,6 +3086,212 @@ def _iter_external_tools(snapshot: SessionSnapshot) -> list[tuple[int, Any]]:
     ]
 
 
+def _build_construction_step_guide_markdown(
+    *,
+    validation: Any,
+    readiness: Any,
+    blocking_gaps: list[ConstructionGapEntry],
+    open_questions: list[dict[str, Any]],
+    structured_deferred_decisions: list[dict[str, Any]],
+    external_dependencies: list[dict[str, Any]],
+    required_api_contracts: list[dict[str, Any]],
+    deployment_questions: list[dict[str, Any]],
+) -> str:
+    def append_artifacts(lines: list[str], artifacts: list[str]) -> None:
+        lines.append("- Artefactos impactados:")
+        if artifacts:
+            for artifact in artifacts[:8]:
+                lines.append(f"  - `{artifact}`")
+        else:
+            lines.append("  - `needs_review`")
+
+    def append_options(lines: list[str], options: list[dict[str, Any]]) -> None:
+        if not options:
+            return
+        lines.append("- Alternativas sugeridas:")
+        for option in options[:5]:
+            label = str(option.get("label") or option.get("key") or "opcion").strip()
+            description = str(option.get("description") or option.get("impact") or "").strip()
+            recommended = " recomendada" if option.get("recommended") else ""
+            suffix = f": {description}" if description else ""
+            lines.append(f"  - `{label}`{recommended}{suffix}")
+
+    lines: list[str] = [
+        "# Guia paso a paso de construccion ACP",
+        "",
+        "Este archivo convierte el ACP en una guia operativa para construir el agente sin inventar informacion faltante.",
+        "Usalo como primera lectura despues de abrir el paquete y antes de modificar runtime, tools, memoria, conocimiento, deployment o codigo.",
+        "",
+        "## Regla de avance",
+        f"- `package_validation.can_export_zip`: `{str(validation.can_export_zip).lower()}`.",
+        f"- `construction_readiness.can_start_build`: `{str(readiness.can_start_build).lower()}`.",
+        "- Poder descargar el ZIP no significa que todas las integraciones, secrets, fuentes RAG o bindings reales existan.",
+        "- Si una decision falta, pregunta al usuario en el momento indicado y registra la respuesta antes de editar el artefacto afectado.",
+        "- Mantén la trazabilidad `gap_key` -> `question_key` -> respuesta -> artefactos actualizados.",
+        "",
+        "## Reglas de no-asuncion",
+        "- Las tools externas del diseno son contratos hasta que exista un binding operativo confirmado.",
+        "- No agregues endpoints, OAuth apps, tokens, secrets, URLs reales, payloads o bases de datos si no estan definidos en el ACP o por el usuario.",
+        "- Si una integracion se opera por navegador, el usuario debe operar la sesion autorizada y entregar capturas, texto, HTML o JSON curado.",
+        "- No solicites cookies, credenciales directas, scraping no autorizado ni acceso directo a sesiones privadas.",
+        "- Si RAG usa fuentes, portafolio, documentos, vector store o embeddings como placeholders, primero guia al usuario para construir esa base.",
+        "",
+        "## Paso 1 - Confirmar estado inicial",
+        f"- Estado del paquete: `{validation.overall_status}`.",
+        f"- Estado de construccion: `{readiness.overall_status}`.",
+        f"- Gaps bloqueantes: `{readiness.blocking_gaps}`.",
+        f"- Preguntas abiertas: `{readiness.open_questions}`.",
+        f"- Supuestos pendientes: `{readiness.assumptions_count}`.",
+        "- Lee en paralelo `ACP/construction-readiness/overview.yaml` y `ACP/conformance/portability-report.md`.",
+        "",
+        "## Paso 2 - Resolver bloqueos reales",
+    ]
+    if blocking_gaps:
+        for index, gap in enumerate(blocking_gaps, start=1):
+            lines.extend(
+                [
+                    f"### 2.{index} `{gap.gap_key}`",
+                    f"- Dominio: `{gap.domain}`.",
+                    f"- Resumen: {gap.summary}",
+                    f"- Criterio de cierre: {'; '.join(gap.closure_criteria) if gap.closure_criteria else 'needs_review'}.",
+                ]
+            )
+            append_artifacts(lines, list(gap.evidence_paths or []))
+    else:
+        lines.append("- No hay gaps bloqueantes actuales; conserva esta verificacion antes de activar integraciones reales.")
+
+    lines.extend(
+        [
+            "",
+            "## Paso 3 - Preguntar lo abierto",
+        ]
+    )
+    if open_questions:
+        for index, question in enumerate(open_questions, start=1):
+            lines.extend(
+                [
+                    f"### 3.{index} `{question['question_key']}`",
+                    f"- Gap: `{question['gap_key']}`.",
+                    f"- Dominio: `{question['domain']}`.",
+                    f"- Pregunta para el usuario: {question['question_text']}",
+                    f"- Por que importa: {question['rationale']}",
+                    f"- Owner sugerido: `{question['target_owner']}`.",
+                    f"- Formato esperado: `{question['expected_answer_format']}`.",
+                    f"- Bloqueante: `{str(question['blocking']).lower()}`.",
+                ]
+            )
+            append_options(lines, list(question.get("options") or []))
+            append_artifacts(lines, list(question.get("impacted_artifacts") or []))
+    else:
+        lines.append("- No hay preguntas abiertas activas. Revisa de todos modos las decisiones delegadas antes de construir cada componente.")
+
+    lines.extend(
+        [
+            "",
+            "## Paso 4 - Ejecutar decisiones delegadas durante implementacion",
+        ]
+    )
+    if structured_deferred_decisions:
+        for index, decision in enumerate(structured_deferred_decisions, start=1):
+            lines.extend(
+                [
+                    f"### 4.{index} `{decision.get('question_key')}`",
+                    f"- Gap: `{decision.get('gap_key') or 'needs_review'}`.",
+                    f"- Dominio: `{decision.get('domain') or 'general'}`.",
+                    f"- Pregunta a formular: {decision.get('question_text') or 'needs_review'}",
+                    f"- Owner sugerido: `{decision.get('target_owner') or 'developer'}`.",
+                    "- Politica: `DO_NOT_ASSUME_SILENTLY`; pregunta al usuario antes de tocar el componente afectado.",
+                ]
+            )
+            append_options(lines, list(decision.get("options") or []))
+            append_artifacts(lines, list(decision.get("impacted_artifacts") or []))
+    else:
+        lines.append("- No hay decisiones delegadas actuales.")
+
+    lines.extend(
+        [
+            "",
+            "## Paso 5 - Cerrar contratos de integracion",
+        ]
+    )
+    if required_api_contracts:
+        for index, contract in enumerate(required_api_contracts, start=1):
+            unknowns = list(contract.get("unknown_payloads") or [])
+            lines.extend(
+                [
+                    f"### 5.{index} `{contract.get('system_name') or contract.get('tool_name') or 'external_system'}`",
+                    f"- Tipo: contrato de diseno; no binding operativo hasta confirmar credenciales, permisos y payloads.",
+                    f"- Proposito: {contract.get('purpose') or 'needs_review'}",
+                    f"- Acciones/endpoints requeridos: `{', '.join(contract.get('required_endpoints_or_actions') or ['needs_review'])}`.",
+                    f"- Autenticacion esperada: `{contract.get('expected_authentication') or 'needs_review'}`.",
+                    f"- Payloads por definir: `{', '.join(unknowns) if unknowns else 'cerrado'}`.",
+                    f"- Contrato afectado: `{contract.get('contract_path') or 'needs_review'}`.",
+                    "- Si el acceso se hace por navegador, detenerse en preparacion guiada y pedir al usuario evidencias curadas.",
+                ]
+            )
+    else:
+        lines.append("- No hay contratos API externos pendientes en el ACP actual.")
+
+    lines.extend(
+        [
+            "",
+            "## Paso 6 - Preparar conocimiento y RAG",
+        ]
+    )
+    knowledge_dependencies = [
+        dependency for dependency in external_dependencies if dependency.get("category") == "knowledge_source"
+    ]
+    if knowledge_dependencies:
+        for index, dependency in enumerate(knowledge_dependencies, start=1):
+            lines.extend(
+                [
+                    f"### 6.{index} `{dependency.get('dependency_key')}`",
+                    f"- Resumen: {dependency.get('summary') or 'needs_review'}",
+                    "- Antes de activar retrieval real, define fuentes, permisos, estructura documental, estrategia de ingesta, embeddings y vector store.",
+                    f"- Inputs requeridos: `{', '.join(dependency.get('required_inputs') or ['needs_review'])}`.",
+                ]
+            )
+            append_artifacts(lines, list(dependency.get("evidence_paths") or []))
+    else:
+        lines.append("- No hay dependencia RAG abierta, pero valida que fuentes y vector store no sean placeholders antes de produccion.")
+
+    lines.extend(
+        [
+            "",
+            "## Paso 7 - Confirmar runtime, deployment y aprobaciones",
+        ]
+    )
+    runtime_dependencies = [
+        dependency
+        for dependency in external_dependencies
+        if dependency.get("category") in {"runtime_or_secrets", "deployment_environment"}
+    ]
+    if runtime_dependencies or deployment_questions:
+        for dependency in runtime_dependencies:
+            lines.extend(
+                [
+                    f"- `{dependency.get('dependency_key')}`: {dependency.get('summary') or 'needs_review'}",
+                    f"  - Inputs: `{', '.join(dependency.get('required_inputs') or ['needs_review'])}`.",
+                ]
+            )
+        for question in deployment_questions:
+            lines.append(f"- Preguntar `{question['question_key']}` antes de fijar deployment o secrets.")
+    else:
+        lines.append("- No hay decisiones de runtime/deployment abiertas segun readiness actual.")
+
+    lines.extend(
+        [
+            "",
+            "## Paso 8 - Actualizar solo lo impactado",
+            "- Cuando el usuario responda, actualiza unicamente los artefactos listados como impactados.",
+            "- Registra evidencia en `ACP/construction-readiness/question-impact-log.yaml` o en el mecanismo equivalente de la implementacion.",
+            "- Si una respuesta contradice el Blueprint aprobado, crea reconciliacion granular del artefacto; no reinicies fases completas.",
+            "- Al terminar, ejecuta validaciones de conformance y revisa `ACP/release-readiness-checklist.md`.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _build_construction_readiness_files(
     snapshot: SessionSnapshot,
     preview: ACPPreview,
@@ -2571,6 +3409,7 @@ def _build_construction_readiness_files(
         "key_paths": {
             "manifest": preview.manifest_path,
             "canonical_env_template": ACP_CANONICAL_ENV_TEMPLATE_PATH,
+            "construction_guide": "ACP/construction-readiness/construction-guide.md",
             "builder_handoff_prompt": "ACP/prompts/builder-handoff.md",
             "gap_closure_prompt": "ACP/prompts/gap-closure.md",
             "question_impact_log": "ACP/construction-readiness/question-impact-log.yaml",
@@ -2631,6 +3470,8 @@ def _build_construction_readiness_files(
                 "question_text": question_text,
                 "rationale": item.get("rationale") or "",
                 "target_owner": item.get("target_owner") or "developer",
+                "expected_answer_format": item.get("expected_answer_format") or "decision_with_rationale",
+                "impacted_artifacts": list(item.get("impacted_artifacts") or []),
                 "options": options,
                 "agentic_instruction": {
                     "policy": "DO_NOT_ASSUME_SILENTLY",
@@ -2668,16 +3509,27 @@ def _build_construction_readiness_files(
             for question in deployment_questions
         ]
     }
+    construction_guide_markdown = _build_construction_step_guide_markdown(
+        validation=validation,
+        readiness=readiness,
+        blocking_gaps=blocking_gaps,
+        open_questions=open_questions,
+        structured_deferred_decisions=structured_deferred_decisions,
+        external_dependencies=external_dependencies,
+        required_api_contracts=required_api_contracts,
+        deployment_questions=deployment_questions,
+    )
     resolution_workflow_payload = {
         "steps": [
-            {"order": 1, "action": "read_overview", "path": "ACP/construction-readiness/overview.yaml"},
-            {"order": 2, "action": "review_blocking_gaps", "path": "ACP/construction-readiness/blocking-gaps.yaml"},
-            {"order": 3, "action": "ask_open_questions", "path": "ACP/construction-readiness/open-questions.yaml"},
-            {"order": 4, "action": "review_answer_impact", "path": "ACP/construction-readiness/question-impact-log.yaml"},
-            {"order": 5, "action": "register_answers", "path": ACP_CANONICAL_ENV_TEMPLATE_PATH},
-            {"order": 6, "action": "review_deferred_decisions", "path": "ACP/construction-readiness/deferred-decisions.yaml"},
-            {"order": 7, "action": "recalculate_readiness", "path": "ACP/construction-readiness/overview.yaml"},
-            {"order": 8, "action": "continue_to_implementation", "condition": "only_if_can_start_build_true"},
+            {"order": 1, "action": "read_step_by_step_construction_guide", "path": "ACP/construction-readiness/construction-guide.md"},
+            {"order": 2, "action": "read_overview", "path": "ACP/construction-readiness/overview.yaml"},
+            {"order": 3, "action": "review_blocking_gaps", "path": "ACP/construction-readiness/blocking-gaps.yaml"},
+            {"order": 4, "action": "ask_open_questions", "path": "ACP/construction-readiness/open-questions.yaml"},
+            {"order": 5, "action": "review_answer_impact", "path": "ACP/construction-readiness/question-impact-log.yaml"},
+            {"order": 6, "action": "register_answers", "path": ACP_CANONICAL_ENV_TEMPLATE_PATH},
+            {"order": 7, "action": "review_deferred_decisions", "path": "ACP/construction-readiness/deferred-decisions.yaml"},
+            {"order": 8, "action": "recalculate_readiness", "path": "ACP/construction-readiness/overview.yaml"},
+            {"order": 9, "action": "continue_to_implementation", "condition": "only_if_can_start_build_true"},
         ]
     }
 
@@ -2689,6 +3541,20 @@ def _build_construction_readiness_files(
             format="yaml",
             source_sections=["construction_readiness", "validation"],
             content_text=serialize_yaml_document(overview_payload),
+        ),
+        build_acp_file_entry(
+            path="ACP/construction-readiness/construction-guide.md",
+            domain="construction-readiness",
+            title="Step-by-step construction guide",
+            format="markdown",
+            source_sections=[
+                "construction_readiness",
+                "construction_readiness.gaps.questions",
+                "blueprint.tools",
+                "runtime",
+                "knowledge",
+            ],
+            content_text=serialize_markdown_document(construction_guide_markdown),
         ),
         build_acp_file_entry(
             path="ACP/construction-readiness/blocking-gaps.yaml",
@@ -2782,9 +3648,10 @@ def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
             f"- can_start_build: {str(readiness.can_start_build).lower()}",
             "",
             "## Reglas obligatorias",
-            "- Lee primero `ACP/construction-readiness/overview.yaml`.",
+            "- Lee primero `ACP/construction-readiness/construction-guide.md` y luego `ACP/construction-readiness/overview.yaml`.",
             "- Usa `ACP/blueprint.graph.json` y `ACP/diagrams/Architecture.md` como mapa vivo antes de tocar runtime, tools o deployment.",
             "- Revisa `blocking-gaps.yaml`, `open-questions.yaml` y `deployment-decisions-needed.yaml` antes de construir.",
+            "- Trata tools externas, RAG, runtime y deployment como contratos de diseno hasta que el usuario confirme bindings reales.",
             "- No asumas detalles de deployment, secretos ni contratos API externos cuando aparezcan como gaps abiertos.",
             "- Manten trazabilidad entre `gap_key`, `question_key`, respuesta recibida y artefactos ACP impactados.",
             "- No reabras fases estables del Blueprint por flags stale o deuda operativa interna ya cerrada en el handoff.",
@@ -2853,11 +3720,12 @@ def _build_implementation_guidance_files(preview: ACPPreview) -> list[ACPFileEnt
         "- Reconciliacion granular: una respuesta nueva actualiza solo diagramas, contratos, documentos o artefactos afectados.",
         "",
         "## Como usar el paquete",
-        "1. Lee `ACP/README.md` y `ACP/construction-readiness/overview.yaml`.",
-        "2. Revisa `ACP/construction-readiness/open-questions.yaml` y `deferred-decisions.yaml`.",
-        "3. Antes de implementar un componente, resuelve o conserva como delegada la pregunta asociada a ese componente.",
-        "4. Si una decision cambia un entregable, actualiza solo los archivos impactados y registra la razon.",
-        "5. Usa `ACP/conformance/portability-report.md` para verificar que el paquete sigue siendo portable.",
+        "1. Lee `ACP/README.md` y `ACP/construction-readiness/construction-guide.md`.",
+        "2. Usa la guia para recorrer bloqueos, preguntas abiertas, decisiones delegadas, contratos externos, RAG y runtime.",
+        "3. Revisa `ACP/construction-readiness/open-questions.yaml` y `deferred-decisions.yaml` como contratos fuente.",
+        "4. Antes de implementar un componente, resuelve o conserva como delegada la pregunta asociada a ese componente.",
+        "5. Si una decision cambia un entregable, actualiza solo los archivos impactados y registra la razon.",
+        "6. Usa `ACP/conformance/portability-report.md` para verificar que el paquete sigue siendo portable.",
         "",
         "## Estado actual de readiness",
         f"- status: {readiness.overall_status}",
@@ -2869,6 +3737,7 @@ def _build_implementation_guidance_files(preview: ACPPreview) -> list[ACPFileEnt
         "# Release Readiness Checklist",
         "",
         "- [ ] El paquete fue abierto desde `ACP/README.md` o el viewer generado.",
+        "- [ ] Se siguio `ACP/construction-readiness/construction-guide.md` como guia paso a paso.",
         "- [ ] Se revisaron preguntas abiertas y decisiones delegadas.",
         "- [ ] Se confirmo que no viajan flags stale como deuda de implementacion.",
         "- [ ] Los contratos de tools requeridos tienen owner o decision delegada.",
@@ -2991,6 +3860,8 @@ def _build_operational_cost_files(snapshot: SessionSnapshot) -> list[ACPFileEntr
 
 def _acp_viewer_stage_for_path(path: str, domain: str) -> str:
     normalized = path.lower()
+    if "/ops/agent-flow-map/" in normalized:
+        return "flow-map"
     if "/construction-readiness/" in normalized or "readiness" in domain:
         return "readiness"
     if "/evaluation/" in normalized or domain == "evaluation":
@@ -2999,7 +3870,7 @@ def _acp_viewer_stage_for_path(path: str, domain: str) -> str:
         return "costs"
     if "/governance/" in normalized or "question" in normalized or "decision" in normalized:
         return "decisions"
-    if "/launcher/" in normalized or "/adapters/" in normalized:
+    if "/ops/" in normalized or "/launcher/" in normalized or "/adapters/" in normalized:
         return "implement"
     if "/conformance/" in normalized or "/manifest" in normalized:
         return "package"
@@ -3116,6 +3987,7 @@ def _implementation_target_selector(snapshot: SessionSnapshot, preview: ACPPrevi
             ],
             warnings=[] if has_open_questions else ["El ACP ya permite seleccionar target con mayor confianza."],
             source_files=[
+                "ACP/construction-readiness/construction-guide.md",
                 "ACP/construction-readiness/overview.yaml",
                 "ACP/construction-readiness/open-questions.yaml",
                 "ACP/construction-readiness/deferred-decisions.yaml",
@@ -3350,6 +4222,7 @@ def _implementation_cockpit(
     return {
         "schema_version": "acp-implementation-cockpit.v1",
         "source_files": [
+            "ACP/construction-readiness/construction-guide.md",
             "ACP/construction-readiness/overview.yaml",
             "ACP/construction-readiness/open-questions.yaml",
             "ACP/construction-readiness/deferred-decisions.yaml",
@@ -3451,6 +4324,12 @@ def _build_acp_navigation_manifest(
             "why_it_matters": "Le da a la herramienta agentica los limites, componentes y responsabilidades necesarios para construir.",
         },
         {
+            "id": "flow-map",
+            "title": "Mapa vivo del agente",
+            "narrative": "Visualiza como se mueve la informacion entre usuario, planner, RAG, memoria, tools, handoff, fallbacks, costos y observabilidad.",
+            "why_it_matters": "Hace entendible y vendible el ACP sin desconectarse de sus contratos fuente.",
+        },
+        {
             "id": "costs",
             "title": "Costos operativos",
             "narrative": "Separa el costo de operar el agente del costo de construirlo, con escenarios trazables.",
@@ -3493,6 +4372,7 @@ def _build_acp_navigation_manifest(
         "can_export_zip": preview.validation.can_export_zip,
         "construction_readiness": preview.construction_readiness.model_dump(mode="json"),
         "implementation_cockpit": _implementation_cockpit(snapshot, preview, response_records),
+        "agent_flow_map": _agent_flow_map_payload(snapshot),
         "storyline": chapters,
         "items": items,
     }
@@ -3570,10 +4450,40 @@ a { color:inherit; }
 .card a { display:inline-flex; padding:8px 10px; border-radius:12px; background:var(--soft); color:var(--brand); text-decoration:none; font-weight:850; font-size:13px; }
 .status-needs_review { border-left:4px solid var(--warn); }
 .status-incomplete { border-left:4px solid #b42318; }
+.flow-shell { margin:18px 0 22px; border:1px solid #162033; border-radius:8px; overflow:hidden; background:#07111f; color:#eef6ff; box-shadow:0 22px 55px rgba(7,17,31,.22); }
+.flow-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:14px; border-bottom:1px solid rgba(218,226,240,.18); background:linear-gradient(90deg,#07111f,#0d2730); }
+.flow-toolbar h3 { margin:0; font-size:15px; color:white; }
+.flow-tools { display:flex; flex-wrap:wrap; gap:8px; }
+.flow-tools button,.flow-tools select { border:1px solid rgba(238,246,255,.24); border-radius:8px; background:rgba(255,255,255,.08); color:#eef6ff; padding:8px 10px; font-weight:850; cursor:pointer; }
+.flow-tools button.active { background:#20c997; color:#06251c; border-color:#20c997; }
+.flow-stage { display:grid; grid-template-columns:minmax(0,1fr) 280px; min-height:520px; }
+.flow-canvas { position:relative; min-height:520px; overflow:hidden; background:radial-gradient(circle at 20% 20%,rgba(32,201,151,.18),transparent 28%),radial-gradient(circle at 75% 35%,rgba(255,193,7,.16),transparent 24%),linear-gradient(135deg,#07111f,#102131); }
+.flow-canvas::before { content:""; position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px); background-size:42px 42px; mask-image:linear-gradient(to bottom,rgba(0,0,0,.85),rgba(0,0,0,.25)); }
+.flow-wires { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.flow-edge { stroke:#8be9d2; stroke-width:.32; stroke-linecap:round; opacity:.68; stroke-dasharray:1.4 1.2; animation:flowDash 2.2s linear infinite; }
+.flow-edge.approval { stroke:#ffd166; }
+.flow-edge.fallback { stroke:#ff7b7b; }
+.flow-shell.paused .flow-edge { animation-play-state:paused; }
+.flow-node { position:absolute; width:138px; min-height:74px; transform:translate(-50%,-50%); border:1px solid rgba(238,246,255,.24); border-radius:8px; padding:10px; background:rgba(9,21,34,.88); color:#eef6ff; box-shadow:0 16px 35px rgba(0,0,0,.22); cursor:pointer; backdrop-filter:blur(10px); transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,opacity .18s ease; z-index:2; }
+.flow-node:hover,.flow-node.selected { transform:translate(-50%,-50%) scale(1.04); border-color:#20c997; box-shadow:0 18px 38px rgba(32,201,151,.22); }
+.flow-node.dimmed { opacity:.28; }
+.flow-node strong { display:block; font-size:13px; line-height:1.25; }
+.flow-node span { display:block; margin-top:6px; color:#a9bacd; font-size:11px; text-transform:uppercase; letter-spacing:.08em; font-weight:850; }
+.flow-state { display:inline-flex; margin-top:8px; border-radius:999px; padding:4px 7px; font-size:10px; font-weight:900; background:rgba(32,201,151,.15); color:#8be9d2; }
+.state-needs_binding,.state-approval_required { background:rgba(255,209,102,.16); color:#ffd166; }
+.state-blocked,.state-degraded { background:rgba(255,123,123,.16); color:#ff9b9b; }
+.state-fallback_available { background:rgba(125,211,252,.16); color:#7dd3fc; }
+.flow-panel { border-left:1px solid rgba(218,226,240,.18); padding:16px; background:#091522; color:#dbeafe; }
+.flow-panel h4 { margin:0 0 8px; color:white; font-size:16px; }
+.flow-panel p { color:#a9bacd; font-size:13px; line-height:1.55; }
+.flow-panel a { display:block; margin-top:8px; color:#8be9d2; text-decoration:none; font-size:12px; font-weight:850; overflow-wrap:anywhere; }
+.flow-caption { position:absolute; left:18px; bottom:18px; max-width:440px; border:1px solid rgba(238,246,255,.18); border-radius:8px; padding:12px; background:rgba(7,17,31,.82); color:#dbeafe; font-size:13px; line-height:1.45; z-index:3; }
+@keyframes flowDash { to { stroke-dashoffset:-8; } }
+@media (prefers-reduced-motion:reduce){ .flow-edge{animation:none;} .flow-node{transition:none;} }
 .controls { display:flex; justify-content:space-between; gap:12px; margin-top:24px; }
 .controls button { border:0; border-radius:14px; padding:12px 16px; background:var(--brand); color:white; font-weight:900; cursor:pointer; }
 .controls button.secondary { background:white; color:var(--brand); border:1px solid var(--line); }
-@media (max-width:860px){ .shell{grid-template-columns:1fr;} .sidebar{position:relative;height:auto;} .main{padding:18px;} .hero h1{font-size:28px;} .cockpit-head{grid-template-columns:1fr;} .decision-card{grid-template-columns:1fr;} .source-link{width:max-content;} }
+@media (max-width:860px){ .shell{grid-template-columns:1fr;} .sidebar{position:relative;height:auto;} .main{padding:18px;} .hero h1{font-size:28px;} .cockpit-head{grid-template-columns:1fr;} .decision-card{grid-template-columns:1fr;} .source-link{width:max-content;} .flow-stage{grid-template-columns:1fr;} .flow-panel{border-left:0;border-top:1px solid rgba(218,226,240,.18);} .flow-node{width:118px;} }
 """.strip()
 
 
@@ -3586,6 +4496,10 @@ def _acp_viewer_js() -> str:
   const cockpitNode = document.querySelector('[data-cockpit]');
   const search = document.querySelector('[data-search]');
   let current = 0;
+  let flowMode = 'design';
+  let flowPlaying = true;
+  let flowLayer = 'all';
+  let selectedFlowNode = '';
   function esc(value){ return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
   function shortPath(path){ return String(path || '').replace(/^ACP\\//, ''); }
   function gateClass(readiness){
@@ -3744,6 +4658,81 @@ def _acp_viewer_js() -> str:
 
     return html || '<p>No hay archivos en este capítulo.</p>';
   }
+  function stateLabel(state){
+    return String(state || 'defined').replace(/_/g, ' ');
+  }
+  function flowNodeById(flow, id){
+    return (flow.nodes || []).find(node => node.id === id) || null;
+  }
+  function renderFlowMap(){
+    const flow = data.agent_flow_map || {};
+    const nodes = flow.nodes || [];
+    if(!nodes.length){ return ''; }
+    if(!selectedFlowNode || !flowNodeById(flow, selectedFlowNode)){ selectedFlowNode = nodes[0].id; }
+    const selected = flowNodeById(flow, selectedFlowNode) || nodes[0];
+    const visibleNodes = nodes.filter(node => flowLayer === 'all' || node.layer === flowLayer);
+    const visibleIds = new Set(visibleNodes.map(node => node.id));
+    const edges = (flow.edges || []).filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+    const wires = edges.map(edge => {
+      const source = flowNodeById(flow, edge.source);
+      const target = flowNodeById(flow, edge.target);
+      if(!source || !target){ return ''; }
+      return `<line class="flow-edge ${esc(edge.mode || '')}" x1="${esc(source.x)}" y1="${esc(source.y)}" x2="${esc(target.x)}" y2="${esc(target.y)}"><title>${esc(edge.label || edge.relation)}</title></line>`;
+    }).join('');
+    const nodeHtml = nodes.map(node => {
+      const hidden = flowLayer !== 'all' && node.layer !== flowLayer;
+      const selectedClass = node.id === selectedFlowNode ? 'selected' : '';
+      const dimmed = hidden ? 'dimmed' : '';
+      return `<button type="button" class="flow-node ${selectedClass} ${dimmed}" data-flow-node="${esc(node.id)}" style="left:${esc(node.x)}%;top:${esc(node.y)}%" aria-label="${esc(node.label)}">
+        <strong>${esc(node.label)}</strong>
+        <span>${esc(node.type)} · ${esc(node.layer)}</span>
+        <em class="flow-state state-${esc(node.state)}">${esc(stateLabel(node.state))}</em>
+      </button>`;
+    }).join('');
+    const layers = ['all'].concat(flow.layers || []);
+    const sourceLinks = (selected.source_files || []).slice(0, 6).map(path => `<a href="${esc(shortPath(path))}" target="_blank" rel="noreferrer">${esc(shortPath(path))}</a>`).join('');
+    const metrics = Object.entries(selected.metrics || {}).slice(0, 4).map(([key, value]) => `<span class="tag">${esc(key)}=${esc(value)}</span>`).join('');
+    const modeButtons = (flow.modes || ['design','simulation','operations']).map(mode => `<button type="button" class="${mode===flowMode?'active':''}" data-flow-mode="${esc(mode)}">${esc(mode)}</button>`).join('');
+    const layerOptions = layers.map(layer => `<option value="${esc(layer)}" ${layer===flowLayer?'selected':''}>${esc(layer)}</option>`).join('');
+    const caption = flowMode === 'simulation'
+      ? 'Simulacion offline: la informacion se mueve por el flujo sin ejecutar herramientas reales.'
+      : flowMode === 'operations'
+        ? 'Operations View: revisa bindings, approvals, fallbacks, costos y observabilidad.'
+        : 'Design View: entiende la arquitectura aprobada antes de construir.';
+    return `<section class="flow-shell ${flowPlaying ? '' : 'paused'}" aria-label="Mapa vivo del agente">
+      <div class="flow-toolbar">
+        <h3>${esc(flow.title || 'Mapa vivo del agente')}</h3>
+        <div class="flow-tools">
+          ${modeButtons}
+          <button type="button" data-flow-play>${flowPlaying ? 'Pausar' : 'Reproducir'}</button>
+          <select data-flow-layer aria-label="Filtrar capa">${layerOptions}</select>
+        </div>
+      </div>
+      <div class="flow-stage">
+        <div class="flow-canvas">
+          <svg class="flow-wires" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${wires}</svg>
+          ${nodeHtml}
+          <div class="flow-caption">${esc(caption)}</div>
+        </div>
+        <aside class="flow-panel">
+          <h4>${esc(selected.label)}</h4>
+          <p>${esc(selected.description || 'Nodo derivado de artefactos ACP.')}</p>
+          <div class="decision-meta">${metrics}</div>
+          <p><strong>Estado:</strong> ${esc(stateLabel(selected.state))}</p>
+          <p><strong>Fuentes ACP</strong></p>
+          ${sourceLinks || '<p>No hay fuentes declaradas para este nodo.</p>'}
+        </aside>
+      </div>
+    </section>`;
+  }
+  function bindFlowMap(){
+    chapter.querySelectorAll('[data-flow-mode]').forEach(btn => btn.addEventListener('click', () => { flowMode = btn.dataset.flowMode || 'design'; render(); }));
+    const play = chapter.querySelector('[data-flow-play]');
+    if(play){ play.addEventListener('click', () => { flowPlaying = !flowPlaying; render(); }); }
+    const layer = chapter.querySelector('[data-flow-layer]');
+    if(layer){ layer.addEventListener('change', () => { flowLayer = layer.value || 'all'; render(); }); }
+    chapter.querySelectorAll('[data-flow-node]').forEach(btn => btn.addEventListener('click', () => { selectedFlowNode = btn.dataset.flowNode || ''; render(); }));
+  }
   function renderNav(){
     nav.innerHTML = data.storyline.map((item, index) => `<button type="button" class="${index===current?'active':''}" data-index="${index}">${esc(index+1)}. ${esc(item.title)}</button>`).join('');
     nav.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => { current = Number(btn.dataset.index || 0); render(); }));
@@ -3758,11 +4747,13 @@ def _acp_viewer_js() -> str:
       <p>${esc(item.narrative)}</p>
       <p><strong>Por que importa:</strong> ${esc(item.why_it_matters)}</p>
       <div class="pills">${(item.key_takeaways || []).map(t => `<span class="pill">${esc(t)}</span>`).join('')}</div>
+      ${item.id === 'flow-map' ? renderFlowMap() : ''}
       ${renderSegmentedFiles(files)}
       <div class="controls"><button class="secondary" type="button" data-prev>Anterior</button><button type="button" data-next>Siguiente</button></div>
     `;
     chapter.querySelector('[data-prev]').addEventListener('click', () => { current = Math.max(0, current - 1); render(); });
     chapter.querySelector('[data-next]').addEventListener('click', () => { current = Math.min(data.storyline.length - 1, current + 1); render(); });
+    bindFlowMap();
     renderNav();
   }
   if(search){
@@ -4308,6 +5299,345 @@ def _build_observability_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     ]
 
 
+def _governance_tool_items(snapshot: SessionSnapshot) -> list[dict[str, Any]]:
+    blueprint = snapshot.blueprint
+    if blueprint is None:
+        return []
+    items: list[dict[str, Any]] = []
+    for index, tool in enumerate(blueprint.tools, start=1):
+        slug = _tool_connector_slug(tool, index)
+        items.append(
+            {
+                "tool_name": getattr(tool, "name", "") or f"tool_{index}",
+                "connector_key": slug,
+                "contract_ref": _tool_contract_ref(tool, index),
+                "connector_profile_ref": f"ACP/tools/connectors/{slug}.yaml",
+                "sandbox_binding_ref": f"ACP/tools/bindings/{slug}.sandbox.yaml",
+                "production_binding_ref": f"ACP/tools/bindings/{slug}.production.yaml",
+                "smoke_test_ref": f"ACP/tools/tests/{slug}-smoke-test.yaml",
+                "risk_level": getattr(tool, "risk_level", "") or "needs_review",
+                "permission_mode": _tool_permission_mode(tool),
+                "requires_approval": bool(getattr(tool, "requires_approval", False)),
+                "side_effects": bool(getattr(tool, "has_side_effects", False)),
+                "failure_mode": getattr(tool, "failure_mode", "") or "",
+            }
+        )
+    return items
+
+
+def _build_agent_governance_console_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    tools = _governance_tool_items(snapshot)
+    source_files = [
+        "ACP/governance/control-plane.yaml",
+        "ACP/governance/tool-governance-policy.yaml",
+        "ACP/governance/decision-policy.yaml",
+        "ACP/governance/approval-matrix.yaml",
+        "ACP/tools/connectors/catalog.yaml",
+        "ACP/costs/operational-cost-estimate.json",
+        "ACP/observability/event-model.yaml",
+    ]
+    console_manifest = {
+        "schema_version": "agent-governance-console.v1",
+        "console_type": "web_control_plane_definition",
+        "purpose": "Interfaz web para configurar, operar y auditar el agente construido desde el ACP.",
+        "custom_client_tools_supported": True,
+        "known_connectors_are_examples_not_limits": True,
+        "source_files": source_files,
+        "modules": [
+            {
+                "module_key": "overview",
+                "label": "Estado del agente",
+                "responsibility": "Mostrar estado runtime, readiness, version activa y alertas principales.",
+                "source_refs": ["ACP/runtime/config.yaml", "ACP/construction-readiness/overview.yaml"],
+            },
+            {
+                "module_key": "tool_contracts",
+                "label": "Contratos de tools",
+                "responsibility": "Configurar conectores, bindings, secretos referenciados y smoke tests por herramienta.",
+                "source_refs": ["ACP/tools/connectors/catalog.yaml", "ACP/tools/bindings/"],
+            },
+            {
+                "module_key": "decisions",
+                "label": "Decisiones y aprobaciones",
+                "responsibility": "Resolver preguntas delegadas, aprobaciones humanas y overrides por entorno.",
+                "source_refs": ["ACP/governance/decision-policy.yaml", "ACP/governance/approval-matrix.yaml"],
+            },
+            {
+                "module_key": "finops",
+                "label": "FinOps",
+                "responsibility": "Definir presupuestos, umbrales, limites de consumo y reglas de degradacion.",
+                "source_refs": ["ACP/finops/budget-policy.yaml", "ACP/costs/operational-cost-estimate.json"],
+            },
+            {
+                "module_key": "fallbacks",
+                "label": "Fallbacks e incidentes",
+                "responsibility": "Pausar herramientas, activar rutas alternativas, escalar a humano y cerrar incidentes.",
+                "source_refs": ["ACP/governance/control-plane.yaml", "ACP/ops/runbooks/fallback-and-incident-response.md"],
+            },
+            {
+                "module_key": "observability",
+                "label": "Observabilidad",
+                "responsibility": "Monitorear eventos, metricas, trazas, alertas y auditoria operacional.",
+                "source_refs": ["ACP/observability/event-model.yaml", "ACP/observability/metrics.yaml", "ACP/observability/alerts.yaml"],
+            },
+        ],
+        "minimum_ui_states": ["draft", "sandbox_ready", "production_ready", "live", "paused", "degraded", "incident"],
+    }
+    ui_map = {
+        "schema_version": "agent-governance-console-ui-map.v1",
+        "navigation": [
+            {"route": "/agent", "module_key": "overview", "primary_action": "review_current_state"},
+            {"route": "/agent/tools", "module_key": "tool_contracts", "primary_action": "configure_tool_binding"},
+            {"route": "/agent/decisions", "module_key": "decisions", "primary_action": "resolve_required_decision"},
+            {"route": "/agent/finops", "module_key": "finops", "primary_action": "set_budget_guardrails"},
+            {"route": "/agent/fallbacks", "module_key": "fallbacks", "primary_action": "manage_fallback_route"},
+            {"route": "/agent/observability", "module_key": "observability", "primary_action": "inspect_events"},
+        ],
+        "tool_configuration_flow": [
+            "select_tool",
+            "choose_binding_type",
+            "map_client_contract_fields",
+            "attach_secret_references",
+            "run_smoke_test",
+            "request_approval_if_needed",
+            "activate_environment_binding",
+        ],
+        "must_surface_when_present": [
+            "blocking_construction_gaps",
+            "delegated_implementation_decisions",
+            "missing_tool_bindings",
+            "plain_secret_values",
+            "production_write_tool_without_owner",
+            "budget_threshold_breach",
+            "fallback_route_missing",
+        ],
+    }
+    role_permissions = {
+        "schema_version": "agent-governance-console-roles.v1",
+        "roles": {
+            "owner": ["view_all", "approve_release", "approve_side_effects", "manage_budget", "pause_agent"],
+            "admin": ["view_all", "configure_tools", "manage_fallbacks", "run_smoke_tests"],
+            "implementer": ["view_specs", "configure_sandbox_tools", "run_smoke_tests", "propose_production_binding"],
+            "operator": ["view_runtime", "pause_tool", "open_incident", "activate_fallback"],
+            "auditor": ["view_audit", "export_logs", "view_decisions"],
+        },
+        "rules": [
+            "Production bindings with write or side effects require owner or admin approval.",
+            "Implementers can prepare contracts but cannot silently bypass approval gates.",
+            "Auditors can inspect decisions and logs without changing runtime state.",
+        ],
+    }
+    control_plane = {
+        "schema_version": "agent-control-plane.v1",
+        "states": ["draft", "sandbox_ready", "production_ready", "live", "paused", "degraded", "incident", "retired"],
+        "actions": [
+            "activate_sandbox",
+            "promote_to_production",
+            "pause_agent",
+            "resume_agent",
+            "disable_tool",
+            "enable_tool",
+            "activate_fallback",
+            "request_human_approval",
+            "open_incident",
+            "close_incident",
+            "export_audit_report",
+        ],
+        "hard_rules": [
+            "no_plain_secrets",
+            "no_production_write_without_named_owner",
+            "no_unmapped_custom_client_tool",
+            "no_silent_resolution_of_delegated_decisions",
+            "fail_closed_when_tool_binding_missing",
+        ],
+        "tool_refs": tools,
+    }
+    tool_policy = {
+        "schema_version": "tool-governance-policy.v1",
+        "custom_client_tools_supported": True,
+        "scope": "all_blueprint_tools",
+        "default_policy": {
+            "read_tools": "allowed_after_contract_and_binding_validation",
+            "write_tools": "approval_required_before_production_activation",
+            "unknown_or_custom_tools": "allowed_only_with_connector_profile_binding_and_smoke_test",
+        },
+        "tools": tools,
+    }
+    decision_policy = {
+        "schema_version": "agent-decision-policy.v1",
+        "policy": "DO_NOT_ASSUME_SILENTLY",
+        "decision_sources": [
+            "ACP/construction-readiness/open-questions.yaml",
+            "ACP/construction-readiness/deferred-decisions.yaml",
+            "ACP/governance/journey-decisions.json",
+        ],
+        "must_prompt_when": [
+            "decision_is_blocking",
+            "decision_affects_runtime_or_deployment",
+            "decision_affects_tool_binding",
+            "decision_affects_budget_or_sla",
+            "decision_affects_side_effect_or_fallback",
+        ],
+    }
+    approval_matrix = {
+        "schema_version": "agent-approval-matrix.v1",
+        "approval_triggers": [
+            {"trigger": "production_release", "required_role": "owner"},
+            {"trigger": "write_tool_activation", "required_role": "owner_or_admin"},
+            {"trigger": "budget_limit_change", "required_role": "owner"},
+            {"trigger": "fallback_policy_change", "required_role": "admin"},
+            {"trigger": "custom_client_tool_binding", "required_role": "admin"},
+        ],
+        "tool_overrides": [
+            {
+                "tool_name": item["tool_name"],
+                "requires_approval": item["requires_approval"] or item["side_effects"],
+                "reason": "Blueprint approval policy or side effects.",
+            }
+            for item in tools
+        ],
+    }
+    budget_policy = {
+        "schema_version": "agent-finops-budget-policy.v1",
+        "source_estimate": "ACP/costs/operational-cost-estimate.json",
+        "budget_controls": {
+            "monthly_budget_limit": "needs_review",
+            "per_run_budget_limit": "needs_review",
+            "alert_thresholds_percent": [50, 80, 95],
+            "degradation_strategy": "switch_model_reduce_context_or_require_human_approval",
+        },
+        "must_track": ["llm_tokens", "tool_calls", "external_api_costs", "storage_costs", "human_review_time"],
+    }
+    event_model = {
+        "schema_version": "agent-observability-event-model.v1",
+        "required_events": [
+            "agent.started",
+            "agent.completed",
+            "agent.failed",
+            "decision.requested",
+            "decision.resolved",
+            "tool.binding.changed",
+            "tool.call.started",
+            "tool.call.completed",
+            "tool.call.failed",
+            "approval.requested",
+            "approval.granted",
+            "approval.denied",
+            "fallback.activated",
+            "budget.threshold_reached",
+            "incident.opened",
+            "incident.closed",
+        ],
+        "tool_event_namespace": [{"tool_name": item["tool_name"], "prefix": f"tool.{item['connector_key']}"} for item in tools],
+        "privacy_policy": "log_references_and_metadata_first; avoid_payload_logging_unless_explicitly_allowed",
+    }
+    runbook = "\n".join(
+        [
+            "# Fallback and incident response",
+            "",
+            "## Activation criteria",
+            "- Tool binding missing or failing smoke tests.",
+            "- Budget threshold breached.",
+            "- Approval gate unavailable for a side-effect action.",
+            "- External provider incident or unexpected response schema.",
+            "",
+            "## Operator flow",
+            "1. Open the incident in the governance console.",
+            "2. Disable only the affected tool or route when possible.",
+            "3. Activate the configured fallback or human handoff.",
+            "4. Capture decision, owner, timestamp and evidence.",
+            "5. Run the smoke test again before resuming production traffic.",
+            "",
+            "## Non-negotiables",
+            "- Do not paste plaintext secrets into the console or ACP.",
+            "- Do not activate production write actions without the required approval.",
+            "- Do not treat known connector examples as the full integration catalog.",
+        ]
+    )
+    return [
+        build_acp_file_entry(
+            path="ACP/ops/agent-governance-console/console-manifest.yaml",
+            domain="governance",
+            title="Agent governance console manifest",
+            format="yaml",
+            source_sections=["blueprint", "construction_readiness", "tool_contracts", "runtime", "observability"],
+            content_text=serialize_yaml_document(console_manifest),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/agent-governance-console/ui-map.json",
+            domain="governance",
+            title="Agent governance console UI map",
+            format="json",
+            source_sections=["tool_contracts", "runtime", "governance"],
+            content_text=serialize_json_document(ui_map),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/agent-governance-console/role-permissions.yaml",
+            domain="governance",
+            title="Agent governance console role permissions",
+            format="yaml",
+            source_sections=["approvals", "risk_summary", "tool_contracts"],
+            content_text=serialize_yaml_document(role_permissions),
+        ),
+        build_acp_file_entry(
+            path="ACP/governance/control-plane.yaml",
+            domain="governance",
+            title="Agent control plane",
+            format="yaml",
+            source_sections=["runtime", "tool_contracts", "governance"],
+            content_text=serialize_yaml_document(control_plane),
+        ),
+        build_acp_file_entry(
+            path="ACP/governance/tool-governance-policy.yaml",
+            domain="governance",
+            title="Tool governance policy",
+            format="yaml",
+            source_sections=["blueprint.tools", "approvals", "risk_summary"],
+            content_text=serialize_yaml_document(tool_policy),
+        ),
+        build_acp_file_entry(
+            path="ACP/governance/decision-policy.yaml",
+            domain="governance",
+            title="Agent decision policy",
+            format="yaml",
+            source_sections=["construction_readiness", "blueprint_consistency"],
+            content_text=serialize_yaml_document(decision_policy),
+        ),
+        build_acp_file_entry(
+            path="ACP/governance/approval-matrix.yaml",
+            domain="governance",
+            title="Agent approval matrix",
+            format="yaml",
+            source_sections=["approvals", "blueprint.tools"],
+            content_text=serialize_yaml_document(approval_matrix),
+        ),
+        build_acp_file_entry(
+            path="ACP/finops/budget-policy.yaml",
+            domain="costs",
+            title="Agent FinOps budget policy",
+            format="yaml",
+            source_sections=["estimation_report", "operational_costs", "runtime"],
+            content_text=serialize_yaml_document(budget_policy),
+        ),
+        build_acp_file_entry(
+            path="ACP/observability/event-model.yaml",
+            domain="observability",
+            title="Agent observability event model",
+            format="yaml",
+            source_sections=["observability", "tool_contracts", "runtime"],
+            content_text=serialize_yaml_document(event_model),
+        ),
+        build_acp_file_entry(
+            path="ACP/ops/runbooks/fallback-and-incident-response.md",
+            domain="governance",
+            title="Fallback and incident response runbook",
+            format="markdown",
+            source_sections=["governance", "observability", "tool_contracts"],
+            content_text=serialize_markdown_document(runbook),
+        ),
+    ]
+
+
 def _build_governance_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     report = ensure_blueprint_consistency_report(snapshot)
     process_debt = [
@@ -4421,6 +5751,7 @@ def generate_acp_files(
     files.extend(_build_memory_files(snapshot))
     files.extend(_build_knowledge_files(snapshot, continuity_answers))
     files.extend(_build_tools_files(snapshot))
+    files.extend(_build_tool_connector_files(snapshot))
     files.extend(_build_objective_files(snapshot, response_records))
     files.extend(_build_workflow_files(snapshot))
     files.extend(_build_prompt_files(snapshot))
@@ -4430,6 +5761,8 @@ def generate_acp_files(
     files.extend(_build_operational_cost_files(snapshot))
     files.extend(_build_observability_files(snapshot))
     files.extend(_build_governance_files(snapshot))
+    files.extend(_build_agent_governance_console_files(snapshot))
+    files.extend(_build_agent_flow_map_files(snapshot))
     files.extend(_build_estimation_files(snapshot))
     base_files = sorted(files, key=lambda item: item.path)
     base_preview = build_acp_preview(snapshot, base_files)

@@ -63,3 +63,16 @@ def test_blueprint_free_active_registry_surface_includes_curated_deliverables() 
         "diagram.traceability_matrix",
         "diagram.integration_boundaries",
     }.isdisjoint(active_keys)
+
+
+def test_blueprint_pro_human_intervention_flow_does_not_require_acp_inputs() -> None:
+    entry = get_registry_entry("diagram.human_intervention_flow")
+
+    assert entry is not None
+    assert entry.required_tier.value == "blueprint_pro"
+    assert "blueprint_pro" in entry.product_scope
+    assert set(entry.context_policy.short_term_refs) == {
+        "definition.requirements",
+        "blueprint.architecture_spec",
+    }
+    assert all(not ref.startswith("acp.") for ref in entry.dependency_policy.depends_on)

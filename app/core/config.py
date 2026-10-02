@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     database_pool_timeout_seconds: int = 30
     database_pool_recycle_seconds: int = 1800
     product_build_batch_size: int = 1
+    product_build_dynamic_parallelism_enabled: bool = True
+    product_build_parallel_token_budget: int = 36_000
+    product_build_parallel_complexity_budget: int = 6
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3200", "http://127.0.0.1:3200"]
     )

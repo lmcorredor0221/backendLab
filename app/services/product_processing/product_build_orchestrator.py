@@ -22,9 +22,15 @@ from app.services.deliverable_catalog.contracts import (
     DeliverableGenerationResult,
     DeliverableGenerationTask,
 )
+from app.services.deliverable_catalog.deterministic_builders import supports_deterministic_deliverable
 from app.services.deliverable_catalog.generation_service import run_deliverable_generation_task
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
-from app.services.deliverable_catalog.registry_service import get_registry_entry as get_deliverable_registry_entry
+from app.services.deliverable_catalog.registry_service import (
+    get_registry_entry as get_deliverable_registry_entry,
+    list_registry_entries as list_deliverable_registry_entries,
+    resolve_product_delivery_plan,
+)
+from app.services.diagram_center.deterministic_builders import supports_deterministic_diagram
 from app.services.diagram_center.generation_service import create_generation_job, run_generation_job
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing.contracts import (
@@ -59,6 +65,11 @@ QUEUE_ACTIVE_STATUSES = {"queued", "running"}
 MAX_PROCESSING_ATTEMPTS = 2
 ORPHANED_JOB_TIMEOUT = timedelta(minutes=15)
 MAX_PRODUCT_BUILD_BATCH_SIZE = 3
+DEFAULT_PARALLEL_TOKEN_BUDGET = 36_000
+DEFAULT_PARALLEL_COMPLEXITY_BUDGET = 6
+HEAVY_ARTIFACT_DURATION_SECONDS = 180
+ACP_NONBLOCKING_DIAGRAM_GROUPS = {"large", "isolated"}
+ACP_NONBLOCKING_POLICY_KEY = "acp_core_first_nonblocking_diagrams"
 
 JobRunner = Callable[[Session, DeliverableGenerationTask], tuple[DeliverableGenerationJobRecord, DeliverableGenerationResult | None]]
 
@@ -74,6 +85,30 @@ class ProductBuildOrchestrationOptions:
     approved_context_refs: tuple[str, ...] = ()
     job_runner: JobRunner | None = None
 
+
+@dataclass(frozen=True)
+class ProductBuildArtifactEstimate:
+    deliverable_key: str
+    group: str
+    estimated_tokens: int
+    estimated_seconds: int
+    complexity_score: int
+    dependency_count: int
+    can_parallelize: bool
+    resource_units: int
+    isolation_reason: str = ""
+    historical_duration_seconds: int = 0
+    generation_mode: str = "deterministic"
+
+
+@dataclass(frozen=True)
+class ProductBuildCompletionScope:
+    blocking_keys: frozenset[str]
+    nonblocking_payload: tuple[dict[str, Any], ...]
+
+    @property
+    def nonblocking_keys(self) -> frozenset[str]:
+        return frozenset(str(item.get("deliverable_key") or "") for item in self.nonblocking_payload)
 
 
 def seal_product_build_run(db: Session, *, run: ProductBuildRunRecord) -> None:
@@ -125,7 +160,21 @@ def ensure_product_build_orchestration(
         tier=access.tier,
         current_stage=current_stage,
     )
-    expected_items = [item for item in catalog.entries if _is_expected_for_product(item, meta)]
+    run_idempotency_key = _run_idempotency_key(
+        record=record,
+        product_key=meta.product_key,
+        explicit_key=resolved_options.idempotency_key,
+    )
+    existing_run = _find_product_build_run_by_idempotency(
+        db,
+        workspace_id=workspace_id,
+        idempotency_key=run_idempotency_key,
+    )
+    expected_items, delivery_plan_payload = _expected_items_for_product_run(
+        catalog_entries=catalog.entries,
+        meta=meta,
+        run=existing_run,
+    )
     jobs_by_key = _latest_jobs_by_key(db, session_id=record.id)
     diagram_jobs_by_key = _latest_diagram_jobs_by_key(db, session_id=record.id)
     run_checkpoint = {
@@ -134,6 +183,8 @@ def ensure_product_build_orchestration(
         "expected_deliverables": [item.key for item in expected_items],
         "catalog_stage": current_stage,
     }
+    if delivery_plan_payload is not None:
+        run_checkpoint["delivery_plan"] = delivery_plan_payload
     if resolved_options.activation_payload:
         run_checkpoint["activation"] = dict(resolved_options.activation_payload)
 
@@ -146,11 +197,7 @@ def ensure_product_build_orchestration(
         entitlement_tier=access.tier,
         access_state="allowed",
         lifecycle=ProductBuildLifecycle.preparing,
-        idempotency_key=_run_idempotency_key(
-            record=record,
-            product_key=meta.product_key,
-            explicit_key=resolved_options.idempotency_key,
-        ),
+        idempotency_key=run_idempotency_key,
         created_by_user_id=current_user.id if current_user is not None else None,
         checkpoint_payload=run_checkpoint,
     )
@@ -281,7 +328,11 @@ def reconcile_product_build_run(
         tier=access.tier,
         current_stage=current_stage,
     )
-    expected_items = [item for item in catalog.entries if _is_expected_for_product(item, meta)]
+    expected_items, _ = _expected_items_for_product_run(
+        catalog_entries=catalog.entries,
+        meta=meta,
+        run=run,
+    )
     refreshed_jobs = _latest_jobs_by_key(db, session_id=record.id)
     refreshed_diagram_jobs = _latest_diagram_jobs_by_key(db, session_id=record.id)
     _sync_expected_steps(
@@ -423,7 +474,20 @@ def enqueue_product_build_processing(
         current_stage=current_stage,
     )
     meta = PRODUCT_BUILD_META[normalized_product_key]
-    expected_items = [item for item in catalog.entries if _is_expected_for_product(item, meta)]
+    expected_items, delivery_plan_payload = _expected_items_for_product_run(
+        catalog_entries=catalog.entries,
+        meta=meta,
+        run=run,
+    )
+    if delivery_plan_payload is not None and not (run.checkpoint_payload or {}).get("delivery_plan"):
+        _merge_run_checkpoint(
+            db,
+            run=run,
+            checkpoint_payload={
+                "expected_deliverables": [item.key for item in expected_items],
+                "delivery_plan": delivery_plan_payload,
+            },
+        )
     jobs_by_key = _latest_jobs_by_key(db, session_id=record.id)
     diagram_jobs_by_key = _latest_diagram_jobs_by_key(db, session_id=record.id)
     _sync_expected_steps(
@@ -434,6 +498,7 @@ def enqueue_product_build_processing(
         diagram_jobs_by_key=diagram_jobs_by_key,
     )
     steps_by_key = {step.step_key: step for step in list_product_build_steps(db, run_id=run.id)}
+    completion_scope = _build_completion_scope(db, run=run, expected_items=expected_items)
     selected_items = _select_processing_items(
         run=run,
         expected_items=expected_items,
@@ -441,6 +506,7 @@ def enqueue_product_build_processing(
         diagram_jobs_by_key=diagram_jobs_by_key,
         steps_by_key=steps_by_key,
         mode=resolved_mode,
+        nonblocking_keys=completion_scope.nonblocking_keys,
     )
 
     if not selected_items:
@@ -455,7 +521,14 @@ def enqueue_product_build_processing(
                     "mode": resolved_mode.value,
                     "status": "completed",
                     "selected_deliverable_keys": [],
-                    "summary": "No hay entregables pendientes, no generados o fallidos para procesar.",
+                    "completion_policy": ACP_NONBLOCKING_POLICY_KEY if _is_acp_run(run) else "all_expected_deliverables",
+                    "deferred_nonblocking_deliverable_keys": sorted(completion_scope.nonblocking_keys),
+                    "deferred_nonblocking_deliverables": list(completion_scope.nonblocking_payload),
+                    "summary": (
+                        "No hay entregables bloqueantes pendientes. Los artefactos ACP extendidos quedaron diferidos."
+                        if completion_scope.nonblocking_keys
+                        else "No hay entregables pendientes, no generados o fallidos para procesar."
+                    ),
                 },
             },
             error_payload={},
@@ -473,6 +546,11 @@ def enqueue_product_build_processing(
         )
 
     queue_id = str(uuid4())
+    items_by_key = {item.key: item for item in expected_items}
+    selected_estimates = {
+        item.key: _estimate_artifact_processing(db, run=run, item=item, items_by_key=items_by_key)
+        for item in selected_items
+    }
     for sequence, item in enumerate(selected_items, start=1):
         existing_step = steps_by_key.get(f"deliverable:{item.key}")
         upsert_product_build_step(
@@ -496,10 +574,12 @@ def enqueue_product_build_processing(
                 "queue_mode": resolved_mode.value,
                 "queue_selected": True,
                 "job_source": "diagram_center" if item.deliverable_type.value == "diagram" else "deliverable_catalog",
+                "processing_estimate": _artifact_estimate_payload(selected_estimates[item.key]),
             },
             error_payload={},
         )
 
+    batch_size = _product_build_batch_size(db.get_bind())
     update_product_build_run_state(
         db,
         run=run,
@@ -513,7 +593,19 @@ def enqueue_product_build_processing(
                 "selected_deliverable_keys": [item.key for item in selected_items],
                 "retry_deliverable_keys": [],
                 "allow_llm": allow_llm,
-                "summary": f"Se encolaron {len(selected_items)} entregables para procesamiento secuencial.",
+                "strategy": "dynamic_parallelism" if _dynamic_parallelism_enabled() and batch_size > 1 else "sequential",
+                "max_parallel": batch_size,
+                "parallel_token_budget": _parallel_token_budget(),
+                "parallel_complexity_budget": _parallel_complexity_budget(),
+                "completion_policy": ACP_NONBLOCKING_POLICY_KEY if _is_acp_run(run) else "all_expected_deliverables",
+                "deferred_nonblocking_deliverable_keys": sorted(completion_scope.nonblocking_keys),
+                "deferred_nonblocking_deliverables": list(completion_scope.nonblocking_payload),
+                "profile_counts": _estimate_profile_counts(list(selected_estimates.values())),
+                "summary": (
+                    f"Se encolaron {len(selected_items)} entregables con estrategia de paralelizacion dinamica."
+                    if _dynamic_parallelism_enabled() and batch_size > 1
+                    else f"Se encolaron {len(selected_items)} entregables para procesamiento secuencial."
+                ),
             },
         },
         error_payload={},
@@ -570,9 +662,15 @@ def run_product_build_processing(
             current_stage=current_stage,
         )
         meta = PRODUCT_BUILD_META[_normalize_product_key(run.product_key)]
-        expected_items = [item for item in catalog.entries if _is_expected_for_product(item, meta)]
+        expected_items, _ = _expected_items_for_product_run(
+            catalog_entries=catalog.entries,
+            meta=meta,
+            run=run,
+        )
         items_by_key = {item.key: item for item in expected_items}
+        completion_scope = _build_completion_scope(db, run=run, expected_items=expected_items)
         selected_keys = [str(key) for key in queue_checkpoint.get("selected_deliverable_keys", []) if str(key) in items_by_key]
+        selected_keys = [key for key in selected_keys if key not in completion_scope.nonblocking_keys]
         ordered_items = _topologically_sort_items([items_by_key[key] for key in selected_keys])
 
         _update_processing_queue_checkpoint(
@@ -679,10 +777,34 @@ def _product_build_batch_size(bind: Any = None) -> int:
     return max(1, min(MAX_PRODUCT_BUILD_BATCH_SIZE, configured))
 
 
+def _dynamic_parallelism_enabled() -> bool:
+    return bool(getattr(get_settings(), "product_build_dynamic_parallelism_enabled", True))
+
+
+def _parallel_token_budget() -> int:
+    try:
+        configured = int(getattr(get_settings(), "product_build_parallel_token_budget", DEFAULT_PARALLEL_TOKEN_BUDGET) or 0)
+    except (TypeError, ValueError):
+        configured = DEFAULT_PARALLEL_TOKEN_BUDGET
+    return max(8_000, configured)
+
+
+def _parallel_complexity_budget() -> int:
+    try:
+        configured = int(
+            getattr(get_settings(), "product_build_parallel_complexity_budget", DEFAULT_PARALLEL_COMPLEXITY_BUDGET) or 0
+        )
+    except (TypeError, ValueError):
+        configured = DEFAULT_PARALLEL_COMPLEXITY_BUDGET
+    return max(2, configured)
+
+
 def _processing_batch_summary(*, total_count: int, batch_size: int) -> str:
     if batch_size <= 1:
         return f"Procesando {total_count} entregables de forma secuencial."
-    return f"Procesando {total_count} entregables en lotes de hasta {batch_size}."
+    if not _dynamic_parallelism_enabled():
+        return f"Procesando {total_count} entregables en lotes fijos de hasta {batch_size}."
+    return f"Procesando {total_count} entregables con paralelizacion dinamica de hasta {batch_size}."
 
 
 def _run_idempotency_key(*, record: SessionRecord, product_key: ProductBuildProductKey, explicit_key: str) -> str:
@@ -713,6 +835,86 @@ def _resolve_role(db: Session, *, record: SessionRecord, current_user: UserRecor
 
 def _is_expected_for_product(item: DeliverableCatalogItem, meta) -> bool:
     return bool(set(item.product_scope).intersection(meta.included_scopes)) and tier_rank(item.required_tier) <= tier_rank(meta.required_tier)
+
+
+def _find_product_build_run_by_idempotency(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    idempotency_key: str,
+) -> ProductBuildRunRecord | None:
+    return db.exec(
+        select(ProductBuildRunRecord).where(
+            ProductBuildRunRecord.workspace_id == workspace_id,
+            ProductBuildRunRecord.idempotency_key == idempotency_key,
+        )
+    ).first()
+
+
+def _checkpoint_expected_keys(run: ProductBuildRunRecord | None) -> list[str] | None:
+    if run is None:
+        return None
+    checkpoint = run.checkpoint_payload or {}
+    delivery_plan = checkpoint.get("delivery_plan")
+    if isinstance(delivery_plan, dict) and "generated_deliverable_keys" in delivery_plan:
+        return [str(key) for key in delivery_plan.get("generated_deliverable_keys", []) if str(key).strip()]
+    if "expected_deliverables" in checkpoint:
+        return [str(key) for key in checkpoint.get("expected_deliverables", []) if str(key).strip()]
+    return None
+
+
+def _items_for_expected_keys(
+    *,
+    catalog_entries: list[DeliverableCatalogItem],
+    meta,
+    expected_keys: list[str],
+) -> list[DeliverableCatalogItem]:
+    items_by_key = {item.key: item for item in catalog_entries}
+    ordered_items: list[DeliverableCatalogItem] = []
+    for key in expected_keys:
+        item = items_by_key.get(key)
+        if item is None:
+            continue
+        if not _is_expected_for_product(item, meta):
+            continue
+        ordered_items.append(item)
+    return ordered_items
+
+
+def _legacy_expected_items(
+    *,
+    catalog_entries: list[DeliverableCatalogItem],
+    meta,
+) -> list[DeliverableCatalogItem]:
+    return [item for item in catalog_entries if _is_expected_for_product(item, meta)]
+
+
+def _expected_items_for_product_run(
+    *,
+    catalog_entries: list[DeliverableCatalogItem],
+    meta,
+    run: ProductBuildRunRecord | None,
+) -> tuple[list[DeliverableCatalogItem], dict[str, Any] | None]:
+    frozen_keys = _checkpoint_expected_keys(run)
+    if frozen_keys is not None:
+        return _items_for_expected_keys(catalog_entries=catalog_entries, meta=meta, expected_keys=frozen_keys), None
+
+    if run is not None:
+        return _legacy_expected_items(catalog_entries=catalog_entries, meta=meta), None
+
+    plan = resolve_product_delivery_plan(
+        meta.product_key.value,
+        registry_entries=list_deliverable_registry_entries(include_inactive=True),
+        confirmed_signals=[],
+    )
+    expected_items = _items_for_expected_keys(
+        catalog_entries=catalog_entries,
+        meta=meta,
+        expected_keys=list(plan.generated_keys),
+    )
+    plan_payload = plan.checkpoint_payload()
+    plan_payload["generated_deliverable_keys"] = [item.key for item in expected_items]
+    return expected_items, plan_payload
 
 
 def _normalize_catalog_stage(value: str) -> str:
@@ -765,7 +967,12 @@ def _sync_expected_steps(
 ) -> None:
     existing_steps = {step.step_key: step for step in list_product_build_steps(db, run_id=run.id)}
     queue_active = str(_processing_queue_checkpoint(run).get("status") or "") in QUEUE_ACTIVE_STATUSES
-    for index, item in enumerate(sorted(expected_items, key=lambda entry: entry.sort_order), start=1):
+    completion_scope = _build_completion_scope(db, run=run, expected_items=expected_items)
+    nonblocking_by_key = {
+        str(item.get("deliverable_key") or ""): dict(item)
+        for item in completion_scope.nonblocking_payload
+    }
+    for index, item in enumerate(expected_items, start=1):
         step_key = f"deliverable:{item.key}"
         existing_step = existing_steps.get(step_key)
         job = jobs_by_key.get(item.key)
@@ -786,6 +993,13 @@ def _sync_expected_steps(
         elif existing_step is not None:
             job_source = str((existing_step.checkpoint_payload or {}).get("job_source") or "")
         error_payload = _error_payload_for_job(job or diagram_job)
+        nonblocking_payload = nonblocking_by_key.get(item.key)
+        if (
+            nonblocking_payload is not None
+            and str(step_state or "") in {"pending", "stale", "error", "failed", "requires_attention", "locked"}
+        ):
+            step_state = "skipped"
+            error_payload = {}
         if not error_payload and existing_step is not None and step_state in QUEUE_FAILURE_STEP_STATES:
             error_payload = dict(existing_step.error_payload or {})
         upsert_product_build_step(
@@ -805,6 +1019,14 @@ def _sync_expected_steps(
                 "product_scope": list(item.product_scope),
                 "access_state": item.access.access_state,
                 "job_source": job_source,
+                "blocking_for_product": nonblocking_payload is None,
+                "deferred_nonblocking": nonblocking_payload is not None,
+                "nonblocking_policy_key": str(nonblocking_payload.get("policy_key") or "")
+                if nonblocking_payload is not None
+                else "",
+                "nonblocking_reason": str(nonblocking_payload.get("reason") or "")
+                if nonblocking_payload is not None
+                else "",
             },
             error_payload=error_payload,
         )
@@ -883,7 +1105,7 @@ def _execute_expected_jobs(
     options: ProductBuildOrchestrationOptions,
 ) -> None:
     runner = options.job_runner or run_deliverable_generation_task
-    for item in sorted(expected_items, key=lambda entry: entry.sort_order):
+    for item in expected_items:
         existing = existing_jobs_by_key.get(item.key)
         if existing is not None and str(existing.status or "") in {"available", "generating", "queued", "updating"}:
             continue
@@ -927,10 +1149,12 @@ def _execute_expected_jobs(
 def _finalize_run_from_steps(db: Session, *, run: ProductBuildRunRecord, expected_items: list[DeliverableCatalogItem]) -> None:
     steps = list_product_build_steps(db, run_id=run.id)
     relevant_steps = [step for step in steps if step.deliverable_key]
-    total_units = float(len(expected_items))
-    completed_units = float(sum(1 for step in relevant_steps if step.status in COMPLETED_STEP_STATES))
-    blocked_units = float(sum(1 for step in relevant_steps if step.status in {"error", "requires_attention", "locked"}))
-    active_units = sum(1 for step in relevant_steps if step.status in {"queued", "running", "generating"})
+    completion_scope = _build_completion_scope(db, run=run, expected_items=expected_items)
+    blocking_steps = [step for step in relevant_steps if str(step.deliverable_key or "") in completion_scope.blocking_keys]
+    total_units = float(len(completion_scope.blocking_keys))
+    completed_units = float(sum(1 for step in blocking_steps if step.status in COMPLETED_STEP_STATES))
+    blocked_units = float(sum(1 for step in blocking_steps if step.status in {"error", "requires_attention", "locked"}))
+    active_units = sum(1 for step in blocking_steps if step.status in {"queued", "running", "generating"})
     queue_status = str(_processing_queue_checkpoint(run).get("status") or "")
 
     if queue_status in QUEUE_ACTIVE_STATUSES:
@@ -962,9 +1186,22 @@ def _finalize_run_from_steps(db: Session, *, run: ProductBuildRunRecord, expecte
             ],
             "blocked_deliverables": [
                 step.deliverable_key
-                for step in relevant_steps
+                for step in blocking_steps
                 if step.status in {"error", "requires_attention", "locked"}
             ],
+            "blocking_deliverables": sorted(completion_scope.blocking_keys),
+            "nonblocking_deliverables": list(completion_scope.nonblocking_payload),
+            "completion_policy": {
+                "policy_key": ACP_NONBLOCKING_POLICY_KEY if _is_acp_run(run) else "all_expected_deliverables",
+                "blocking_count": len(completion_scope.blocking_keys),
+                "nonblocking_count": len(completion_scope.nonblocking_payload),
+                "summary": (
+                    "El ACP queda listo cuando el nucleo de construccion esta disponible; "
+                    "diagramas grandes o aislados se difieren como enriquecimiento."
+                    if _is_acp_run(run)
+                    else "Todos los entregables esperados bloquean la finalizacion del producto."
+                ),
+            },
         },
     )
 
@@ -1074,12 +1311,15 @@ def _select_processing_items(
     diagram_jobs_by_key: dict[str, DiagramGenerationJobRecord],
     steps_by_key: dict[str, ProductBuildStepRecord],
     mode: ProductBuildProcessingQueueMode,
+    nonblocking_keys: frozenset[str] = frozenset(),
 ) -> list[DeliverableCatalogItem]:
     if not _queue_processing_allowed(run):
         return []
     eligible_states = QUEUE_RETRY_ONLY_STATES if mode == ProductBuildProcessingQueueMode.retry_failed else QUEUE_ELIGIBLE_STATES
     selected: list[DeliverableCatalogItem] = []
     for item in expected_items:
+        if item.key in nonblocking_keys:
+            continue
         existing_step = steps_by_key.get(f"deliverable:{item.key}")
         job = jobs_by_key.get(item.key)
         diagram_job = _diagram_job_for_item(item, diagram_jobs_by_key) if job is None else None
@@ -1107,6 +1347,7 @@ def _topologically_sort_items(items: list[DeliverableCatalogItem]) -> list[Deliv
     if len(items) < 2:
         return list(items)
     items_by_key = {item.key: item for item in items}
+    order_index = {item.key: index for index, item in enumerate(items)}
     edges: dict[str, set[str]] = defaultdict(set)
     indegree: dict[str, int] = {item.key: 0 for item in items}
     for item in items:
@@ -1119,18 +1360,291 @@ def _topologically_sort_items(items: list[DeliverableCatalogItem]) -> list[Deliv
             if item.key not in edges[dependency_key]:
                 edges[dependency_key].add(item.key)
                 indegree[item.key] += 1
-    queue = deque(sorted((item for item in items if indegree[item.key] == 0), key=lambda entry: (entry.sort_order, entry.key)))
+    queue = deque(sorted((item for item in items if indegree[item.key] == 0), key=lambda entry: (order_index[entry.key], entry.key)))
     ordered: list[DeliverableCatalogItem] = []
     while queue:
         item = queue.popleft()
         ordered.append(item)
-        for dependent_key in sorted(edges.get(item.key, set()), key=lambda key: (items_by_key[key].sort_order, key)):
+        for dependent_key in sorted(edges.get(item.key, set()), key=lambda key: (order_index[key], key)):
             indegree[dependent_key] -= 1
             if indegree[dependent_key] == 0:
                 queue.append(items_by_key[dependent_key])
     if len(ordered) != len(items):
-        return sorted(items, key=lambda entry: (entry.sort_order, entry.key))
+        return list(items)
     return ordered
+
+
+def _artifact_history(
+    db: Session,
+    *,
+    run: ProductBuildRunRecord,
+    item: DeliverableCatalogItem,
+    generation_mode: str = "",
+) -> tuple[int, bool]:
+    if item.deliverable_type.value == "diagram":
+        rows = list(
+            db.exec(
+                select(DiagramGenerationJobRecord)
+                .where(
+                    DiagramGenerationJobRecord.workspace_id == run.workspace_id,
+                    DiagramGenerationJobRecord.diagram_key == item.key.removeprefix("diagram."),
+                )
+                .order_by(DiagramGenerationJobRecord.updated_at.desc())
+                .limit(5)
+            ).all()
+        )
+    else:
+        rows = list(
+            db.exec(
+                select(DeliverableGenerationJobRecord)
+                .where(
+                    DeliverableGenerationJobRecord.workspace_id == run.workspace_id,
+                    DeliverableGenerationJobRecord.deliverable_key == item.key,
+                )
+                .order_by(DeliverableGenerationJobRecord.updated_at.desc())
+                .limit(5)
+            ).all()
+        )
+    if generation_mode == "deterministic_python":
+        rows = [job for job in rows if str(getattr(job, "provider_key", "") or "") == generation_mode]
+    durations = [
+        _seconds_between(getattr(job, "started_at", None), getattr(job, "completed_at", None) or getattr(job, "updated_at", None))
+        for job in rows
+        if getattr(job, "started_at", None) is not None
+    ]
+    average_duration = round(sum(durations) / len(durations)) if durations else 0
+    recent_failure = any(str(getattr(job, "status", "") or "") in ERROR_JOB_STATES or bool(getattr(job, "error_code", "")) for job in rows[:3])
+    return average_duration, recent_failure
+
+
+def _effective_generation_mode(item: DeliverableCatalogItem, entry: Any | None = None) -> str:
+    if supports_deterministic_deliverable(item.key):
+        return "deterministic_python"
+    if item.deliverable_type.value == "diagram" and supports_deterministic_diagram(item.key.removeprefix("diagram.")):
+        return "deterministic_python"
+    if entry is None:
+        entry = get_deliverable_registry_entry(item.key)
+    return str(
+        getattr(getattr(entry, "generation_mode", ""), "value", getattr(entry, "generation_mode", ""))
+        or "deterministic"
+    )
+
+
+def _seconds_between(started_at, finished_at) -> int:
+    if started_at is None or finished_at is None:
+        return 0
+    return max(0, round((finished_at - started_at).total_seconds()))
+
+
+def _estimate_artifact_processing(
+    db: Session,
+    *,
+    run: ProductBuildRunRecord,
+    item: DeliverableCatalogItem,
+    items_by_key: dict[str, DeliverableCatalogItem],
+) -> ProductBuildArtifactEstimate:
+    entry = get_deliverable_registry_entry(item.key)
+    type_value = str(getattr(item.deliverable_type, "value", item.deliverable_type) or "artifact")
+    generation_mode = _effective_generation_mode(item, entry)
+    context_policy = getattr(entry, "context_policy", None)
+    try:
+        context_tokens = max(0, int(getattr(context_policy, "max_context_tokens", 0) or 0))
+    except (TypeError, ValueError):
+        context_tokens = 0
+    deterministic_python = generation_mode == "deterministic_python"
+    if deterministic_python:
+        context_tokens = min(context_tokens, 1_500)
+    dependency_policy = getattr(entry, "dependency_policy", None)
+    dependency_keys = [str(value or "").strip() for value in getattr(dependency_policy, "depends_on", []) or []]
+    dependency_count = sum(1 for key in dependency_keys if key in items_by_key)
+    historical_duration, recent_failure = _artifact_history(
+        db,
+        run=run,
+        item=item,
+        generation_mode=generation_mode,
+    )
+
+    type_score = {
+        "artifact": 3,
+        "contract": 4,
+        "diagram": 4,
+        "document": 5,
+        "lineage": 3,
+        "package": 8,
+        "prompt": 4,
+        "test": 4,
+    }.get(type_value, 3)
+    if deterministic_python:
+        type_score = min(type_score, 2)
+    mode_score = {
+        "deterministic": 0,
+        "deterministic_python": 0,
+        "llm_supported": 2,
+        "llm_required": 3,
+        "llm_with_deterministic_fallback": 2,
+        "manual_review_required": 6,
+    }.get(generation_mode, 1)
+    context_score = min(4, (context_tokens + 5_999) // 6_000)
+    dependency_score = min(4, dependency_count)
+    history_score = 4 if historical_duration >= HEAVY_ARTIFACT_DURATION_SECONDS else 2 if historical_duration >= 90 else 1 if historical_duration >= 45 else 0
+    failure_score = 2 if recent_failure else 0
+    complexity_score = type_score + mode_score + context_score + dependency_score + history_score + failure_score
+
+    output_tokens = {
+        "artifact": 3_000,
+        "contract": 4_000,
+        "diagram": 3_500,
+        "document": 6_000,
+        "lineage": 2_500,
+        "package": 1_500,
+        "prompt": 3_500,
+        "test": 4_500,
+    }.get(type_value, 3_000)
+    default_seconds = {
+        "artifact": 35,
+        "contract": 55,
+        "diagram": 75,
+        "document": 90,
+        "lineage": 40,
+        "package": 120,
+        "prompt": 50,
+        "test": 70,
+    }.get(type_value, 45)
+    if deterministic_python:
+        output_tokens = min(output_tokens, 900)
+        estimated_tokens = min(6_000, context_tokens + output_tokens + 300)
+        default_seconds = 8 if type_value == "diagram" else 10
+        token_seconds = max(2, estimated_tokens // 1_500)
+    else:
+        estimated_tokens = min(120_000, context_tokens + output_tokens + 1_200)
+        token_seconds = max(15, estimated_tokens // 350)
+    estimated_seconds = max(historical_duration, default_seconds, token_seconds)
+
+    isolation_reason = ""
+    if type_value == "package":
+        isolation_reason = "package_final_critical_path"
+    elif generation_mode == "manual_review_required":
+        isolation_reason = "manual_review_required"
+    elif dependency_count >= 3:
+        isolation_reason = "many_dependencies"
+    elif historical_duration >= HEAVY_ARTIFACT_DURATION_SECONDS:
+        isolation_reason = "historically_slow"
+    elif estimated_tokens >= 30_000:
+        isolation_reason = "large_context_budget"
+    elif complexity_score >= 11:
+        isolation_reason = "high_complexity_score"
+
+    if isolation_reason:
+        return ProductBuildArtifactEstimate(
+            deliverable_key=item.key,
+            group="isolated",
+            estimated_tokens=estimated_tokens,
+            estimated_seconds=estimated_seconds,
+            complexity_score=complexity_score,
+            dependency_count=dependency_count,
+            can_parallelize=False,
+            resource_units=999,
+            isolation_reason=isolation_reason,
+            historical_duration_seconds=historical_duration,
+            generation_mode=generation_mode,
+        )
+    if complexity_score >= 7 or estimated_tokens >= 16_000 or estimated_seconds >= 120:
+        group = "large"
+        can_parallelize = False
+        resource_units = 4
+    elif complexity_score >= 4 or estimated_tokens >= 8_000 or estimated_seconds >= 60:
+        group = "medium"
+        can_parallelize = True
+        resource_units = 2
+    else:
+        group = "small"
+        can_parallelize = True
+        resource_units = 1
+    return ProductBuildArtifactEstimate(
+        deliverable_key=item.key,
+        group=group,
+        estimated_tokens=estimated_tokens,
+        estimated_seconds=estimated_seconds,
+        complexity_score=complexity_score,
+        dependency_count=dependency_count,
+        can_parallelize=can_parallelize,
+        resource_units=resource_units,
+        historical_duration_seconds=historical_duration,
+        generation_mode=generation_mode,
+    )
+
+
+def _artifact_estimate_payload(estimate: ProductBuildArtifactEstimate) -> dict[str, Any]:
+    return {
+        "group": estimate.group,
+        "estimated_tokens": estimate.estimated_tokens,
+        "estimated_seconds": estimate.estimated_seconds,
+        "complexity_score": estimate.complexity_score,
+        "dependency_count": estimate.dependency_count,
+        "can_parallelize": estimate.can_parallelize,
+        "resource_units": estimate.resource_units,
+        "isolation_reason": estimate.isolation_reason,
+        "historical_duration_seconds": estimate.historical_duration_seconds,
+        "generation_mode": estimate.generation_mode,
+    }
+
+
+def _is_acp_run(run: ProductBuildRunRecord) -> bool:
+    return str(run.product_key or "") == ProductBuildProductKey.acp.value
+
+
+def _nonblocking_acp_payload_for_item(
+    db: Session,
+    *,
+    run: ProductBuildRunRecord,
+    item: DeliverableCatalogItem,
+    items_by_key: dict[str, DeliverableCatalogItem],
+) -> dict[str, Any] | None:
+    if not _is_acp_run(run):
+        return None
+    if item.deliverable_type.value != "diagram":
+        return None
+    estimate = _estimate_artifact_processing(db, run=run, item=item, items_by_key=items_by_key)
+    if estimate.group not in ACP_NONBLOCKING_DIAGRAM_GROUPS:
+        return None
+    return {
+        "deliverable_key": item.key,
+        "title": item.title,
+        "type": item.deliverable_type.value,
+        "stage": item.stage,
+        "policy_key": ACP_NONBLOCKING_POLICY_KEY,
+        "reason": (
+            "Diagrama ACP de alto costo o alta dependencia. No bloquea el paquete inicial; "
+            "puede generarse como enriquecimiento extendido."
+        ),
+        "processing_estimate": _artifact_estimate_payload(estimate),
+    }
+
+
+def _build_completion_scope(
+    db: Session,
+    *,
+    run: ProductBuildRunRecord,
+    expected_items: list[DeliverableCatalogItem],
+) -> ProductBuildCompletionScope:
+    items_by_key = {item.key: item for item in expected_items}
+    nonblocking_payload = tuple(
+        payload
+        for item in expected_items
+        if (payload := _nonblocking_acp_payload_for_item(db, run=run, item=item, items_by_key=items_by_key)) is not None
+    )
+    nonblocking_keys = frozenset(str(item.get("deliverable_key") or "") for item in nonblocking_payload)
+    return ProductBuildCompletionScope(
+        blocking_keys=frozenset(item.key for item in expected_items if item.key not in nonblocking_keys),
+        nonblocking_payload=nonblocking_payload,
+    )
+
+
+def _estimate_profile_counts(estimates: list[ProductBuildArtifactEstimate]) -> dict[str, int]:
+    counts = {"small": 0, "medium": 0, "large": 0, "isolated": 0}
+    for estimate in estimates:
+        counts[estimate.group] = counts.get(estimate.group, 0) + 1
+    return counts
 
 
 def _next_ready_batch(
@@ -1146,11 +1660,63 @@ def _next_ready_batch(
         if _dependency_error_for_item(db, run=run, item=item, items_by_key=items_by_key) is not None:
             continue
         ready.append(item)
-        if len(ready) >= batch_size:
+        if not _dynamic_parallelism_enabled() and len(ready) >= batch_size:
             break
     if ready:
-        return ready
+        if batch_size <= 1 or not _dynamic_parallelism_enabled():
+            return ready[:batch_size]
+        estimates = {
+            item.key: _estimate_artifact_processing(db, run=run, item=item, items_by_key=items_by_key)
+            for item in ready
+        }
+        first = ready[0]
+        first_estimate = estimates[first.key]
+        if not first_estimate.can_parallelize:
+            return [first]
+
+        selected: list[DeliverableCatalogItem] = []
+        total_tokens = 0
+        total_units = 0
+        token_budget = _parallel_token_budget()
+        complexity_budget = _parallel_complexity_budget()
+        for item in ready:
+            estimate = estimates[item.key]
+            if not estimate.can_parallelize:
+                if not selected:
+                    return [item]
+                continue
+            next_tokens = total_tokens + estimate.estimated_tokens
+            next_units = total_units + estimate.resource_units
+            if selected and (next_tokens > token_budget or next_units > complexity_budget):
+                continue
+            selected.append(item)
+            total_tokens = next_tokens
+            total_units = next_units
+            if len(selected) >= batch_size:
+                break
+        return selected or [first]
     return remaining_items[:1]
+
+
+def _batch_execution_summary(
+    *,
+    batch: list[DeliverableCatalogItem],
+    estimates: list[ProductBuildArtifactEstimate],
+    positions: dict[str, int],
+    total_count: int,
+    batch_size: int,
+) -> str:
+    if len(batch) == 1:
+        item = batch[0]
+        estimate = estimates[0]
+        if batch_size > 1 and not estimate.can_parallelize:
+            reason = estimate.isolation_reason or estimate.group
+            return f"Procesando {positions[item.key]} de {total_count}: {item.title} de forma individual ({reason})."
+        return f"Procesando {positions[item.key]} de {total_count}: {item.title}."
+    counts = _estimate_profile_counts(estimates)
+    profile = ", ".join(f"{key}:{value}" for key, value in counts.items() if value)
+    total_tokens = sum(estimate.estimated_tokens for estimate in estimates)
+    return f"Procesando lote paralelo de {len(batch)} de {total_count} entregables ({profile}; {total_tokens} tokens estimados)."
 
 
 def _process_queue_item_in_new_session(
@@ -1217,17 +1783,30 @@ def _process_queue_items_in_batches(
             items_by_key=items_by_key,
             batch_size=batch_size,
         )
+        batch_estimates = [
+            _estimate_artifact_processing(db, run=run, item=item, items_by_key=items_by_key)
+            for item in batch
+        ]
         batch_keys = {item.key for item in batch}
         _update_processing_queue_checkpoint(
             db,
             run=run,
             status="running",
             current_deliverable_key=", ".join(item.key for item in batch),
-            summary=(
-                f"Procesando lote de {len(batch)} de {total_count} entregables."
-                if batch_size > 1
-                else f"Procesando {positions[batch[0].key]} de {total_count}: {batch[0].title}."
+            summary=_batch_execution_summary(
+                batch=batch,
+                estimates=batch_estimates,
+                positions=positions,
+                total_count=total_count,
+                batch_size=batch_size,
             ),
+            current_batch_profile={
+                "strategy": "dynamic_parallelism" if _dynamic_parallelism_enabled() and batch_size > 1 else "sequential",
+                "items": [
+                    {"deliverable_key": item.key, **_artifact_estimate_payload(estimate)}
+                    for item, estimate in zip(batch, batch_estimates)
+                ],
+            },
         )
         db.commit()
 
@@ -1295,7 +1874,11 @@ def _process_single_queue_item(
         )
     step = _step_record(db, run=run, deliverable_key=item.key)
     existing_attempt_count = int((step.checkpoint_payload or {}).get("attempt_count") or 0) if step is not None else 0
-    if item.deliverable_type.value == "diagram" and not allow_llm:
+    if (
+        item.deliverable_type.value == "diagram"
+        and not allow_llm
+        and not supports_deterministic_diagram(item.key.removeprefix("diagram."))
+    ):
         _record_queue_item_failure(
             db,
             run=run,
@@ -1312,6 +1895,7 @@ def _process_single_queue_item(
         )
         return False
     attempt_count = int((step.checkpoint_payload or {}).get("attempt_count") or 0) + 1 if step is not None else 1
+    processing_estimate = _estimate_artifact_processing(db, run=run, item=item, items_by_key=items_by_key)
     upsert_product_build_step(
         db,
         run=run,
@@ -1327,6 +1911,7 @@ def _process_single_queue_item(
             "retried": phase == "retry" or attempt_count > 1,
             "last_phase": phase,
             "last_started_at": utc_now().isoformat(),
+            "processing_estimate": _artifact_estimate_payload(processing_estimate),
         },
         error_payload={},
     )

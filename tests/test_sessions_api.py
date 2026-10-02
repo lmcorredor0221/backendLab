@@ -2650,7 +2650,7 @@ def test_validate_discovery_analysis_output_returns_no_false_issue_for_valid_mod
     assert "valido" in summary.lower()
 
 
-def test_analyze_discovery_requires_approval_before_canvas(
+def test_analyze_discovery_without_normalized_discovery_does_not_unlock_canvas(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2662,13 +2662,6 @@ def test_analyze_discovery_requires_approval_before_canvas(
     create_response = client.post("/api/v1/sessions", headers=headers)
     assert create_response.status_code == 201
     session_id = create_response.json()["id"]
-
-    normalize_response = client.post(
-        f"/api/v1/sessions/{session_id}/normalize-discovery",
-        headers=headers,
-        json=complete_discovery_payload(),
-    )
-    assert normalize_response.status_code == 200
 
     analyze_response = client.post(
         f"/api/v1/sessions/{session_id}/analyze-discovery",
@@ -2683,7 +2676,7 @@ def test_analyze_discovery_requires_approval_before_canvas(
 
     blocked_canvas = client.post(f"/api/v1/sessions/{session_id}/build-canvas", headers=headers)
     assert blocked_canvas.status_code == 409
-    assert blocked_canvas.json()["detail"] == "Discover must be approved before canvas"
+    assert blocked_canvas.json()["detail"] == "Discovery must exist before canvas"
 
 
 def test_approving_discover_analysis_projects_candidate_and_unblocks_canvas(
@@ -2741,6 +2734,48 @@ def test_approving_discover_analysis_projects_candidate_and_unblocks_canvas(
     canvas_response = client.post(f"/api/v1/sessions/{session_id}/build-canvas", headers=headers)
     assert canvas_response.status_code == 200
     assert canvas_response.json()["status"] == "ready"
+
+
+def test_define_uses_normalized_discover_when_latest_analysis_is_generated(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.skill_runtime._builder_service_for_stage",
+        lambda stage_key, runtime_settings=None: FakeLLMTraceBuilderService(),
+    )
+    headers = auth_headers(client)
+    create_response = client.post("/api/v1/sessions", headers=headers)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["id"]
+
+    normalize_response = client.post(
+        f"/api/v1/sessions/{session_id}/normalize-discovery",
+        headers=headers,
+        json=complete_discovery_payload(),
+    )
+    assert normalize_response.status_code == 200
+
+    analysis_response = client.post(
+        f"/api/v1/sessions/{session_id}/analyze-discovery",
+        headers=headers,
+        json=complete_discovery_payload(),
+    )
+    assert analysis_response.status_code == 200
+    analysis_artifact = analysis_response.json()
+    assert analysis_artifact["state"] == "generated"
+    assert analysis_artifact["artifact_kind"] == "discovery_analysis_artifact"
+
+    define_response = client.post(f"/api/v1/sessions/{session_id}/define-requirements", headers=headers)
+    assert define_response.status_code == 200
+    assert define_response.json()["stage_key"] == "define"
+
+    snapshot_response = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    assert snapshot["journey_latest_artifacts"]["discover"]["artifact_kind"] == "discovery_artifact"
+    assert snapshot["journey_latest_artifacts"]["discover"]["state"] == "approved_legacy"
+    assert snapshot["journey_latest_artifacts"]["define"]["state"] == "generated"
 
 
 def test_define_requirements_route_persists_definition_artifact_and_canvas_projection(

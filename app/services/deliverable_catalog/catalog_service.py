@@ -71,15 +71,17 @@ def _runtime_state_for_entry(
             )
             .order_by(DiagramVersionRecord.version_number.desc())
         ).first()
-        artifact_keys = _artifact_keys_for_entry(entry)
-        artifact = db.exec(
-            select(ArtifactRegistryRecord)
-            .where(
-                ArtifactRegistryRecord.session_id == session_id,
-                ArtifactRegistryRecord.artifact_key.in_(artifact_keys),
-            )
-            .order_by(ArtifactRegistryRecord.created_at.desc())
-        ).first()
+        artifact = None
+        if diagram_version is None:
+            artifact_keys = _artifact_keys_for_entry(entry)
+            artifact = db.exec(
+                select(ArtifactRegistryRecord)
+                .where(
+                    ArtifactRegistryRecord.session_id == session_id,
+                    ArtifactRegistryRecord.artifact_key.in_(artifact_keys),
+                )
+                .order_by(ArtifactRegistryRecord.created_at.desc())
+            ).first()
         diagram_job = db.exec(
             select(DiagramGenerationJobRecord)
             .where(
@@ -105,7 +107,12 @@ def _runtime_state_for_entry(
             generation_state = "error"
         else:
             generation_state = "pending"
-        quality_state = quality.state if quality is not None else ("passed" if has_current_version else "unknown")
+        if diagram_version is not None and isinstance(diagram_version.quality_report, dict):
+            quality_state = "passed" if bool(diagram_version.quality_report.get("valid")) else "failed"
+        elif quality is not None:
+            quality_state = quality.state
+        else:
+            quality_state = "passed" if has_current_version else "unknown"
         return has_current_version, generation_state, quality_state
 
     artifact_keys = _artifact_keys_for_entry(entry)

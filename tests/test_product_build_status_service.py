@@ -19,7 +19,7 @@ from app.models import (
 )
 from app.services.auth_service import hash_password
 from app.services.deliverable_catalog import build_deliverable_catalog_response
-from app.services.deliverable_catalog.registry_service import get_registry_entry
+from app.services.deliverable_catalog.registry_service import get_registry_entry, resolve_product_delivery_plan
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord, UncertaintyBacklogRecord
@@ -477,15 +477,7 @@ def test_product_build_status_uses_governed_catalog_count() -> None:
 
     with Session(engine) as db:
         user, record = _seed_session(db, tier=CommercialTier.acp)
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.acp,
-            current_stage="package",
-        )
-        expected = [item for item in catalog.entries if set(item.product_scope).intersection({"blueprint", "blueprint_pro", "acp"})]
+        expected = resolve_product_delivery_plan("acp").generated_keys
         status = build_product_build_status(db, record=record, product_key=ProductBuildProductKey.acp, current_user=user)
 
     assert len(status.deliverables) == len(expected)
@@ -498,23 +490,15 @@ def test_product_build_status_surfaces_failed_deliverable_as_attention() -> None
     SQLModel.metadata.create_all(engine)
 
     with Session(engine) as db:
-        user, record = _seed_session(db, tier=CommercialTier.blueprint)
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint,
-            current_stage="package",
-        )
-        deliverable_key = next(item.key for item in catalog.entries if "blueprint" in item.product_scope)
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        deliverable_key = "definition.requirements"
         db.add(
             DeliverableGenerationJobRecord(
                 workspace_id=record.workspace_id,
                 session_id=record.id,
                 deliverable_key=deliverable_key,
                 status="failed",
-                product_mode="basic_free",
+                product_mode="premium_enrichment",
                 idempotency_key=f"eov3-job-{uuid4()}",
                 error_code="renderer_failed",
                 error_message="Renderer failed while producing the governed deliverable.",
@@ -525,7 +509,7 @@ def test_product_build_status_surfaces_failed_deliverable_as_attention() -> None
         status = build_product_build_status(
             db,
             record=record,
-            product_key=ProductBuildProductKey.blueprint_basic,
+            product_key=ProductBuildProductKey.blueprint_pro,
             current_user=user,
         )
         failed = next(item for item in status.deliverables if item.deliverable_key == deliverable_key)
@@ -542,19 +526,19 @@ def test_product_build_status_surfaces_failed_diagram_job_as_attention() -> None
     SQLModel.metadata.create_all(engine)
 
     with Session(engine) as db:
-        user, record = _seed_session(db, tier=CommercialTier.blueprint)
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
         catalog = build_deliverable_catalog_response(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
             role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint,
+            tier=CommercialTier.blueprint_pro,
             current_stage="package",
         )
         diagram_item = next(
             item
             for item in catalog.entries
-            if item.deliverable_type.value == "diagram" and "blueprint" in item.product_scope
+            if item.key == "diagram.target_capabilities_map"
         )
         db.add(
             DiagramGenerationJobRecord(
@@ -572,7 +556,7 @@ def test_product_build_status_surfaces_failed_diagram_job_as_attention() -> None
         status = build_product_build_status(
             db,
             record=record,
-            product_key=ProductBuildProductKey.blueprint_basic,
+            product_key=ProductBuildProductKey.blueprint_pro,
             current_user=user,
         )
         failed = next(item for item in status.deliverables if item.deliverable_key == diagram_item.key)
@@ -589,19 +573,19 @@ def test_product_build_status_uses_active_diagram_job_as_current_activity() -> N
     SQLModel.metadata.create_all(engine)
 
     with Session(engine) as db:
-        user, record = _seed_session(db, tier=CommercialTier.blueprint)
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
         catalog = build_deliverable_catalog_response(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
             role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint,
+            tier=CommercialTier.blueprint_pro,
             current_stage="package",
         )
         diagram_item = next(
             item
             for item in catalog.entries
-            if item.deliverable_type.value == "diagram" and "blueprint" in item.product_scope
+            if item.key == "diagram.target_capabilities_map"
         )
         db.add(
             DiagramGenerationJobRecord(
@@ -617,7 +601,7 @@ def test_product_build_status_uses_active_diagram_job_as_current_activity() -> N
         status = build_product_build_status(
             db,
             record=record,
-            product_key=ProductBuildProductKey.blueprint_basic,
+            product_key=ProductBuildProductKey.blueprint_pro,
             current_user=user,
         )
 
@@ -641,7 +625,7 @@ def test_product_build_status_prefers_available_diagram_over_later_orphaned_queu
             tier=CommercialTier.blueprint_pro,
             current_stage="package",
         )
-        diagram_item = next(item for item in catalog.entries if item.deliverable_type.value == "diagram")
+        diagram_item = next(item for item in catalog.entries if item.key == "diagram.target_capabilities_map")
         diagram_key = diagram_item.key.removeprefix("diagram.")
         available_at = utc_now()
         orphaned_at = available_at + timedelta(seconds=1)
@@ -694,7 +678,7 @@ def test_product_build_status_prefers_available_diagram_over_later_orphaned_queu
     assert all(item.deliverable_key != diagram_item.key for item in status.attention.items)
 
 
-def test_product_build_status_allows_cumulative_product_surface_override() -> None:
+def test_product_build_status_uses_product_profile_independent_of_stage_override() -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
 
@@ -704,7 +688,7 @@ def test_product_build_status_allows_cumulative_product_surface_override() -> No
             tier=CommercialTier.blueprint_pro,
             stage=SessionStage.build_canvas,
         )
-        entry = get_registry_entry("diagram.c4_context")
+        entry = get_registry_entry("diagram.target_capabilities_map")
         assert entry is not None
         assert entry.canonical_paths
 
@@ -718,7 +702,7 @@ def test_product_build_status_allows_cumulative_product_surface_override() -> No
                 source_action="deliverable_generation_agent",
                 export_format=entry.formats.preferred,
                 content_text="graph TD\n    Client --> Agent",
-                content_hash="c4-context-available",
+                content_hash="target-capabilities-available",
                 artifact_metadata={
                     "deliverable_key": entry.deliverable_key,
                     "product_scope": list(entry.product_scope),
@@ -746,5 +730,5 @@ def test_product_build_status_allows_cumulative_product_surface_override() -> No
             item for item in product_surface_status.deliverables if item.deliverable_key == entry.deliverable_key
         )
 
-    assert default_item.state.value == "locked"
+    assert default_item.state.value == "available"
     assert product_surface_item.state.value == "available"

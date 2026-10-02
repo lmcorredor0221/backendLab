@@ -32,7 +32,6 @@ ACP_REQUIRED_STAGE_KEYS: tuple[str, ...] = (
     "tools",
     "memory",
     "estimate",
-    "validate",
 )
 
 ACP_STAGE_LABELS: dict[str, str] = {
@@ -191,7 +190,7 @@ def build_acp_direct_resolution(
     for entry in backlog:
         stage = entry.source_stage if entry.source_stage in ACP_REQUIRED_STAGE_KEYS else entry.target_stage
         if stage not in ACP_REQUIRED_STAGE_KEYS:
-            stage = "validate"
+            stage = "package"
         technical_by_stage[stage] += 1
         if entry.disposition == UncertaintyDisposition.block:
             blocking_by_stage[stage] += 1

@@ -61,6 +61,35 @@ def evaluate_deliverable_quality(
                 errors.append("artifact_title_missing")
             if not checks["has_content"]:
                 errors.append("artifact_content_missing")
+            if entry.deliverable_key == "definition.acceptance_trace":
+                rows = payload.get("trace_matrix")
+                checks["has_trace_matrix"] = isinstance(rows, list) and bool(rows)
+                if not checks["has_trace_matrix"]:
+                    errors.append("acceptance_trace_matrix_missing")
+                elif isinstance(rows, list):
+                    checks["acceptance_trace_has_requirement_links"] = all(
+                        isinstance(row, dict)
+                        and _is_non_empty_text(row.get("requirement_id"))
+                        and _is_non_empty_text(row.get("acceptance_criterion_id"))
+                        for row in rows
+                    )
+                    checks["acceptance_trace_has_source_refs"] = all(
+                        isinstance(row, dict)
+                        and isinstance(row.get("evidence_refs"), list)
+                        and bool(row.get("evidence_refs"))
+                        for row in rows
+                    )
+                    checks["acceptance_trace_evidence_is_explicit"] = all(
+                        isinstance(row, dict)
+                        and str(row.get("evidence_type") or "") == "explicit_approved_context"
+                        for row in rows
+                    )
+                    if not checks["acceptance_trace_has_requirement_links"]:
+                        errors.append("acceptance_trace_requirement_links_missing")
+                    if not checks["acceptance_trace_has_source_refs"]:
+                        errors.append("acceptance_trace_source_refs_missing")
+                    if not checks["acceptance_trace_evidence_is_explicit"]:
+                        errors.append("acceptance_trace_evidence_type_invalid")
             if validator_key == "artifact.commercial_consistency.v1":
                 text = json.dumps(payload, ensure_ascii=False).lower()
                 checks["declares_estimate_source"] = "estimate" in text or "estimar" in text or "traceability" in text

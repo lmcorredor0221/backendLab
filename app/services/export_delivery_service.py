@@ -757,6 +757,35 @@ def _run_export_generation(
         artifact_kind=definition.key,
         actor_user_id=current_user.id,
     )
+    _sync_acp_product_build_from_export_if_ready(
+        db,
+        record=record,
+        current_user=current_user,
+        definition=definition,
+        job=job,
+    )
+
+
+def _sync_acp_product_build_from_export_if_ready(
+    db: Session,
+    *,
+    record: SessionRecord,
+    current_user: UserRecord,
+    definition: ExportDefinition,
+    job: ExportJobRecord,
+) -> None:
+    if definition.product_key != ProductBuildProductKey.acp.value or definition.key != "acp_portable_zip":
+        return
+    if job.status != ExportJobStatus.ready:
+        return
+    from app.services.product_processing.acp_product_orchestration_service import sync_acp_product_run_from_ready_export
+
+    sync_acp_product_run_from_ready_export(
+        db,
+        record=record,
+        current_user=current_user,
+        export_job=job,
+    )
 
 
 def _rerun_existing_export_job(
@@ -870,6 +899,13 @@ def create_export_job(
                 snapshot=snapshot,
                 preview=preview,
             )
+        _sync_acp_product_build_from_export_if_ready(
+            db,
+            record=record,
+            current_user=current_user,
+            definition=definition,
+            job=existing,
+        )
         return _serialize_job(existing)
 
     now = utc_now()

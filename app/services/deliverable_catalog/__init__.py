@@ -17,6 +17,8 @@ from app.services.deliverable_catalog.contracts import (
     DeliverableCatalogResponse,
     DeliverablePolicyContext,
     DeliverablePolicyDecision,
+    ProductDeliveryCondition,
+    ProductDeliveryProfile,
     DeliverablePromptResponse,
     DeliverablePromptPolicy,
     DeliverablePromptUpdate,
@@ -54,6 +56,9 @@ from app.services.deliverable_catalog.registry_service import (
     get_registry_entry,
     list_registry_entries,
     load_deliverable_registry,
+    load_product_delivery_profile,
+    resolve_product_delivery_plan,
+    validate_product_delivery_profiles,
 )
 from app.services.deliverable_catalog.policy_service import (
     deliverable_governance_entry,
@@ -95,6 +100,8 @@ __all__ = [
     "DeliverableGovernanceUpdate",
     "DeliverablePolicyContext",
     "DeliverablePolicyDecision",
+    "ProductDeliveryCondition",
+    "ProductDeliveryProfile",
     "DeliverablePromptPolicy",
     "DeliverablePromptResponse",
     "DeliverablePromptUpdate",
@@ -124,7 +131,9 @@ __all__ = [
     "get_deliverable_prompt",
     "list_registry_entries",
     "load_deliverable_registry",
+    "load_product_delivery_profile",
     "resolve_deliverable_policy",
+    "resolve_product_delivery_plan",
     "resolve_regeneration_scope",
     "run_deliverable_generation_task",
     "scope_key_for_workspace",
@@ -136,4 +145,5 @@ __all__ = [
     "update_deliverable_prompt",
     "validate_deliverable_prompt",
     "validate_deliverable_catalog",
+    "validate_product_delivery_profiles",
 ]

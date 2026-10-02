@@ -6,10 +6,11 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import BackgroundTasks
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db import commit_without_expiring
 from app.models import (
+    ArtifactRegistryRecord,
     CommercialTier,
     SessionRecord,
     SessionSnapshot,
@@ -37,6 +38,11 @@ from app.services.product_processing.product_build_orchestrator import (
     ensure_product_build_orchestration,
     reconcile_product_build_run,
 )
+from app.services.product_processing.product_build_run_service import (
+    list_product_build_runs,
+    update_product_build_run_state,
+    upsert_product_build_step,
+)
 from app.api.routes.sessions import (
     build_snapshot,
     capture_operational_state,
@@ -49,6 +55,76 @@ from app.services.blueprint_commercial_result_service import (
 
 BLUEPRINT_COMMERCIAL_RESULT_ACTION = "prepare_blueprint_commercial_result"
 BLUEPRINT_BASIC_DIAGRAM_QUEUE_PRIORITY = ("agent_orchestration",)
+BLUEPRINT_BASIC_REQUIRED_COMMERCIAL_ARTIFACTS = (
+    "Blueprint/commercial/resultado-ejecutivo.md",
+    "Blueprint/commercial/comparativa-valor.md",
+)
+BLUEPRINT_BASIC_COMPLETION_STEP_KEY = "commercial_result"
+
+
+def _blueprint_basic_commercial_artifact_keys(db: Session, *, record: SessionRecord) -> set[str]:
+    if record.workspace_id is None:
+        return set()
+    rows = db.exec(
+        select(ArtifactRegistryRecord.artifact_key).where(
+            ArtifactRegistryRecord.session_id == record.id,
+            ArtifactRegistryRecord.source_action == BLUEPRINT_COMMERCIAL_RESULT_ACTION,
+        )
+    ).all()
+    return {str(item) for item in rows if str(item).strip()}
+
+
+def _has_blueprint_basic_commercial_result(db: Session, *, record: SessionRecord) -> bool:
+    keys = _blueprint_basic_commercial_artifact_keys(db, record=record)
+    return set(BLUEPRINT_BASIC_REQUIRED_COMMERCIAL_ARTIFACTS).issubset(keys)
+
+
+def _sync_blueprint_basic_run_from_commercial_result(db: Session, *, record: SessionRecord) -> None:
+    if record.workspace_id is None or not _has_blueprint_basic_commercial_result(db, record=record):
+        return
+    runs = list_product_build_runs(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        product_key=ProductBuildProductKey.blueprint_basic,
+    )
+    if not runs:
+        return
+    run = runs[0]
+    generated_keys = sorted(_blueprint_basic_commercial_artifact_keys(db, record=record))
+    upsert_product_build_step(
+        db,
+        run=run,
+        step_key=BLUEPRINT_BASIC_COMPLETION_STEP_KEY,
+        status="available",
+        stage_key="estimate",
+        deliverable_key="blueprint.commercial_result",
+        sequence=1,
+        progress_percent=100,
+        checkpoint_payload={
+            "source_action": BLUEPRINT_COMMERCIAL_RESULT_ACTION,
+            "artifact_keys": generated_keys,
+            "completion_source": "blueprint_basic_commercial_result",
+        },
+        error_payload={},
+    )
+    update_product_build_run_state(
+        db,
+        run=run,
+        lifecycle=ProductBuildLifecycle.completed,
+        completed_units=1.0,
+        total_units=1.0,
+        blocked_units=0.0,
+        checkpoint_payload={
+            **(run.checkpoint_payload or {}),
+            "commercial_result": {
+                "source_action": BLUEPRINT_COMMERCIAL_RESULT_ACTION,
+                "artifact_keys": generated_keys,
+                "required_artifact_keys": list(BLUEPRINT_BASIC_REQUIRED_COMMERCIAL_ARTIFACTS),
+            },
+        },
+        error_payload={},
+    )
 
 
 def is_blueprint_basic_completed(db: Session, *, record: SessionRecord) -> tuple[bool, str]:
@@ -63,6 +139,10 @@ def is_blueprint_basic_completed(db: Session, *, record: SessionRecord) -> tuple
         product_key=ProductBuildProductKey.blueprint_basic,
     )
     if status.lifecycle == ProductBuildLifecycle.completed:
+        return True, ""
+
+    if status.lifecycle == ProductBuildLifecycle.ready_to_start and _has_blueprint_basic_commercial_result(db, record=record):
+        _sync_blueprint_basic_run_from_commercial_result(db, record=record)
         return True, ""
 
     if status.lifecycle in {
@@ -344,6 +424,16 @@ def prepare_blueprint_basic_commercial_result(
         product_key=ProductBuildProductKey.blueprint_basic,
         current_user=current_user,
         options=ProductBuildOrchestrationOptions(current_stage="estimate"),
+    )
+    _sync_blueprint_basic_run_from_commercial_result(db, record=record)
+    from app.services.product_processing.product_build_status_service import build_product_build_status
+
+    status = build_product_build_status(
+        db,
+        record=record,
+        product_key=ProductBuildProductKey.blueprint_basic,
+        current_user=current_user,
+        catalog_stage_override="estimate",
     )
     commit_without_expiring(db)
     refreshed_snapshot = build_snapshot(db, record, current_user=current_user)

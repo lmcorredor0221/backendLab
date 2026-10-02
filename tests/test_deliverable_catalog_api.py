@@ -90,7 +90,11 @@ def test_blueprint_commercial_result_generates_governed_artifacts(client: TestCl
         session_generator.close()
     assert generated_artifacts
     assert product_run is not None
+    assert product_run.lifecycle == "completed"
+    assert product_run.completed_units == 1.0
+    assert product_run.total_units == 1.0
     assert product_steps
+    assert any(step.step_key == "commercial_result" and step.status == "available" for step in product_steps)
     assert any(
         artifact.artifact_metadata.get("deliverable_key") == "discovery.analysis"
         for artifact in generated_artifacts

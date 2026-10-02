@@ -217,6 +217,11 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "ACP/assets/acp-viewer.css" in paths
     assert "ACP/assets/acp-viewer.js" in paths
     assert "ACP/tools/external/tool-build-blueprint.yaml" in paths
+    assert "ACP/tools/connectors/catalog.yaml" in paths
+    assert "ACP/tools/connectors/build-blueprint.yaml" in paths
+    assert "ACP/tools/bindings/build-blueprint.sandbox.yaml" in paths
+    assert "ACP/tools/bindings/build-blueprint.production.yaml" in paths
+    assert "ACP/tools/tests/build-blueprint-smoke-test.yaml" in paths
     assert "ACP/adapters/n8n.md" in paths
     assert "ACP/adapters/make.md" in paths
     assert "ACP/adapters/langgraph.md" in paths
@@ -224,11 +229,28 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "ACP/memory/strategy.yaml" in paths
     assert "ACP/costs/operational-cost-estimate.json" in paths
     assert "ACP/costs/operational-cost-estimate.md" in paths
+    assert "ACP/finops/budget-policy.yaml" in paths
     assert "ACP/evaluation/rubrics.yaml" in paths
     assert "ACP/observability/alerts.yaml" in paths
+    assert "ACP/observability/event-model.yaml" in paths
     assert "ACP/deployment/env.template" in paths
+    assert "ACP/ops/agent-governance-console/console-manifest.yaml" in paths
+    assert "ACP/ops/agent-governance-console/ui-map.json" in paths
+    assert "ACP/ops/agent-governance-console/role-permissions.yaml" in paths
+    assert "ACP/ops/agent-flow-map/flow-map-manifest.json" in paths
+    assert "ACP/ops/agent-flow-map/flow-map-data.json" in paths
+    assert "ACP/ops/agent-flow-map/simulation-scenarios.json" in paths
+    assert "ACP/ops/agent-flow-map/node-state-policy.yaml" in paths
+    assert "ACP/ops/agent-flow-map/interaction-model.yaml" in paths
+    assert "ACP/ops/agent-flow-map/README.md" in paths
+    assert "ACP/ops/runbooks/fallback-and-incident-response.md" in paths
+    assert "ACP/governance/control-plane.yaml" in paths
+    assert "ACP/governance/tool-governance-policy.yaml" in paths
+    assert "ACP/governance/decision-policy.yaml" in paths
+    assert "ACP/governance/approval-matrix.yaml" in paths
     assert "ACP/runtime/env.template" not in paths
     assert "ACP/construction-readiness/overview.yaml" in paths
+    assert "ACP/construction-readiness/construction-guide.md" in paths
     assert "ACP/construction-readiness/blocking-gaps.yaml" in paths
     assert "ACP/construction-readiness/open-questions.yaml" in paths
     assert "ACP/construction-readiness/question-impact-log.yaml" in paths
@@ -261,12 +283,29 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "generated_by: Lean Agent Builder" in manifest.content_text
     tool_contract = next(item for item in preview.files if item.path == "ACP/tools/external/tool-build-blueprint.yaml")
     assert "name: build_blueprint" in tool_contract.content_text
+    connector_catalog = next(item for item in preview.files if item.path == "ACP/tools/connectors/catalog.yaml")
+    assert "custom_client_tools_supported: true" in connector_catalog.content_text
+    connector_profile = next(item for item in preview.files if item.path == "ACP/tools/connectors/build-blueprint.yaml")
+    assert "schema_version: tool-connector-profile.v1" in connector_profile.content_text
+    assert "custom_provider_supported: true" in connector_profile.content_text
+    production_binding = next(
+        item for item in preview.files if item.path == "ACP/tools/bindings/build-blueprint.production.yaml"
+    )
+    assert "secret:BUILD_BLUEPRINT_PRODUCTION_AUTH" in production_binding.content_text
+    assert "fail_closed_when_binding_missing: true" in production_binding.content_text
     readiness_overview = next(
         item for item in preview.files if item.path == "ACP/construction-readiness/overview.yaml"
     )
     assert "construction_readiness:" in readiness_overview.content_text
     assert "next_recommended_action: start_agentic_build" in readiness_overview.content_text
     assert "question_outcomes:" in readiness_overview.content_text
+    construction_guide = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/construction-guide.md"
+    )
+    assert "Guia paso a paso de construccion ACP" in construction_guide.content_text
+    assert "Poder descargar el ZIP no significa" in construction_guide.content_text
+    assert "Las tools externas del diseno son contratos" in construction_guide.content_text
+    assert "Si RAG usa fuentes" in construction_guide.content_text
     architecture_diagram = next(item for item in preview.files if item.path == "ACP/diagrams/Architecture.md")
     assert "## Mermaid" in architecture_diagram.content_text
     architecture_svg = next(item for item in preview.files if item.path == "ACP/svg/Architecture.svg")
@@ -279,9 +318,10 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert '"pending": [' in visualization_manifest.content_text
     assert '"png"' in visualization_manifest.content_text
     builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
-    assert "Lee primero `ACP/construction-readiness/overview.yaml`." in builder_handoff.content_text
+    assert "Lee primero `ACP/construction-readiness/construction-guide.md`" in builder_handoff.content_text
     assert "`ACP/blueprint.graph.json`" in builder_handoff.content_text
     implementation_guide = next(item for item in preview.files if item.path == "ACP/IMPLEMENTATION_GUIDE.md")
+    assert "ACP/construction-readiness/construction-guide.md" in implementation_guide.content_text
     assert "Deuda de proceso" in implementation_guide.content_text
     cost_estimate = next(item for item in preview.files if item.path == "ACP/costs/operational-cost-estimate.json")
     assert '"schema_version": "acp-operational-cost-estimate.v1"' in cost_estimate.content_text
@@ -294,12 +334,40 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert {"pure-code", "openai-agents-sdk", "langgraph", "n8n", "make"} <= target_keys
     assert any(item["target_key"] == "n8n" and item["orientation_only"] is True for item in selector["candidates"])
     assert any(item["target_key"] == "make" and item["orientation_only"] is True for item in selector["candidates"])
+    assert navigation_payload["agent_flow_map"]["schema_version"] == "agent-flow-map.v1"
+    assert any(item["id"] == "flow-map" for item in navigation_payload["storyline"])
+    flow_nodes = {item["id"] for item in navigation_payload["agent_flow_map"]["nodes"]}
+    assert {"user_channel", "agent_core", "planner", "memory", "finops", "observability", "output"} <= flow_nodes
+    assert any(item.startswith("tool_") for item in flow_nodes)
     viewer = next(item for item in preview.files if item.path == "ACP/index.html")
     assert "ACP Viewer" in viewer.content_text
+    assert "Mapa vivo del agente" in viewer.content_text
+    viewer_js = next(item for item in preview.files if item.path == "ACP/assets/acp-viewer.js")
+    assert "data-flow-mode" in viewer_js.content_text
+    assert "renderFlowMap" in viewer_js.content_text
     assert "http://" not in viewer.content_text
     assert "https://" not in viewer.content_text
     handoff_closure = next(item for item in preview.files if item.path == "ACP/governance/blueprint-handoff-closure.yaml")
     assert "blueprint_approval_closes_operational_cycle: true" in handoff_closure.content_text
+    console_manifest = next(
+        item for item in preview.files if item.path == "ACP/ops/agent-governance-console/console-manifest.yaml"
+    )
+    assert "schema_version: agent-governance-console.v1" in console_manifest.content_text
+    assert "custom_client_tools_supported: true" in console_manifest.content_text
+    control_plane = next(item for item in preview.files if item.path == "ACP/governance/control-plane.yaml")
+    assert "no_plain_secrets" in control_plane.content_text
+    assert "no_unmapped_custom_client_tool" in control_plane.content_text
+    tool_policy = next(item for item in preview.files if item.path == "ACP/governance/tool-governance-policy.yaml")
+    assert "unknown_or_custom_tools" in tool_policy.content_text
+    event_model = next(item for item in preview.files if item.path == "ACP/observability/event-model.yaml")
+    assert "tool.call.started" in event_model.content_text
+    flow_map_data = next(item for item in preview.files if item.path == "ACP/ops/agent-flow-map/flow-map-data.json")
+    assert '"schema_version": "agent-flow-map.v1"' in flow_map_data.content_text
+    assert '"requires_approval"' in flow_map_data.content_text
+    flow_scenarios = next(
+        item for item in preview.files if item.path == "ACP/ops/agent-flow-map/simulation-scenarios.json"
+    )
+    assert '"offline_simulation_only": true' in flow_scenarios.content_text
     assert preview.validation.can_export_zip is True
     assert preview.validation.overall_status == "needs_review"
     assert preview.validation.completeness_percent > 0
@@ -369,6 +437,9 @@ def test_generate_acp_preview_publishes_deferred_decisions_without_using_them_as
     deferred_file = next(
         item for item in preview.files if item.path == "ACP/construction-readiness/deferred-decisions.yaml"
     )
+    construction_guide = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/construction-guide.md"
+    )
     impact_log_file = next(
         item for item in preview.files if item.path == "ACP/construction-readiness/question-impact-log.yaml"
     )
@@ -381,6 +452,9 @@ def test_generate_acp_preview_publishes_deferred_decisions_without_using_them_as
     assert "reconciliation_decision: delegated_to_implementation" in impact_log_file.content_text
     assert "reprocess_decision: delegated_to_implementation" in impact_log_file.content_text
     assert "question_key: deployment_target" not in open_questions_file.content_text
+    assert "deployment_target" in construction_guide.content_text
+    assert "DO_NOT_ASSUME_SILENTLY" in construction_guide.content_text
+    assert "ACP/deployment/env.template" in construction_guide.content_text
 
     navigation_manifest = next(item for item in preview.files if item.path == "ACP/navigation-manifest.v1.json")
     navigation_payload = json.loads(navigation_manifest.content_text)
@@ -453,11 +527,20 @@ def test_build_acp_zip_contains_construction_readiness_block() -> None:
         members = {name: archive.read(name) for name in names}
 
     assert "ACP/construction-readiness/overview.yaml" in names
+    assert "ACP/construction-readiness/construction-guide.md" in names
     assert "ACP/index.html" in names
     assert "ACP/navigation-manifest.v1.json" in names
     assert "ACP/assets/acp-viewer.css" in names
     assert "ACP/assets/acp-viewer.js" in names
     assert "ACP/costs/operational-cost-estimate.md" in names
+    assert "ACP/finops/budget-policy.yaml" in names
+    assert "ACP/tools/connectors/build-blueprint.yaml" in names
+    assert "ACP/tools/bindings/build-blueprint.production.yaml" in names
+    assert "ACP/ops/agent-governance-console/console-manifest.yaml" in names
+    assert "ACP/ops/agent-flow-map/flow-map-data.json" in names
+    assert "ACP/ops/agent-flow-map/simulation-scenarios.json" in names
+    assert "ACP/governance/control-plane.yaml" in names
+    assert "ACP/observability/event-model.yaml" in names
     assert "ACP/construction-readiness/blocking-gaps.yaml" in names
     assert "ACP/prompts/builder-handoff.md" in names
     assert "ACP/diagrams/KnowledgeGraph.md" in names

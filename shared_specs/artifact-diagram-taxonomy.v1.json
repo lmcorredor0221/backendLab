@@ -976,7 +976,8 @@
       },
       "source_artifact_keys": [
         "acp.deployment_guide",
-        "acp.package_manifest"
+        "acp.workflow_pack",
+        "acp.gap_register"
       ],
       "portable_paths": [
         "ACP/deployment/decision-matrix.yaml",
@@ -1117,8 +1118,7 @@
         ]
       },
       "source_artifact_keys": [
-        "acp.implementation_questions",
-        "acp.gap_register",
+        "definition.requirements",
         "blueprint.architecture_spec"
       ],
       "portable_paths": [

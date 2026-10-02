@@ -170,9 +170,15 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
     assert artifact.source_action == "deliverable_generation_agent"
 
 
-def test_generation_service_marks_job_error_when_llm_executor_raises() -> None:
+def test_generation_service_uses_deterministic_acceptance_trace_without_llm_executor() -> None:
     with _session() as db:
-        task = _task(context={"summary": "Contexto suficiente para intentar LLM."}).model_copy(
+        task = _task(
+            context={
+                "summary": "Contexto aprobado para trazabilidad.",
+                "functional_requirements": ["Clasificar oportunidades por compatibilidad."],
+                "acceptance_criteria": ["Cada oportunidad debe tener score y razon de recomendacion."],
+            }
+        ).model_copy(
             update={
                 "deliverable_key": "definition.acceptance_trace",
                 "current_stage": "define",
@@ -182,10 +188,10 @@ def test_generation_service_marks_job_error_when_llm_executor_raises() -> None:
         )
 
         def failing_executor(*_args, **_kwargs):
-            raise RuntimeError("provider unavailable")
+            raise AssertionError("deterministic acceptance trace must not call the LLM executor")
 
-        with pytest.raises(RuntimeError, match="provider unavailable"):
-            run_deliverable_generation_task(db, task, llm_executor=failing_executor)
+        job, result = run_deliverable_generation_task(db, task, llm_executor=failing_executor)
+        db.commit()
 
         job = db.exec(
             select(DeliverableGenerationJobRecord).where(
@@ -193,10 +199,20 @@ def test_generation_service_marks_job_error_when_llm_executor_raises() -> None:
                 DeliverableGenerationJobRecord.idempotency_key == task.idempotency_key,
             )
         ).one()
+        artifact = next(
+            record
+            for record in db.exec(select(ArtifactRegistryRecord).where(ArtifactRegistryRecord.session_id == task.session_id)).all()
+            if record.artifact_metadata.get("deliverable_key") == "definition.acceptance_trace"
+        )
 
-    assert job.status == "error"
-    assert job.error_code == "RuntimeError"
+    assert result is not None
+    assert result.status == "available"
+    assert result.provider_key == "deterministic_python"
+    assert job.status == "available"
+    assert job.provider_key == "deterministic_python"
     assert job.completed_at is not None
+    assert "trace_matrix" in result.output_payload
+    assert "REQ-01" in artifact.content_text
 
 
 def test_generation_service_respects_paused_prompt_policy() -> None:

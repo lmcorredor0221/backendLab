@@ -115,6 +115,55 @@ class DeliverableAccessPolicy(ContractModel):
     content_protection: DeliverableContentProtection = PydanticField(default_factory=DeliverableContentProtection)
 
 
+class ProductDeliveryCondition(ContractModel):
+    condition_key: str
+    deliverable_keys: list[str] = PydanticField(default_factory=list)
+    required_evidence: list[str] = PydanticField(default_factory=list)
+    activation_mode: Literal["explicit_request", "confirmed_case_signal"] = "explicit_request"
+
+    @field_validator("condition_key")
+    @classmethod
+    def validate_condition_key(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("condition_key is required")
+        return normalized
+
+
+class ProductDeliveryProfile(ContractModel):
+    profile_key: str
+    revision: str
+    product_key: Literal["blueprint_basic", "blueprint_pro", "acp"]
+    default_deliverable_keys: list[str] = PydanticField(default_factory=list)
+    inherited_deliverable_keys: list[str] = PydanticField(default_factory=list)
+    conditional_rules: list[ProductDeliveryCondition] = PydanticField(default_factory=list)
+
+    @field_validator("profile_key", "revision")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("profile_key and revision are required")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_unique_profile_keys(self) -> "ProductDeliveryProfile":
+        generated_duplicates = sorted(
+            {key for key in self.default_deliverable_keys if self.default_deliverable_keys.count(key) > 1}
+        )
+        inherited_duplicates = sorted(
+            {key for key in self.inherited_deliverable_keys if self.inherited_deliverable_keys.count(key) > 1}
+        )
+        if generated_duplicates:
+            raise ValueError(f"duplicate default deliverable keys in profile: {generated_duplicates}")
+        if inherited_duplicates:
+            raise ValueError(f"duplicate inherited deliverable keys in profile: {inherited_duplicates}")
+        overlap = sorted(set(self.default_deliverable_keys).intersection(self.inherited_deliverable_keys))
+        if overlap:
+            raise ValueError(f"profile keys cannot be both generated and inherited: {overlap}")
+        return self
+
+
 class DeliverableRegistryEntry(ContractModel):
     deliverable_key: str
     title: str
@@ -190,6 +239,7 @@ class DeliverableCatalog(ContractModel):
     deliverable_types: list[DeliverableType]
     generation_modes: list[DeliverableGenerationMode]
     entries: list[DeliverableRegistryEntry]
+    product_delivery_profiles: list[ProductDeliveryProfile] = PydanticField(default_factory=list)
     validation_rules: list[str] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
@@ -200,6 +250,14 @@ class DeliverableCatalog(ContractModel):
         duplicates = sorted({key for key in keys if keys.count(key) > 1})
         if duplicates:
             raise ValueError(f"duplicate deliverable keys: {duplicates}")
+        profile_keys = [profile.profile_key for profile in self.product_delivery_profiles]
+        duplicate_profiles = sorted({key for key in profile_keys if profile_keys.count(key) > 1})
+        if duplicate_profiles:
+            raise ValueError(f"duplicate product delivery profiles: {duplicate_profiles}")
+        profile_product_keys = [profile.product_key for profile in self.product_delivery_profiles]
+        duplicate_products = sorted({key for key in profile_product_keys if profile_product_keys.count(key) > 1})
+        if duplicate_products:
+            raise ValueError(f"duplicate profile product keys: {duplicate_products}")
         return self
 
 

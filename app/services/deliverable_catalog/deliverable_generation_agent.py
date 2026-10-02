@@ -12,6 +12,11 @@ from app.services.deliverable_catalog.contracts import (
     DeliverablePromptResponse,
     DeliverableRegistryEntry,
 )
+from app.services.deliverable_catalog.deterministic_builders import (
+    DeterministicBuilderContextError,
+    build_deterministic_deliverable,
+    supports_deterministic_deliverable,
+)
 from app.services.deliverable_catalog.quality_service import evaluate_deliverable_quality
 
 
@@ -450,6 +455,80 @@ class DeliverableGenerationAgent:
                 prompt_version=prompt.prompt_version,
                 error_code="manual_review_required",
                 error_message="El catalogo exige revision manual para este entregable.",
+            )
+
+        if supports_deterministic_deliverable(entry.deliverable_key):
+            try:
+                output = build_deterministic_deliverable(entry, task)
+            except DeterministicBuilderContextError as exc:
+                public_trace.append(_public_step("act", "El builder deterministico detecto contexto insuficiente.", "failed"))
+                internal_trace.append(
+                    {
+                        "step": "act",
+                        "tool": "deterministic_python",
+                        "error": exc.code,
+                        "missing_refs": list(exc.missing_refs),
+                    }
+                )
+                return DeliverableGenerationResult(
+                    deliverable_key=entry.deliverable_key,
+                    status="requires_attention",
+                    public_trace=public_trace,
+                    internal_trace_hash=_trace_hash(internal_trace),
+                    iteration_count=1,
+                    provider_key="deterministic_python",
+                    model_name="",
+                    prompt_version=prompt.prompt_version,
+                    error_code=exc.code,
+                    error_message=exc.message,
+                    warnings=list(exc.missing_refs),
+                )
+            public_trace.append(_public_step("act", "Se genero salida deterministica con Python y contexto aprobado."))
+            internal_trace.append({"step": "act", "iteration": 1, "tool": "deterministic_python"})
+            quality = evaluate_deliverable_quality(entry, output)
+            public_trace.append(_public_step("observe", f"Se valido salida contra {quality.schema_contract}."))
+            internal_trace.append(
+                {
+                    "step": "observe",
+                    "iteration": 1,
+                    "state": quality.state,
+                    "score": quality.score,
+                    "errors": quality.errors,
+                }
+            )
+            if quality.state == "failed":
+                public_trace.append(_public_step("evaluate", "La salida deterministica no supero validacion.", "failed"))
+                return DeliverableGenerationResult(
+                    deliverable_key=entry.deliverable_key,
+                    status="requires_attention",
+                    output_payload=output,
+                    quality=quality,
+                    public_trace=public_trace,
+                    internal_trace_hash=_trace_hash(internal_trace),
+                    iteration_count=1,
+                    provider_key="deterministic_python",
+                    model_name="",
+                    prompt_version=prompt.prompt_version,
+                    used_fallback=False,
+                    error_code="quality_failed",
+                    error_message=", ".join(quality.errors),
+                    warnings=quality.warnings,
+                )
+            public_trace.append(_public_step("evaluate", "El entregable cumple los criterios minimos de calidad."))
+            public_trace.append(_public_step("finish", "Generacion finalizada y lista para versionado."))
+            return DeliverableGenerationResult(
+                deliverable_key=entry.deliverable_key,
+                status="available",
+                output_payload=output,
+                quality=quality,
+                public_trace=public_trace,
+                internal_trace_hash=_trace_hash(internal_trace),
+                iteration_count=1,
+                provider_key="deterministic_python",
+                model_name="",
+                prompt_version=prompt.prompt_version,
+                used_fallback=False,
+                warnings=quality.warnings,
             )
 
         for iteration in range(1, max_iterations + 1):

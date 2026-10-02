@@ -347,9 +347,20 @@ class StageProposalService:
     ) -> dict[str, JourneyStageArtifactEntry]:
         entries = self.list_all(session, session_record=session_record)
         latest: dict[str, JourneyStageArtifactEntry] = {}
+        grouped: dict[str, list[JourneyStageArtifactEntry]] = {}
         for entry in entries:
-            if entry.stage_key not in latest:
-                latest[entry.stage_key] = entry
+            grouped.setdefault(entry.stage_key, []).append(entry)
+        for stage_key, stage_entries in grouped.items():
+            current = stage_entries[0]
+            if (
+                stage_key == "discover"
+                and current.artifact_kind == "discovery_analysis_artifact"
+                and current.state not in APPROVED_ARTIFACT_STATES
+            ):
+                approved = next((item for item in stage_entries if item.state in APPROVED_ARTIFACT_STATES), None)
+                latest[stage_key] = approved or current
+            else:
+                latest[stage_key] = current
         return latest
 
     def list(
@@ -383,6 +394,16 @@ class StageProposalService:
         stage_key: str,
     ) -> JourneyStageArtifactEntry | None:
         record = self._latest_record(session, session_record=session_record, stage_key=stage_key)
+        return self._build_artifact_entry(session, record) if record is not None else None
+
+    def latest_approved(
+        self,
+        session: Session,
+        *,
+        session_record: SessionRecord,
+        stage_key: str,
+    ) -> JourneyStageArtifactEntry | None:
+        record = self._latest_approved_record(session, session_record=session_record, stage_key=stage_key)
         return self._build_artifact_entry(session, record) if record is not None else None
 
     def get(
@@ -1203,6 +1224,25 @@ class StageProposalService:
                 JourneyStageArtifactRecord.workspace_id == session_record.workspace_id,
                 JourneyStageArtifactRecord.session_id == session_record.id,
                 JourneyStageArtifactRecord.stage_key == normalized_stage,
+            )
+            .order_by(JourneyStageArtifactRecord.version_number.desc(), JourneyStageArtifactRecord.created_at.desc())
+        ).first()
+
+    def _latest_approved_record(
+        self,
+        session: Session,
+        *,
+        session_record: SessionRecord,
+        stage_key: str,
+    ) -> JourneyStageArtifactRecord | None:
+        normalized_stage = _journey_stage_or_raise(stage_key)
+        return session.exec(
+            select(JourneyStageArtifactRecord)
+            .where(
+                JourneyStageArtifactRecord.workspace_id == session_record.workspace_id,
+                JourneyStageArtifactRecord.session_id == session_record.id,
+                JourneyStageArtifactRecord.stage_key == normalized_stage,
+                JourneyStageArtifactRecord.state.in_(tuple(APPROVED_ARTIFACT_STATES)),
             )
             .order_by(JourneyStageArtifactRecord.version_number.desc(), JourneyStageArtifactRecord.created_at.desc())
         ).first()

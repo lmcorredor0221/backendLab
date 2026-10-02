@@ -14,6 +14,9 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
+    ACPBuildRunRecord,
+    ACPPhaseRunRecord,
+    ACPWorkflowRunStatus,
     AgenticEstimate,
     ArtifactRegistryRecord,
     CommercialAccessSnapshotV2,
@@ -43,6 +46,7 @@ from app.models import (
 from app.services.auth_service import hash_password
 from app.services.commercial_access import build_commercial_access_snapshot_v2
 from app.services import export_delivery_service
+from app.services.acp_workflow_service import ACP_PHASES
 from app.services.product_processing.contracts import JourneyStateKey, ProductBuildLifecycle, ProductBuildProductKey
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 from app.services.diagram_center.persistence import DiagramVersionRecord
@@ -867,6 +871,33 @@ def test_create_export_job_acp_conformance_success(db_session: Session) -> None:
     preview.validation.can_export_zip = True
     preview.construction_readiness.blocking_gaps = 0
     preview.construction_readiness.open_questions = 0
+    acp_run = ACPBuildRunRecord(
+        workspace_id=record.workspace_id,
+        session_id=record.id,
+        created_by_user_id=user.id,
+        blueprint_version_number=preview.blueprint_version_number,
+        status=ACPWorkflowRunStatus.completed,
+        current_phase_key="acp_download_ready",
+        phase_order=[phase.key for phase in ACP_PHASES],
+        progress_percent=100,
+        idempotency_key=f"{record.id}:{preview.blueprint_version_number}:acp-workspace",
+    )
+    db_session.add(acp_run)
+    db_session.flush()
+    for phase in ACP_PHASES:
+        db_session.add(
+            ACPPhaseRunRecord(
+                run_id=acp_run.id,
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                phase_key=phase.key,
+                phase_label=phase.label,
+                phase_order=phase.order,
+                status=ACPWorkflowRunStatus.completed,
+                attempt_count=1,
+                idempotency_key=f"{record.id}:{phase.key}:test",
+            )
+        )
 
     job_response = create_export_job(
         db_session,
@@ -889,6 +920,23 @@ def test_create_export_job_acp_conformance_success(db_session: Session) -> None:
     assert job_response.checksum_sha256 != ""
     assert job_response.size_bytes > 0
     assert job_response.download_url.startswith(f"/api/v1/sessions/{record.id}/exports/jobs/")
+    product_run = db_session.exec(
+        select(ProductBuildRunRecord).where(
+            ProductBuildRunRecord.session_id == record.id,
+            ProductBuildRunRecord.product_key == ProductBuildProductKey.acp.value,
+        )
+    ).first()
+    assert product_run is not None
+    assert product_run.lifecycle == ProductBuildLifecycle.completed.value
+    assert product_run.completed_units == 9
+    assert product_run.total_units == 9
+    assert product_run.progress_percent == 100
+    steps = db_session.exec(
+        select(ProductBuildStepRecord).where(ProductBuildStepRecord.run_id == product_run.id)
+    ).all()
+    step_keys = {step.step_key for step in steps}
+    assert "export:acp_portable_zip" in step_keys
+    assert all(f"acp_phase:{phase.key}" in step_keys for phase in ACP_PHASES)
 
     job_record, raw_bytes = read_export_job_bytes(db_session, record=record, job_id=job_response.id)
     assert hashlib.sha256(raw_bytes).hexdigest() == job_response.checksum_sha256

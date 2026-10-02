@@ -108,7 +108,6 @@ def test_acp_direct_run_tracks_missing_pro_dependencies_and_justifies_disabled_e
         "design",
         "tools",
         "memory",
-        "validate",
     ]
     assert run.checkpoint_payload["acp_direct_resolution"]["justified_stage_keys"] == ["estimate"]
 
@@ -147,7 +146,6 @@ def test_acp_direct_run_tracks_estimate_dependency_when_feature_is_enabled() -> 
         "tools",
         "memory",
         "estimate",
-        "validate",
     ]
     assert run.checkpoint_payload["acp_direct_resolution"]["justified_stage_keys"] == []
 
@@ -244,11 +242,9 @@ def test_acp_direct_run_blocks_on_acp_questions_even_with_approved_stages() -> N
             session_id=record.id,
             product_key=ProductBuildProductKey.acp,
         )[0]
-        package_step = next(step for step in list_product_build_steps(db, run_id=run.id) if step.step_key == "acp_dependency:validate")
-
     assert status.lifecycle == ProductBuildLifecycle.requires_attention
-    assert package_step.status == "requires_attention"
-    assert "blocking_questions:validate:1" in package_step.error_payload["reasons"]
+    assert run.blocked_units == 1
+    assert "blocking_questions:package:1" in run.checkpoint_payload["acp_direct_resolution"]["readiness_blockers"]
 
 
 def test_acp_direct_dependencies_complete_when_readiness_is_closed() -> None:

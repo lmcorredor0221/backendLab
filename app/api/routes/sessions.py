@@ -928,6 +928,29 @@ def resolve_blueprint_from_design_stage_artifact(artifact: JourneyStageArtifactE
     return BlueprintArtifact.model_validate(blueprint_payload)
 
 
+def enrich_blueprint_from_memory_stage_artifact(
+    blueprint: BlueprintArtifact | None,
+    artifact: JourneyStageArtifactEntry | None,
+) -> BlueprintArtifact | None:
+    if blueprint is None or artifact is None:
+        return blueprint
+    try:
+        recommendation = MemoryRecommendationArtifact.model_validate(artifact.proposal_payload)
+    except Exception:
+        return blueprint
+
+    updates: dict[str, Any] = {}
+    proposed_memory = recommendation.proposed_memory_profile
+    proposed_knowledge = recommendation.proposed_knowledge_profile
+    if not blueprint.memory_strategy and proposed_memory.strategy:
+        updates["memory_strategy"] = proposed_memory.strategy
+    if not blueprint.memory_profile.strategy and not blueprint.memory_profile.storage_layers:
+        updates["memory_profile"] = proposed_memory
+    if blueprint.knowledge_profile.mode == "none" and proposed_knowledge.mode != "none":
+        updates["knowledge_profile"] = proposed_knowledge
+    return blueprint.model_copy(update=updates) if updates else blueprint
+
+
 def resolve_session_context_from_records_or_stage_artifacts(
     *,
     opportunity: OpportunityRecord | None,
@@ -936,6 +959,7 @@ def resolve_session_context_from_records_or_stage_artifacts(
     discover_artifact: JourneyStageArtifactEntry | None,
     define_artifact: JourneyStageArtifactEntry | None,
     design_artifact: JourneyStageArtifactEntry | None,
+    memory_artifact: JourneyStageArtifactEntry | None = None,
 ) -> tuple[DiscoveryArtifact | None, CanvasArtifact | None, BlueprintArtifact | None]:
     discovery = (
         hydrate_discovery(opportunity)
@@ -958,6 +982,7 @@ def resolve_session_context_from_records_or_stage_artifacts(
         if design_artifact is not None
         else None
     )
+    blueprint = enrich_blueprint_from_memory_stage_artifact(blueprint, memory_artifact)
     return discovery, canvas, blueprint
 
 
@@ -3397,9 +3422,15 @@ def build_snapshot(
         .where(ValidationSimulationRunStateRecord.session_id == record.id)
         .order_by(ValidationSimulationRunStateRecord.updated_at.desc(), ValidationSimulationRunStateRecord.created_at.desc())
     ).all()
-    hydrated_discovery = hydrate_discovery(opportunity) if opportunity is not None else None
-    hydrated_canvas = hydrate_canvas(canvas) if canvas is not None else None
-    hydrated_blueprint = hydrate_blueprint(blueprint) if blueprint is not None else None
+    hydrated_discovery, hydrated_canvas, hydrated_blueprint = resolve_session_context_from_records_or_stage_artifacts(
+        opportunity=opportunity,
+        canvas_record=canvas,
+        blueprint_record=blueprint,
+        discover_artifact=latest_journey_artifacts.get("discover"),
+        define_artifact=latest_journey_artifacts.get("define"),
+        design_artifact=latest_journey_artifacts.get("design"),
+        memory_artifact=latest_journey_artifacts.get("memory"),
+    )
     latest_evaluation_run = evaluation_run_records[0] if evaluation_run_records else None
     governance_policies = evaluate_governance_policies(
         session,
@@ -4910,7 +4941,7 @@ def build_canvas_route(
     opportunity = db.exec(select(OpportunityRecord).where(OpportunityRecord.session_id == session_id)).first()
     if opportunity is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Discovery must exist before canvas")
-    latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
+    latest_discover_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="discover")
     if not is_discovery_stage_approved(latest_discover_artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -4983,7 +5014,7 @@ def define_requirements_route(
     opportunity = db.exec(select(OpportunityRecord).where(OpportunityRecord.session_id == session_id)).first()
     if opportunity is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Discovery must exist before define requirements")
-    latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
+    latest_discover_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="discover")
     if not is_discovery_stage_approved(latest_discover_artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -5191,7 +5222,7 @@ def _execute_propose_design(
     session_id = record.id
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
-    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
+    latest_define_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="define")
     if not is_define_stage_approved(latest_define_artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -7350,7 +7381,7 @@ def build_blueprint_route(
     record = get_or_404(db, session_id, current_user.id)
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
-    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
+    latest_define_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="define")
     if not is_define_stage_approved(latest_define_artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -7738,14 +7769,14 @@ def recommend_tools_route(
         flag_key=FEATURE_FLAG_TOOL_RECOMMENDATION,
         detail="Tool recommendation feature flag is disabled",
     )
-    latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
-    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
+    latest_discover_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="discover")
+    latest_define_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="define")
     if not is_define_stage_approved(latest_define_artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Define must be approved before recommending tools",
         )
-    latest_design_artifact = proposal_service.latest(db, session_record=record, stage_key="design")
+    latest_design_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="design")
     if not is_design_stage_approved(latest_design_artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -7985,9 +8016,9 @@ def approve_tools_selection_route(
     record = get_or_404(db, session_id, current_user.id)
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
-    latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
-    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
-    latest_design_artifact = proposal_service.latest(db, session_record=record, stage_key="design")
+    latest_discover_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="discover")
+    latest_define_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="define")
+    latest_design_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="design")
     if not is_design_stage_approved(latest_design_artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -8418,10 +8449,10 @@ def recommend_memory_route(
     )
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
-    latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
-    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
-    latest_design_artifact = proposal_service.latest(db, session_record=record, stage_key="design")
-    latest_tools_artifact = proposal_service.latest(db, session_record=record, stage_key="tools")
+    latest_discover_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="discover")
+    latest_define_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="define")
+    latest_design_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="design")
+    latest_tools_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="tools")
     if not is_discovery_stage_approved(latest_discover_artifact):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Discover must be approved before Memory")
     if not is_define_stage_approved(latest_define_artifact):
@@ -8895,7 +8926,7 @@ def approve_memory_profile_route(
     )
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     proposal_service = StageProposalService()
-    latest_tools_artifact = proposal_service.latest(db, session_record=record, stage_key="tools")
+    latest_tools_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="tools")
     if not is_tools_stage_approved(latest_tools_artifact):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Tools must be approved before Memory")
     latest_memory_artifact = proposal_service.latest(db, session_record=record, stage_key="memory")
@@ -8929,8 +8960,8 @@ def approve_memory_profile_route(
             status_code=status.HTTP_409_CONFLICT,
             detail="Memory requires an approved tools digest before approval",
         )
-    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
-    latest_design_artifact = proposal_service.latest(db, session_record=record, stage_key="design")
+    latest_define_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="define")
+    latest_design_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="design")
     if latest_memory_artifact.schema_version == "memory-recommendation.v1":
         memory_payload = latest_memory_artifact.proposal_payload
         proposed_memory_profile = memory_payload.get("proposed_memory_profile")
@@ -9016,11 +9047,11 @@ def generate_validation_scenarios_route(
     JourneyStageMigrationService().backfill_session(db, session_record=record)
     ensure_acp_validation_access(record, db=db, current_user=current_user)
     proposal_service = StageProposalService()
-    latest_discover_artifact = proposal_service.latest(db, session_record=record, stage_key="discover")
-    latest_define_artifact = proposal_service.latest(db, session_record=record, stage_key="define")
-    latest_design_artifact = proposal_service.latest(db, session_record=record, stage_key="design")
-    latest_tools_artifact = proposal_service.latest(db, session_record=record, stage_key="tools")
-    latest_memory_artifact = proposal_service.latest(db, session_record=record, stage_key="memory")
+    latest_discover_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="discover")
+    latest_define_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="define")
+    latest_design_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="design")
+    latest_tools_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="tools")
+    latest_memory_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="memory")
     if not is_discovery_stage_approved(latest_discover_artifact):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Discover must be approved before Validate")
     if not is_define_stage_approved(latest_define_artifact):

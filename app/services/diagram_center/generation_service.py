@@ -17,6 +17,11 @@ from app.services.diagram_center.contracts import (
     DiagramNotation,
     StructuredDiagramModel,
 )
+from app.services.diagram_center.deterministic_builders import (
+    DeterministicDiagramContextError,
+    build_deterministic_diagram,
+    supports_deterministic_diagram,
+)
 from app.services.diagram_center.persistence import (
     DiagramGenerationJobRecord,
     DiagramGovernanceRecord,
@@ -34,6 +39,8 @@ from app.services.openai_builder import build_builder_service
 MAX_CONTEXT_ITEMS = 36
 MAX_CONTEXT_CHARS_PER_ITEM = 4000
 RESOLVED_INPUT_EVIDENCE_LIMIT = 16000
+APPROVED_ARTIFACT_DIGEST_LIMIT = 12
+APPROVED_ARTIFACT_CONTENT_LIMIT = 800
 
 _REQUIRED_INPUT_MATCHERS: dict[str, dict[str, set[str]]] = {
     "session.discovery": {"artifact_keys": {"discovery_artifact", "discovery_analysis_artifact"}, "stages": {"discover"}},
@@ -308,13 +315,20 @@ def _normalized_lookup_tokens(*values: object) -> set[str]:
 def _matches_required_input(required_input: str, artifact: dict[str, Any]) -> bool:
     matcher = _REQUIRED_INPUT_MATCHERS.get(required_input, {})
     expected_keys = {item.strip().lower() for item in matcher.get("artifact_keys", set()) if str(item).strip()}
+    normalized_required_input = str(required_input or "").strip().lower()
+    if normalized_required_input:
+        expected_keys.add(normalized_required_input)
     expected_stages = {item.strip().lower() for item in matcher.get("stages", set()) if str(item).strip()}
+    metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {}
     artifact_key = str(artifact.get("key") or artifact.get("kind") or "").strip().lower()
     artifact_stage = str(artifact.get("stage") or "").strip().lower()
     artifact_tokens = _normalized_lookup_tokens(
         artifact.get("key"),
         artifact.get("kind"),
         artifact.get("stage"),
+        metadata.get("deliverable_key"),
+        metadata.get("artifact_key"),
+        metadata.get("catalog_key"),
     )
     if expected_keys & artifact_tokens:
         return True
@@ -386,6 +400,36 @@ def _build_context_brief(
     if missing_required_inputs:
         parts.append("Missing required inputs: " + ", ".join(missing_required_inputs[:6]))
     return " ".join(parts)[:1600].strip()
+
+
+def _approved_artifact_digest(sources: list[dict[str, object]]) -> list[dict[str, object]]:
+    digest: list[dict[str, object]] = []
+    for item in sources[:APPROVED_ARTIFACT_DIGEST_LIMIT]:
+        digest.append(
+            {
+                "key": str(item.get("key") or ""),
+                "kind": str(item.get("kind") or ""),
+                "stage": str(item.get("stage") or ""),
+                "state": str(item.get("state") or ""),
+                "version": item.get("version"),
+                "ref": str(item.get("ref") or ""),
+                "content_excerpt": _artifact_content_excerpt(
+                    item.get("content"),
+                    limit=APPROVED_ARTIFACT_CONTENT_LIMIT,
+                ),
+            }
+        )
+    return digest
+
+
+def _artifact_content_excerpt(value: object, *, limit: int) -> str:
+    if isinstance(value, str):
+        return _compact_text(value, limit=limit)
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        serialized = str(value)
+    return _compact_text(serialized, limit=limit)
 
 
 def _source_context(
@@ -479,7 +523,7 @@ def _source_context(
             "resolved_inputs": resolved_inputs,
             "missing_required_inputs": missing_required_inputs,
             "approved_artifact_keys": [str(item.get("key") or "") for item in sources[:MAX_CONTEXT_ITEMS]],
-            "approved_artifacts": sources[:MAX_CONTEXT_ITEMS],
+            "approved_artifacts": _approved_artifact_digest(sources),
         },
         source_refs[:MAX_CONTEXT_ITEMS],
     )
@@ -680,7 +724,6 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
             prompt_spec_version=str(prompt_spec["version"]),
         )
         runtime_settings = load_effective_runtime_settings(db, record.workspace_id)
-        provider = build_builder_service(runtime_settings)
         requesting_user = db.get(UserRecord, job.requested_by_user_id)
         effective_language = (
             str(getattr(requesting_user, "preferred_language", "") or "").strip().lower() or "es"
@@ -709,40 +752,63 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
         except Exception:
             pass  # Do not block generation if the size check itself fails
         commit_without_expiring(db)
-        result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
         retry_count = 0
-        if result.artifact is None and result.failure_kind in {
-            "provider_error",
-            "schema_invalid",
-            "schema_missing_output",
-        }:
+        provider = None
+        provider_key = "deterministic_python"
+        model_name = ""
+        prompt_spec_version = str(prompt_spec["version"])
+        request_id = ""
+        failure_kind = "provider_failure"
+        failure_detail = "El proveedor no produjo un DiagramModel valido."
+        generated_artifact: DiagramModel | StructuredDiagramModel | None = None
+        if supports_deterministic_diagram(entry.key):
+            try:
+                generated_artifact = build_deterministic_diagram(generation_input)
+            except DeterministicDiagramContextError as exc:
+                _fail_job(db, job, exc.code, exc.message)
+                return
+        else:
+            provider = build_builder_service(runtime_settings)
             result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
-            retry_count = 1
+            if result.artifact is None and result.failure_kind in {
+                "provider_error",
+                "schema_invalid",
+                "schema_missing_output",
+            }:
+                result = provider.generate_diagram_model(generation_input, context_bundle=stage_context)
+                retry_count = 1
+            generated_artifact = result.artifact
+            provider_key = result.provider_key or runtime_settings.active_provider.value
+            model_name = result.model_name or ""
+            prompt_spec_version = result.prompt_version or str(prompt_spec["version"])
+            request_id = result.request_id or ""
+            failure_kind = result.failure_kind or "provider_failure"
+            failure_detail = result.warning or result.failure_detail or "El proveedor no produjo un DiagramModel valido."
         job = db.get(DiagramGenerationJobRecord, job_id)
         if job is None:
             return
         if retry_count:
             job.request_metadata = {**(job.request_metadata or {}), "retry_count": retry_count}
-        job.provider_key = result.provider_key or runtime_settings.active_provider.value
-        job.model_name = result.model_name or ""
-        job.prompt_spec_version = result.prompt_version or str(prompt_spec["version"])
-        if result.artifact is None:
+        job.provider_key = provider_key
+        job.model_name = model_name
+        job.prompt_spec_version = prompt_spec_version
+        if generated_artifact is None:
             _fail_job(
                 db,
                 job,
-                result.failure_kind or "provider_failure",
-                result.warning or result.failure_detail or "El proveedor no produjo un DiagramModel válido.",
+                failure_kind,
+                failure_detail,
             )
             return
 
         try:
-            if isinstance(result.artifact, StructuredDiagramModel):
+            if isinstance(generated_artifact, StructuredDiagramModel):
                 try:
-                    repaired_artifact, _ = repair_structured_diagram_model(result.artifact)
-                    result.artifact = repaired_artifact
+                    repaired_artifact, _ = repair_structured_diagram_model(generated_artifact)
+                    generated_artifact = repaired_artifact
                 except Exception:
                     pass
-            raw_model = result.artifact.model_dump(mode="json")
+            raw_model = generated_artifact.model_dump(mode="json")
             existing_metadata = raw_model.get("metadata", {})
             if not isinstance(existing_metadata, dict):
                 existing_metadata = {}
@@ -788,7 +854,7 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
             return
 
         quality = evaluate_diagram_quality(model)
-        if not quality.valid:
+        if not quality.valid and provider is not None:
             critique_issues = " ".join(quality.errors)
             critique_retry_count = int(job.request_metadata.get("critique_retry_count", 0))
             if critique_retry_count < 1:
@@ -832,7 +898,10 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
                         if retry_quality.valid or retry_quality.score > quality.score:
                             model = retry_model
                             quality = retry_quality
-                            result = retry_result
+                            provider_key = retry_result.provider_key or provider_key
+                            model_name = retry_result.model_name or model_name
+                            prompt_spec_version = retry_result.prompt_version or prompt_spec_version
+                            request_id = retry_result.request_id or request_id
                             job.request_metadata = {
                                 **job.request_metadata,
                                 "critique_retry_count": critique_retry_count + 1,
@@ -864,10 +933,10 @@ def _run_generation_job_in_session(db: Session, job_id: UUID) -> None:
             quality_report=quality.model_dump(mode="json"),
             source_fingerprint=_fingerprint(source_context),
             source_refs=source_refs,
-            provider_key=result.provider_key or runtime_settings.active_provider.value,
-            model_name=result.model_name or "",
-            prompt_spec_version=result.prompt_version or str(prompt_spec["version"]),
-            request_id=result.request_id or "",
+            provider_key=provider_key,
+            model_name=model_name,
+            prompt_spec_version=prompt_spec_version,
+            request_id=request_id,
             created_by_user_id=job.requested_by_user_id,
         )
         db.add(version)

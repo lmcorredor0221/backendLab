@@ -11,6 +11,10 @@ from app.services.commerce_service import role_for_user, tier_rank
 from app.services.commercial_access import build_commercial_access_snapshot_v2
 from app.services.deliverable_catalog.catalog_service import build_deliverable_catalog_response
 from app.services.deliverable_catalog.contracts import DeliverableCatalogItem
+from app.services.deliverable_catalog.registry_service import (
+    list_registry_entries as list_deliverable_registry_entries,
+    resolve_product_delivery_plan,
+)
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord
 from app.services.product_processing.contracts import (
@@ -124,7 +128,8 @@ def build_product_build_status(
         tier=access.tier,
         current_stage=current_stage,
     )
-    product_items = [item for item in catalog.entries if _is_expected_for_product(item, meta)]
+    run = _latest_run(db, record=record, product_key=meta.product_key)
+    product_items = _product_items_for_status(catalog.entries, meta=meta, run=run)
     product_items_by_key = {item.key: item for item in product_items}
     jobs_by_key = _latest_jobs_by_key(db, session_id=record.id)
     diagram_jobs_by_key = _latest_diagram_jobs_by_key(db, session_id=record.id)
@@ -134,6 +139,7 @@ def build_product_build_status(
         for item in product_items
         if (diagram_job := _diagram_job_for_item(item, diagram_jobs_by_key)) is not None
     }
+    nonblocking_deliverable_keys = _nonblocking_deliverable_keys(run)
     deliverables = [
         _build_deliverable_status(
             item,
@@ -141,10 +147,10 @@ def build_product_build_status(
             job=jobs_by_key.get(item.key),
             diagram_job=diagram_jobs_by_deliverable_key.get(item.key),
             session_id=str(record.id),
+            required=item.key not in nonblocking_deliverable_keys,
         )
         for item in product_items
     ]
-    run = _latest_run(db, record=record, product_key=meta.product_key)
     attention_items = _build_attention_items(
         db,
         record=record,
@@ -249,6 +255,72 @@ def _is_expected_for_product(item: DeliverableCatalogItem, meta: ProductBuildMet
     return bool(set(item.product_scope).intersection(meta.included_scopes)) and tier_rank(item.required_tier) <= tier_rank(meta.required_tier)
 
 
+def _checkpoint_expected_keys(run: ProductBuildRunRecord | None) -> list[str] | None:
+    if run is None:
+        return None
+    checkpoint = run.checkpoint_payload or {}
+    delivery_plan = checkpoint.get("delivery_plan")
+    if isinstance(delivery_plan, dict) and "generated_deliverable_keys" in delivery_plan:
+        return [str(key) for key in delivery_plan.get("generated_deliverable_keys", []) if str(key).strip()]
+    if "expected_deliverables" in checkpoint:
+        return [str(key) for key in checkpoint.get("expected_deliverables", []) if str(key).strip()]
+    return None
+
+
+def _catalog_items_for_keys(
+    entries: list[DeliverableCatalogItem],
+    *,
+    meta: ProductBuildMeta,
+    keys: list[str],
+) -> list[DeliverableCatalogItem]:
+    by_key = {item.key: item for item in entries}
+    ordered: list[DeliverableCatalogItem] = []
+    for key in keys:
+        item = by_key.get(key)
+        if item is None or not _is_expected_for_product(item, meta):
+            continue
+        ordered.append(item)
+    return ordered
+
+
+def _product_items_for_status(
+    entries: list[DeliverableCatalogItem],
+    *,
+    meta: ProductBuildMeta,
+    run: ProductBuildRunRecord | None,
+) -> list[DeliverableCatalogItem]:
+    frozen_keys = _checkpoint_expected_keys(run)
+    if frozen_keys is not None:
+        return _catalog_items_for_keys(entries, meta=meta, keys=frozen_keys)
+    if run is not None:
+        return [item for item in entries if _is_expected_for_product(item, meta)]
+    plan = resolve_product_delivery_plan(
+        meta.product_key.value,
+        registry_entries=list_deliverable_registry_entries(include_inactive=True),
+        confirmed_signals=[],
+    )
+    return _catalog_items_for_keys(entries, meta=meta, keys=list(plan.generated_keys))
+
+
+def _nonblocking_deliverable_keys(run: ProductBuildRunRecord | None) -> set[str]:
+    if run is None:
+        return set()
+    checkpoint = run.checkpoint_payload or {}
+    keys: set[str] = set()
+    for item in checkpoint.get("nonblocking_deliverables", []) or []:
+        if isinstance(item, dict):
+            key = str(item.get("deliverable_key") or "").strip()
+            if key:
+                keys.add(key)
+    queue = checkpoint.get("processing_queue")
+    if isinstance(queue, dict):
+        for key in queue.get("deferred_nonblocking_deliverable_keys", []) or []:
+            normalized = str(key or "").strip()
+            if normalized:
+                keys.add(normalized)
+    return keys
+
+
 def _resolve_role(db: Session, *, record: SessionRecord, current_user: UserRecord | None) -> WorkspaceRole:
     if current_user is None or record.workspace_id is None:
         return WorkspaceRole.admin
@@ -332,6 +404,7 @@ def _build_deliverable_status(
     job: DeliverableGenerationJobRecord | None,
     diagram_job: DiagramGenerationJobRecord | None,
     session_id: str,
+    required: bool = True,
 ) -> ProductBuildDeliverableStatus:
     effective_job = job or diagram_job
     state = _deliverable_state(item, job, diagram_job=diagram_job)
@@ -342,7 +415,7 @@ def _build_deliverable_status(
         state=state,
         product_surface=meta.product_key,
         stage_key=item.stage,
-        required=True,
+        required=required,
         job_id=str(effective_job.id) if effective_job is not None else "",
         updated_at=(effective_job.updated_at.isoformat() if effective_job is not None else ""),
         href=f"/projects/{session_id}/blueprint?deliverable={item.key}",
@@ -387,6 +460,7 @@ def _build_attention_items(
 ) -> list[ProductBuildAttentionItem]:
     items: list[ProductBuildAttentionItem] = []
     steps_by_key = _steps_by_key(db, run)
+    nonblocking_deliverable_keys = _nonblocking_deliverable_keys(run)
     backlog = db.exec(
         select(UncertaintyBacklogRecord).where(
             UncertaintyBacklogRecord.workspace_id == record.workspace_id,
@@ -415,6 +489,8 @@ def _build_attention_items(
             )
         )
     for deliverable_key, job in jobs_by_key.items():
+        if deliverable_key in nonblocking_deliverable_keys:
+            continue
         if job.product_mode != meta.product_mode.value or job.status not in {"error", "failed", "requires_attention"}:
             continue
         linked_step = steps_by_key.get(f"deliverable:{deliverable_key}")
@@ -436,6 +512,8 @@ def _build_attention_items(
             )
         )
     for deliverable_key, job in diagram_jobs_by_key.items():
+        if deliverable_key in nonblocking_deliverable_keys:
+            continue
         if job.status not in {"error", "failed", "requires_attention"}:
             continue
         item = product_items_by_key.get(deliverable_key)
@@ -565,9 +643,14 @@ def _build_progress(
             calculation="manual",
             label=label,
         )
-    completed = sum(1 for item in deliverables if item.state == ProductBuildDeliverableState.available)
-    blocked = sum(1 for item in deliverables if item.state in {ProductBuildDeliverableState.error, ProductBuildDeliverableState.requires_attention})
-    total = len(deliverables)
+    required_deliverables = [item for item in deliverables if item.required]
+    completed = sum(1 for item in required_deliverables if item.state == ProductBuildDeliverableState.available)
+    blocked = sum(
+        1
+        for item in required_deliverables
+        if item.state in {ProductBuildDeliverableState.error, ProductBuildDeliverableState.requires_attention}
+    )
+    total = len(required_deliverables)
     return ProductBuildProgress(
         percent=calculate_product_build_percent(completed, total),
         completed_units=float(completed),
@@ -599,13 +682,17 @@ def _derive_lifecycle(
         return ProductBuildLifecycle(run.lifecycle)
     if any(item.blocking for item in attention_items):
         return ProductBuildLifecycle.requires_attention
-    if any(item.state in {ProductBuildDeliverableState.error, ProductBuildDeliverableState.requires_attention} for item in deliverables):
+    required_deliverables = [item for item in deliverables if item.required]
+    if any(
+        item.state in {ProductBuildDeliverableState.error, ProductBuildDeliverableState.requires_attention}
+        for item in required_deliverables
+    ):
         return ProductBuildLifecycle.requires_attention
-    if any(item.state in {ProductBuildDeliverableState.queued, ProductBuildDeliverableState.generating} for item in deliverables):
+    if any(item.state in {ProductBuildDeliverableState.queued, ProductBuildDeliverableState.generating} for item in required_deliverables):
         return ProductBuildLifecycle.running
-    if deliverables and all(item.state == ProductBuildDeliverableState.available for item in deliverables):
+    if required_deliverables and all(item.state == ProductBuildDeliverableState.available for item in required_deliverables):
         return ProductBuildLifecycle.completed
-    if any(item.state == ProductBuildDeliverableState.available for item in deliverables):
+    if any(item.state == ProductBuildDeliverableState.available for item in required_deliverables):
         return ProductBuildLifecycle.partial
     return ProductBuildLifecycle.ready_to_start
 
@@ -742,7 +829,7 @@ def _build_last_error(
             retry_action_key=str(run.error_payload.get("retry_action_key") or "retry_product_build"),
             trace_refs=[str(ref) for ref in run.error_payload.get("trace_refs", [])],
         )
-    failed = next((item for item in deliverables if item.state == ProductBuildDeliverableState.error), None)
+    failed = next((item for item in deliverables if item.required and item.state == ProductBuildDeliverableState.error), None)
     if failed is None:
         return None
     return ProductBuildRecoverableError(
@@ -975,7 +1062,7 @@ def _build_stage_statuses(
 
     statuses: list[ProductBuildStageStatus] = []
     for idx, stage_key in enumerate(stage_keys):
-        stage_deliverables = [item for item in deliverables if item.stage_key == stage_key]
+        stage_deliverables = [item for item in deliverables if item.stage_key == stage_key and item.required]
         stage_attention = [item for item in attention_items if item.stage_key == stage_key]
         completed = sum(1 for item in stage_deliverables if item.state == ProductBuildDeliverableState.available)
         total = len(stage_deliverables)

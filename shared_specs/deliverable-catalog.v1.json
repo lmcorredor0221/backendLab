@@ -741,6 +741,139 @@
       "active": true
     }
   ],
+  "product_delivery_profiles": [
+    {
+      "profile_key": "blueprint_basic.commercial.v1",
+      "revision": "1",
+      "product_key": "blueprint_basic",
+      "default_deliverable_keys": [],
+      "inherited_deliverable_keys": [],
+      "conditional_rules": []
+    },
+    {
+      "profile_key": "blueprint_pro.default.v1",
+      "revision": "1",
+      "product_key": "blueprint_pro",
+      "default_deliverable_keys": [
+        "definition.requirements",
+        "definition.acceptance_trace",
+        "diagram.target_capabilities_map",
+        "blueprint.architecture_spec",
+        "diagram.agent_orchestration",
+        "diagram.decision_model",
+        "tools.minimum_set",
+        "tools.contracts",
+        "diagram.tool_capability_map",
+        "diagram.security_guardrails",
+        "memory.strategy",
+        "knowledge.contract",
+        "diagram.human_intervention_flow",
+        "blueprint.professional_document",
+        "estimate.comparison"
+      ],
+      "inherited_deliverable_keys": [],
+      "conditional_rules": [
+        {
+          "condition_key": "external_contracts_confirmed",
+          "deliverable_keys": [
+            "diagram.c4_context",
+            "diagram.api_integration_sequence",
+            "diagram.sequence_diagram"
+          ],
+          "required_evidence": [
+            "confirmed_external_systems",
+            "explicit_user_request"
+          ],
+          "activation_mode": "confirmed_case_signal"
+        },
+        {
+          "condition_key": "rag_or_knowledge_base_confirmed",
+          "deliverable_keys": [
+            "diagram.memory_rag_architecture",
+            "diagram.rag_ingestion_pipeline",
+            "diagram.knowledge_graph"
+          ],
+          "required_evidence": [
+            "confirmed_rag_scope",
+            "explicit_user_request"
+          ],
+          "activation_mode": "confirmed_case_signal"
+        },
+        {
+          "condition_key": "pii_or_side_effect_risk_confirmed",
+          "deliverable_keys": [
+            "diagram.security_threat_model"
+          ],
+          "required_evidence": [
+            "confirmed_pii",
+            "confirmed_side_effects",
+            "explicit_user_request"
+          ],
+          "activation_mode": "confirmed_case_signal"
+        }
+      ]
+    },
+    {
+      "profile_key": "acp.default.v1",
+      "revision": "1",
+      "product_key": "acp",
+      "default_deliverable_keys": [
+        "validation.simulation_spec",
+        "evaluation.test_suite",
+        "diagram.tool_contract_sequence",
+        "acp.gap_register",
+        "acp.prompt_pack",
+        "acp.workflow_pack",
+        "acp.deployment_guide",
+        "diagram.deployment_decision_matrix",
+        "diagram.prompt_reasoning_playbook"
+      ],
+      "inherited_deliverable_keys": [
+        "definition.requirements",
+        "definition.acceptance_trace",
+        "diagram.target_capabilities_map",
+        "blueprint.architecture_spec",
+        "diagram.agent_orchestration",
+        "diagram.decision_model",
+        "tools.minimum_set",
+        "tools.contracts",
+        "diagram.tool_capability_map",
+        "diagram.security_guardrails",
+        "memory.strategy",
+        "knowledge.contract",
+        "diagram.human_intervention_flow",
+        "blueprint.professional_document",
+        "estimate.comparison"
+      ],
+      "conditional_rules": [
+        {
+          "condition_key": "implementation_stack_confirmed",
+          "deliverable_keys": [
+            "diagram.deployment_diagram",
+            "diagram.component_diagram",
+            "diagram.package_diagram"
+          ],
+          "required_evidence": [
+            "confirmed_runtime_stack",
+            "explicit_user_request"
+          ],
+          "activation_mode": "confirmed_case_signal"
+        },
+        {
+          "condition_key": "data_contracts_confirmed",
+          "deliverable_keys": [
+            "diagram.data_contracts",
+            "diagram.data_lineage_map"
+          ],
+          "required_evidence": [
+            "confirmed_structured_payloads",
+            "explicit_user_request"
+          ],
+          "activation_mode": "confirmed_case_signal"
+        }
+      ]
+    }
+  ],
   "validation_rules": [
     "deliverable_keys_must_be_unique",
     "llm_generation_requires_prompt_schema_validator_and_fallback",

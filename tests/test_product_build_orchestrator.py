@@ -12,6 +12,8 @@ from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
     CommercialTier,
+    JourneyArtifactState,
+    JourneyStageArtifactRecord,
     SessionRecord,
     SessionStage,
     UserRecord,
@@ -21,7 +23,6 @@ from app.models import (
     utc_now,
 )
 from app.services.auth_service import hash_password
-from app.services.commerce_service import tier_rank
 from app.services.deliverable_catalog.catalog_service import build_deliverable_catalog_response
 from app.services.deliverable_catalog.contracts import DeliverableGenerationResult, DeliverableGenerationTask
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
@@ -32,10 +33,12 @@ from app.services.product_processing import (
     ProductBuildProductKey,
     build_product_build_status,
     enqueue_product_build_processing,
+    ensure_acp_product_orchestration,
     ensure_product_build_orchestration,
     run_product_build_processing,
 )
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
+from app.services.product_processing.product_build_orchestrator import _finalize_run_from_steps
 from app.services.product_processing.product_build_orchestrator import _finalize_processing_queue
 from app.services.product_processing.product_build_orchestrator import _process_single_queue_item
 from app.services.product_processing.product_build_orchestrator import _recover_orphaned_processing_queue
@@ -80,27 +83,27 @@ def _seed_session(db: Session, *, tier: CommercialTier = CommercialTier.blueprin
     return user, record
 
 
+def _approve_acp_required_stages(db: Session, record: SessionRecord) -> None:
+    for stage_key in ("discover", "define", "design", "tools", "memory", "estimate", "validate"):
+        db.add(
+            JourneyStageArtifactRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                artifact_kind=f"{stage_key}_artifact",
+                stage_key=stage_key,
+                state=JourneyArtifactState.approved,
+                source_action="product_build_test",
+            )
+        )
+
+
 def test_orchestrator_creates_run_and_expected_deliverable_steps() -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
 
     with Session(engine) as db:
         user, record = _seed_session(db)
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint,
-            current_stage="package",
-        )
-        expected_count = len(
-            [
-                item
-                for item in catalog.entries
-                if "blueprint" in item.product_scope and tier_rank(item.required_tier) <= tier_rank(CommercialTier.blueprint)
-            ]
-        )
+        expected_count = 0
 
         status = ensure_product_build_orchestration(
             db,
@@ -120,6 +123,7 @@ def test_orchestrator_creates_run_and_expected_deliverable_steps() -> None:
     assert len(runs) == 1
     assert len(steps) == expected_count
     assert status.progress.total_units == float(expected_count)
+    assert status.deliverables == []
     assert status.lifecycle == ProductBuildLifecycle.ready_to_start
 
 
@@ -161,23 +165,15 @@ def test_orchestrator_reflects_existing_deliverable_job_state() -> None:
     SQLModel.metadata.create_all(engine)
 
     with Session(engine) as db:
-        user, record = _seed_session(db)
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint,
-            current_stage="package",
-        )
-        deliverable_key = next(item.key for item in catalog.entries if "blueprint" in item.product_scope)
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        deliverable_key = "definition.requirements"
         db.add(
             DeliverableGenerationJobRecord(
                 workspace_id=record.workspace_id,
                 session_id=record.id,
                 deliverable_key=deliverable_key,
                 status="available",
-                product_mode="basic_free",
+                product_mode="premium_enrichment",
                 idempotency_key=f"eov4-job-{uuid4()}",
             )
         )
@@ -186,14 +182,14 @@ def test_orchestrator_reflects_existing_deliverable_job_state() -> None:
         status = ensure_product_build_orchestration(
             db,
             record=record,
-            product_key=ProductBuildProductKey.blueprint_basic,
+            product_key=ProductBuildProductKey.blueprint_pro,
             current_user=user,
         )
         run = list_product_build_runs(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
-            product_key=ProductBuildProductKey.blueprint_basic,
+            product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
         step = next(step for step in list_product_build_steps(db, run_id=run.id) if step.deliverable_key == deliverable_key)
 
@@ -222,11 +218,11 @@ def test_orchestrator_can_execute_jobs_with_injected_runner() -> None:
         return job, DeliverableGenerationResult(deliverable_key=task.deliverable_key, status="available")
 
     with Session(engine) as db:
-        user, record = _seed_session(db)
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
         status = ensure_product_build_orchestration(
             db,
             record=record,
-            product_key=ProductBuildProductKey.blueprint_basic,
+            product_key=ProductBuildProductKey.blueprint_pro,
             current_user=user,
             options=ProductBuildOrchestrationOptions(execute_jobs=True, job_runner=fake_runner),
         )
@@ -322,16 +318,6 @@ def test_enqueue_product_build_processing_persists_queue_selection() -> None:
             options=ProductBuildOrchestrationOptions(current_stage="package"),
             catalog_stage_override="package",
         )
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint_pro,
-            current_stage="package",
-        )
-        queued_item = next(item for item in catalog.entries if item.access.can_generate or item.access.can_regenerate)
-
         run, status, queued_now = enqueue_product_build_processing(
             db,
             record=record,
@@ -353,8 +339,9 @@ def test_enqueue_product_build_processing_persists_queue_selection() -> None:
         persisted_run = db.get(ProductBuildRunRecord, run_id)
         assert persisted_run is not None
         selected_keys = (persisted_run.checkpoint_payload or {}).get("processing_queue", {}).get("selected_deliverable_keys", [])
-        assert queued_item.key in selected_keys
-        assert "diagram.architecture_overview" in selected_keys
+        assert "definition.requirements" in selected_keys
+        assert "diagram.target_capabilities_map" in selected_keys
+        assert "diagram.architecture_overview" not in selected_keys
         selected_steps = [
             step
             for step in list_product_build_steps(db, run_id=run_id)
@@ -378,19 +365,6 @@ def test_enqueue_product_build_processing_skips_exhausted_failed_deliverables() 
             options=ProductBuildOrchestrationOptions(current_stage="package"),
             catalog_stage_override="package",
         )
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint_pro,
-            current_stage="package",
-        )
-        failed_item = next(
-            item
-            for item in catalog.entries
-            if item.deliverable_type.value != "diagram" and (item.access.can_generate or item.access.can_regenerate)
-        )
         run = list_product_build_runs(
             db,
             workspace_id=record.workspace_id,
@@ -398,8 +372,11 @@ def test_enqueue_product_build_processing_skips_exhausted_failed_deliverables() 
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
         step = next(
-            candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == failed_item.key
+            candidate
+            for candidate in list_product_build_steps(db, run_id=run.id)
+            if not str(candidate.deliverable_key or "").startswith("diagram.")
         )
+        failed_item_key = str(step.deliverable_key or "")
         step.status = "error"
         step.error_payload = {"code": "forced_failure", "message": "El entregable ya agotó los intentos permitidos."}
         step.checkpoint_payload = {
@@ -415,7 +392,7 @@ def test_enqueue_product_build_processing_skips_exhausted_failed_deliverables() 
             DeliverableGenerationJobRecord(
                 workspace_id=record.workspace_id,
                 session_id=record.id,
-                deliverable_key=failed_item.key,
+                deliverable_key=failed_item_key,
                 status="error",
                 product_mode="premium_enrichment",
                 idempotency_key=f"exhausted-deliverable-{uuid4()}",
@@ -439,14 +416,14 @@ def test_enqueue_product_build_processing_skips_exhausted_failed_deliverables() 
 
     assert run is not None
     assert status.processing_queue is not None
-    assert failed_item.key not in status.processing_queue.current_deliverable_key
-    assert failed_item.key not in [item.deliverable_key for item in status.processing_queue.completed_items]
-    assert failed_item.key not in [item.deliverable_key for item in status.processing_queue.failed_items]
+    assert failed_item_key not in status.processing_queue.current_deliverable_key
+    assert failed_item_key not in [item.deliverable_key for item in status.processing_queue.completed_items]
+    assert failed_item_key not in [item.deliverable_key for item in status.processing_queue.failed_items]
     with Session(engine) as db:
         persisted_run = db.get(ProductBuildRunRecord, run_id)
         assert persisted_run is not None
         selected_keys = (persisted_run.checkpoint_payload or {}).get("processing_queue", {}).get("selected_deliverable_keys", [])
-    assert failed_item.key not in selected_keys
+    assert failed_item_key not in selected_keys
     assert queued_now is (len(selected_keys) > 0)
 
 
@@ -565,8 +542,9 @@ def test_run_product_build_processing_retries_failed_items_once(monkeypatch: pyt
     assert status.processing_queue.status == "completed_with_errors"
     assert status.lifecycle == ProductBuildLifecycle.requires_attention
     assert steps
-    assert all(
-        int((step.checkpoint_payload or {}).get("attempt_count") or 0) == 0
+    assert all(int((step.checkpoint_payload or {}).get("attempt_count") or 0) <= 2 for step in steps)
+    assert any(
+        int((step.checkpoint_payload or {}).get("attempt_count") or 0) > 1
         for step in steps
         if str(step.deliverable_key or "").startswith("diagram.")
     )
@@ -892,29 +870,26 @@ def test_retry_failed_selects_requires_attention_steps() -> None:
             options=ProductBuildOrchestrationOptions(current_stage="package"),
             catalog_stage_override="package",
         )
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint_pro,
-            current_stage="package",
-        )
-        item = next(entry for entry in catalog.entries if entry.deliverable_type.value != "diagram")
         run = list_product_build_runs(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
+        existing_step = next(
+            step
+            for step in list_product_build_steps(db, run_id=run.id)
+            if not str(step.deliverable_key or "").startswith("diagram.")
+        )
+        deliverable_key = str(existing_step.deliverable_key or "")
         upsert_product_build_step(
             db,
             run=run,
-            step_key=f"deliverable:{item.key}",
+            step_key=f"deliverable:{deliverable_key}",
             status="requires_attention",
-            stage_key=item.stage,
-            deliverable_key=item.key,
-            sequence=item.sort_order,
+            stage_key=existing_step.stage_key,
+            deliverable_key=deliverable_key,
+            sequence=existing_step.sequence,
             progress_percent=0,
             checkpoint_payload={"attempt_count": 1},
             error_payload={"code": "context_missing"},
@@ -935,7 +910,7 @@ def test_retry_failed_selects_requires_attention_steps() -> None:
     assert queued_now is True
     assert status.processing_queue is not None
     assert status.processing_queue.total_count >= 1
-    assert item.key in (run.checkpoint_payload.get("processing_queue") or {}).get("selected_deliverable_keys", [])
+    assert deliverable_key in (run.checkpoint_payload.get("processing_queue") or {}).get("selected_deliverable_keys", [])
 
 
 def test_run_product_build_processing_marks_orphaned_diagram_jobs_as_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -952,23 +927,22 @@ def test_run_product_build_processing_marks_orphaned_diagram_jobs_as_error(monke
             options=ProductBuildOrchestrationOptions(current_stage="package"),
             catalog_stage_override="package",
         )
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint_pro,
-            current_stage="package",
-        )
-        diagrams = [item for item in catalog.entries if item.deliverable_type.value == "diagram"]
-        queued_diagram = diagrams[0]
-        pending_diagram = diagrams[1]
         run = list_product_build_runs(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
+        diagram_steps = sorted(
+            [
+                step
+                for step in list_product_build_steps(db, run_id=run.id)
+                if str(step.deliverable_key or "").startswith("diagram.")
+            ],
+            key=lambda step: step.sequence,
+        )
+        queued_diagram = SimpleNamespace(key=str(diagram_steps[0].deliverable_key))
+        pending_diagram = SimpleNamespace(key=str(diagram_steps[1].deliverable_key))
         step = next(
             candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
         )
@@ -1061,23 +1035,22 @@ def test_reconcile_marks_started_stale_diagram_job_as_orphaned() -> None:
             options=ProductBuildOrchestrationOptions(current_stage="package"),
             catalog_stage_override="package",
         )
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint_pro,
-            current_stage="package",
-        )
-        diagrams = [item for item in catalog.entries if item.deliverable_type.value == "diagram"]
-        queued_diagram = diagrams[0]
-        pending_diagram = diagrams[1]
         run = list_product_build_runs(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
+        diagram_steps = sorted(
+            [
+                step
+                for step in list_product_build_steps(db, run_id=run.id)
+                if str(step.deliverable_key or "").startswith("diagram.")
+            ],
+            key=lambda step: step.sequence,
+        )
+        queued_diagram = SimpleNamespace(key=str(diagram_steps[0].deliverable_key))
+        pending_diagram = SimpleNamespace(key=str(diagram_steps[1].deliverable_key))
         stale_at = utc_now() - timedelta(minutes=20)
         step = next(
             candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
@@ -1161,23 +1134,22 @@ def test_ensure_product_build_orchestration_recovers_stale_processing_queue() ->
             options=ProductBuildOrchestrationOptions(current_stage="package"),
             catalog_stage_override="package",
         )
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint_pro,
-            current_stage="package",
-        )
-        diagrams = [item for item in catalog.entries if item.deliverable_type.value == "diagram"]
-        queued_diagram = diagrams[0]
-        pending_diagram = diagrams[1]
         run = list_product_build_runs(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
+        diagram_steps = sorted(
+            [
+                step
+                for step in list_product_build_steps(db, run_id=run.id)
+                if str(step.deliverable_key or "").startswith("diagram.")
+            ],
+            key=lambda step: step.sequence,
+        )
+        queued_diagram = SimpleNamespace(key=str(diagram_steps[0].deliverable_key))
+        pending_diagram = SimpleNamespace(key=str(diagram_steps[1].deliverable_key))
         stale_at = utc_now() - timedelta(minutes=20)
         step = next(
             candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
@@ -1262,21 +1234,18 @@ def test_recover_orphaned_queue_uses_active_job_timestamp_even_when_step_was_ref
             options=ProductBuildOrchestrationOptions(current_stage="package"),
             catalog_stage_override="package",
         )
-        catalog = build_deliverable_catalog_response(
-            db,
-            workspace_id=record.workspace_id,
-            session_id=record.id,
-            role=WorkspaceRole.owner,
-            tier=CommercialTier.blueprint_pro,
-            current_stage="package",
-        )
-        queued_diagram = next(item for item in catalog.entries if item.deliverable_type.value == "diagram")
         run = list_product_build_runs(
             db,
             workspace_id=record.workspace_id,
             session_id=record.id,
             product_key=ProductBuildProductKey.blueprint_pro,
         )[0]
+        queued_step = next(
+            step
+            for step in list_product_build_steps(db, run_id=run.id)
+            if str(step.deliverable_key or "").startswith("diagram.")
+        )
+        queued_diagram = SimpleNamespace(key=str(queued_step.deliverable_key))
         stale_at = utc_now() - timedelta(minutes=20)
         step = next(
             candidate for candidate in list_product_build_steps(db, run_id=run.id) if candidate.deliverable_key == queued_diagram.key
@@ -1445,3 +1414,106 @@ def test_ensure_product_build_orchestration_execute_jobs_skips_exhausted_failure
     assert status.lifecycle == ProductBuildLifecycle.requires_attention
     assert status.processing_queue is not None
     assert status.processing_queue.total_count == 0
+
+
+def test_acp_processing_defers_large_diagrams_from_initial_queue() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.acp)
+        _approve_acp_required_stages(db, record)
+        db.commit()
+
+        run, status, queued_now = enqueue_product_build_processing(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.acp,
+            current_user=user,
+            mode="process_pending",
+            allow_llm=True,
+            catalog_stage_override="package",
+        )
+        assert run is not None
+        queue = (run.checkpoint_payload or {}).get("processing_queue", {})
+        selected_keys = set(queue.get("selected_deliverable_keys", []))
+        deferred_keys = set(queue.get("deferred_nonblocking_deliverable_keys", []))
+
+    assert queued_now is True
+    assert status.entitlement.access_state == "allowed"
+    assert deferred_keys == set()
+    assert "diagram.physical_architecture" not in selected_keys
+    assert selected_keys.isdisjoint(deferred_keys)
+    assert any(not key.startswith("diagram.") for key in selected_keys)
+    assert queue["completion_policy"] == "acp_core_first_nonblocking_diagrams"
+
+
+def test_acp_core_completion_ignores_deferred_diagram_failures() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.acp)
+        _approve_acp_required_stages(db, record)
+        db.commit()
+
+        ensure_acp_product_orchestration(db, record=record, current_user=user)
+        run = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.acp,
+        )[0]
+        for step in list_product_build_steps(db, run_id=run.id):
+            checkpoint = step.checkpoint_payload or {}
+            if step.step_key.startswith("acp_dependency:") or checkpoint.get("blocking_for_product", True):
+                step.status = "available" if step.step_key.startswith("deliverable:") else "completed"
+                step.progress_percent = 100
+                step.error_payload = {}
+                db.add(step)
+
+        db.add(
+            DiagramGenerationJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                diagram_key="physical_architecture",
+                requested_by_user_id=user.id,
+                detail_level="standard",
+                reason="generate",
+                idempotency_key=f"deferred-physical-architecture-{uuid4()}",
+                status="error",
+                error_code="provider_error",
+                error_message="Provider failed on a deferred ACP diagram.",
+            )
+        )
+        db.commit()
+
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.acp,
+            current_stage="package",
+        )
+        expected_keys = {
+            str(step.deliverable_key or "")
+            for step in list_product_build_steps(db, run_id=run.id)
+            if step.step_key.startswith("deliverable:")
+        }
+        expected_items = [item for item in catalog.entries if item.key in expected_keys]
+        _finalize_run_from_steps(db, run=run, expected_items=expected_items)
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.acp,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+
+    assert status.lifecycle == ProductBuildLifecycle.completed
+    assert status.progress.percent == 100
+    assert status.attention.technical_error_count == 0
+    assert all(item.deliverable_key != "diagram.physical_architecture" for item in status.deliverables)

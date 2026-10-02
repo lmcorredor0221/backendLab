@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models import (
+    ArtifactRegistryRecord,
     JourneyArtifactState,
     JourneyStageArtifactRecord,
     SessionRecord,
@@ -28,7 +29,7 @@ from app.services.diagram_center.contracts import (
     StructuredDiagramLane,
 )
 from app.services.diagram_center.catalog_service import _renderings_need_refresh, build_catalog_v3, build_diagram_detail_v3
-from app.services.diagram_center.generation_service import run_generation_job
+from app.services.diagram_center.generation_service import _source_context, run_generation_job
 from app.services.diagram_center.persistence import DiagramGovernanceRecord, DiagramVersionRecord
 from app.services.diagram_center.policy_service import resolve_diagram_policy
 from app.services.diagram_center.quality_service import evaluate_diagram_quality
@@ -59,6 +60,35 @@ def _session() -> Session:
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_source_context_resolves_canonical_deliverable_keys_from_registry_metadata() -> None:
+    with _session() as db:
+        user = UserRecord(email="diagram-context@leanbuilder.local", full_name="Diagram Context")
+        db.add(user)
+        db.flush()
+        workspace = WorkspaceRecord(name="Diagram Workspace", slug="diagram-context", created_by_user_id=user.id)
+        db.add(workspace)
+        db.flush()
+        record = SessionRecord(user_id=user.id, workspace_id=workspace.id, title="Diagram Context Project")
+        db.add(record)
+        db.flush()
+        db.add(
+            ArtifactRegistryRecord(
+                session_id=record.id,
+                artifact_key="ACP/workflows/agent-runtime.yaml",
+                artifact_kind="artifact",
+                content_text="workflow pack aprobado",
+                artifact_metadata={"deliverable_key": "acp.workflow_pack"},
+            )
+        )
+        db.commit()
+
+        context, refs = _source_context(db, record, required_inputs=["acp.workflow_pack"])
+
+    assert refs
+    assert context["missing_required_inputs"] == []
+    assert context["resolved_inputs"][0]["input_key"] == "acp.workflow_pack"
 
 
 def test_diagram_governance_entry_exposes_taxonomy_metadata_for_admin_tables() -> None:
