@@ -528,12 +528,19 @@ def _coverage_tool_matches(text: str, *, allowed_tool_keys: set[str]) -> list[st
     )
     register(
         "business_policy_evaluation",
+        "calificar",
         "descuento",
+        "icp",
         "limite",
         "límite",
         "monto",
         "politica",
         "política",
+        "prioriz",
+        "ranking",
+        "regla",
+        "score",
+        "scoring",
         "estado",
         "approval_required",
     )
@@ -1185,7 +1192,24 @@ def build_placeholder_tool_recommendation(
     )
     raw_policy_rule_signal = _contains_any(
         business_text,
-        ("descuento", "limite", "límite", "monto", "politica", "política", "estado", "condicion", "condición"),
+        (
+            "calificar",
+            "descuento",
+            "icp",
+            "limite",
+            "límite",
+            "monto",
+            "politica",
+            "política",
+            "prioriz",
+            "ranking",
+            "regla",
+            "score",
+            "scoring",
+            "estado",
+            "condicion",
+            "condición",
+        ),
     )
     raw_business_graph_signal = _contains_any(
         business_text,
@@ -1212,7 +1236,23 @@ def build_placeholder_tool_recommendation(
     operational_control_context = has_browser_ui_signal or has_write_actions or needs_human_gate
     has_policy_rule_signal = raw_policy_rule_signal and (
         operational_control_context
-        or _contains_any(business_text, ("descuento", "limite", "límite", "monto", "approval_required"))
+        or _contains_any(
+            business_text,
+            (
+                "calificar",
+                "descuento",
+                "icp",
+                "limite",
+                "límite",
+                "monto",
+                "prioriz",
+                "ranking",
+                "regla",
+                "score",
+                "scoring",
+                "approval_required",
+            ),
+        )
     )
     has_business_graph_signal = raw_business_graph_signal and (
         operational_control_context

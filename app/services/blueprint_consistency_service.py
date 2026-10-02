@@ -52,6 +52,29 @@ def _dedupe(items: list[str]) -> list[str]:
     return ordered
 
 
+def _requirement_gap_covered_by_approved_tools(item: Any, approved_tools_digest: Any | None) -> bool:
+    if approved_tools_digest is None:
+        return False
+    approved_tool_keys = {
+        str(tool_key or "").strip().lower()
+        for tool_key in getattr(approved_tools_digest, "approved_tool_keys", []) or []
+        if str(tool_key or "").strip()
+    }
+    if not approved_tool_keys:
+        return False
+
+    requirement_text = " ".join(
+        str(getattr(item, field_name, "") or "")
+        for field_name in ("requirement_key", "requirement_title", "rationale")
+    ).lower()
+    if (
+        "business_policy_evaluation" in approved_tool_keys
+        and any(token in requirement_text for token in ("scoring", "score", "icp", "prioriz"))
+    ):
+        return True
+    return False
+
+
 def _artifact_sort_key(artifact: JourneyStageArtifactEntry) -> tuple[int, datetime | str]:
     return artifact.version_number, artifact.updated_at or artifact.created_at
 
@@ -371,6 +394,8 @@ def build_blueprint_consistency_report(snapshot: SessionSnapshot) -> BlueprintCo
 
         for item in tool_recommendation.requirements_coverage:
             if item.coverage_status != "gap":
+                continue
+            if _requirement_gap_covered_by_approved_tools(item, tool_recommendation.approved_tools_digest):
                 continue
             uncovered_requirement_keys.append(item.requirement_key)
             issues.append(

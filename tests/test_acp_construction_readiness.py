@@ -236,6 +236,43 @@ def test_design_blueprint_projection_drift_is_traced_without_blocking_acp() -> N
     assert not any(item.gap_key == "cross_stage_consistency_drift" for item in readiness.gaps)
 
 
+def test_blocking_consistency_drift_exposes_actionable_question() -> None:
+    snapshot = build_snapshot().model_copy(
+        update={
+            "blueprint_consistency": BlueprintConsistencyReport(
+                overall_status=ReviewState.blocked,
+                summary="Requirement aprobado y Tools aprobadas siguen desalineados.",
+                issues=[
+                    BlueprintConsistencyIssue(
+                        issue_key="tools_requirement_gap:RF-002",
+                        severity="blocking",
+                        category="design_to_tools",
+                        title="Requirement sin cobertura de herramientas",
+                        detail="El scoring ICP quedo sin cobertura ejecutable.",
+                        affected_stage_keys=["tools"],
+                    )
+                ],
+                blocking_issues=["El scoring ICP quedo sin cobertura ejecutable."],
+            )
+        }
+    )
+
+    readiness = build_initial_construction_readiness(
+        snapshot,
+        build_complete_acp_files(),
+        build_valid_validation_report(),
+    )
+
+    consistency_gap = next(item for item in readiness.gaps if item.gap_key == "cross_stage_consistency_drift")
+
+    assert readiness.overall_status == "blocked"
+    assert readiness.blocking_gaps == 1
+    assert readiness.open_questions >= 1
+    assert consistency_gap.questions
+    assert consistency_gap.questions[0].blocking is True
+    assert "delegate" in consistency_gap.questions[0].allowed_decisions
+
+
 def test_build_initial_construction_readiness_allows_build_when_only_warning_gaps_remain() -> None:
     files = build_complete_acp_files()
     files[0] = build_file(

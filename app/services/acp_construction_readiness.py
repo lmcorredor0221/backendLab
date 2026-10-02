@@ -766,7 +766,56 @@ def _collect_consistency_gap(snapshot: SessionSnapshot) -> ConstructionGapEntry 
         source_sections=["blueprint_consistency", "journey_artifacts", "estimation_report"],
         current_assumptions=assumptions,
         closure_criteria=closure_criteria,
-        questions=[],
+        questions=[
+            _question(
+                question_key="cross_stage_consistency_drift_resolution",
+                question_text=(
+                    "Como quieres cerrar la deuda de coherencia detectada entre etapas antes de empaquetar el ACP?"
+                ),
+                rationale=(
+                    "El ACP no debe bloquearse sin una accion clara. Esta decision permite confirmar si el drift "
+                    "requiere regeneracion, puede delegarse a implementacion o debe mantenerse como bloqueo real."
+                ),
+                purpose="Dar una salida accionable al bloqueo de consistencia sin reabrir fases estables automaticamente.",
+                expected_answer_format=(
+                    "Elige una opcion y agrega una nota breve con la decision: regenerar, delegar a implementacion o mantener bloqueo."
+                ),
+                target_owner="solution_owner",
+                blocking=severity == "blocking",
+                options=[
+                    ConstructionQuestionOption(
+                        key="delegate_to_implementation",
+                        label="Delegar a implementacion",
+                        description="Registrar la deuda como decision implementable dentro del ACP.",
+                        impact="Permite continuar si el issue no compromete la integridad del Blueprint aprobado.",
+                        example="Delegar la validacion final del scoring ICP al builder durante implementacion.",
+                        recommended=True,
+                        source_refs=["blueprint_consistency.issues"],
+                    ),
+                    ConstructionQuestionOption(
+                        key="regenerate_affected_artifacts",
+                        label="Regenerar artefactos afectados",
+                        description="Reprocesar las piezas impactadas antes de empaquetar.",
+                        impact="Mantiene el bloqueo hasta que los artefactos afectados queden sincronizados.",
+                        example="Regenerar Tools y readiness ACP con el digest aprobado actualizado.",
+                        source_refs=["journey_artifacts", "blueprint_consistency.issues"],
+                    ),
+                    ConstructionQuestionOption(
+                        key="keep_blocking",
+                        label="Mantener bloqueo",
+                        description="Confirmar que la inconsistencia impide construir el agente.",
+                        impact="El ACP debe detenerse hasta resolver la coherencia extremo a extremo.",
+                        example="No continuar porque falta una tool obligatoria para un requisito high.",
+                        source_refs=["blueprint_consistency.issues"],
+                    ),
+                ],
+                question_kind="consistency_resolution",
+                subject_type="blueprint_consistency",
+                subject_id="cross_stage_consistency_drift",
+                allowed_decisions=["answer", "choose_option", "delegate", "dismiss"],
+                answer_semantics="resolve_or_delegate_consistency_gap",
+            )
+        ],
     )
 
 

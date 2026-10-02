@@ -19,7 +19,7 @@ from app.models import (
     ToolRecommendationArtifact,
     WorkspaceRecord,
 )
-from app.services.llm_runtime.builder_contracts import NonFunctionalRequirement, RequirementsDefinitionOutput
+from app.services.llm_runtime.builder_contracts import FunctionalRequirement, NonFunctionalRequirement, RequirementsDefinitionOutput
 from app.services.knowledge_tool_policy import build_memory_tool_dependencies
 from app.services.rules import derive_memory_profile
 from app.services.stage_proposal_service import StageProposalService
@@ -892,6 +892,62 @@ def test_operational_efficiency_nfr_is_covered_by_core_automation_tools() -> Non
     assert coverage.coverage_status == "covered"
     assert {"read_system_of_record", "transactional_write"}.issubset(set(coverage.covered_by_tool_keys))
     assert all(item.finding_key != "requirement-coverage:nfr-latency" for item in evaluated.evaluation.findings)
+
+
+def test_business_scoring_requirement_is_covered_by_policy_evaluation_tool() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Priorizar cuentas comerciales contra ICP para enfocar el equipo de ventas.",
+            current_process="El analista revisa senales de CRM y calcula manualmente un score ICP.",
+            desired_outcome="Generar scoring explicable para priorizacion comercial.",
+            autonomy_level="medium",
+            constraints=["El score debe ser trazable y configurable por reglas de negocio"],
+        ),
+        canvas=build_canvas(
+            user_goal="Calcular score ICP, explicar razones y recomendar prioridad comercial.",
+            expected_outputs=["score ICP", "prioridad", "razones de evaluacion"],
+        ),
+        blueprint=build_blueprint(
+            workflow_steps=[
+                {
+                    "name": "Evaluar cuenta",
+                    "objective": "Calcular scoring de priorizacion contra ICP aprobado.",
+                    "actor": "agent",
+                    "outputs": ["score ICP", "razones"],
+                    "fallback": "escalar",
+                    "requires_approval": False,
+                }
+            ],
+        ),
+        definition_artifact=RequirementsDefinitionOutput(
+            summary="Definition para scoring comercial contra ICP.",
+            functional_requirements=[
+                FunctionalRequirement(
+                    key="rf-scoring-icp",
+                    title="Scoring de priorizacion contra ICP",
+                    priority="high",
+                    requirement=(
+                        "Calcular un score de priorizacion de cuentas contra el ICP usando reglas "
+                        "de negocio configurables y explicar las razones del resultado."
+                    ),
+                    actor="Sales Ops",
+                    trigger="Nueva cuenta o lead en revision",
+                    happy_path="El agente asigna score, prioridad y razones trazables.",
+                    source_refs=["define.functional_requirements"],
+                )
+            ],
+        ),
+        blueprint_version_number=43,
+    )
+
+    coverage = next(item for item in artifact.requirements_coverage if item.requirement_key == "rf-scoring-icp")
+    evaluated = evaluate_tool_recommendation_artifact(artifact)
+
+    assert "business_policy_evaluation" in {item.tool_key for item in artifact.recommended_tools}
+    assert coverage.coverage_status == "covered"
+    assert "business_policy_evaluation" in coverage.covered_by_tool_keys
+    assert all(item.finding_key != "requirement-coverage:rf-scoring-icp" for item in evaluated.evaluation.findings)
 
 
 def test_evaluator_clears_happy_path_for_approval_gated_operator() -> None:
