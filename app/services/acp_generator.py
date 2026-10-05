@@ -3222,13 +3222,34 @@ def _apply_prompt_section_synthesis(
         try:
             synthesis = prompt_synthesizer(request)
             if synthesis is None:
+                _record_prompt_synthesis_outcome(
+                    prompt_synthesizer,
+                    section_id=section_id,
+                    path=entry.path,
+                    status="fallback",
+                    reason="provider_returned_no_artifact",
+                )
                 synthesized_files.append(entry)
                 continue
             validated = validate_prompt_section_synthesis(synthesis, request)
-        except (PromptSectionSynthesisRejected, ValueError, TypeError):
+        except (PromptSectionSynthesisRejected, ValueError, TypeError) as exc:
+            _record_prompt_synthesis_outcome(
+                prompt_synthesizer,
+                section_id=section_id,
+                path=entry.path,
+                status="rejected",
+                reason=str(exc)[:240],
+            )
             synthesized_files.append(entry)
             continue
 
+        _record_prompt_synthesis_outcome(
+            prompt_synthesizer,
+            section_id=section_id,
+            path=entry.path,
+            status="applied",
+            reason="validated",
+        )
         synthesized_files.append(
             build_acp_file_entry(
                 path=entry.path,
@@ -3241,7 +3262,40 @@ def _apply_prompt_section_synthesis(
                 warnings=entry.warnings,
             )
         )
+    report_payload = _prompt_synthesis_report_payload(prompt_synthesizer)
+    if report_payload:
+        synthesized_files.append(
+            build_acp_file_entry(
+                path="ACP/prompts/synthesis-report.json",
+                domain="prompts",
+                title="Prompt synthesis report",
+                format="json",
+                source_sections=["llm_prompt_synthesis"],
+                content_text=serialize_json_document(report_payload),
+            )
+        )
     return synthesized_files
+
+
+def _record_prompt_synthesis_outcome(
+    prompt_synthesizer: ACPPromptSectionSynthesizer,
+    *,
+    section_id: str,
+    path: str,
+    status: str,
+    reason: str = "",
+) -> None:
+    recorder = getattr(prompt_synthesizer, "record_validation_outcome", None)
+    if callable(recorder):
+        recorder(section_id=section_id, path=path, status=status, reason=reason)
+
+
+def _prompt_synthesis_report_payload(prompt_synthesizer: ACPPromptSectionSynthesizer) -> dict[str, object] | None:
+    report_builder = getattr(prompt_synthesizer, "build_report_payload", None)
+    if not callable(report_builder):
+        return None
+    payload = report_builder()
+    return payload if isinstance(payload, dict) else None
 
 
 def _suggested_owners(gap: ConstructionGapEntry) -> list[str]:

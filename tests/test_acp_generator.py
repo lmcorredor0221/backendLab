@@ -468,6 +468,67 @@ def test_generate_acp_preview_rejects_unsafe_prompt_section_synthesis() -> None:
     assert system_prompt.status == "complete"
 
 
+def test_generate_acp_preview_records_prompt_synthesis_report_when_available() -> None:
+    snapshot = build_ready_snapshot()
+
+    class InstrumentedSynthesizer:
+        def __init__(self) -> None:
+            self.events: list[dict[str, str]] = []
+
+        def __call__(self, request: ACPPromptSectionSynthesisRequest) -> PromptSectionSynthesis | None:
+            if request.section_id != "system":
+                return None
+            source_ref = request.source_refs[0]
+            return PromptSectionSynthesis(
+                section_id=request.section_id,
+                section_markdown="\n".join(
+                    [
+                        request.deterministic_markdown,
+                        "",
+                        "## Guia contextual sintetizada",
+                        "- Prioriza trazabilidad y cierre de preguntas antes de modificar el runtime.",
+                        f"- Fuente trazada: `{source_ref}`.",
+                    ]
+                ),
+                rationale="Refuerza el prompt principal sin alterar contratos.",
+                cited_source_refs=[source_ref],
+                introduced_terms=[],
+            )
+
+        def record_validation_outcome(self, *, section_id: str, path: str, status: str, reason: str = "") -> None:
+            self.events.append({"section_id": section_id, "path": path, "status": status, "reason": reason})
+
+        def build_report_payload(self) -> dict[str, object]:
+            attempted = len(self.events)
+            applied = sum(1 for event in self.events if event["status"] == "applied")
+            fallback = sum(1 for event in self.events if event["status"] == "fallback")
+            rejected = sum(1 for event in self.events if event["status"] == "rejected")
+            return {
+                "schema_version": "acp-prompt-synthesis-report.v1",
+                "enabled": True,
+                "attempted_sections": attempted,
+                "applied_sections": applied,
+                "fallback_sections": fallback,
+                "rejected_sections": rejected,
+                "rejection_rate": rejected / attempted if attempted else 0.0,
+                "total_duration_ms": 0,
+                "total_cost": 0.0,
+                "currency": "USD",
+                "events": list(self.events),
+            }
+
+    preview = generate_acp_preview(snapshot, prompt_synthesizer=InstrumentedSynthesizer())
+
+    report = next(item for item in preview.files if item.path == "ACP/prompts/synthesis-report.json")
+    payload = json.loads(report.content_text)
+    assert payload["schema_version"] == "acp-prompt-synthesis-report.v1"
+    assert payload["attempted_sections"] >= 3
+    assert payload["applied_sections"] == 1
+    assert payload["fallback_sections"] >= 1
+    assert payload["rejection_rate"] == 0.0
+    assert any(event["section_id"] == "system" and event["status"] == "applied" for event in payload["events"])
+
+
 def test_generate_acp_preview_delegates_missing_evaluation_without_blocking_zip() -> None:
     snapshot = build_ready_snapshot().model_copy(
         update={
