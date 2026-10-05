@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 from uuid import uuid4
 
 from sqlmodel import Session, select
@@ -14,8 +15,9 @@ from app.services.deliverable_catalog.contracts import (
     DeliverablePolicyContext,
 )
 from app.services.deliverable_catalog.deliverable_generation_agent import DeliverableGenerationAgent, LLMExecutor
-from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
+from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord, DeliverableQualitySnapshotRecord
 from app.services.deliverable_catalog.policy_service import resolve_deliverable_policy
+from app.services.deliverable_catalog.project_generation_context import BUILDER_VERSION, ProjectGenerationContext
 from app.services.deliverable_catalog.prompt_service import get_deliverable_prompt
 from app.services.deliverable_catalog.quality_service import record_deliverable_quality_snapshot
 from app.services.deliverable_catalog.registry_service import get_registry_entry
@@ -25,6 +27,8 @@ from app.services.product_processing.persistence import UncertaintyBacklogRecord
 
 TERMINAL_RETRYABLE_JOB_STATUSES = {"error", "failed", "requires_attention"}
 SOURCE_ACTION = "deliverable_generation_agent"
+GENERATION_PROFILE_VERSION = "deliverable-generation-profile.v1"
+CACHE_OBSERVATION_SCHEMA_VERSION = "deliverable-generation-cache-observation.v1"
 
 
 def _role_for_generation(task: DeliverableGenerationTask) -> WorkspaceRole:
@@ -120,6 +124,11 @@ def _content_hash(content_text: str) -> str:
     return hashlib.sha256(content_text.encode("utf-8")).hexdigest()
 
 
+def _output_metadata(result: DeliverableGenerationResult) -> dict[str, Any]:
+    metadata = result.output_payload.get("metadata") if isinstance(result.output_payload, dict) else {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
 def _render_artifact_content(payload: dict[str, object], *, preferred_format: str) -> str:
     if preferred_format.lower() in {"json", "application/json"}:
         return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
@@ -155,6 +164,135 @@ def _blueprint_version_from_task(task: DeliverableGenerationTask) -> int | None:
         return None
 
 
+def _generation_identity_for_task(task: DeliverableGenerationTask, entry) -> dict[str, Any]:
+    if not task.context_payload and not task.approved_context_refs:
+        return {
+            "input_fingerprint": None,
+            "builder_version": BUILDER_VERSION,
+            "generation_profile_version": GENERATION_PROFILE_VERSION,
+            "source_versions": [],
+            "source_refs": [],
+            "skip_reason": "context_missing",
+        }
+
+    try:
+        generation_context = ProjectGenerationContext.from_approved_payload(
+            task.context_payload,
+            deliverable_key=entry.deliverable_key,
+            policy=entry.context_policy,
+        )
+    except Exception as exc:
+        return {
+            "input_fingerprint": None,
+            "builder_version": BUILDER_VERSION,
+            "generation_profile_version": GENERATION_PROFILE_VERSION,
+            "source_versions": [],
+            "source_refs": [],
+            "skip_reason": f"identity_error:{type(exc).__name__}",
+        }
+    return {
+        "input_fingerprint": generation_context.input_fingerprint or None,
+        "builder_version": BUILDER_VERSION,
+        "generation_profile_version": GENERATION_PROFILE_VERSION,
+        "source_versions": [source.model_dump(mode="json") for source in generation_context.source_versions],
+        "source_refs": [source.ref for source in generation_context.source_refs],
+        "skip_reason": "",
+    }
+
+
+def _cache_observation_for_generation(
+    db: Session,
+    *,
+    task: DeliverableGenerationTask,
+    entry,
+    current_job: DeliverableGenerationJobRecord,
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    input_fingerprint = str(identity.get("input_fingerprint") or "").strip()
+    builder_version = str(identity.get("builder_version") or "").strip()
+    if not input_fingerprint or not builder_version:
+        return {
+            "schema_version": CACHE_OBSERVATION_SCHEMA_VERSION,
+            "mode": "observation",
+            "decision": "bypass",
+            "reason": identity.get("skip_reason") or "identity_incomplete",
+            "candidate_count": 0,
+        }
+
+    candidates = db.exec(
+        select(DeliverableGenerationJobRecord)
+        .where(
+            DeliverableGenerationJobRecord.workspace_id == task.workspace_id,
+            DeliverableGenerationJobRecord.session_id == task.session_id,
+            DeliverableGenerationJobRecord.deliverable_key == task.deliverable_key,
+            DeliverableGenerationJobRecord.input_fingerprint == input_fingerprint,
+            DeliverableGenerationJobRecord.builder_version == builder_version,
+            DeliverableGenerationJobRecord.status == "available",
+            DeliverableGenerationJobRecord.id != current_job.id,
+        )
+        .order_by(DeliverableGenerationJobRecord.completed_at.desc())
+    ).all()
+    artifact_key = _artifact_key_for_entry(entry)
+    artifacts = db.exec(
+        select(ArtifactRegistryRecord).where(
+            ArtifactRegistryRecord.session_id == task.session_id,
+            ArtifactRegistryRecord.artifact_key == artifact_key,
+            ArtifactRegistryRecord.source_action == SOURCE_ACTION,
+        )
+    ).all()
+    artifacts_by_job = {
+        str(record.artifact_metadata.get("generation_job_id") or ""): record
+        for record in artifacts
+        if isinstance(record.artifact_metadata, dict)
+    }
+
+    rejected: dict[str, int] = {}
+    valid: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if candidate.output_version_id is None:
+            rejected["quality_snapshot_missing"] = rejected.get("quality_snapshot_missing", 0) + 1
+            continue
+        snapshot = db.get(DeliverableQualitySnapshotRecord, candidate.output_version_id)
+        if snapshot is None:
+            rejected["quality_snapshot_missing"] = rejected.get("quality_snapshot_missing", 0) + 1
+            continue
+        if snapshot.state != "passed":
+            rejected["quality_not_passed"] = rejected.get("quality_not_passed", 0) + 1
+            continue
+        artifact = artifacts_by_job.get(str(candidate.id))
+        if artifact is None:
+            rejected["artifact_missing"] = rejected.get("artifact_missing", 0) + 1
+            continue
+        valid.append(
+            {
+                "job_id": str(candidate.id),
+                "artifact_id": str(artifact.id),
+                "output_version_id": str(candidate.output_version_id),
+                "completed_at": candidate.completed_at.isoformat() if candidate.completed_at is not None else "",
+                "quality_state": snapshot.state,
+                "quality_score": snapshot.score,
+            }
+        )
+
+    observation: dict[str, Any] = {
+        "schema_version": CACHE_OBSERVATION_SCHEMA_VERSION,
+        "mode": "observation",
+        "input_fingerprint_prefix": input_fingerprint[:12],
+        "builder_version": builder_version,
+        "generation_profile_version": identity.get("generation_profile_version") or GENERATION_PROFILE_VERSION,
+        "candidate_count": len(candidates),
+        "valid_candidate_count": len(valid),
+        "rejected_counts": rejected,
+    }
+    if len(valid) == 1:
+        observation.update({"decision": "would_reuse", "candidate": valid[0]})
+    elif len(valid) > 1:
+        observation.update({"decision": "bypass", "reason": "ambiguous_candidates"})
+    else:
+        observation.update({"decision": "bypass", "reason": "no_valid_candidate"})
+    return observation
+
+
 def _upsert_generated_artifact_record(
     db: Session,
     *,
@@ -173,7 +311,7 @@ def _upsert_generated_artifact_record(
             ArtifactRegistryRecord.source_action == SOURCE_ACTION,
         )
     ).first()
-    output_metadata = result.output_payload.get("metadata") if isinstance(result.output_payload.get("metadata"), dict) else {}
+    output_metadata = _output_metadata(result)
     record = existing or ArtifactRegistryRecord(
         session_id=task.session_id,
         artifact_key=artifact_key,
@@ -201,6 +339,8 @@ def _upsert_generated_artifact_record(
         "content_length": len(content_text),
         "context_version": str(output_metadata.get("context_version") or ""),
         "input_fingerprint": str(output_metadata.get("input_fingerprint") or ""),
+        "builder_version": str(output_metadata.get("builder_version") or ""),
+        "generation_profile_version": str(output_metadata.get("generation_profile_version") or GENERATION_PROFILE_VERSION),
         "estimated_input_tokens": int(output_metadata.get("estimated_input_tokens") or 0),
         "specificity_anchors": list(output_metadata.get("specificity_anchors") or []),
         "missing_fields": list(output_metadata.get("missing_fields") or []),
@@ -259,6 +399,7 @@ def run_deliverable_generation_task(
     if not access.can_generate:
         raise PermissionError(access.reason_code or "deliverable_generation_not_allowed")
 
+    generation_identity = _generation_identity_for_task(task, entry)
     job = existing_job or DeliverableGenerationJobRecord(
         workspace_id=task.workspace_id,
         session_id=task.session_id,
@@ -270,9 +411,30 @@ def run_deliverable_generation_task(
         prompt_version_id=prompt.versions[0].id if prompt.versions else None,
         request_metadata={"task": task.model_dump(mode="json")},
     )
+    job.input_fingerprint = str(generation_identity.get("input_fingerprint") or "") or None
+    job.builder_version = str(generation_identity.get("builder_version") or BUILDER_VERSION) or None
+    job.generation_profile_version = str(generation_identity.get("generation_profile_version") or GENERATION_PROFILE_VERSION) or None
     job.status = "generating"
     job.started_at = job.started_at or utc_now()
     job.updated_at = utc_now()
+    db.add(job)
+    db.flush()
+    cache_observation = _cache_observation_for_generation(
+        db,
+        task=task,
+        entry=entry,
+        current_job=job,
+        identity=generation_identity,
+    )
+    job.request_metadata = {
+        **(job.request_metadata or {}),
+        "generation_identity": {
+            "input_fingerprint": job.input_fingerprint,
+            "builder_version": job.builder_version,
+            "generation_profile_version": job.generation_profile_version,
+        },
+        "cache_observation": cache_observation,
+    }
     db.add(job)
     db.flush()
     job_id = job.id
@@ -302,9 +464,18 @@ def run_deliverable_generation_task(
     job.estimated_cost_usd = result.estimated_cost_usd
     job.error_code = result.error_code
     job.error_message = result.error_message
+    output_metadata = _output_metadata(result)
+    job.input_fingerprint = str(output_metadata.get("input_fingerprint") or "") or None
+    job.builder_version = str(output_metadata.get("builder_version") or BUILDER_VERSION) or None
+    job.generation_profile_version = str(output_metadata.get("generation_profile_version") or GENERATION_PROFILE_VERSION) or None
     job.request_metadata = {
         **(job.request_metadata or {}),
         "result": result.model_dump(mode="json"),
+        "generation_identity": {
+            "input_fingerprint": job.input_fingerprint,
+            "builder_version": job.builder_version,
+            "generation_profile_version": job.generation_profile_version,
+        },
         "public_trace": [step.model_dump(mode="json") for step in result.public_trace],
         "internal_trace_hash": result.internal_trace_hash,
     }

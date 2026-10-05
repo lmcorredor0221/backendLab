@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, JSON, UniqueConstraint
+from sqlalchemy import Column, Index, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from app.models import utc_now
@@ -50,6 +50,15 @@ class DeliverableGenerationJobRecord(SQLModel, table=True):
     __tablename__ = "deliverable_generation_jobs_v1"
     __table_args__ = (
         UniqueConstraint("workspace_id", "idempotency_key", name="uq_deliverable_job_workspace_idempotency_v1"),
+        Index(
+            "ix_deliverable_generation_jobs_v1_cache_identity",
+            "workspace_id",
+            "session_id",
+            "deliverable_key",
+            "input_fingerprint",
+            "builder_version",
+            "status",
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -65,6 +74,9 @@ class DeliverableGenerationJobRecord(SQLModel, table=True):
     model_name: str = Field(default="", nullable=False)
     prompt_version_id: UUID | None = Field(default=None, foreign_key="deliverable_prompt_versions_v1.id", nullable=True, index=True)
     output_version_id: UUID | None = Field(default=None, nullable=True, index=True)
+    input_fingerprint: str | None = Field(default=None, index=True, nullable=True)
+    builder_version: str | None = Field(default=None, index=True, nullable=True)
+    generation_profile_version: str | None = Field(default=None, nullable=True)
     error_code: str = Field(default="", nullable=False)
     error_message: str = Field(default="", nullable=False)
     tokens_input: int = Field(default=0, nullable=False)

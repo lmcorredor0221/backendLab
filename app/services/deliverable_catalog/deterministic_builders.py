@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services.deliverable_catalog.contracts import DeliverableGenerationTask, DeliverableRegistryEntry
-from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
+from app.services.deliverable_catalog.project_generation_context import BUILDER_VERSION, ProjectGenerationContext
 
 
 DETERMINISTIC_DELIVERABLE_KEYS = frozenset({"definition.acceptance_trace"})
@@ -144,6 +144,8 @@ def _acceptance_trace(
             },
         )
         summary = _text(context.get("summary") or context.get("project_title") or "", limit=700)
+    anchors = [anchor.value for anchor in generation_context.specificity_anchors] if generation_context is not None else []
+    missing_fields = [missing.field for missing in generation_context.missing_fields] if generation_context is not None else []
     if not requirements and not criteria and not summary:
         raise DeterministicBuilderContextError(
             code="approved_requirements_missing",
@@ -200,6 +202,15 @@ def _acceptance_trace(
             )
             + " |"
         )
+    if anchors:
+        markdown_lines.extend(
+            [
+                "",
+                "## Anclajes de contexto",
+                "",
+                *[f"- {anchor}" for anchor in anchors[:6]],
+            ]
+        )
 
     return {
         "schema_version": "deliverable-artifact.v1",
@@ -210,6 +221,13 @@ def _acceptance_trace(
         "metadata": {
             "generated_by": "deterministic_python",
             "deliverable_key": entry.deliverable_key,
+            "context_version": generation_context.context_version if generation_context is not None else "",
+            "input_fingerprint": generation_context.input_fingerprint if generation_context is not None else "",
+            "builder_version": BUILDER_VERSION,
+            "estimated_input_tokens": generation_context.estimated_input_tokens if generation_context is not None else 0,
+            "specificity_anchors": anchors,
+            "missing_fields": missing_fields,
+            "source_refs": refs,
             "input_summary": summary,
             "requirement_count": len(rows),
         },

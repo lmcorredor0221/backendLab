@@ -78,6 +78,11 @@ def test_generation_service_runs_react_fallback_and_records_quality_snapshot() -
     assert result.used_fallback is False
     assert job_status == "available"
     assert jobs[0].output_version_id == snapshots[0].id
+    assert jobs[0].input_fingerprint
+    assert jobs[0].builder_version == "contextual-deterministic.v1"
+    assert jobs[0].generation_profile_version == "deliverable-generation-profile.v1"
+    assert jobs[0].request_metadata["generation_identity"]["input_fingerprint"] == jobs[0].input_fingerprint
+    assert jobs[0].request_metadata["generation_identity"]["builder_version"] == "contextual-deterministic.v1"
     assert snapshots[0].state == "passed"
     assert artifact.source_action == "deliverable_generation_agent"
     assert artifact.artifact_metadata["deliverable_key"] == "discovery.analysis"
@@ -88,6 +93,8 @@ def test_generation_service_runs_react_fallback_and_records_quality_snapshot() -
     assert artifact.artifact_metadata["source_refs"]
     assert artifact.artifact_metadata["context_version"] == "project-generation-context.v1"
     assert artifact.artifact_metadata["input_fingerprint"]
+    assert artifact.artifact_metadata["builder_version"] == "contextual-deterministic.v1"
+    assert artifact.artifact_metadata["generation_profile_version"] == "deliverable-generation-profile.v1"
     catalog_item = next(item for item in catalog.entries if item.key == "discovery.analysis")
     assert catalog_item.access.access_state == "available"
     assert catalog_item.access.can_view is True
@@ -175,6 +182,44 @@ def test_generation_service_retries_retryable_terminal_job_with_same_intention()
     assert artifact.source_action == "deliverable_generation_agent"
 
 
+def test_generation_service_observes_cache_candidate_without_reusing_result() -> None:
+    with _session() as db:
+        first_task = _task(context={"summary": "El usuario necesita un agente para clasificar solicitudes internas."})
+        first_job, first_result = run_deliverable_generation_task(db, first_task)
+        first_job_id = str(first_job.id)
+        db.commit()
+
+        second_task = first_task.model_copy(update={"idempotency_key": f"job-{uuid4()}"})
+        second_job, second_result = run_deliverable_generation_task(db, second_task)
+        db.commit()
+
+        second_job = db.exec(
+            select(DeliverableGenerationJobRecord).where(
+                DeliverableGenerationJobRecord.workspace_id == second_task.workspace_id,
+                DeliverableGenerationJobRecord.idempotency_key == second_task.idempotency_key,
+            )
+        ).one()
+        artifact = next(
+            record
+            for record in db.exec(select(ArtifactRegistryRecord).where(ArtifactRegistryRecord.session_id == second_task.session_id)).all()
+            if record.artifact_metadata.get("deliverable_key") == "discovery.analysis"
+        )
+
+    assert first_result is not None
+    assert first_result.status == "available"
+    assert second_result is not None
+    assert second_result.status == "available"
+    assert str(second_job.id) != first_job_id
+    assert second_job.status == "available"
+    observation = second_job.request_metadata["cache_observation"]
+    assert observation["schema_version"] == "deliverable-generation-cache-observation.v1"
+    assert observation["mode"] == "observation"
+    assert observation["decision"] == "would_reuse"
+    assert observation["candidate"]["job_id"] == first_job_id
+    assert observation["valid_candidate_count"] == 1
+    assert artifact.artifact_metadata["generation_job_id"] == str(second_job.id)
+
+
 def test_generation_service_uses_deterministic_acceptance_trace_without_llm_executor() -> None:
     with _session() as db:
         task = _task(
@@ -215,9 +260,13 @@ def test_generation_service_uses_deterministic_acceptance_trace_without_llm_exec
     assert result.provider_key == "deterministic_python"
     assert job.status == "available"
     assert job.provider_key == "deterministic_python"
+    assert job.input_fingerprint
+    assert job.builder_version == "contextual-deterministic.v1"
+    assert job.generation_profile_version == "deliverable-generation-profile.v1"
     assert job.completed_at is not None
     assert "trace_matrix" in result.output_payload
     assert "REQ-01" in artifact.content_text
+    assert artifact.artifact_metadata["builder_version"] == "contextual-deterministic.v1"
 
 
 def test_generation_service_respects_paused_prompt_policy() -> None:

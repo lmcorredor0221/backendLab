@@ -17,7 +17,7 @@ from app.services.deliverable_catalog.deterministic_builders import (
     build_deterministic_deliverable,
     supports_deterministic_deliverable,
 )
-from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext, SourceReference
+from app.services.deliverable_catalog.project_generation_context import BUILDER_VERSION, ProjectGenerationContext, SourceReference
 from app.services.deliverable_catalog.quality_service import evaluate_deliverable_quality
 
 
@@ -102,6 +102,7 @@ def _deterministic_payload(
                 "context_summary": problem or entry.description,
                 "context_version": generation_context.context_version,
                 "input_fingerprint": generation_context.input_fingerprint,
+                "builder_version": BUILDER_VERSION,
                 "specificity_anchors": anchors,
                 "missing_fields": missing,
             },
@@ -403,6 +404,7 @@ def _deterministic_payload(
                 "deliverable_key": entry.deliverable_key,
                 "context_version": generation_context.context_version,
                 "input_fingerprint": generation_context.input_fingerprint,
+                "builder_version": BUILDER_VERSION,
                 "estimated_input_tokens": generation_context.estimated_input_tokens,
                 "specificity_anchors": anchors,
                 "missing_fields": missing,
