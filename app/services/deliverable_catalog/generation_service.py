@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlmodel import Session, select
 
@@ -200,6 +200,21 @@ def _generation_identity_for_task(task: DeliverableGenerationTask, entry) -> dic
     }
 
 
+def _source_version_signature(identity: dict[str, Any]) -> list[dict[str, str]]:
+    source_versions = identity.get("source_versions")
+    if not isinstance(source_versions, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in source_versions:
+        if not isinstance(item, dict):
+            continue
+        source_ref = str(item.get("source_ref") or "").strip()
+        if not source_ref:
+            continue
+        normalized.append({"source_ref": source_ref, "version": str(item.get("version") or "").strip()})
+    return sorted(normalized, key=lambda item: (item["source_ref"], item["version"]))
+
+
 def _cache_observation_for_generation(
     db: Session,
     *,
@@ -246,9 +261,22 @@ def _cache_observation_for_generation(
         if isinstance(record.artifact_metadata, dict)
     }
 
+    current_source_versions = _source_version_signature(identity)
     rejected: dict[str, int] = {}
     valid: list[dict[str, Any]] = []
     for candidate in candidates:
+        candidate_identity = (
+            candidate.request_metadata.get("generation_identity")
+            if isinstance(candidate.request_metadata, dict) and isinstance(candidate.request_metadata.get("generation_identity"), dict)
+            else {}
+        )
+        candidate_source_versions = _source_version_signature(candidate_identity)
+        if not candidate_source_versions:
+            rejected["source_versions_missing"] = rejected.get("source_versions_missing", 0) + 1
+            continue
+        if candidate_source_versions != current_source_versions:
+            rejected["source_versions_changed"] = rejected.get("source_versions_changed", 0) + 1
+            continue
         if candidate.output_version_id is None:
             rejected["quality_snapshot_missing"] = rejected.get("quality_snapshot_missing", 0) + 1
             continue
@@ -271,6 +299,7 @@ def _cache_observation_for_generation(
                 "completed_at": candidate.completed_at.isoformat() if candidate.completed_at is not None else "",
                 "quality_state": snapshot.state,
                 "quality_score": snapshot.score,
+                "source_version_count": len(candidate_source_versions),
             }
         )
 
@@ -280,6 +309,8 @@ def _cache_observation_for_generation(
         "input_fingerprint_prefix": input_fingerprint[:12],
         "builder_version": builder_version,
         "generation_profile_version": identity.get("generation_profile_version") or GENERATION_PROFILE_VERSION,
+        "source_ref_count": len(identity.get("source_refs") if isinstance(identity.get("source_refs"), list) else []),
+        "source_version_count": len(current_source_versions),
         "candidate_count": len(candidates),
         "valid_candidate_count": len(valid),
         "rejected_counts": rejected,
@@ -291,6 +322,77 @@ def _cache_observation_for_generation(
     else:
         observation.update({"decision": "bypass", "reason": "no_valid_candidate"})
     return observation
+
+
+def _cache_observation_with_comparison(
+    db: Session,
+    *,
+    observation: dict[str, Any],
+    current_job: DeliverableGenerationJobRecord,
+    current_snapshot: DeliverableQualitySnapshotRecord | None,
+) -> dict[str, Any]:
+    if observation.get("decision") != "would_reuse":
+        return {
+            **observation,
+            "comparison": {
+                "performed": False,
+                "reason": observation.get("reason") or "no_single_valid_candidate",
+            },
+        }
+    if current_snapshot is None or current_job.output_version_id is None:
+        return {
+            **observation,
+            "comparison": {
+                "performed": False,
+                "reason": "current_generation_unavailable",
+                "current_status": current_job.status,
+            },
+        }
+
+    candidate = observation.get("candidate") if isinstance(observation.get("candidate"), dict) else {}
+    candidate_output_version_id = str(candidate.get("output_version_id") or "").strip()
+    try:
+        parsed_candidate_snapshot_id = UUID(candidate_output_version_id)
+    except (TypeError, ValueError):
+        return {
+            **observation,
+            "comparison": {
+                "performed": False,
+                "reason": "candidate_snapshot_reference_invalid",
+            },
+        }
+    candidate_snapshot = db.get(DeliverableQualitySnapshotRecord, parsed_candidate_snapshot_id)
+    if candidate_snapshot is None:
+        return {
+            **observation,
+            "comparison": {
+                "performed": False,
+                "reason": "candidate_snapshot_missing_after_generation",
+            },
+        }
+
+    source_fingerprint_match = candidate_snapshot.source_fingerprint == current_snapshot.source_fingerprint
+    quality_state_match = candidate_snapshot.state == current_snapshot.state
+    quality_score_delta = current_snapshot.score - candidate_snapshot.score
+    return {
+        **observation,
+        "comparison": {
+            "performed": True,
+            "current_job_id": str(current_job.id),
+            "current_output_version_id": str(current_job.output_version_id),
+            "candidate_output_version_id": str(candidate_snapshot.id),
+            "source_fingerprint_match": source_fingerprint_match,
+            "candidate_source_fingerprint_prefix": candidate_snapshot.source_fingerprint[:12],
+            "current_source_fingerprint_prefix": current_snapshot.source_fingerprint[:12],
+            "quality_state_match": quality_state_match,
+            "candidate_quality_state": candidate_snapshot.state,
+            "current_quality_state": current_snapshot.state,
+            "candidate_quality_score": candidate_snapshot.score,
+            "current_quality_score": current_snapshot.score,
+            "quality_score_delta": quality_score_delta,
+            "divergence": "none" if source_fingerprint_match and quality_state_match and quality_score_delta == 0 else "observed",
+        },
+    }
 
 
 def _upsert_generated_artifact_record(
@@ -432,6 +534,8 @@ def run_deliverable_generation_task(
             "input_fingerprint": job.input_fingerprint,
             "builder_version": job.builder_version,
             "generation_profile_version": job.generation_profile_version,
+            "source_versions": generation_identity.get("source_versions") if isinstance(generation_identity.get("source_versions"), list) else [],
+            "source_refs": generation_identity.get("source_refs") if isinstance(generation_identity.get("source_refs"), list) else [],
         },
         "cache_observation": cache_observation,
     }
@@ -475,10 +579,13 @@ def run_deliverable_generation_task(
             "input_fingerprint": job.input_fingerprint,
             "builder_version": job.builder_version,
             "generation_profile_version": job.generation_profile_version,
+            "source_versions": generation_identity.get("source_versions") if isinstance(generation_identity.get("source_versions"), list) else [],
+            "source_refs": generation_identity.get("source_refs") if isinstance(generation_identity.get("source_refs"), list) else [],
         },
         "public_trace": [step.model_dump(mode="json") for step in result.public_trace],
         "internal_trace_hash": result.internal_trace_hash,
     }
+    current_snapshot: DeliverableQualitySnapshotRecord | None = None
     if result.status == "available":
         snapshot = record_deliverable_quality_snapshot(
             db,
@@ -488,6 +595,7 @@ def run_deliverable_generation_task(
             version_ref=f"job::{job.id}",
             payload=result.output_payload,
         )
+        current_snapshot = snapshot
         job.output_version_id = snapshot.id
         job.status = "available"
         _upsert_generated_artifact_record(db, task=task, job=job, result=result, entry=entry)
@@ -497,6 +605,15 @@ def run_deliverable_generation_task(
         job.status = "requires_attention"
     else:
         job.status = "error"
+    job.request_metadata = {
+        **(job.request_metadata or {}),
+        "cache_observation": _cache_observation_with_comparison(
+            db,
+            observation=cache_observation,
+            current_job=job,
+            current_snapshot=current_snapshot,
+        ),
+    }
     job.completed_at = utc_now()
     job.updated_at = utc_now()
     db.add(job)

@@ -217,7 +217,50 @@ def test_generation_service_observes_cache_candidate_without_reusing_result() ->
     assert observation["decision"] == "would_reuse"
     assert observation["candidate"]["job_id"] == first_job_id
     assert observation["valid_candidate_count"] == 1
+    assert observation["source_version_count"] >= 1
+    assert observation["candidate"]["source_version_count"] == observation["source_version_count"]
+    assert observation["comparison"]["performed"] is True
+    assert observation["comparison"]["source_fingerprint_match"] is True
+    assert observation["comparison"]["quality_state_match"] is True
+    assert observation["comparison"]["quality_score_delta"] == 0
+    assert observation["comparison"]["divergence"] == "none"
+    assert observation["comparison"]["current_job_id"] == str(second_job.id)
     assert artifact.artifact_metadata["generation_job_id"] == str(second_job.id)
+
+
+def test_generation_service_cache_observation_does_not_cross_sessions() -> None:
+    workspace_id = uuid4()
+    context = {"summary": "El usuario necesita un agente para clasificar solicitudes internas."}
+    with _session() as db:
+        first_task = _task(context=context).model_copy(update={"workspace_id": workspace_id})
+        first_job, first_result = run_deliverable_generation_task(db, first_task)
+        first_job_status = first_job.status
+        db.commit()
+
+        second_task = _task(context=context).model_copy(update={"workspace_id": workspace_id})
+        second_job, second_result = run_deliverable_generation_task(db, second_task)
+        db.commit()
+
+        second_job = db.exec(
+            select(DeliverableGenerationJobRecord).where(
+                DeliverableGenerationJobRecord.workspace_id == second_task.workspace_id,
+                DeliverableGenerationJobRecord.idempotency_key == second_task.idempotency_key,
+            )
+        ).one()
+
+    assert first_result is not None
+    assert first_result.status == "available"
+    assert first_job_status == "available"
+    assert second_result is not None
+    assert second_result.status == "available"
+    assert second_job.status == "available"
+    observation = second_job.request_metadata["cache_observation"]
+    assert observation["mode"] == "observation"
+    assert observation["decision"] == "bypass"
+    assert observation["reason"] == "no_valid_candidate"
+    assert observation["candidate_count"] == 0
+    assert observation["valid_candidate_count"] == 0
+    assert observation["comparison"]["performed"] is False
 
 
 def test_generation_service_uses_deterministic_acceptance_trace_without_llm_executor() -> None:
