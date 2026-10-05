@@ -119,11 +119,19 @@ def build_approved_deliverable_context(
         {
             "summary": f"Contexto aprobado y acotado para {entry.title}.",
             "project_title": record.title,
+            "session_id": str(record.id),
+            "workspace_id": str(record.workspace_id),
             "deliverable_key": deliverable_key,
             "context_policy": {
                 "retrieval_strategy": context_policy.retrieval_strategy,
                 "requested_refs": requested_refs,
                 "max_context_tokens": context_policy.max_context_tokens,
+            },
+            "approved_context_refs": refs,
+            "generation_context": {
+                "context_version": "project-generation-context.v1",
+                "source_refs": refs,
+                "estimated_input_tokens": max(1, used // 4),
             },
             "approved_context": {"stages": stages, "artifacts": artifacts},
         },
@@ -278,11 +286,19 @@ def _build_acp_package_fallback_context(
         {
             "summary": f"Contexto ACP consolidado para {deliverable_key}.",
             "project_title": record.title,
+            "session_id": str(record.id),
+            "workspace_id": str(record.workspace_id),
             "deliverable_key": deliverable_key,
             "context_policy": {
                 "retrieval_strategy": "acp_package_context_from_product_artifacts_and_readiness_questions",
                 "requested_refs": requested_refs,
                 "max_context_tokens": max_context_tokens,
+            },
+            "approved_context_refs": refs,
+            "generation_context": {
+                "context_version": "project-generation-context.v1",
+                "source_refs": refs,
+                "estimated_input_tokens": max(1, used // 4),
             },
             "approved_context": {
                 "artifacts": artifacts,
@@ -325,11 +341,19 @@ def _build_snapshot_fallback_context(
         {
             "summary": f"Contexto consolidado de la sesion para {deliverable_key}.",
             "project_title": record.title,
+            "session_id": str(record.id),
+            "workspace_id": str(record.workspace_id),
             "deliverable_key": deliverable_key,
             "context_policy": {
                 "retrieval_strategy": "approved_snapshot_fallback",
                 "requested_refs": requested_refs,
                 "max_context_tokens": max_context_tokens,
+            },
+            "approved_context_refs": refs,
+            "generation_context": {
+                "context_version": "project-generation-context.v1",
+                "source_refs": refs,
+                "estimated_input_tokens": max(1, size // 4),
             },
             "approved_context": {"snapshot": value},
         },

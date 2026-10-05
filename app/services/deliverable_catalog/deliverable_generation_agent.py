@@ -17,6 +17,7 @@ from app.services.deliverable_catalog.deterministic_builders import (
     build_deterministic_deliverable,
     supports_deterministic_deliverable,
 )
+from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext, SourceReference
 from app.services.deliverable_catalog.quality_service import evaluate_deliverable_quality
 
 
@@ -34,49 +35,49 @@ def _public_step(step: str, summary: str, status: str = "completed") -> Delivera
 def _deterministic_payload(
     entry: DeliverableRegistryEntry,
     task: DeliverableGenerationTask,
+    generation_context: ProjectGenerationContext,
 ) -> dict[str, object]:
-    ctx = task.context_payload or {}
-    problem = str(ctx.get("problem_statement") or ctx.get("discovery_summary") or ctx.get("summary") or "").strip()
-    current_proc = str(ctx.get("current_process") or "").strip()
-    user = str(ctx.get("current_user") or "Usuario Operativo").strip()
-    desired = str(ctx.get("desired_outcome") or "").strip()
-    goal = str(ctx.get("user_goal") or ctx.get("canvas_summary") or ctx.get("summary") or desired or entry.title).strip()
-    north_star = str(ctx.get("north_star_metric") or ctx.get("success_metric") or "Optimización operativa").strip()
-    time_spent = str(ctx.get("current_time_spent") or "No especificado").strip()
-    cost_spent = str(ctx.get("current_cost") or "No especificado").strip()
-    frequent_errors = ctx.get("frequent_errors") if isinstance(ctx.get("frequent_errors"), list) else []
-    mvp_scope = ctx.get("mvp_scope") if isinstance(ctx.get("mvp_scope"), list) else []
-    out_of_scope = ctx.get("out_of_scope") if isinstance(ctx.get("out_of_scope"), list) else []
-    non_delegable = ctx.get("non_delegable_decisions") if isinstance(ctx.get("non_delegable_decisions"), list) else []
-    constraints = ctx.get("constraints") if isinstance(ctx.get("constraints"), list) else []
-    primary_risk = str(ctx.get("primary_risk") or "Riesgo de desvío operativo").strip()
-    architecture = str(ctx.get("architecture") or "supervisor_with_subagents").strip()
-    reasoning_pattern = str(ctx.get("reasoning_pattern") or "Plan-and-Execute").strip()
-    autonomy_level = str(ctx.get("autonomy_level") or ctx.get("desired_autonomy") or "Supervisada").strip()
-    memory_strategy = str(ctx.get("memory_strategy") or "session_and_checkpoints").strip()
-    guardrails = ctx.get("guardrails") if isinstance(ctx.get("guardrails"), list) else []
-    tools = ctx.get("tools") if isinstance(ctx.get("tools"), list) else []
+    problem = generation_context.problem_statement or ""
+    current_proc = generation_context.current_process or ""
+    user = generation_context.current_user or "needs_review: current_user"
+    desired = generation_context.desired_outcome or ""
+    goal = (
+        generation_context.project_title
+        or desired
+        or problem
+        or "needs_review: project_goal"
+    )
+    north_star = (
+        generation_context.acceptance_criteria[0]
+        if generation_context.acceptance_criteria
+        else "needs_review: success_metric"
+    )
+    time_spent = "needs_review: current_time_spent"
+    cost_spent = "needs_review: current_cost"
+    frequent_errors: list[str] = []
+    mvp_scope = list(generation_context.mvp_scope)
+    out_of_scope = list(generation_context.out_of_scope)
+    non_delegable = list(generation_context.nondelegable_decisions)
+    constraints = list(generation_context.constraints)
+    primary_risk = generation_context.risks[0] if generation_context.risks else "needs_review: primary_risk"
+    architecture = generation_context.architecture or "needs_review: architecture"
+    reasoning_pattern = generation_context.reasoning_pattern or "needs_review: reasoning_pattern"
+    autonomy_level = "needs_review: autonomy_level"
+    memory_strategy = generation_context.memory_strategy or "needs_review: memory_strategy"
+    guardrails = list(generation_context.guardrails)
+    tools = generation_context.tools
     tool_count = len(tools)
 
-    def _tool_display_name(tool: dict) -> str:
-        """Devuelve el nombre enriquecido del tool, incluyendo el conector detectado si difiere del nombre generico."""
-        name = tool.get("name", "")
-        # Si el name ya es especifico (no es un arquetipo generico), lo usamos directamente
-        generic_archetypes = {
-            "read_system_of_record", "transactional_write", "outbound_notification",
-            "knowledge_retrieval", "document_ingestion", "approval_gate",
-            "human_handoff", "scheduler",
-        }
-        if name and name not in generic_archetypes:
-            return name
-        return name
-
     tool_names = (
-        ", ".join(_tool_display_name(t) for t in tools if isinstance(t, dict) and t.get("name"))
-        if tools else "herramientas estandar"
+        ", ".join(tool.name for tool in tools if tool.name)
+        if tools else "needs_review: tools"
     )
 
-    estimation = ctx.get("estimation_report") if isinstance(ctx.get("estimation_report"), dict) else {}
+    estimation = generation_context.estimation_summary.model_dump(mode="json") if generation_context.estimation_summary else {}
+    refs = [source.ref for source in generation_context.source_refs] or list(task.approved_context_refs)
+    refs_text = ", ".join(refs)
+    missing = [missing.field for missing in generation_context.missing_fields]
+    anchors = [anchor.value for anchor in generation_context.specificity_anchors]
 
     if entry.deliverable_type == "diagram":
         return {
@@ -99,6 +100,10 @@ def _deterministic_payload(
                 "generated_by": "deliverable_generation_agent",
                 "fallback": False,
                 "context_summary": problem or entry.description,
+                "context_version": generation_context.context_version,
+                "input_fingerprint": generation_context.input_fingerprint,
+                "specificity_anchors": anchors,
+                "missing_fields": missing,
             },
         }
 
@@ -121,14 +126,14 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia y Trazabilidad",
-                "content": f"Basado en snapshot validado de Discovery. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Basado en contexto aprobado de Discovery. Referencias: {refs_text}.",
             },
         ]
     elif "stakeholder" in key or "actor" in key:
         sections = [
             {
                 "title": "Inventario de Actores Principales",
-                "content": f"1. **Usuario Operativo Primario:** {user} — Interacciona directamente con el agente para resolver solicitudes en lenguaje natural.\n2. **Revisor Humano (Human-in-the-Loop):** Administrador o supervisor asignado para validar decisiones no delegables ({', '.join(non_delegable[:2]) if non_delegable else 'operaciones sensibles'}).\n3. **Patrocinador / Business Owner:** Responsable del cumplimiento de la métrica North Star ({north_star}).",
+                "content": f"1. **Usuario principal:** {user} — Interacciona directamente con el agente para resolver solicitudes en lenguaje natural.\n2. **Revisor humano (Human-in-the-Loop):** Administrador o supervisor asignado para validar decisiones no delegables ({', '.join(non_delegable[:2]) if non_delegable else 'needs_review: nondelegable_decisions'}).\n3. **Patrocinador / Business Owner:** Responsable del cumplimiento de la métrica North Star ({north_star}).",
             },
             {
                 "title": "Sistemas y Áreas Afectadas",
@@ -140,7 +145,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia y Referencias",
-                "content": f"Mapeo de actores derivado de Discovery y Canvas. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Mapeo de actores derivado de contexto aprobado. Referencias: {refs_text}.",
             },
         ]
     elif key in {"definition.requirements", "definition.requirements_brief"}:
@@ -163,7 +168,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia Aprobada",
-                "content": f"Consolidado de requerimientos gobernados. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Consolidado de requerimientos gobernados. Referencias: {refs_text}.",
             },
         ]
     elif key == "blueprint.architecture_spec":
@@ -204,7 +209,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia",
-                "content": f"Especificacion arquitectonica y patrones consolidados desde snapshots aprobados. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Especificacion arquitectonica y patrones consolidados desde contexto aprobado. Referencias: {refs_text}.",
             },
         ]
     elif "architecture" in key or "spec" in key or "design" in key:
@@ -223,7 +228,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia",
-                "content": f"Especificación arquitectónica validada. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Especificación arquitectónica validada. Referencias: {refs_text}.",
             },
         ]
     elif "test" in key or "qa" in key or "rubric" in key:
@@ -246,7 +251,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia y Trazabilidad",
-                "content": f"Batería de validación agéntica. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Batería de validación agéntica. Referencias: {refs_text}.",
             },
         ]
     elif "risk" in key or "security" in key:
@@ -265,7 +270,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia",
-                "content": f"Registro de riesgos de gobernanza. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Registro de riesgos de gobernanza. Referencias: {refs_text}.",
             },
         ]
     elif "backlog" in key or "roadmap" in key or "implementation" in key:
@@ -288,7 +293,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia",
-                "content": f"Backlog de implementación gobernado. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Backlog de implementación gobernado. Referencias: {refs_text}.",
             },
         ]
     elif "estimate" in key or "roi" in key or "comparison" in key or "cost" in key:
@@ -361,7 +366,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia y Trazabilidad",
-                "content": f"Estimación y modelo financiero derivados de la fase Lean. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Estimación y modelo financiero derivados de la fase Lean. Referencias: {refs_text}.",
             },
         ]
     else:
@@ -380,7 +385,7 @@ def _deterministic_payload(
             },
             {
                 "title": "Evidencia y Trazabilidad",
-                "content": f"Entregable generado con snapshot formal de la fase Lean. Referencias: {', '.join(task.approved_context_refs)}.",
+                "content": f"Entregable generado con contexto formal de la fase Lean. Referencias: {refs_text}.",
             },
         ]
 
@@ -391,13 +396,19 @@ def _deterministic_payload(
         "title": entry.title,
         "content": intro_content,
         "sections": sections,
-        "metadata": {
-            "generated_by": "deliverable_generation_agent",
-            "fallback": True,
-            "session_id": str(task.session_id),
-            "deliverable_key": entry.deliverable_key,
-        },
-    }
+            "metadata": {
+                "generated_by": "deliverable_generation_agent",
+                "fallback": True,
+                "session_id": str(task.session_id),
+                "deliverable_key": entry.deliverable_key,
+                "context_version": generation_context.context_version,
+                "input_fingerprint": generation_context.input_fingerprint,
+                "estimated_input_tokens": generation_context.estimated_input_tokens,
+                "specificity_anchors": anchors,
+                "missing_fields": missing,
+                "source_refs": refs,
+            },
+        }
 
 
 class DeliverableGenerationAgent:
@@ -444,6 +455,26 @@ class DeliverableGenerationAgent:
                 error_message="No hay contexto aprobado suficiente para generar el entregable.",
             )
 
+        generation_context = ProjectGenerationContext.from_approved_payload(
+            task.context_payload,
+            deliverable_key=entry.deliverable_key,
+            policy=entry.context_policy,
+        )
+        if not generation_context.session_id or not generation_context.workspace_id or (
+            task.approved_context_refs and not any(source.ref in task.approved_context_refs for source in generation_context.source_refs)
+        ):
+            source_refs = list(generation_context.source_refs)
+            for ref in task.approved_context_refs:
+                if ref and all(source.ref != ref for source in source_refs):
+                    source_refs.append(SourceReference(ref=ref, source_type="task_ref", confidence="high"))
+            generation_context = generation_context.model_copy(
+                update={
+                    "session_id": generation_context.session_id or task.session_id,
+                    "workspace_id": generation_context.workspace_id or task.workspace_id,
+                    "source_refs": source_refs,
+                }
+            )
+
         if entry.generation_mode == DeliverableGenerationMode.manual_review_required:
             public_trace.append(_public_step("act", "El entregable requiere revision manual antes de generarse.", "skipped"))
             return DeliverableGenerationResult(
@@ -459,7 +490,7 @@ class DeliverableGenerationAgent:
 
         if supports_deterministic_deliverable(entry.deliverable_key):
             try:
-                output = build_deterministic_deliverable(entry, task)
+                output = build_deterministic_deliverable(entry, task, generation_context)
             except DeterministicBuilderContextError as exc:
                 public_trace.append(_public_step("act", "El builder deterministico detecto contexto insuficiente.", "failed"))
                 internal_trace.append(
@@ -484,7 +515,15 @@ class DeliverableGenerationAgent:
                     warnings=list(exc.missing_refs),
                 )
             public_trace.append(_public_step("act", "Se genero salida deterministica con Python y contexto aprobado."))
-            internal_trace.append({"step": "act", "iteration": 1, "tool": "deterministic_python"})
+            internal_trace.append(
+                {
+                    "step": "act",
+                    "iteration": 1,
+                    "tool": "deterministic_python",
+                    "context_version": generation_context.context_version,
+                    "input_fingerprint": generation_context.input_fingerprint,
+                }
+            )
             quality = evaluate_deliverable_quality(entry, output)
             public_trace.append(_public_step("observe", f"Se valido salida contra {quality.schema_contract}."))
             internal_trace.append(
@@ -555,9 +594,17 @@ class DeliverableGenerationAgent:
                 )
             else:
                 public_trace.append(_public_step("act", "Se genero salida deterministica/fallback con contexto aprobado."))
-                output = _deterministic_payload(entry, task)
+                output = _deterministic_payload(entry, task, generation_context)
                 used_fallback = entry.generation_mode != DeliverableGenerationMode.deterministic
-                internal_trace.append({"step": "act", "iteration": iteration, "tool": "deterministic_fallback"})
+                internal_trace.append(
+                    {
+                        "step": "act",
+                        "iteration": iteration,
+                        "tool": "deterministic_fallback",
+                        "context_version": generation_context.context_version,
+                        "input_fingerprint": generation_context.input_fingerprint,
+                    }
+                )
 
             quality = evaluate_deliverable_quality(entry, output)
             public_trace.append(_public_step("observe", f"Se valido salida contra {quality.schema_contract}."))

@@ -83,6 +83,11 @@ def test_generation_service_runs_react_fallback_and_records_quality_snapshot() -
     assert artifact.artifact_metadata["deliverable_key"] == "discovery.analysis"
     assert "El usuario necesita un agente" in artifact.content_text
     assert "session.discovery" in artifact.content_text
+    assert "Usuario Operativo" not in artifact.content_text
+    assert "herramientas estandar" not in artifact.content_text
+    assert artifact.artifact_metadata["source_refs"]
+    assert artifact.artifact_metadata["context_version"] == "project-generation-context.v1"
+    assert artifact.artifact_metadata["input_fingerprint"]
     catalog_item = next(item for item in catalog.entries if item.key == "discovery.analysis")
     assert catalog_item.access.access_state == "available"
     assert catalog_item.access.can_view is True

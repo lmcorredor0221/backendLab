@@ -173,6 +173,7 @@ def _upsert_generated_artifact_record(
             ArtifactRegistryRecord.source_action == SOURCE_ACTION,
         )
     ).first()
+    output_metadata = result.output_payload.get("metadata") if isinstance(result.output_payload.get("metadata"), dict) else {}
     record = existing or ArtifactRegistryRecord(
         session_id=task.session_id,
         artifact_key=artifact_key,
@@ -198,6 +199,11 @@ def _upsert_generated_artifact_record(
         "prompt_version": result.prompt_version,
         "used_fallback": result.used_fallback,
         "content_length": len(content_text),
+        "context_version": str(output_metadata.get("context_version") or ""),
+        "input_fingerprint": str(output_metadata.get("input_fingerprint") or ""),
+        "estimated_input_tokens": int(output_metadata.get("estimated_input_tokens") or 0),
+        "specificity_anchors": list(output_metadata.get("specificity_anchors") or []),
+        "missing_fields": list(output_metadata.get("missing_fields") or []),
     }
     record.blueprint_version_number = _blueprint_version_from_task(task)
     record.artifact_title = entry.title

@@ -1627,13 +1627,12 @@ def _build_completion_scope(
     run: ProductBuildRunRecord,
     expected_items: list[DeliverableCatalogItem],
 ) -> ProductBuildCompletionScope:
-    items_by_key = {item.key: item for item in expected_items}
-    nonblocking_payload = tuple(
-        payload
-        for item in expected_items
-        if (payload := _nonblocking_acp_payload_for_item(db, run=run, item=item, items_by_key=items_by_key)) is not None
-    )
-    nonblocking_keys = frozenset(str(item.get("deliverable_key") or "") for item in nonblocking_payload)
+    # The delivery plan is already resolved before processing. Once a deliverable
+    # is included in that frozen scope, ACP must either complete it or surface an
+    # explicit blocker instead of silently classifying it as optional.
+    _ = db, run
+    nonblocking_payload: tuple[dict[str, Any], ...] = ()
+    nonblocking_keys: frozenset[str] = frozenset()
     return ProductBuildCompletionScope(
         blocking_keys=frozenset(item.key for item in expected_items if item.key not in nonblocking_keys),
         nonblocking_payload=nonblocking_payload,

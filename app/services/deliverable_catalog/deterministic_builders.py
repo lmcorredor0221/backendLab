@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services.deliverable_catalog.contracts import DeliverableGenerationTask, DeliverableRegistryEntry
+from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
 
 
 DETERMINISTIC_DELIVERABLE_KEYS = frozenset({"definition.acceptance_trace"})
@@ -87,40 +88,62 @@ def _source_refs(task: DeliverableGenerationTask) -> list[str]:
     return [str(ref or "").strip() for ref in requested if str(ref or "").strip()]
 
 
-def _acceptance_trace(entry: DeliverableRegistryEntry, task: DeliverableGenerationTask) -> dict[str, object]:
+def _acceptance_trace(
+    entry: DeliverableRegistryEntry,
+    task: DeliverableGenerationTask,
+    generation_context: ProjectGenerationContext | None = None,
+) -> dict[str, object]:
     context = task.context_payload or {}
     refs = _source_refs(task)
-    requirements = _collect_named_lists(
-        context,
-        {
-            "functional_requirements",
-            "non_functional_requirements",
-            "requirements",
-            "mvp_scope",
-            "scope",
-            "v1_scope",
-        },
-    )
-    criteria = _collect_named_lists(
-        context,
-        {
-            "acceptance_criteria",
-            "criteria",
-            "success_criteria",
-            "validation_criteria",
-        },
-    )
-    rules = _collect_named_lists(
-        context,
-        {
-            "business_rules",
-            "rules",
-            "non_delegable_decisions",
-            "constraints",
-        },
-    )
-
-    summary = _text(context.get("summary") or context.get("project_title") or "", limit=700)
+    if generation_context is not None:
+        refs = [source.ref for source in generation_context.source_refs] or refs
+        requirements = [
+            *generation_context.mvp_scope,
+            *generation_context.objectives,
+        ]
+        criteria = list(generation_context.acceptance_criteria)
+        rules = [
+            *generation_context.nondelegable_decisions,
+            *generation_context.constraints,
+        ]
+        summary = _text(
+            generation_context.problem_statement
+            or generation_context.desired_outcome
+            or generation_context.project_title
+            or "",
+            limit=700,
+        )
+    else:
+        requirements = _collect_named_lists(
+            context,
+            {
+                "functional_requirements",
+                "non_functional_requirements",
+                "requirements",
+                "mvp_scope",
+                "scope",
+                "v1_scope",
+            },
+        )
+        criteria = _collect_named_lists(
+            context,
+            {
+                "acceptance_criteria",
+                "criteria",
+                "success_criteria",
+                "validation_criteria",
+            },
+        )
+        rules = _collect_named_lists(
+            context,
+            {
+                "business_rules",
+                "rules",
+                "non_delegable_decisions",
+                "constraints",
+            },
+        )
+        summary = _text(context.get("summary") or context.get("project_title") or "", limit=700)
     if not requirements and not criteria and not summary:
         raise DeterministicBuilderContextError(
             code="approved_requirements_missing",
@@ -196,10 +219,11 @@ def _acceptance_trace(entry: DeliverableRegistryEntry, task: DeliverableGenerati
 def build_deterministic_deliverable(
     entry: DeliverableRegistryEntry,
     task: DeliverableGenerationTask,
+    generation_context: ProjectGenerationContext | None = None,
 ) -> dict[str, object]:
     key = str(entry.deliverable_key or "").strip()
     if key == "definition.acceptance_trace":
-        return _acceptance_trace(entry, task)
+        return _acceptance_trace(entry, task, generation_context)
     raise DeterministicBuilderContextError(
         code="deterministic_builder_not_supported",
         message=f"No deterministic builder is registered for {key}.",
