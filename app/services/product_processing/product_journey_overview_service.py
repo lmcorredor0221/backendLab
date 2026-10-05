@@ -117,6 +117,14 @@ def _persisted_journey_state_matches_overview(
 ) -> bool:
     current = journey_state.current
     current_issue_count = overview.blocking_attention_count + overview.technical_error_count
+    products_by_key = {product.product_key: product for product in overview.products}
+    acp = products_by_key.get(ProductBuildProductKey.acp)
+    if (
+        current.product_key == ProductBuildProductKey.acp
+        and current.substate == JourneyStateSubstate.completed
+        and (acp is None or not acp.final_export_ready)
+    ):
+        return False
     if current_issue_count > 0:
         return True
     if current.blocking or current.substate in {JourneyStateSubstate.blocked, JourneyStateSubstate.failed}:
@@ -136,6 +144,7 @@ def _summarize_product(status: ProductBuildStatus) -> ProductJourneyProductSumma
         progress_percent=status.progress.percent,
         available_deliverable_count=available,
         total_deliverable_count=len(status.deliverables),
+        final_export_ready="export-jobs.v1" in status.source_contracts,
         blocking_attention_count=status.attention.blocking_count,
         warning_attention_count=status.attention.warning_count,
         technical_error_count=status.attention.technical_error_count,
@@ -252,6 +261,22 @@ def _select_current_stage(statuses: list[ProductBuildStatus], record: SessionRec
             open_stage = _first_open_stage(status)
             if open_stage is not None:
                 return _stage_to_current(status, open_stage)
+
+    purchased_statuses = [status for status in _ordered(statuses) if not status.entitlement.purchase_required]
+    final_purchased_status = purchased_statuses[-1] if purchased_statuses else None
+    if (
+        purchased_statuses
+        and final_purchased_status is not None
+        and all(status.lifecycle == ProductBuildLifecycle.completed for status in purchased_statuses)
+        and "export-jobs.v1" in final_purchased_status.source_contracts
+    ):
+        return ProductJourneyCurrentStage(
+            stage_key="package" if final_purchased_status.product_key == ProductBuildProductKey.acp else "estimate",
+            label="Completado" if final_purchased_status.product_key == ProductBuildProductKey.acp else f"{final_purchased_status.product_label} listo",
+            lifecycle=ProductBuildLifecycle.completed,
+            progress_percent=100,
+            product_key=final_purchased_status.product_key,
+        )
 
     normalized = _normalize_stage_key(getattr(record.current_stage, "value", str(record.current_stage)))
     return ProductJourneyCurrentStage(

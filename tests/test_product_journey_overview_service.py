@@ -9,6 +9,8 @@ from app.models import (
     CommercialAccessRequestRecord,
     CommercialAccessRequestStatus,
     CommercialTier,
+    ExportJobRecord,
+    ExportJobStatus,
     SessionRecord,
     SessionStage,
     UserRecord,
@@ -23,6 +25,7 @@ from app.services.product_processing import (
     ProductProcessingMode,
     build_product_journey_overview,
 )
+from app.services.product_processing.product_build_status_service import build_product_build_status
 from app.services.product_processing.persistence import ProductBuildRunRecord, UncertaintyBacklogRecord
 
 
@@ -203,3 +206,46 @@ def test_product_journey_overview_prioritizes_blocking_attention_over_upsell() -
     assert overview.recommended_next_action is not None
     assert overview.recommended_next_action.action_key == "open_attention"
     assert overview.recommended_next_action.product_key == ProductBuildProductKey.blueprint_basic
+
+
+def test_product_build_status_treats_ready_final_export_as_completed() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.acp, stage=SessionStage.post_validation)
+        db.add(
+            ExportJobRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                user_id=user.id,
+                product_key=ProductBuildProductKey.acp.value,
+                artifact_kind="acp_portable_zip",
+                status=ExportJobStatus.ready,
+                idempotency_key=f"acp-export-ready:{record.id}",
+                content_type="application/zip",
+                file_name="agent-acp.zip",
+                storage_key=f"exports/{record.id}/agent-acp.zip",
+                checksum_sha256="test-checksum",
+                size_bytes=1024,
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.acp,
+            current_user=user,
+        )
+        overview = build_product_journey_overview(db, record=record, current_user=user)
+
+    acp = next(product for product in overview.products if product.product_key == ProductBuildProductKey.acp)
+
+    assert status.lifecycle.value == "completed"
+    assert status.progress.percent == 100
+    assert "export-jobs.v1" in status.source_contracts
+    assert acp.lifecycle.value == "completed"
+    assert acp.final_export_ready is True
+    assert overview.journey_state_machine is not None
+    assert overview.journey_state_machine.current.state_key.value == "completed"

@@ -9,12 +9,14 @@ from app.models import (
     ACPBuildRunRecord,
     ACPPhaseRunRecord,
     ACPWorkflowRunStatus,
+    ArtifactStatus,
     CommercialAccessRequestRecord,
     CommercialAccessRequestStatus,
     CommercialTier,
     JourneyStateRecord,
     JourneyStateTransitionRecord,
     SessionRecord,
+    SessionStage,
     UserRecord,
     utc_now,
 )
@@ -429,6 +431,10 @@ def transition_for_export_ready(
         initial_state = JourneyStateKey.package
     else:
         return None
+    record.current_stage = SessionStage.ready_for_export
+    record.status = ArtifactStatus.ready
+    record.updated_at = utc_now()
+    db.add(record)
     return transition_journey_state(
         db,
         record=record,
@@ -713,10 +719,12 @@ def _resolve_current_state_key(
     if access_tier == CommercialTier.acp:
         if _is_completed_state(overview, acp):
             return JourneyStateKey.completed
-        if current_stage_key == JourneyStateKey.package or record_stage_key == JourneyStateKey.package:
-            return JourneyStateKey.package
         if current_stage_key == JourneyStateKey.validate or record_stage_key == JourneyStateKey.validate:
             return JourneyStateKey.validate
+        if record_stage_key == JourneyStateKey.package:
+            return JourneyStateKey.package
+        if current_stage_key == JourneyStateKey.package and acp is not None and acp.final_export_ready:
+            return JourneyStateKey.package
         return JourneyStateKey.acp_prep
 
     if "acp" in pending_requests:
@@ -766,7 +774,7 @@ def _is_completed_state(overview: ProductJourneyOverview, acp: ProductJourneyPro
         return False
     if acp is None:
         return False
-    return acp.lifecycle == ProductBuildLifecycle.completed
+    return acp.lifecycle == ProductBuildLifecycle.completed and acp.final_export_ready
 
 
 def _build_stage(

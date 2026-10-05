@@ -360,6 +360,7 @@ class ProductJourneyProductSummary(ContractModel):
     progress_percent: int = 0
     available_deliverable_count: int = 0
     total_deliverable_count: int = 0
+    final_export_ready: bool = False
     blocking_attention_count: int = 0
     warning_attention_count: int = 0
     technical_error_count: int = 0

@@ -6,7 +6,7 @@ from typing import Iterable
 
 from sqlmodel import Session, select
 
-from app.models import CommercialTier, SessionRecord, UserRecord, WorkspaceRole, utc_now
+from app.models import CommercialTier, ExportJobRecord, ExportJobStatus, SessionRecord, UserRecord, WorkspaceRole, utc_now
 from app.services.commerce_service import role_for_user, tier_rank
 from app.services.commercial_access import build_commercial_access_snapshot_v2
 from app.services.deliverable_catalog.catalog_service import build_deliverable_catalog_response
@@ -89,6 +89,10 @@ PROCESSING_STEP_ACTIVE_STATES = {"queued", "running", "generating"}
 PROCESSING_STEP_COMPLETED_STATES = {"available", "completed", "skipped"}
 POSSIBLY_INTERRUPTED_QUEUE_TIMEOUT = timedelta(minutes=15)
 PROCESSING_QUEUE_ORPHANED_ERROR_CODE = "processing_queue_orphaned"
+FINAL_EXPORT_ARTIFACT_BY_PRODUCT: dict[ProductBuildProductKey, str] = {
+    ProductBuildProductKey.blueprint_pro: "blueprint_professional",
+    ProductBuildProductKey.acp: "acp_portable_zip",
+}
 CLOSED_UNCERTAINTY_STATUSES = {
     UncertaintyBacklogStatus.resolved.value,
     UncertaintyBacklogStatus.dismissed.value,
@@ -165,8 +169,16 @@ def build_product_build_status(
     steps_by_key = _steps_by_key(db, visible_run)
     queue_interruption_error = _build_queue_interruption_error(visible_run, steps_by_key)
     progress = _build_progress(visible_run, deliverables)
+    final_export = _latest_ready_final_export(db, record=record, product_key=meta.product_key)
+    export_closes_product = final_export is not None and not entitlement.purchase_required
+    if export_closes_product:
+        progress = _completed_progress_from_export(progress, deliverables)
     lifecycle = _derive_lifecycle(visible_run, entitlement, deliverables, visible_attention_items)
+    if export_closes_product:
+        lifecycle = ProductBuildLifecycle.completed
     last_error = queue_interruption_error or _build_last_error(visible_run, deliverables)
+    if export_closes_product:
+        last_error = None
     if queue_interruption_error is not None and lifecycle in {
         ProductBuildLifecycle.queued,
         ProductBuildLifecycle.preparing,
@@ -226,6 +238,7 @@ def build_product_build_status(
             "deliverable-catalog-response.v1",
             "product-build-runs.v1",
             "uncertainty-backlog.v1",
+            *(["export-jobs.v1"] if final_export is not None else []),
         ],
     )
 
@@ -372,6 +385,28 @@ def _latest_diagram_jobs_by_key(db: Session, *, session_id) -> dict[str, Diagram
         .order_by(DiagramGenerationJobRecord.updated_at.desc())
     ).all()
     return _latest_effective_jobs_by_key(jobs, key_attr="diagram_key")
+
+
+def _latest_ready_final_export(
+    db: Session,
+    *,
+    record: SessionRecord,
+    product_key: ProductBuildProductKey,
+) -> ExportJobRecord | None:
+    artifact_kind = FINAL_EXPORT_ARTIFACT_BY_PRODUCT.get(product_key)
+    if artifact_kind is None:
+        return None
+    return db.exec(
+        select(ExportJobRecord)
+        .where(
+            ExportJobRecord.workspace_id == record.workspace_id,
+            ExportJobRecord.session_id == record.id,
+            ExportJobRecord.product_key == product_key.value,
+            ExportJobRecord.artifact_kind == artifact_kind,
+            ExportJobRecord.status == ExportJobStatus.ready,
+        )
+        .order_by(ExportJobRecord.updated_at.desc(), ExportJobRecord.created_at.desc())
+    ).first()
 
 
 def _latest_effective_jobs_by_key(jobs: Iterable, *, key_attr: str):
@@ -658,6 +693,23 @@ def _build_progress(
         blocked_units=float(blocked),
         calculation="weighted_units",
         label="Calculado desde catalogo y versiones disponibles.",
+    )
+
+
+def _completed_progress_from_export(
+    progress: ProductBuildProgress,
+    deliverables: list[ProductBuildDeliverableStatus],
+) -> ProductBuildProgress:
+    total = progress.total_units
+    if total <= 0:
+        total = float(max(len([item for item in deliverables if item.required]), 1))
+    return ProductBuildProgress(
+        percent=100,
+        completed_units=total,
+        total_units=total,
+        blocked_units=0,
+        calculation="manual",
+        label="Export final listo; el producto se considera completo para la experiencia de usuario.",
     )
 
 
