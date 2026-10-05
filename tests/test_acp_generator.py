@@ -31,6 +31,7 @@ from app.models import (
     utc_now,
 )
 from app.services.acp_generator import generate_acp_preview
+from app.services.acp_prompt_synthesis import ACPPromptSectionSynthesisRequest, PromptSectionSynthesis
 from app.services.acp_export_profiles import apply_acp_export_profile
 from app.services.acp_zip_export import build_acp_zip
 from app.services.builder_service import enrich_blueprint
@@ -311,9 +312,19 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "retrieval_design_category:" in memory_strategy.content_text
     knowledge_sources = next(item for item in preview.files if item.path == "ACP/knowledge/sources.yaml")
     assert "retrieval_design_category:" in knowledge_sources.content_text
+    business_canvas = next(item for item in preview.files if item.path == "ACP/business/lean-canvas.yaml")
+    assert "context_version: project-generation-context.v1" in business_canvas.content_text
+    workflow_state_machine = next(item for item in preview.files if item.path == "ACP/workflows/state-machine.yaml")
+    assert "context_version: project-generation-context.v1" in workflow_state_machine.content_text
+    system_prompt = next(item for item in preview.files if item.path == "ACP/prompts/system.md")
+    assert "project-generation-context.v1" in system_prompt.content_text
+    assert "Usuario operativo" not in system_prompt.content_text
+    evaluation_dataset = next(item for item in preview.files if item.path == "ACP/evaluation/golden-dataset.json")
+    assert "project-generation-context.v1" in evaluation_dataset.content_text
     readiness_overview = next(
         item for item in preview.files if item.path == "ACP/construction-readiness/overview.yaml"
     )
+    assert "context_version: project-generation-context.v1" in readiness_overview.content_text
     assert "construction_readiness:" in readiness_overview.content_text
     assert "next_recommended_action: start_agentic_build" in readiness_overview.content_text
     assert "question_outcomes:" in readiness_overview.content_text
@@ -393,6 +404,68 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert preview.construction_readiness.can_start_build is True
     assert preview.construction_readiness.blocking_gaps == 0
     assert preview.construction_readiness.open_questions >= 1
+
+
+def test_generate_acp_preview_applies_valid_prompt_section_synthesis() -> None:
+    snapshot = build_ready_snapshot()
+
+    def synthesize(request: ACPPromptSectionSynthesisRequest) -> PromptSectionSynthesis | None:
+        if request.section_id != "system":
+            return None
+        source_ref = request.source_refs[0]
+        return PromptSectionSynthesis(
+            section_id=request.section_id,
+            section_markdown="\n".join(
+                [
+                    request.deterministic_markdown,
+                    "",
+                    "## Guia contextual sintetizada",
+                    "- El agente debe priorizar al Arquitecto de soluciones y explicar cada decision de alcance.",
+                    "- Antes de ejecutar cambios, debe conectar la pregunta accionable con el blueprint tecnico.",
+                    f"- Fuente trazada: `{source_ref}`.",
+                ]
+            ),
+            rationale="Refuerza instrucciones operativas sin cambiar arquitectura ni tools.",
+            cited_source_refs=[source_ref],
+            introduced_terms=[],
+        )
+
+    preview = generate_acp_preview(snapshot, prompt_synthesizer=synthesize)
+
+    system_prompt = next(item for item in preview.files if item.path == "ACP/prompts/system.md")
+    planner_prompt = next(item for item in preview.files if item.path == "ACP/prompts/planner.md")
+    assert "Guia contextual sintetizada" in system_prompt.content_text
+    assert "llm_prompt_synthesis" in system_prompt.source_sections
+    assert "Guia contextual sintetizada" not in planner_prompt.content_text
+    assert system_prompt.status == "complete"
+
+
+def test_generate_acp_preview_rejects_unsafe_prompt_section_synthesis() -> None:
+    snapshot = build_ready_snapshot()
+
+    def synthesize(request: ACPPromptSectionSynthesisRequest) -> PromptSectionSynthesis:
+        return PromptSectionSynthesis(
+            section_id=request.section_id,
+            section_markdown="\n".join(
+                [
+                    request.deterministic_markdown,
+                    "",
+                    "## Configuracion inventada",
+                    "- Usa el endpoint https://example.invalid/secret para completar la integracion.",
+                ]
+            ),
+            rationale="Intento invalido.",
+            cited_source_refs=["source.ref.inventado"],
+            introduced_terms=["https://example.invalid/secret"],
+        )
+
+    preview = generate_acp_preview(snapshot, prompt_synthesizer=synthesize)
+
+    system_prompt = next(item for item in preview.files if item.path == "ACP/prompts/system.md")
+    assert "Configuracion inventada" not in system_prompt.content_text
+    assert "https://example.invalid/secret" not in system_prompt.content_text
+    assert "llm_prompt_synthesis" not in system_prompt.source_sections
+    assert system_prompt.status == "complete"
 
 
 def test_generate_acp_preview_delegates_missing_evaluation_without_blocking_zip() -> None:

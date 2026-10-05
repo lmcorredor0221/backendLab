@@ -41,6 +41,12 @@ from app.services.acp_serialization import (
     serialize_markdown_document,
     serialize_yaml_document,
 )
+from app.services.acp_prompt_synthesis import (
+    ACPPromptSectionSynthesizer,
+    PromptSectionSynthesisRejected,
+    build_prompt_section_synthesis_request,
+    validate_prompt_section_synthesis,
+)
 from app.services.acp_visualization import build_acp_visualization_files
 from app.services.acp_validation import build_acp_file_entry, build_acp_preview
 from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
@@ -198,6 +204,17 @@ def _context_anchor_values(context: ProjectGenerationContext | None) -> list[str
     if context is None:
         return []
     return [anchor.value for anchor in context.specificity_anchors[:8] if anchor.value]
+
+
+def _context_trace_payload(context: ProjectGenerationContext | None) -> dict[str, Any]:
+    if context is None:
+        return {}
+    return {
+        "context_version": context.context_version,
+        "context_fingerprint": context.input_fingerprint,
+        "context_source_refs": _context_source_refs(context),
+        "specificity_anchors": _context_anchor_values(context),
+    }
 
 
 def _tool_binding_category(tool: Any) -> str:
@@ -1541,7 +1558,7 @@ def _build_adapter_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     ]
 
 
-def _build_business_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+def _build_business_files(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> list[ACPFileEntry]:
     discovery = snapshot.discovery
     canvas = snapshot.canvas
     if discovery is None or canvas is None:
@@ -1573,25 +1590,28 @@ def _build_business_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
         ]
 
     canvas_payload = {
-        "problem_statement": discovery.problem_statement,
-        "current_user": discovery.current_user,
-        "current_process": discovery.current_process,
-        "desired_outcome": discovery.desired_outcome,
+        **_context_trace_payload(context),
+        "problem_statement": context.problem_statement if context and context.problem_statement else discovery.problem_statement,
+        "current_user": context.current_user if context and context.current_user else discovery.current_user,
+        "current_process": context.current_process if context and context.current_process else discovery.current_process,
+        "desired_outcome": context.desired_outcome if context and context.desired_outcome else discovery.desired_outcome,
         "value_statement": discovery.value_statement,
-        "mvp_scope": canvas.mvp_scope,
-        "out_of_scope": canvas.out_of_scope,
-        "primary_risk": canvas.primary_risk,
+        "mvp_scope": context.mvp_scope if context and context.mvp_scope else canvas.mvp_scope,
+        "out_of_scope": context.out_of_scope if context and context.out_of_scope else canvas.out_of_scope,
+        "primary_risk": context.risks[0] if context and context.risks else canvas.primary_risk,
         "allowed_decisions": canvas.agent_profile.allowed_decisions,
         "prohibited_decisions": canvas.agent_profile.prohibited_decisions,
     }
     kpi_payload = {
+        **_context_trace_payload(context),
         "north_star_metric": discovery.mvp_definition.north_star_metric,
         "success_metrics": canvas.agent_profile.success_metrics or [canvas.success_metric],
         "success_metric": canvas.success_metric,
     }
     constraints_payload = {
-        "constraints": discovery.constraints,
-        "non_delegable_decisions": discovery.mvp_definition.non_delegable_decisions,
+        **_context_trace_payload(context),
+        "constraints": context.constraints if context and context.constraints else discovery.constraints,
+        "non_delegable_decisions": context.nondelegable_decisions if context and context.nondelegable_decisions else discovery.mvp_definition.non_delegable_decisions,
         "human_approvals": canvas.agent_profile.human_approvals,
     }
     return [
@@ -1622,7 +1642,7 @@ def _build_business_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     ]
 
 
-def _build_architecture_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+def _build_architecture_files(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> list[ACPFileEntry]:
     blueprint = snapshot.blueprint
     discovery = snapshot.discovery
     if blueprint is None:
@@ -1654,9 +1674,10 @@ def _build_architecture_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
         ]
 
     topology_payload = {
-        "architecture": blueprint.architecture,
+        **_context_trace_payload(context),
+        "architecture": context.architecture if context and context.architecture else blueprint.architecture,
         "case_type": discovery.case_type if discovery else "",
-        "reasoning_pattern": blueprint.reasoning_pattern,
+        "reasoning_pattern": context.reasoning_pattern if context and context.reasoning_pattern else blueprint.reasoning_pattern,
         "workflow_template": snapshot.selected_workflow_template_key,
         "components": [
             {"name": "llm_core", "role": "reasoning"},
@@ -2766,12 +2787,13 @@ def _build_agent_flow_map_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]
     ]
 
 
-def _build_workflow_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+def _build_workflow_files(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> list[ACPFileEntry]:
     blueprint = snapshot.blueprint
     if blueprint is None:
         return []
     steps = blueprint.delivery_package.workflow_profile.steps
     state_machine_payload = {
+        **_context_trace_payload(context),
         "execution_pattern": blueprint.delivery_package.workflow_profile.execution_pattern,
         "states": [
             {
@@ -2785,7 +2807,9 @@ def _build_workflow_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
         ],
     }
     durable_payload = blueprint.delivery_package.workflow_profile.model_dump(mode="json")
+    durable_payload = {**_context_trace_payload(context), **durable_payload}
     langgraph_payload = {
+        **_context_trace_payload(context),
         "nodes": [{"id": item.name, "type": "workflow_step"} for item in steps],
         "edges": [
             {"source": steps[index].name, "target": steps[index + 1].name}
@@ -2924,18 +2948,38 @@ def _build_objective_files(
     return files
 
 
-def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+_PROMPT_SYNTHESIS_SECTION_IDS = {
+    "ACP/prompts/system.md": "system",
+    "ACP/prompts/planner.md": "planner",
+    "ACP/prompts/evaluator.md": "evaluator",
+    "ACP/prompts/skills/discovery.md": "skill.discovery",
+    "ACP/prompts/skills/architecture.md": "skill.architecture",
+    "ACP/prompts/skills/evaluation.md": "skill.evaluation",
+    "ACP/prompts/skills/catalog.md": "skill.catalog",
+}
+
+
+def _build_prompt_files(
+    snapshot: SessionSnapshot,
+    context: ProjectGenerationContext | None = None,
+    prompt_synthesizer: ACPPromptSectionSynthesizer | None = None,
+) -> list[ACPFileEntry]:
     discovery = snapshot.discovery
     blueprint = snapshot.blueprint
     canvas = snapshot.canvas
     title = snapshot.session.title or "Agent System"
 
-    desired_outcome = discovery.desired_outcome if discovery and discovery.desired_outcome else "Automatizar y optimizar el flujo operativo según el diseño aprobado."
-    problem_statement = discovery.problem_statement if discovery and discovery.problem_statement else "Resolver fricciones operativas mediante asistencia agéntica."
-    primary_user = (canvas.agent_profile.primary_user if canvas and canvas.agent_profile else None) or (discovery.current_user if discovery else "Usuario operativo")
-    current_process = discovery.current_process if discovery and discovery.current_process else "Proceso operativo manual susceptible de automatización."
-    architecture = blueprint.architecture if blueprint and blueprint.architecture else "Arquitectura agéntica estructurada"
-    reasoning_pattern = blueprint.reasoning_pattern if blueprint and blueprint.reasoning_pattern else "Plan-and-Execute"
+    desired_outcome = context.desired_outcome if context and context.desired_outcome else discovery.desired_outcome if discovery and discovery.desired_outcome else "needs_review"
+    problem_statement = context.problem_statement if context and context.problem_statement else discovery.problem_statement if discovery and discovery.problem_statement else "needs_review"
+    primary_user = (
+        context.current_user
+        if context and context.current_user
+        else (canvas.agent_profile.primary_user if canvas and canvas.agent_profile else None)
+        or (discovery.current_user if discovery and discovery.current_user else "needs_review")
+    )
+    current_process = context.current_process if context and context.current_process else discovery.current_process if discovery and discovery.current_process else "needs_review"
+    architecture = context.architecture if context and context.architecture else blueprint.architecture if blueprint and blueprint.architecture else "needs_review"
+    reasoning_pattern = context.reasoning_pattern if context and context.reasoning_pattern else blueprint.reasoning_pattern if blueprint and blueprint.reasoning_pattern else "needs_review"
     autonomy_level = discovery.autonomy_level if discovery and discovery.autonomy_level else "Supervisada (HITL)"
     
     guardrails_list = blueprint.guardrails if blueprint and blueprint.guardrails else [
@@ -2951,6 +2995,8 @@ def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
         system_prompt = "\n".join(
             [
                 f"# System Prompt: {title}",
+                "",
+                f"> Contexto: `{context.context_version if context is not None else 'needs_review'}` / `{context.input_fingerprint if context is not None else 'needs_review'}`",
                 "",
                 "## 1. Identidad y Propósito",
                 f"Eres un agente de inteligencia artificial especializado en {title}.",
@@ -2970,12 +3016,22 @@ def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
                 "- Si una herramienta falla o devuelve error, registra el fallo y utiliza el mecanismo de fallback sin exponer detalles internos sensibles.",
             ]
         )
+    elif context is not None and "project-generation-context.v1" not in system_prompt:
+        system_prompt = "\n".join(
+            [
+                f"> Contexto: `{context.context_version}` / `{context.input_fingerprint}`",
+                "",
+                system_prompt,
+            ]
+        )
 
     skill_spec = _find_deliverable(snapshot, "skill_spec")
     
     planner_prompt = "\n".join(
         [
             f"# Planner Role Prompt: {title}",
+            "",
+            f"> Contexto: `{context.context_version if context is not None else 'needs_review'}` / `{context.input_fingerprint if context is not None else 'needs_review'}`",
             "",
             "> **Módulo de Planificación Cognitiva y Descomposición de Tareas**",
             "",
@@ -3004,6 +3060,8 @@ def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     evaluator_prompt = "\n".join(
         [
             f"# Evaluator Role Prompt: {title}",
+            "",
+            f"> Contexto: `{context.context_version if context is not None else 'needs_review'}` / `{context.input_fingerprint if context is not None else 'needs_review'}`",
             "",
             "> **Módulo de Control de Calidad, Grounding y Auditoría de Seguridad**",
             "",
@@ -3134,7 +3192,56 @@ def _build_prompt_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
                 content_text=serialize_markdown_document(skill_spec),
             )
         )
-    return files
+    return _apply_prompt_section_synthesis(files, context, prompt_synthesizer)
+
+
+def _apply_prompt_section_synthesis(
+    files: list[ACPFileEntry],
+    context: ProjectGenerationContext | None,
+    prompt_synthesizer: ACPPromptSectionSynthesizer | None,
+) -> list[ACPFileEntry]:
+    if context is None or prompt_synthesizer is None:
+        return files
+
+    synthesized_files: list[ACPFileEntry] = []
+    first_question = _first_actionable_construction_question(context)
+    for entry in files:
+        section_id = _PROMPT_SYNTHESIS_SECTION_IDS.get(entry.path)
+        if not section_id:
+            synthesized_files.append(entry)
+            continue
+
+        request = build_prompt_section_synthesis_request(
+            section_id=section_id,
+            path=entry.path,
+            title=entry.title,
+            deterministic_markdown=entry.content_text,
+            context=context,
+            first_actionable_question=first_question,
+        )
+        try:
+            synthesis = prompt_synthesizer(request)
+            if synthesis is None:
+                synthesized_files.append(entry)
+                continue
+            validated = validate_prompt_section_synthesis(synthesis, request)
+        except (PromptSectionSynthesisRejected, ValueError, TypeError):
+            synthesized_files.append(entry)
+            continue
+
+        synthesized_files.append(
+            build_acp_file_entry(
+                path=entry.path,
+                domain=entry.domain,
+                title=entry.title,
+                format=entry.format,
+                source_sections=[*entry.source_sections, "llm_prompt_synthesis"],
+                content_text=serialize_markdown_document(validated.section_markdown),
+                missing_fields=entry.missing_fields,
+                warnings=entry.warnings,
+            )
+        )
+    return synthesized_files
 
 
 def _suggested_owners(gap: ConstructionGapEntry) -> list[str]:
@@ -3265,6 +3372,7 @@ def _build_construction_step_guide_markdown(
     external_dependencies: list[dict[str, Any]],
     required_api_contracts: list[dict[str, Any]],
     deployment_questions: list[dict[str, Any]],
+    context: ProjectGenerationContext | None = None,
 ) -> str:
     def append_artifacts(lines: list[str], artifacts: list[str]) -> None:
         lines.append("- Artefactos impactados:")
@@ -3306,6 +3414,9 @@ def _build_construction_step_guide_markdown(
         "- Si RAG usa fuentes, portafolio, documentos, vector store o embeddings como placeholders, primero guia al usuario para construir esa base.",
         "",
         "## Paso 1 - Confirmar estado inicial",
+        f"- Contexto normalizado: `{context.context_version if context is not None else 'needs_review'}`.",
+        f"- Fingerprint de contexto: `{context.input_fingerprint if context is not None else 'needs_review'}`.",
+        f"- Primera pregunta accionable: {_first_actionable_construction_question(context)}",
         f"- Estado del paquete: `{validation.overall_status}`.",
         f"- Estado de construccion: `{readiness.overall_status}`.",
         f"- Gaps bloqueantes: `{readiness.blocking_gaps}`.",
@@ -3466,6 +3577,7 @@ def _build_construction_readiness_files(
     preview: ACPPreview,
     continuity_answers: dict[str, str] | None = None,
     response_records: list[ConstructionQuestionResponseRecord] | None = None,
+    context: ProjectGenerationContext | None = None,
 ) -> list[ACPFileEntry]:
     readiness = preview.construction_readiness
     validation = preview.validation
@@ -3562,6 +3674,7 @@ def _build_construction_readiness_files(
         )
 
     overview_payload = {
+        **_context_trace_payload(context),
         "package_validation": {
             "overall_status": validation.overall_status,
             "can_export_zip": validation.can_export_zip,
@@ -3687,6 +3800,7 @@ def _build_construction_readiness_files(
         external_dependencies=external_dependencies,
         required_api_contracts=required_api_contracts,
         deployment_questions=deployment_questions,
+        context=context,
     )
     resolution_workflow_payload = {
         "steps": [
@@ -5130,11 +5244,12 @@ def _build_runtime_files(
     ]
 
 
-def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+def _build_evaluation_files(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> list[ACPFileEntry]:
     dataset = snapshot.evaluation_dataset
     rubric = snapshot.evaluation_rubric
     if dataset is None or rubric is None:
         delegated_evaluation_payload = {
+            **_context_trace_payload(context),
             "schema_version": "acp-evaluation-delegation.v1",
             "status": "delegated_to_implementation",
             "reason": "El Blueprint aprobado no incluye dataset/rubrica de evaluacion cerrados.",
@@ -5148,6 +5263,7 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             "starter_cases": [],
         }
         delegated_rubric_payload = {
+            **_context_trace_payload(context),
             "schema_version": "acp-rubric-delegation.v1",
             "status": "delegated_to_implementation",
             "dimensions": [
@@ -5220,6 +5336,7 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
         ]
 
     benchmarks_payload = {
+        **_context_trace_payload(context),
         "latest_runs": [item.model_dump(mode="json") for item in snapshot.evaluation_runs[:3]],
         "expected_min_score": 70,
     }
@@ -5240,7 +5357,7 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             title="Golden dataset",
             format="json",
             source_sections=["evaluation_dataset"],
-            content_text=serialize_json_document(dataset.model_dump(mode="json")),
+            content_text=serialize_json_document({**_context_trace_payload(context), "dataset": dataset.model_dump(mode="json")}),
         ),
         build_acp_file_entry(
             path="ACP/evaluation/rubrics.yaml",
@@ -5248,7 +5365,7 @@ def _build_evaluation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
             title="Rubrics",
             format="yaml",
             source_sections=["evaluation_rubric"],
-            content_text=serialize_yaml_document(rubric.model_dump(mode="json")),
+            content_text=serialize_yaml_document({**_context_trace_payload(context), "rubric": rubric.model_dump(mode="json")}),
         ),
         build_acp_file_entry(
             path="ACP/evaluation/benchmarks.yaml",
@@ -5908,6 +6025,7 @@ def generate_acp_files(
     response_records: list[ConstructionQuestionResponseRecord] | None = None,
     extra_readiness_gaps: list[ConstructionGapEntry] | None = None,
     context: ProjectGenerationContext | None = None,
+    prompt_synthesizer: ACPPromptSectionSynthesizer | None = None,
 ) -> list[ACPFileEntry]:
     acp_context = context or _build_acp_generation_context(snapshot, response_records, extra_readiness_gaps)
     files: list[ACPFileEntry] = []
@@ -5916,18 +6034,18 @@ def generate_acp_files(
     files.extend(_build_deliverable_catalog_files(snapshot))
     files.extend(_build_launcher_files(snapshot))
     files.extend(_build_adapter_files(snapshot))
-    files.extend(_build_business_files(snapshot))
-    files.extend(_build_architecture_files(snapshot))
+    files.extend(_build_business_files(snapshot, acp_context))
+    files.extend(_build_architecture_files(snapshot, acp_context))
     files.extend(_build_cognition_files(snapshot))
     files.extend(_build_memory_files(snapshot, acp_context))
     files.extend(_build_knowledge_files(snapshot, continuity_answers, acp_context))
     files.extend(_build_tools_files(snapshot, acp_context))
     files.extend(_build_tool_connector_files(snapshot))
     files.extend(_build_objective_files(snapshot, response_records))
-    files.extend(_build_workflow_files(snapshot))
-    files.extend(_build_prompt_files(snapshot))
+    files.extend(_build_workflow_files(snapshot, acp_context))
+    files.extend(_build_prompt_files(snapshot, acp_context, prompt_synthesizer))
     files.extend(_build_runtime_files(snapshot, continuity_answers))
-    files.extend(_build_evaluation_files(snapshot))
+    files.extend(_build_evaluation_files(snapshot, acp_context))
     files.extend(_build_deployment_files(snapshot, continuity_answers))
     files.extend(_build_operational_cost_files(snapshot))
     files.extend(_build_observability_files(snapshot))
@@ -5943,6 +6061,7 @@ def generate_acp_files(
         base_preview,
         continuity_answers,
         response_records,
+        acp_context,
     )
     continuity_files.extend(_build_continuity_prompt_files(base_preview))
     continuity_files.extend(_build_implementation_guidance_files(base_preview))
@@ -5968,10 +6087,18 @@ def generate_acp_preview(
     continuity_answers: dict[str, str] | None = None,
     response_records: list[ConstructionQuestionResponseRecord] | None = None,
     extra_readiness_gaps: list[ConstructionGapEntry] | None = None,
+    prompt_synthesizer: ACPPromptSectionSynthesizer | None = None,
 ) -> ACPPreview:
     acp_context = _build_acp_generation_context(snapshot, response_records, extra_readiness_gaps)
     preview = build_acp_preview(
         snapshot,
-        generate_acp_files(snapshot, continuity_answers, response_records, extra_readiness_gaps, acp_context),
+        generate_acp_files(
+            snapshot,
+            continuity_answers,
+            response_records,
+            extra_readiness_gaps,
+            acp_context,
+            prompt_synthesizer,
+        ),
     )
     return append_construction_readiness_gaps(preview, extra_readiness_gaps)
