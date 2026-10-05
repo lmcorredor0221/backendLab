@@ -8,10 +8,12 @@ from app.models import (
     DesignRecommendationArtifact,
     DiscoveryArtifact,
     MemoryDryCompileStatus,
+    KnowledgeProfile,
     MemoryProfile,
     MemoryRecommendationArtifact,
     MemoryRecommendationConfidence,
     MemoryRecommendationFinding,
+    RefreshPolicy,
     ReviewState,
 )
 from app.services.llm_runtime.builder_contracts import MemoryArchitectureRecommendationOutput
@@ -171,3 +173,17 @@ def test_memory_reconciliation_removes_stale_empty_strategy_blocker_after_strate
     assert "memory_strategy vacio" not in reconciled.summary.lower()
     assert "readiness_state bloqueado" not in reconciled.summary.lower()
     assert reconciled.confidence.overall > artifact.confidence.overall
+
+
+def test_memory_reconciliation_defaults_pending_rag_refresh_to_manual_review() -> None:
+    artifact = MemoryRecommendationArtifact(
+        summary="RAG propuesto con politica de refresh pendiente.",
+        proposed_knowledge_profile=KnowledgeProfile(
+            mode="rag",
+            refresh_policy=RefreshPolicy(frequency="pending_review", triggers=["source_change", "manual_review"]),
+        ),
+    )
+
+    reconciled = auto_reconcile_memory_artifact(artifact)
+
+    assert reconciled.proposed_knowledge_profile.refresh_policy.frequency == "manual_review"

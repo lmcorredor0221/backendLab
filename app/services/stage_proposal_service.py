@@ -73,6 +73,7 @@ APPROVED_ARTIFACT_STATES = {
     JourneyArtifactState.approved,
     JourneyArtifactState.approved_legacy,
 }
+PRE_APPROVAL_RETRY_NOTES = {"uxa9_memory_pre_approval_review"}
 STAGE_ORDER = tuple(boundary.stage_key for boundary in list_journey_stage_boundaries())
 DEFAULT_ARTIFACT_KIND_BY_STAGE = {
     "discover": "discovery_artifact",
@@ -318,6 +319,28 @@ def _memory_approval_blocking_issues(
     return issues
 
 
+def _is_pre_approval_retry_from_approved(
+    current: JourneyStageArtifactEntry,
+    stage_entries: list[JourneyStageArtifactEntry],
+) -> bool:
+    if (
+        current.state != JourneyArtifactState.reviewed
+        or current.based_on_artifact_id is None
+        or current.stage_key != "memory"
+    ):
+        return False
+    base_is_approved = any(
+        item.id == current.based_on_artifact_id and item.state in APPROVED_ARTIFACT_STATES
+        for item in stage_entries
+    )
+    if not base_is_approved:
+        return False
+    return any(
+        decision.decision_type == JourneyDecisionType.replace and decision.note in PRE_APPROVAL_RETRY_NOTES
+        for decision in current.decisions
+    )
+
+
 class StageProposalService:
     def list_all(
         self,
@@ -358,6 +381,16 @@ class StageProposalService:
                 and current.state not in APPROVED_ARTIFACT_STATES
             ):
                 approved = next((item for item in stage_entries if item.state in APPROVED_ARTIFACT_STATES), None)
+                latest[stage_key] = approved or current
+            elif stage_key == "memory" and _is_pre_approval_retry_from_approved(current, stage_entries):
+                approved = next(
+                    (
+                        item
+                        for item in stage_entries
+                        if item.id == current.based_on_artifact_id and item.state in APPROVED_ARTIFACT_STATES
+                    ),
+                    None,
+                )
                 latest[stage_key] = approved or current
             else:
                 latest[stage_key] = current

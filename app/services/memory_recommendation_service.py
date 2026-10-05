@@ -1773,7 +1773,7 @@ def auto_reconcile_memory_artifact(
             )
         if str(knowledge_profile.refresh_policy.frequency or "").lower() in {"pending", "pending_review", ""}:
             kp_update["refresh_policy"] = knowledge_profile.refresh_policy.model_copy(
-                update={"frequency": "monthly"}
+                update={"frequency": "manual_review"}
             )
         if str(knowledge_profile.retrieval_policy.reranking_policy or "").lower() in {"pending", "pending_review", ""}:
             kp_update["retrieval_policy"] = knowledge_profile.retrieval_policy.model_copy(

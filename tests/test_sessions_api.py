@@ -3858,7 +3858,7 @@ def test_recommend_memory_route_remediates_missing_scheduler_dependency_once(
 
     assert response.status_code == 200
     assert len(calls) == 1
-    assert "scheduler" in calls[0]
+    assert "scheduler" not in calls[0]
     proposal = response.json()["proposal_payload"]
     assert proposal["review_state"] == "complete"
     dependency_map = {item["tool_key"]: item for item in proposal["tool_dependencies"]}
@@ -4288,6 +4288,33 @@ def test_approve_memory_profile_refreshes_user_edits_and_promotes_blueprint_sect
         finding["finding_key"] == "deferred-retention-owner"
         for finding in approved_memory_payload["critic_findings"]
     )
+    approved_memory_artifact = snapshot["journey_latest_artifacts"]["memory"]
+    approved_blueprint_version_count = len(snapshot["blueprint_versions"])
+
+    retry_patch = client.patch(
+        f"/api/v1/sessions/{session_id}/journey/memory/artifacts/{approved_memory_artifact['id']}",
+        headers=headers,
+        json={
+            "note": "uxa9_memory_pre_approval_review",
+            "proposal_payload": dict(approved_memory_artifact["proposal_payload"]),
+        },
+    )
+    assert retry_patch.status_code == 200
+    assert retry_patch.json()["state"] == "reviewed"
+
+    retry_approval = client.post(
+        f"/api/v1/sessions/{session_id}/approve-memory-profile",
+        headers=headers,
+        json={
+            "note": "uxa9_memory_approved",
+            "decision_payload": {"source": "product_experience_v2"},
+        },
+    )
+    assert retry_approval.status_code == 200
+    retry_snapshot = retry_approval.json()
+    assert len(retry_snapshot["blueprint_versions"]) == approved_blueprint_version_count
+    assert retry_snapshot["journey_latest_artifacts"]["memory"]["id"] == approved_memory_artifact["id"]
+    assert retry_snapshot["journey_latest_artifacts"]["memory"]["state"] == "approved"
 
 
 def test_validate_simulation_flow_generates_runs_judgement_and_preserves_hard_fail_authority(

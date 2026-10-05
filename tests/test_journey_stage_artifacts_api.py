@@ -380,6 +380,32 @@ def test_journey_artifact_routes_invalidate_downstream_when_upstream_reprocess_s
     assert any(reason.endswith("_regenerated") for reason in latest_memory.json()["stale_reasons"])
 
 
+def test_snapshot_keeps_approved_memory_current_after_duplicate_pre_approval_retry(client: TestClient) -> None:
+    headers, session_id = build_session_flow(client)
+    _, _, memory_artifact = _prepare_design_tools_memory_chain(
+        client,
+        headers=headers,
+        session_id=str(session_id),
+    )
+
+    retry_patch = client.patch(
+        f"/api/v1/sessions/{session_id}/journey/memory/artifacts/{memory_artifact['id']}",
+        headers=headers,
+        json={
+            "proposal_payload": dict(memory_artifact["proposal_payload"]),
+            "note": "uxa9_memory_pre_approval_review",
+        },
+    )
+    assert retry_patch.status_code == 200
+    assert retry_patch.json()["state"] == "reviewed"
+
+    snapshot = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
+    assert snapshot.status_code == 200
+    latest_memory = snapshot.json()["journey_latest_artifacts"]["memory"]
+    assert latest_memory["id"] == memory_artifact["id"]
+    assert latest_memory["state"] == "approved"
+
+
 def test_journey_artifact_approval_rejects_non_latest_version(client: TestClient) -> None:
     headers, session_id = build_session_flow(client)
     snapshot = client.get(f"/api/v1/sessions/{session_id}", headers=headers).json()

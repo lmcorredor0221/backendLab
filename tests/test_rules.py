@@ -1,5 +1,11 @@
 from app.models import CanvasArtifact, DiscoveryArtifact
-from app.services.rules import build_reasoning_catalog, infer_case_type, select_architecture, select_reasoning_pattern
+from app.services.rules import (
+    build_reasoning_catalog,
+    derive_knowledge_profile,
+    infer_case_type,
+    select_architecture,
+    select_reasoning_pattern,
+)
 
 
 def test_infer_case_type_prefers_automation_for_high_autonomy() -> None:
@@ -23,6 +29,25 @@ def test_select_architecture_returns_single_agent_for_simple_case() -> None:
         value_statement="Reducir ambiguedad",
     )
     assert select_architecture(discovery) == "single_agent"
+
+
+def test_derive_knowledge_profile_defaults_to_manual_refresh_for_rag() -> None:
+    discovery = DiscoveryArtifact(
+        problem_statement="Responder preguntas usando la base de conocimiento del equipo.",
+        current_user="Operations Lead",
+        current_process="Consulta manuales internos y documentos operativos cuando necesita evidencia.",
+        desired_outcome="Responder con citas sin asumir que el corpus se reindexa por agenda.",
+        autonomy_level="medium",
+        constraints=[],
+        case_type="copiloto",
+        value_statement="Reducir busqueda manual de informacion",
+    )
+
+    profile = derive_knowledge_profile(discovery, [], "session_memory")
+
+    assert profile.mode == "rag"
+    assert profile.refresh_policy.frequency == "manual_review"
+    assert profile.refresh_policy.triggers == ["source_change", "manual_review"]
 
 
 def test_reasoning_catalog_exposes_tot_and_can_recommend_it_for_exploratory_cases() -> None:

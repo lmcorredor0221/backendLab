@@ -490,6 +490,47 @@ def test_scheduled_rag_refresh_requires_scheduler() -> None:
     assert candidate_map["scheduler"].status == "required"
 
 
+def test_manual_rag_refresh_does_not_require_scheduler() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder preguntas sobre procedimientos vigentes.",
+            current_process="Busca procedimientos internos cuando el usuario pregunta, sin refresco programado.",
+            desired_outcome="Responder con citas consistentes desde fuentes aprobadas.",
+        ),
+        canvas=build_canvas(
+            user_goal="Responder con grounding documental bajo demanda.",
+            expected_outputs=["Respuesta con citas"],
+        ),
+        blueprint=build_blueprint(
+            knowledge_mode="rag",
+            knowledge_sources=[
+                {
+                    "key": "ops-playbook",
+                    "title": "Ops Playbook",
+                    "description": "Playbook operativo",
+                    "source_type": "document",
+                    "uri": "kb://ops-playbook",
+                    "owner": "Ops",
+                    "license": "internal",
+                    "sensitivity": "internal",
+                    "source_version": "2026-07",
+                }
+            ],
+            knowledge_refresh_frequency="manual_review",
+        ),
+        blueprint_version_number=2,
+    )
+
+    candidate_map = {item.family_key: item for item in artifact.preflight.candidate_tool_families}
+
+    assert [item.tool_key for item in artifact.recommended_tools] == [
+        "knowledge_retrieval",
+        "document_ingestion",
+    ]
+    assert "scheduler" not in candidate_map or candidate_map["scheduler"].status != "required"
+
+
 def test_memory_dependency_remediation_promotes_missing_scheduler() -> None:
     artifact = build_placeholder_tool_recommendation(
         session_id=uuid4(),

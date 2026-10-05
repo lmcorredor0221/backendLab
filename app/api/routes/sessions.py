@@ -84,6 +84,7 @@ from app.models import (
     IntegrationStatusRecord,
     JourneyArtifactEvidenceEntry,
     JourneyArtifactState,
+    JourneyDecisionType,
     JourneyStageArtifactApprovalRequest,
     JourneyStageArtifactCreateRequest,
     JourneyStageArtifactEntry,
@@ -8910,6 +8911,25 @@ def _preserve_reviewed_memory_fields(
     )
 
 
+def _is_memory_pre_approval_retry_from_approved(
+    candidate: JourneyStageArtifactEntry,
+    approved: JourneyStageArtifactEntry | None,
+) -> bool:
+    if approved is None:
+        return False
+    if (
+        candidate.stage_key != "memory"
+        or candidate.state != JourneyArtifactState.reviewed
+        or candidate.based_on_artifact_id != approved.id
+    ):
+        return False
+    return any(
+        decision.decision_type == JourneyDecisionType.replace
+        and decision.note == "uxa9_memory_pre_approval_review"
+        for decision in candidate.decisions
+    )
+
+
 @router.post("/{session_id}/approve-memory-profile", response_model=SessionSnapshot)
 def approve_memory_profile_route(
     session_id: UUID,
@@ -8935,6 +8955,15 @@ def approve_memory_profile_route(
             status_code=status.HTTP_409_CONFLICT,
             detail="A memory recommendation must exist before approving the memory profile",
         )
+    latest_approved_memory_artifact = proposal_service.latest_approved(db, session_record=record, stage_key="memory")
+    if latest_memory_artifact.state in {
+        JourneyArtifactState.approved,
+        JourneyArtifactState.approved_legacy,
+    } or _is_memory_pre_approval_retry_from_approved(
+        latest_memory_artifact,
+        latest_approved_memory_artifact,
+    ):
+        return build_snapshot(db, record)
     opportunity = db.exec(select(OpportunityRecord).where(OpportunityRecord.session_id == session_id)).first()
     canvas_record = db.exec(select(CanvasRecord).where(CanvasRecord.session_id == session_id)).first()
     blueprint_record = db.exec(select(BlueprintRecord).where(BlueprintRecord.session_id == session_id)).first()

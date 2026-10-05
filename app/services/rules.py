@@ -1507,7 +1507,7 @@ def derive_knowledge_profile(
             fallback_behavior="Declarar falta de evidencia y escalar a remediation guiada.",
         ),
         refresh_policy=RefreshPolicy(
-            frequency="monthly",
+            frequency="manual_review",
             triggers=["source_change", "manual_review"],
             expiration_policy=(
                 "TTL alineado con la memoria persistente."
