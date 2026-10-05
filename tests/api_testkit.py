@@ -75,12 +75,14 @@ def build_test_client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, 
     original_llm_provider = settings.llm_provider
     original_agent_execution_backend = settings.agent_execution_backend
     original_knowledge_access_backend = settings.knowledge_access_backend
+    original_allow_demo_tier_upgrade = settings.allow_demo_tier_upgrade
     settings.llm_config_path = Path(runtime_dir.name) / "llm_settings.json"
     settings.openai_api_key = ""
     settings.deepseek_api_key = ""
     settings.llm_provider = "openai"
     settings.agent_execution_backend = "provider_native"
     settings.knowledge_access_backend = "workspace_staged"
+    settings.allow_demo_tier_upgrade = True
     runtime_knowledge_root = settings.llm_config_path.parent / "knowledge-memory"
     runtime_knowledge_root.mkdir(parents=True, exist_ok=True)
     (runtime_knowledge_root / "knowledge-corpus-manifest.json").write_text(
@@ -112,5 +114,6 @@ def build_test_client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, 
         settings.llm_provider = original_llm_provider
         settings.agent_execution_backend = original_agent_execution_backend
         settings.knowledge_access_backend = original_knowledge_access_backend
+        settings.allow_demo_tier_upgrade = original_allow_demo_tier_upgrade
         runtime_dir.cleanup()
         app.dependency_overrides.clear()
