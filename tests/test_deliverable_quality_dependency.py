@@ -56,6 +56,43 @@ def test_quality_evaluation_validates_artifact_and_records_snapshot() -> None:
     assert snapshot_score == 100
 
 
+def test_contextual_deliverable_quality_requires_traceability_and_specificity() -> None:
+    entry = get_registry_entry("discovery.problem_context_brief")
+    assert entry is not None
+
+    valid_payload = {
+        "title": "Problema",
+        "content": "El coordinador clinico necesita priorizar tickets con Zendesk Salud.",
+        "metadata": {
+            "context_version": "project-generation-context.v1",
+            "input_fingerprint": "ctx-123",
+            "source_refs": ["journey:discover:v1"],
+            "specificity_anchors": ["coordinador clinico", "Zendesk Salud"],
+            "missing_fields": [],
+        },
+    }
+    invalid_payload = {
+        "title": "Problema",
+        "content": "Documento para Usuario Operativo con herramientas estandar.",
+        "metadata": {
+            "context_version": "project-generation-context.v1",
+            "specificity_anchors": ["coordinador clinico", "Zendesk Salud"],
+        },
+    }
+
+    passed = evaluate_deliverable_quality(entry, valid_payload)
+    failed = evaluate_deliverable_quality(entry, invalid_payload)
+
+    assert passed.state == "passed"
+    assert passed.checks["context_has_input_fingerprint"] is True
+    assert passed.checks["context_anchors_are_rendered"] is True
+    assert failed.state == "failed"
+    assert "context_input_fingerprint_missing" in failed.errors
+    assert "context_source_refs_missing" in failed.errors
+    assert "context_specificity_anchors_not_rendered" in failed.errors
+    assert any(error.startswith("forbidden_generic_fact_present") for error in failed.errors)
+
+
 def test_dependency_service_computes_selective_staleness_and_regeneration_order() -> None:
     report = compute_deliverable_staleness(["definition.requirements"])
     scope = resolve_regeneration_scope(changed_dependency_keys=["definition.requirements"])

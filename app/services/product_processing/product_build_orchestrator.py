@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import timedelta
+from math import ceil
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -22,6 +23,7 @@ from app.services.deliverable_catalog.contracts import (
     DeliverableGenerationResult,
     DeliverableGenerationTask,
 )
+from app.services.deliverable_catalog.delivery_signal_service import build_confirmed_delivery_signals
 from app.services.deliverable_catalog.deterministic_builders import supports_deterministic_deliverable
 from app.services.deliverable_catalog.generation_service import run_deliverable_generation_task
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
@@ -70,6 +72,14 @@ DEFAULT_PARALLEL_COMPLEXITY_BUDGET = 6
 HEAVY_ARTIFACT_DURATION_SECONDS = 180
 ACP_NONBLOCKING_DIAGRAM_GROUPS = {"large", "isolated"}
 ACP_NONBLOCKING_POLICY_KEY = "acp_core_first_nonblocking_diagrams"
+MIN_HISTORY_SAMPLES_FOR_ROBUST_ESTIMATE = 3
+PROCESSING_PROFILE_LIMITS = {
+    "deterministic_small": 3,
+    "deterministic_large": 2,
+    "hybrid_bounded": 2,
+    "llm_diagram": 1,
+    "critical_sequential": 1,
+}
 
 JobRunner = Callable[[Session, DeliverableGenerationTask], tuple[DeliverableGenerationJobRecord, DeliverableGenerationResult | None]]
 
@@ -90,7 +100,10 @@ class ProductBuildOrchestrationOptions:
 class ProductBuildArtifactEstimate:
     deliverable_key: str
     group: str
+    processing_profile: str
     estimated_tokens: int
+    estimated_input_tokens: int
+    estimated_output_tokens: int
     estimated_seconds: int
     complexity_score: int
     dependency_count: int
@@ -98,7 +111,21 @@ class ProductBuildArtifactEstimate:
     resource_units: int
     isolation_reason: str = ""
     historical_duration_seconds: int = 0
+    historical_p50_seconds: int = 0
+    historical_p90_seconds: int = 0
+    history_sample_count: int = 0
     generation_mode: str = "deterministic"
+    estimate_source: str = "static_fallback"
+
+
+@dataclass(frozen=True)
+class ProductBuildArtifactHistory:
+    sample_count: int
+    p50_seconds: int
+    p90_seconds: int
+    planning_seconds: int
+    recent_failure: bool
+    source: str
 
 
 @dataclass(frozen=True)
@@ -174,6 +201,8 @@ def ensure_product_build_orchestration(
         catalog_entries=catalog.entries,
         meta=meta,
         run=existing_run,
+        db=db,
+        record=record,
     )
     jobs_by_key = _latest_jobs_by_key(db, session_id=record.id)
     diagram_jobs_by_key = _latest_diagram_jobs_by_key(db, session_id=record.id)
@@ -332,6 +361,8 @@ def reconcile_product_build_run(
         catalog_entries=catalog.entries,
         meta=meta,
         run=run,
+        db=db,
+        record=record,
     )
     refreshed_jobs = _latest_jobs_by_key(db, session_id=record.id)
     refreshed_diagram_jobs = _latest_diagram_jobs_by_key(db, session_id=record.id)
@@ -478,6 +509,8 @@ def enqueue_product_build_processing(
         catalog_entries=catalog.entries,
         meta=meta,
         run=run,
+        db=db,
+        record=record,
     )
     if delivery_plan_payload is not None and not (run.checkpoint_payload or {}).get("delivery_plan"):
         _merge_run_checkpoint(
@@ -601,6 +634,7 @@ def enqueue_product_build_processing(
                 "deferred_nonblocking_deliverable_keys": sorted(completion_scope.nonblocking_keys),
                 "deferred_nonblocking_deliverables": list(completion_scope.nonblocking_payload),
                 "profile_counts": _estimate_profile_counts(list(selected_estimates.values())),
+                "processing_profile_counts": _estimate_processing_profile_counts(list(selected_estimates.values())),
                 "summary": (
                     f"Se encolaron {len(selected_items)} entregables con estrategia de paralelizacion dinamica."
                     if _dynamic_parallelism_enabled() and batch_size > 1
@@ -666,6 +700,8 @@ def run_product_build_processing(
             catalog_entries=catalog.entries,
             meta=meta,
             run=run,
+            db=db,
+            record=record,
         )
         items_by_key = {item.key: item for item in expected_items}
         completion_scope = _build_completion_scope(db, run=run, expected_items=expected_items)
@@ -894,6 +930,8 @@ def _expected_items_for_product_run(
     catalog_entries: list[DeliverableCatalogItem],
     meta,
     run: ProductBuildRunRecord | None,
+    db: Session | None = None,
+    record: SessionRecord | None = None,
 ) -> tuple[list[DeliverableCatalogItem], dict[str, Any] | None]:
     frozen_keys = _checkpoint_expected_keys(run)
     if frozen_keys is not None:
@@ -902,10 +940,11 @@ def _expected_items_for_product_run(
     if run is not None:
         return _legacy_expected_items(catalog_entries=catalog_entries, meta=meta), None
 
+    confirmed_signals = build_confirmed_delivery_signals(db, record=record) if db is not None and record is not None else None
     plan = resolve_product_delivery_plan(
         meta.product_key.value,
         registry_entries=list_deliverable_registry_entries(include_inactive=True),
-        confirmed_signals=[],
+        confirmed_signals=confirmed_signals.signals if confirmed_signals is not None else [],
     )
     expected_items = _items_for_expected_keys(
         catalog_entries=catalog_entries,
@@ -914,6 +953,9 @@ def _expected_items_for_product_run(
     )
     plan_payload = plan.checkpoint_payload()
     plan_payload["generated_deliverable_keys"] = [item.key for item in expected_items]
+    if confirmed_signals is not None:
+        plan_payload["confirmed_signals"] = list(confirmed_signals.signals)
+        plan_payload["confirmed_signal_evidence"] = list(confirmed_signals.evidence)
     return expected_items, plan_payload
 
 
@@ -1380,7 +1422,7 @@ def _artifact_history(
     run: ProductBuildRunRecord,
     item: DeliverableCatalogItem,
     generation_mode: str = "",
-) -> tuple[int, bool]:
+) -> ProductBuildArtifactHistory:
     if item.deliverable_type.value == "diagram":
         rows = list(
             db.exec(
@@ -1390,7 +1432,7 @@ def _artifact_history(
                     DiagramGenerationJobRecord.diagram_key == item.key.removeprefix("diagram."),
                 )
                 .order_by(DiagramGenerationJobRecord.updated_at.desc())
-                .limit(5)
+                .limit(10)
             ).all()
         )
     else:
@@ -1402,7 +1444,7 @@ def _artifact_history(
                     DeliverableGenerationJobRecord.deliverable_key == item.key,
                 )
                 .order_by(DeliverableGenerationJobRecord.updated_at.desc())
-                .limit(5)
+                .limit(10)
             ).all()
         )
     if generation_mode == "deterministic_python":
@@ -1412,9 +1454,26 @@ def _artifact_history(
         for job in rows
         if getattr(job, "started_at", None) is not None
     ]
-    average_duration = round(sum(durations) / len(durations)) if durations else 0
+    sorted_durations = sorted(duration for duration in durations if duration > 0)
+    p50_duration = _percentile_nearest_rank(sorted_durations, 0.50)
+    p90_duration = _percentile_nearest_rank(sorted_durations, 0.90)
+    planning_duration = p50_duration if len(sorted_durations) >= MIN_HISTORY_SAMPLES_FOR_ROBUST_ESTIMATE else 0
     recent_failure = any(str(getattr(job, "status", "") or "") in ERROR_JOB_STATES or bool(getattr(job, "error_code", "")) for job in rows[:3])
-    return average_duration, recent_failure
+    return ProductBuildArtifactHistory(
+        sample_count=len(sorted_durations),
+        p50_seconds=p50_duration,
+        p90_seconds=p90_duration,
+        planning_seconds=planning_duration,
+        recent_failure=recent_failure,
+        source="history_p50" if planning_duration else "static_fallback",
+    )
+
+
+def _percentile_nearest_rank(sorted_values: list[int], percentile: float) -> int:
+    if not sorted_values:
+        return 0
+    rank = max(1, ceil(percentile * len(sorted_values)))
+    return sorted_values[min(len(sorted_values) - 1, rank - 1)]
 
 
 def _effective_generation_mode(item: DeliverableCatalogItem, entry: Any | None = None) -> str:
@@ -1434,6 +1493,46 @@ def _seconds_between(started_at, finished_at) -> int:
     if started_at is None or finished_at is None:
         return 0
     return max(0, round((finished_at - started_at).total_seconds()))
+
+
+def _processing_profile_for_artifact(
+    *,
+    type_value: str,
+    generation_mode: str,
+    deterministic_python: bool,
+    estimated_input_tokens: int,
+    estimated_tokens: int,
+    estimated_seconds: int,
+    dependency_count: int,
+    complexity_score: int,
+) -> str:
+    if type_value == "package" or generation_mode == "manual_review_required" or dependency_count >= 3:
+        return "critical_sequential"
+    if type_value == "diagram" and generation_mode != "deterministic_python":
+        return "llm_diagram"
+    if generation_mode in {"llm_supported", "llm_required", "llm_with_deterministic_fallback"}:
+        return "hybrid_bounded"
+    if deterministic_python or generation_mode == "deterministic":
+        if (
+            dependency_count == 0
+            and estimated_input_tokens <= 3_000
+            and estimated_tokens <= 8_000
+            and estimated_seconds < 60
+            and complexity_score < 4
+        ):
+            return "deterministic_small"
+        return "deterministic_large"
+    return "hybrid_bounded"
+
+
+def _estimate_group_for_profile(processing_profile: str) -> str:
+    return {
+        "deterministic_small": "small",
+        "deterministic_large": "large",
+        "hybrid_bounded": "medium",
+        "llm_diagram": "isolated",
+        "critical_sequential": "isolated",
+    }.get(processing_profile, "isolated")
 
 
 def _estimate_artifact_processing(
@@ -1457,7 +1556,7 @@ def _estimate_artifact_processing(
     dependency_policy = getattr(entry, "dependency_policy", None)
     dependency_keys = [str(value or "").strip() for value in getattr(dependency_policy, "depends_on", []) or []]
     dependency_count = sum(1 for key in dependency_keys if key in items_by_key)
-    historical_duration, recent_failure = _artifact_history(
+    history = _artifact_history(
         db,
         run=run,
         item=item,
@@ -1486,11 +1585,12 @@ def _estimate_artifact_processing(
     }.get(generation_mode, 1)
     context_score = min(4, (context_tokens + 5_999) // 6_000)
     dependency_score = min(4, dependency_count)
-    history_score = 4 if historical_duration >= HEAVY_ARTIFACT_DURATION_SECONDS else 2 if historical_duration >= 90 else 1 if historical_duration >= 45 else 0
-    failure_score = 2 if recent_failure else 0
+    history_risk_seconds = history.p90_seconds or history.planning_seconds
+    history_score = 4 if history_risk_seconds >= HEAVY_ARTIFACT_DURATION_SECONDS else 2 if history_risk_seconds >= 90 else 1 if history_risk_seconds >= 45 else 0
+    failure_score = 2 if history.recent_failure else 0
     complexity_score = type_score + mode_score + context_score + dependency_score + history_score + failure_score
 
-    output_tokens = {
+    estimated_output_tokens = {
         "artifact": 3_000,
         "contract": 4_000,
         "diagram": 3_500,
@@ -1500,6 +1600,7 @@ def _estimate_artifact_processing(
         "prompt": 3_500,
         "test": 4_500,
     }.get(type_value, 3_000)
+    estimated_input_tokens = context_tokens
     default_seconds = {
         "artifact": 35,
         "contract": 55,
@@ -1511,23 +1612,35 @@ def _estimate_artifact_processing(
         "test": 70,
     }.get(type_value, 45)
     if deterministic_python:
-        output_tokens = min(output_tokens, 900)
-        estimated_tokens = min(6_000, context_tokens + output_tokens + 300)
+        estimated_output_tokens = min(estimated_output_tokens, 900)
+        estimated_tokens = min(6_000, estimated_input_tokens + estimated_output_tokens + 300)
         default_seconds = 8 if type_value == "diagram" else 10
         token_seconds = max(2, estimated_tokens // 1_500)
     else:
-        estimated_tokens = min(120_000, context_tokens + output_tokens + 1_200)
+        estimated_tokens = min(120_000, estimated_input_tokens + estimated_output_tokens + 1_200)
         token_seconds = max(15, estimated_tokens // 350)
-    estimated_seconds = max(historical_duration, default_seconds, token_seconds)
+    estimated_seconds = max(history.planning_seconds, default_seconds, token_seconds)
+    processing_profile = _processing_profile_for_artifact(
+        type_value=type_value,
+        generation_mode=generation_mode,
+        deterministic_python=deterministic_python,
+        estimated_input_tokens=estimated_input_tokens,
+        estimated_tokens=estimated_tokens,
+        estimated_seconds=estimated_seconds,
+        dependency_count=dependency_count,
+        complexity_score=complexity_score,
+    )
 
     isolation_reason = ""
     if type_value == "package":
         isolation_reason = "package_final_critical_path"
     elif generation_mode == "manual_review_required":
         isolation_reason = "manual_review_required"
-    elif dependency_count >= 3:
+    elif processing_profile == "critical_sequential" and dependency_count >= 3:
         isolation_reason = "many_dependencies"
-    elif historical_duration >= HEAVY_ARTIFACT_DURATION_SECONDS:
+    elif processing_profile == "llm_diagram":
+        isolation_reason = "llm_diagram_provider_bound"
+    elif history.p90_seconds >= HEAVY_ARTIFACT_DURATION_SECONDS:
         isolation_reason = "historically_slow"
     elif estimated_tokens >= 30_000:
         isolation_reason = "large_context_budget"
@@ -1538,46 +1651,59 @@ def _estimate_artifact_processing(
         return ProductBuildArtifactEstimate(
             deliverable_key=item.key,
             group="isolated",
+            processing_profile=processing_profile,
             estimated_tokens=estimated_tokens,
+            estimated_input_tokens=estimated_input_tokens,
+            estimated_output_tokens=estimated_output_tokens,
             estimated_seconds=estimated_seconds,
             complexity_score=complexity_score,
             dependency_count=dependency_count,
             can_parallelize=False,
             resource_units=999,
             isolation_reason=isolation_reason,
-            historical_duration_seconds=historical_duration,
+            historical_duration_seconds=history.planning_seconds,
+            historical_p50_seconds=history.p50_seconds,
+            historical_p90_seconds=history.p90_seconds,
+            history_sample_count=history.sample_count,
             generation_mode=generation_mode,
+            estimate_source=history.source,
         )
-    if complexity_score >= 7 or estimated_tokens >= 16_000 or estimated_seconds >= 120:
-        group = "large"
-        can_parallelize = False
-        resource_units = 4
-    elif complexity_score >= 4 or estimated_tokens >= 8_000 or estimated_seconds >= 60:
-        group = "medium"
-        can_parallelize = True
-        resource_units = 2
-    else:
-        group = "small"
-        can_parallelize = True
-        resource_units = 1
+    group = _estimate_group_for_profile(processing_profile)
+    profile_limit = PROCESSING_PROFILE_LIMITS.get(processing_profile, 1)
+    can_parallelize = profile_limit > 1
+    resource_units = {
+        "deterministic_small": 1,
+        "deterministic_large": 3,
+        "hybrid_bounded": 3,
+    }.get(processing_profile, 999)
     return ProductBuildArtifactEstimate(
         deliverable_key=item.key,
         group=group,
+        processing_profile=processing_profile,
         estimated_tokens=estimated_tokens,
+        estimated_input_tokens=estimated_input_tokens,
+        estimated_output_tokens=estimated_output_tokens,
         estimated_seconds=estimated_seconds,
         complexity_score=complexity_score,
         dependency_count=dependency_count,
         can_parallelize=can_parallelize,
         resource_units=resource_units,
-        historical_duration_seconds=historical_duration,
+        historical_duration_seconds=history.planning_seconds,
+        historical_p50_seconds=history.p50_seconds,
+        historical_p90_seconds=history.p90_seconds,
+        history_sample_count=history.sample_count,
         generation_mode=generation_mode,
+        estimate_source=history.source,
     )
 
 
 def _artifact_estimate_payload(estimate: ProductBuildArtifactEstimate) -> dict[str, Any]:
     return {
         "group": estimate.group,
+        "processing_profile": estimate.processing_profile,
         "estimated_tokens": estimate.estimated_tokens,
+        "estimated_input_tokens": estimate.estimated_input_tokens,
+        "estimated_output_tokens": estimate.estimated_output_tokens,
         "estimated_seconds": estimate.estimated_seconds,
         "complexity_score": estimate.complexity_score,
         "dependency_count": estimate.dependency_count,
@@ -1585,7 +1711,11 @@ def _artifact_estimate_payload(estimate: ProductBuildArtifactEstimate) -> dict[s
         "resource_units": estimate.resource_units,
         "isolation_reason": estimate.isolation_reason,
         "historical_duration_seconds": estimate.historical_duration_seconds,
+        "historical_p50_seconds": estimate.historical_p50_seconds,
+        "historical_p90_seconds": estimate.historical_p90_seconds,
+        "history_sample_count": estimate.history_sample_count,
         "generation_mode": estimate.generation_mode,
+        "estimate_source": estimate.estimate_source,
     }
 
 
@@ -1646,6 +1776,24 @@ def _estimate_profile_counts(estimates: list[ProductBuildArtifactEstimate]) -> d
     return counts
 
 
+def _estimate_processing_profile_counts(estimates: list[ProductBuildArtifactEstimate]) -> dict[str, int]:
+    counts = {profile: 0 for profile in PROCESSING_PROFILE_LIMITS}
+    for estimate in estimates:
+        counts[estimate.processing_profile] = counts.get(estimate.processing_profile, 0) + 1
+    return counts
+
+
+def _dependent_count_for_item(item: DeliverableCatalogItem, *, items_by_key: dict[str, DeliverableCatalogItem]) -> int:
+    count = 0
+    for candidate in items_by_key.values():
+        entry = get_deliverable_registry_entry(candidate.key)
+        dependency_policy = getattr(entry, "dependency_policy", None)
+        dependency_keys = {str(value or "").strip() for value in getattr(dependency_policy, "depends_on", []) or []}
+        if item.key in dependency_keys:
+            count += 1
+    return count
+
+
 def _next_ready_batch(
     db: Session,
     *,
@@ -1668,6 +1816,16 @@ def _next_ready_batch(
             item.key: _estimate_artifact_processing(db, run=run, item=item, items_by_key=items_by_key)
             for item in ready
         }
+        order_index = {item.key: index for index, item in enumerate(remaining_items)}
+        ready = sorted(
+            ready,
+            key=lambda item: (
+                -_dependent_count_for_item(item, items_by_key=items_by_key),
+                -estimates[item.key].historical_p90_seconds,
+                -estimates[item.key].estimated_seconds,
+                order_index.get(item.key, 0),
+            ),
+        )
         first = ready[0]
         first_estimate = estimates[first.key]
         if not first_estimate.can_parallelize:
@@ -1678,8 +1836,11 @@ def _next_ready_batch(
         total_units = 0
         token_budget = _parallel_token_budget()
         complexity_budget = _parallel_complexity_budget()
+        profile_limit = min(batch_size, PROCESSING_PROFILE_LIMITS.get(first_estimate.processing_profile, 1))
         for item in ready:
             estimate = estimates[item.key]
+            if estimate.processing_profile != first_estimate.processing_profile:
+                continue
             if not estimate.can_parallelize:
                 if not selected:
                     return [item]
@@ -1691,7 +1852,7 @@ def _next_ready_batch(
             selected.append(item)
             total_tokens = next_tokens
             total_units = next_units
-            if len(selected) >= batch_size:
+            if len(selected) >= profile_limit:
                 break
         return selected or [first]
     return remaining_items[:1]
@@ -1709,10 +1870,10 @@ def _batch_execution_summary(
         item = batch[0]
         estimate = estimates[0]
         if batch_size > 1 and not estimate.can_parallelize:
-            reason = estimate.isolation_reason or estimate.group
+            reason = estimate.isolation_reason or estimate.processing_profile
             return f"Procesando {positions[item.key]} de {total_count}: {item.title} de forma individual ({reason})."
         return f"Procesando {positions[item.key]} de {total_count}: {item.title}."
-    counts = _estimate_profile_counts(estimates)
+    counts = _estimate_processing_profile_counts(estimates)
     profile = ", ".join(f"{key}:{value}" for key, value in counts.items() if value)
     total_tokens = sum(estimate.estimated_tokens for estimate in estimates)
     return f"Procesando lote paralelo de {len(batch)} de {total_count} entregables ({profile}; {total_tokens} tokens estimados)."
@@ -1801,6 +1962,7 @@ def _process_queue_items_in_batches(
             ),
             current_batch_profile={
                 "strategy": "dynamic_parallelism" if _dynamic_parallelism_enabled() and batch_size > 1 else "sequential",
+                "processing_profile_counts": _estimate_processing_profile_counts(batch_estimates),
                 "items": [
                     {"deliverable_key": item.key, **_artifact_estimate_payload(estimate)}
                     for item, estimate in zip(batch, batch_estimates)

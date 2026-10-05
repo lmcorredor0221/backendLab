@@ -40,6 +40,9 @@ from app.services.product_processing import (
 from app.services.product_processing.persistence import ProductBuildRunRecord, ProductBuildStepRecord
 from app.services.product_processing.product_build_orchestrator import _finalize_run_from_steps
 from app.services.product_processing.product_build_orchestrator import _finalize_processing_queue
+from app.services.product_processing.product_build_orchestrator import ProductBuildArtifactEstimate
+from app.services.product_processing.product_build_orchestrator import _estimate_artifact_processing
+from app.services.product_processing.product_build_orchestrator import _next_ready_batch
 from app.services.product_processing.product_build_orchestrator import _process_single_queue_item
 from app.services.product_processing.product_build_orchestrator import _recover_orphaned_processing_queue
 from app.services.product_processing.product_build_run_service import (
@@ -97,6 +100,30 @@ def _approve_acp_required_stages(db: Session, record: SessionRecord) -> None:
         )
 
 
+def _test_estimate(
+    key: str,
+    *,
+    processing_profile: str = "deterministic_small",
+    can_parallelize: bool = True,
+    resource_units: int = 1,
+    estimated_seconds: int = 10,
+) -> ProductBuildArtifactEstimate:
+    return ProductBuildArtifactEstimate(
+        deliverable_key=key,
+        group="small" if processing_profile == "deterministic_small" else "medium",
+        processing_profile=processing_profile,
+        estimated_tokens=1_000,
+        estimated_input_tokens=500,
+        estimated_output_tokens=500,
+        estimated_seconds=estimated_seconds,
+        complexity_score=1,
+        dependency_count=0,
+        can_parallelize=can_parallelize,
+        resource_units=resource_units,
+        generation_mode="deterministic_python",
+    )
+
+
 def test_orchestrator_creates_run_and_expected_deliverable_steps() -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
@@ -125,6 +152,73 @@ def test_orchestrator_creates_run_and_expected_deliverable_steps() -> None:
     assert status.progress.total_units == float(expected_count)
     assert status.deliverables == []
     assert status.lifecycle == ProductBuildLifecycle.ready_to_start
+
+
+def test_orchestrator_checkpoints_confirmed_delivery_signals() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        db.add(
+            JourneyStageArtifactRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                artifact_kind="tools_artifact",
+                stage_key="tools",
+                state=JourneyArtifactState.approved,
+                proposal_payload={
+                    "tools": [
+                        {
+                            "name": "Zendesk",
+                            "purpose": "Abrir y actualizar tickets de soporte",
+                            "requires_approval": True,
+                            "has_side_effects": True,
+                        }
+                    ]
+                },
+            )
+        )
+        db.add(
+            JourneyStageArtifactRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                artifact_kind="memory_artifact",
+                stage_key="memory",
+                state=JourneyArtifactState.approved,
+                proposal_payload={
+                    "memory_strategy": "RAG con base documental aprobada",
+                    "rag_required": True,
+                    "knowledge_sources": [{"name": "Base documental de soporte"}],
+                },
+            )
+        )
+        db.commit()
+
+        ensure_product_build_orchestration(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+        db.commit()
+        runs = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro,
+        )
+
+    delivery_plan = runs[0].checkpoint_payload["delivery_plan"]
+    assert set(delivery_plan["confirmed_signals"]) >= {
+        "confirmed_external_systems",
+        "confirmed_rag_scope",
+        "confirmed_side_effects",
+    }
+    assert "diagram.c4_context" in delivery_plan["generated_deliverable_keys"]
+    assert "diagram.memory_rag_architecture" in delivery_plan["generated_deliverable_keys"]
+    assert any(item["signal"] == "confirmed_side_effects" for item in delivery_plan["confirmed_signal_evidence"])
 
 
 def test_orchestrator_reuses_active_run_for_same_product() -> None:
@@ -1414,6 +1508,122 @@ def test_ensure_product_build_orchestration_execute_jobs_skips_exhausted_failure
     assert status.lifecycle == ProductBuildLifecycle.requires_attention
     assert status.processing_queue is not None
     assert status.processing_queue.total_count == 0
+
+
+def test_artifact_processing_estimate_uses_robust_history() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        ensure_product_build_orchestration(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+        run = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro,
+        )[0]
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint_pro,
+            current_stage="package",
+        )
+        items_by_key = {item.key: item for item in catalog.entries}
+        item = items_by_key["blueprint.professional_document"]
+        now = utc_now()
+        for index, duration in enumerate((20, 40, 200), start=1):
+            completed_at = now - timedelta(minutes=index)
+            db.add(
+                DeliverableGenerationJobRecord(
+                    workspace_id=record.workspace_id,
+                    session_id=record.id,
+                    deliverable_key=item.key,
+                    status="completed",
+                    product_mode="premium_enrichment",
+                    generation_mode="deterministic",
+                    idempotency_key=f"history-{index}-{uuid4()}",
+                    started_at=completed_at - timedelta(seconds=duration),
+                    completed_at=completed_at,
+                    updated_at=completed_at,
+                )
+            )
+        db.commit()
+
+        estimate = _estimate_artifact_processing(db, run=run, item=item, items_by_key=items_by_key)
+
+    assert estimate.history_sample_count == 3
+    assert estimate.historical_p50_seconds == 40
+    assert estimate.historical_p90_seconds == 200
+    assert estimate.historical_duration_seconds == 40
+    assert estimate.estimate_source == "history_p50"
+    assert estimate.estimated_input_tokens > 0
+    assert estimate.estimated_output_tokens > 0
+
+
+def test_next_ready_batch_respects_processing_profile_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        ensure_product_build_orchestration(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+        run = list_product_build_runs(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_pro,
+        )[0]
+        catalog = build_deliverable_catalog_response(
+            db,
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            role=WorkspaceRole.owner,
+            tier=CommercialTier.blueprint_pro,
+            current_stage="package",
+        )
+        expected_keys = set((run.checkpoint_payload or {}).get("expected_deliverables", []))
+        remaining_items = [item for item in catalog.entries if item.key in expected_keys][:3]
+        items_by_key = {item.key: item for item in catalog.entries}
+        monkeypatch.setattr(
+            "app.services.product_processing.product_build_orchestrator._dependency_error_for_item",
+            lambda db, *, run, item, items_by_key: None,
+        )
+
+        monkeypatch.setattr(
+            "app.services.product_processing.product_build_orchestrator._estimate_artifact_processing",
+            lambda db, *, run, item, items_by_key: _test_estimate(
+                item.key,
+                processing_profile="hybrid_bounded",
+                resource_units=2,
+                estimated_seconds=80,
+            ),
+        )
+        hybrid_batch = _next_ready_batch(db, run=run, remaining_items=remaining_items, items_by_key=items_by_key, batch_size=3)
+
+        monkeypatch.setattr(
+            "app.services.product_processing.product_build_orchestrator._estimate_artifact_processing",
+            lambda db, *, run, item, items_by_key: _test_estimate(item.key, processing_profile="deterministic_small"),
+        )
+        deterministic_batch = _next_ready_batch(db, run=run, remaining_items=remaining_items, items_by_key=items_by_key, batch_size=3)
+
+    assert len(remaining_items) == 3
+    assert len(hybrid_batch) == 2
+    assert len(deterministic_batch) == 3
 
 
 def test_acp_processing_defers_large_diagrams_from_initial_queue() -> None:

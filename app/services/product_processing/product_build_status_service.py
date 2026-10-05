@@ -11,6 +11,7 @@ from app.services.commerce_service import role_for_user, tier_rank
 from app.services.commercial_access import build_commercial_access_snapshot_v2
 from app.services.deliverable_catalog.catalog_service import build_deliverable_catalog_response
 from app.services.deliverable_catalog.contracts import DeliverableCatalogItem
+from app.services.deliverable_catalog.delivery_signal_service import build_confirmed_delivery_signals
 from app.services.deliverable_catalog.registry_service import (
     list_registry_entries as list_deliverable_registry_entries,
     resolve_product_delivery_plan,
@@ -133,7 +134,7 @@ def build_product_build_status(
         current_stage=current_stage,
     )
     run = _latest_run(db, record=record, product_key=meta.product_key)
-    product_items = _product_items_for_status(catalog.entries, meta=meta, run=run)
+    product_items = _product_items_for_status(catalog.entries, meta=meta, run=run, db=db, record=record)
     product_items_by_key = {item.key: item for item in product_items}
     jobs_by_key = _latest_jobs_by_key(db, session_id=record.id)
     diagram_jobs_by_key = _latest_diagram_jobs_by_key(db, session_id=record.id)
@@ -301,16 +302,19 @@ def _product_items_for_status(
     *,
     meta: ProductBuildMeta,
     run: ProductBuildRunRecord | None,
+    db: Session | None = None,
+    record: SessionRecord | None = None,
 ) -> list[DeliverableCatalogItem]:
     frozen_keys = _checkpoint_expected_keys(run)
     if frozen_keys is not None:
         return _catalog_items_for_keys(entries, meta=meta, keys=frozen_keys)
     if run is not None:
         return [item for item in entries if _is_expected_for_product(item, meta)]
+    confirmed_signals = build_confirmed_delivery_signals(db, record=record) if db is not None and record is not None else None
     plan = resolve_product_delivery_plan(
         meta.product_key.value,
         registry_entries=list_deliverable_registry_entries(include_inactive=True),
-        confirmed_signals=[],
+        confirmed_signals=confirmed_signals.signals if confirmed_signals is not None else [],
     )
     return _catalog_items_for_keys(entries, meta=meta, keys=list(plan.generated_keys))
 

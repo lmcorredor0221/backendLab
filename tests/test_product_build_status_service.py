@@ -9,6 +9,8 @@ from sqlmodel import SQLModel, Session, create_engine
 from app.models import (
     ArtifactRegistryRecord,
     CommercialTier,
+    JourneyArtifactState,
+    JourneyStageArtifactRecord,
     SessionRecord,
     SessionStage,
     UserRecord,
@@ -482,6 +484,61 @@ def test_product_build_status_uses_governed_catalog_count() -> None:
 
     assert len(status.deliverables) == len(expected)
     assert status.progress.total_units == float(len(expected))
+    assert "deliverable-catalog-response.v1" in status.source_contracts
+
+
+def test_product_build_status_includes_conditionals_from_approved_context() -> None:
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        db.add(
+            JourneyStageArtifactRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                artifact_kind="tools_artifact",
+                stage_key="tools",
+                state=JourneyArtifactState.approved,
+                proposal_payload={
+                    "tools": [
+                        {
+                            "name": "Zendesk",
+                            "purpose": "Abrir y actualizar tickets de soporte",
+                            "requires_approval": True,
+                            "has_side_effects": True,
+                        }
+                    ]
+                },
+            )
+        )
+        db.add(
+            JourneyStageArtifactRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                artifact_kind="memory_artifact",
+                stage_key="memory",
+                state=JourneyArtifactState.approved,
+                proposal_payload={
+                    "memory_strategy": "RAG con base documental aprobada",
+                    "rag_required": True,
+                    "knowledge_sources": [{"name": "Base documental de soporte"}],
+                },
+            )
+        )
+        db.commit()
+
+        status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=user,
+            catalog_stage_override="package",
+        )
+
+    deliverable_keys = {item.deliverable_key for item in status.deliverables}
+    assert "diagram.c4_context" in deliverable_keys
+    assert "diagram.memory_rag_architecture" in deliverable_keys
     assert "deliverable-catalog-response.v1" in status.source_contracts
 
 

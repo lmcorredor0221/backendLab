@@ -137,7 +137,7 @@ def resolve_product_delivery_plan(
     entries = registry_entries if registry_entries is not None else list_registry_entries(include_inactive=True)
     active_keys = {entry.deliverable_key for entry in entries if entry.active}
     known_keys = {entry.deliverable_key for entry in entries}
-    generated_keys = tuple(key for key in profile.default_deliverable_keys if key in active_keys)
+    generated_key_list = [key for key in profile.default_deliverable_keys if key in active_keys]
     inherited_keys = tuple(key for key in profile.inherited_deliverable_keys if key in active_keys)
     unknown_dependency_keys = tuple(
         key
@@ -158,6 +158,10 @@ def resolve_product_delivery_plan(
                 "reason": "confirmed_signal" if included else "excluded_until_condition_is_confirmed",
             }
         )
+        if included:
+            for key in rule.deliverable_keys:
+                if key in active_keys and key not in generated_key_list:
+                    generated_key_list.append(key)
     if unknown_dependency_keys:
         raise DeliverableRegistryError(
             f"Product delivery profile {profile.profile_key} references unknown or inactive keys: "
@@ -167,7 +171,7 @@ def resolve_product_delivery_plan(
         product_key=normalized_product_key,
         profile_key=profile.profile_key,
         profile_revision=profile.revision,
-        generated_keys=generated_keys,
+        generated_keys=tuple(generated_key_list),
         inherited_keys=inherited_keys,
         conditional_keys=tuple(conditional_payload),
     )

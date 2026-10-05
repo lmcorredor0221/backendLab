@@ -21,6 +21,79 @@ def _is_non_empty_text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+FORBIDDEN_GENERIC_FACTS = (
+    "Usuario Operativo",
+    "herramientas estandar",
+    "supervisor_with_subagents",
+    "Plan-and-Execute",
+    "session_and_checkpoints",
+)
+
+
+def _payload_text(value: object) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value or "")
+
+
+def _context_metadata(payload: dict[str, object]) -> dict[str, object]:
+    metadata = payload.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _contextual_quality_checks(
+    payload: dict[str, object],
+    *,
+    checks: dict[str, object],
+    warnings: list[str],
+    errors: list[str],
+) -> None:
+    metadata = _context_metadata(payload)
+    if str(metadata.get("context_version") or "") != "project-generation-context.v1":
+        return
+
+    fingerprint = str(metadata.get("input_fingerprint") or "").strip()
+    anchors = [
+        str(anchor or "").strip()
+        for anchor in (metadata.get("specificity_anchors") if isinstance(metadata.get("specificity_anchors"), list) else [])
+        if str(anchor or "").strip()
+    ]
+    missing_fields = [
+        str(field or "").strip()
+        for field in (metadata.get("missing_fields") if isinstance(metadata.get("missing_fields"), list) else [])
+        if str(field or "").strip()
+    ]
+    source_refs = [
+        str(ref or "").strip()
+        for ref in (metadata.get("source_refs") if isinstance(metadata.get("source_refs"), list) else payload.get("source_refs") if isinstance(payload.get("source_refs"), list) else [])
+        if str(ref or "").strip()
+    ]
+    visible_payload = {key: value for key, value in payload.items() if key != "metadata"}
+    text = _payload_text(visible_payload)
+    text_lower = text.lower()
+    forbidden_hits = [value for value in FORBIDDEN_GENERIC_FACTS if value.lower() in text_lower]
+    rendered_anchor_count = sum(1 for anchor in anchors if anchor.lower() in text_lower)
+
+    checks["context_has_input_fingerprint"] = bool(fingerprint)
+    checks["context_has_source_refs"] = bool(source_refs)
+    checks["context_has_specificity_anchors"] = bool(anchors) or bool(missing_fields)
+    checks["context_anchors_are_rendered"] = rendered_anchor_count >= min(2, len(anchors)) if anchors else bool(missing_fields)
+    checks["context_has_no_forbidden_generic_facts"] = not forbidden_hits
+    checks["context_declares_missing_fields"] = bool(missing_fields)
+
+    if not checks["context_has_input_fingerprint"]:
+        errors.append("context_input_fingerprint_missing")
+    if not checks["context_has_source_refs"]:
+        errors.append("context_source_refs_missing")
+    if not checks["context_has_specificity_anchors"]:
+        errors.append("context_specificity_anchors_missing")
+    if anchors and not checks["context_anchors_are_rendered"]:
+        errors.append("context_specificity_anchors_not_rendered")
+    if forbidden_hits:
+        errors.append("forbidden_generic_fact_present:" + ",".join(forbidden_hits))
+
+
 def evaluate_deliverable_quality(
     entry: DeliverableRegistryEntry,
     payload: object,
@@ -95,6 +168,7 @@ def evaluate_deliverable_quality(
                 checks["declares_estimate_source"] = "estimate" in text or "estimar" in text or "traceability" in text
                 if not checks["declares_estimate_source"]:
                     warnings.append("commercial_artifact_should_reference_estimate_sources")
+            _contextual_quality_checks(payload, checks=checks, warnings=warnings, errors=errors)
     elif schema_contract == "professional-document.v1":
         if not isinstance(payload, dict):
             errors.append("professional_document_payload_must_be_object")
@@ -111,6 +185,7 @@ def evaluate_deliverable_quality(
                 errors.append("professional_document_sections_missing")
             if not checks["has_traceability"]:
                 warnings.append("professional_document_traceability_missing")
+            _contextual_quality_checks(payload, checks=checks, warnings=warnings, errors=errors)
     elif schema_contract in {"plantuml-source.v1", "mermaid-source.v1", "bpmn-source.v1", "c4-source.v1", "diagram-presentation.v1"}:
         if not isinstance(payload, dict):
             errors.append("diagram_source_payload_must_be_object")
