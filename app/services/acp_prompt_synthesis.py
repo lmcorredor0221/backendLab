@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol, TYPE_CHECKING
 
 from app.models import ContractModel, PydanticField
-from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
+
+if TYPE_CHECKING:
+    from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
 
 
 class ACPPromptSectionSynthesisRequest(ContractModel):
@@ -156,7 +158,7 @@ def validate_prompt_section_synthesis(
     return synthesis.model_copy(update={"section_markdown": markdown})
 
 
-def _allowed_terms_from_context(context: ProjectGenerationContext) -> set[str]:
+def _allowed_terms_from_context(context: Any) -> set[str]:
     terms = {
         context.context_version,
         context.input_fingerprint,

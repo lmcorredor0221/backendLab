@@ -6,6 +6,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from app.models import CanvasArtifact, DiscoveryArtifact, ToolRecommendationLLMOutput
+from app.services.acp_prompt_synthesis import PromptSectionSynthesis
 from app.services.diagram_center.contracts import StructuredDiagramModel
 from app.services.llm_runtime.builder_contracts import (
     AgentDesignProposalOutput,
@@ -42,6 +43,7 @@ class BuilderCapability(StrEnum):
     judge_validation_run = "judge_validation_run"
     analyze_estimation_risks = "analyze_estimation_risks"
     generate_diagram_model = "generate_diagram_model"
+    synthesize_acp_prompt_section = "synthesize_acp_prompt_section"
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,13 @@ CAPABILITY_ALIASES: dict[BuilderCapability, set[str]] = {
         "diagrams",
         "diagram_center",
         "architecture_diagram",
+    },
+    BuilderCapability.synthesize_acp_prompt_section: {
+        "synthesize_acp_prompt_section",
+        "acp_prompt_section",
+        "acp_prompt_pack",
+        "prompt_pack",
+        "package_prompts",
     },
 }
 
@@ -573,6 +582,32 @@ CAPABILITY_SPECS: dict[BuilderCapability, BuilderCapabilitySpec] = {
         timeout_ms=180000,
         max_retries=1,
         fallback_policy="fail_visible_without_synthetic_diagram",
+    ),
+    BuilderCapability.synthesize_acp_prompt_section: BuilderCapabilitySpec(
+        capability=BuilderCapability.synthesize_acp_prompt_section,
+        task_kind="acp_prompt_section_synthesis",
+        prompt_version="synthesize_acp_prompt_section.v1",
+        source_key="acp_prompt_section_request",
+        source_title="ACP prompt section synthesis request",
+        source_summary="Seccion determinista ACP, contexto aprobado, anclas, source refs y restricciones para mejorar solo narrativa de prompts.",
+        system_instruction=(
+            "Mejora una seccion de prompt ACP usando exclusivamente el contexto permitido. "
+            "No cambies hechos, arquitectura, tools, RAG, bindings, workflows, manifest ni criterios de validacion. "
+            "No inventes endpoints, credenciales, OAuth apps, vector stores, embeddings, SLAs ni integraciones."
+        ),
+        task_instruction=(
+            "Devuelve una version Markdown de `deterministic_markdown` con instrucciones operativas mas claras y especificas. "
+            "Conserva los hechos y el alcance del prompt base. Usa `source_refs` y `specificity_anchors` cuando aporten contexto. "
+            "Si falta evidencia, formula la necesidad como pregunta o `needs_review`; no rellenes con ejemplos presentados como hechos. "
+            "Incluye en `cited_source_refs` solo referencias presentes en la entrada. Incluye en `introduced_terms` cualquier entidad operativa nueva."
+        ),
+        output_model=PromptSectionSynthesis,
+        preferred_model="reasoning",
+        llm_required=True,
+        critic_required=False,
+        timeout_ms=90000,
+        max_retries=0,
+        fallback_policy="preserve_deterministic_prompt_on_failure",
     ),
 }
 

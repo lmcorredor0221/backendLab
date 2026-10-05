@@ -63,6 +63,7 @@ from app.services.acp_export_profiles import (
     rebuild_profile_conformance_with_readiness,
 )
 from app.services.acp_generator import generate_acp_preview
+from app.services.acp_prompt_synthesis_runtime import build_llm_acp_prompt_synthesizer
 from app.services.acp_validation import derive_acp_export_status, should_block_acp_export
 from app.services.acp_zip_export import build_acp_zip
 from app.services.export_delivery_service import _blueprint_markdown
@@ -85,6 +86,8 @@ from app.services.operations_service import (
     record_estimation_artifact,
     record_export_artifact,
 )
+from app.services.openai_builder import build_builder_service
+from app.services.llm_runtime.runtime_settings_service import load_effective_runtime_settings
 from app.services.product_processing import (
     AcpDirectRouteResolution,
     ProductBuildOrchestrationOptions,
@@ -95,7 +98,13 @@ from app.services.product_processing import (
     ensure_acp_product_orchestration,
     ensure_product_build_orchestration,
 )
-from app.services.stage5_service import FEATURE_FLAG_ESTIMATION, FEATURE_FLAG_REACT_RUNTIME, create_export_handoff, is_feature_flag_enabled
+from app.services.stage5_service import (
+    FEATURE_FLAG_ACP_PROMPT_SYNTHESIS,
+    FEATURE_FLAG_ESTIMATION,
+    FEATURE_FLAG_REACT_RUNTIME,
+    create_export_handoff,
+    is_feature_flag_enabled,
+)
 from app.services.agentic_runtime.stages.extended import ReactCapabilityOutput, run_callable_react
 from app.services.workspace_bootstrap import apply_workspace_bootstrap
 
@@ -117,6 +126,27 @@ def _safe_snapshot_payload(value) -> dict:
     if isinstance(value, dict):
         return dict(value)
     return {"value": str(value)}
+
+
+def _acp_prompt_synthesizer_for_route(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    session_id: UUID,
+    snapshot: SessionSnapshot,
+    current_user: UserRecord,
+):
+    if not is_feature_flag_enabled(db, FEATURE_FLAG_ACP_PROMPT_SYNTHESIS, workspace_id=workspace_id):
+        return None
+    runtime_settings = load_effective_runtime_settings(db, workspace_id)
+    builder_service = build_builder_service(runtime_settings)
+    return build_llm_acp_prompt_synthesizer(
+        builder_service,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        snapshot=snapshot,
+        effective_language=current_user.preferred_language,
+    )
 
 
 def _blueprint_commercial_deliverable_context(snapshot: SessionSnapshot) -> dict:
@@ -408,6 +438,13 @@ def generate_acp_route(
     )
     ensure_acp_route_ready_for_package(db, record=record, current_user=current_user, snapshot=snapshot)
     response_records, preview_records, extra_readiness_gaps, continuity_answers = _construction_question_context(db, session_id)
+    prompt_synthesizer = _acp_prompt_synthesizer_for_route(
+        db,
+        workspace_id=record.workspace_id,
+        session_id=session_id,
+        snapshot=snapshot,
+        current_user=current_user,
+    )
     react_run = None
     if is_feature_flag_enabled(db, FEATURE_FLAG_REACT_RUNTIME, workspace_id=record.workspace_id):
         react_execution = run_callable_react(
@@ -417,7 +454,13 @@ def generate_acp_route(
             workspace_id=record.workspace_id,
             context_refs=["session.blueprint", "session.validate", "session.estimate", "knowledge.acp_portability"],
             runner=lambda: ReactCapabilityOutput(
-                value=generate_acp_preview(snapshot, continuity_answers or None, preview_records, extra_readiness_gaps),
+                value=generate_acp_preview(
+                    snapshot,
+                    continuity_answers or None,
+                    preview_records,
+                    extra_readiness_gaps,
+                    prompt_synthesizer,
+                ),
                 summary="Package valido readiness, preguntas de implementacion y portabilidad del ACP.",
             ),
             validator=lambda value: (
@@ -430,7 +473,13 @@ def generate_acp_route(
         preview = react_execution.value
         react_run = react_execution.react_run
     else:
-        preview = generate_acp_preview(snapshot, continuity_answers or None, preview_records, extra_readiness_gaps)
+        preview = generate_acp_preview(
+            snapshot,
+            continuity_answers or None,
+            preview_records,
+            extra_readiness_gaps,
+            prompt_synthesizer,
+        )
     if snapshot.canvas is not None:
         apply_workspace_bootstrap(db, record.workspace_id)
         if is_feature_flag_enabled(db, FEATURE_FLAG_ESTIMATION, workspace_id=record.workspace_id):
@@ -442,7 +491,13 @@ def generate_acp_route(
                     acp_preview=preview,
                 )
                 snapshot.estimation_report = estimation_report
-                preview = generate_acp_preview(snapshot, continuity_answers or None, preview_records, extra_readiness_gaps)
+                preview = generate_acp_preview(
+                    snapshot,
+                    continuity_answers or None,
+                    preview_records,
+                    extra_readiness_gaps,
+                    prompt_synthesizer,
+                )
                 record_estimation_artifact(
                     db,
                     session_id=session_id,

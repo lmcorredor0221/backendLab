@@ -15,6 +15,7 @@ from app.models import (
     ToolRecommendationLLMOutput,
     ToolRecommendationPromptInput,
 )
+from app.services.acp_prompt_synthesis import ACPPromptSectionSynthesisRequest
 from app.services.llm_finops.ledger_service import LLMUsageLedgerService
 from app.services.llm_finops.provider_instrumentation import FinOpsSessionFactory, record_provider_result
 from app.services.llm_finops.usage_normalization import normalize_cli_usage
@@ -598,6 +599,18 @@ class AntigravityLocalBuilderService:
     ) -> LLMArtifactResult:
         return self._execute_structured_capability(
             capability=BuilderCapability.generate_diagram_model,
+            payload=payload,
+            context_bundle=context_bundle,
+        )
+
+    def synthesize_acp_prompt_section(
+        self,
+        payload: ACPPromptSectionSynthesisRequest,
+        *,
+        context_bundle: StageContextBundle | None = None,
+    ) -> LLMArtifactResult:
+        return self._execute_structured_capability(
+            capability=BuilderCapability.synthesize_acp_prompt_section,
             payload=payload,
             context_bundle=context_bundle,
         )

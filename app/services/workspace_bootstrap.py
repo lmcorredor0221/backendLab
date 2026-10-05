@@ -33,6 +33,7 @@ from app.services.stage5_service import (
     DEFAULT_WORKFLOW_TEMPLATES,
     FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
     FEATURE_FLAG_ACP_INHERITED_UNCERTAINTY,
+    FEATURE_FLAG_ACP_PROMPT_SYNTHESIS,
     FEATURE_FLAG_DELIVERABLE_CATALOG,
     FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN,
     FEATURE_FLAG_DESIGN_INTELLIGENCE,
@@ -119,6 +120,12 @@ DEFAULT_FEATURE_FLAGS = [
         "key": FEATURE_FLAG_ACP_INHERITED_UNCERTAINTY,
         "enabled": True,
         "description": "Activa la reconciliacion selectiva de incertidumbres heredadas desde la fase explicita de ACP.",
+        "stage_hint": "acp",
+    },
+    {
+        "key": FEATURE_FLAG_ACP_PROMPT_SYNTHESIS,
+        "enabled": False,
+        "description": "Activa micro-sintesis LLM acotada para secciones narrativas del prompt pack ACP.",
         "stage_hint": "acp",
     },
     {

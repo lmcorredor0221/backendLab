@@ -15,6 +15,7 @@ from app.models import (
     LLMRuntimeSettings,
     ToolRecommendationPromptInput,
 )
+from app.services.acp_prompt_synthesis import ACPPromptSectionSynthesisRequest
 from app.services.diagram_center.contracts import DiagramGenerationInput
 from app.services.llm_runtime.builder_contracts import (
     AgentDesignCritiqueInput,
@@ -166,6 +167,13 @@ class BuilderProviderService(Protocol):
     def generate_diagram_model(
         self,
         payload: DiagramGenerationInput,
+        *,
+        context_bundle: StageContextBundle | None = None,
+    ) -> LLMArtifactResult: ...
+
+    def synthesize_acp_prompt_section(
+        self,
+        payload: ACPPromptSectionSynthesisRequest,
         *,
         context_bundle: StageContextBundle | None = None,
     ) -> LLMArtifactResult: ...
@@ -642,6 +650,25 @@ class BuilderProviderFacade:
             context_bundle=context_bundle,
             native_call=lambda service, route_context_bundle: service.generate_diagram_model(payload, context_bundle=route_context_bundle),
             codex_call=lambda service, route_context_bundle: service.generate_diagram_model(payload, context_bundle=route_context_bundle),
+        )
+
+    def synthesize_acp_prompt_section(
+        self,
+        payload: ACPPromptSectionSynthesisRequest,
+        *,
+        context_bundle: StageContextBundle | None = None,
+    ) -> LLMArtifactResult:
+        return self._execute_capability(
+            capability=BuilderCapability.synthesize_acp_prompt_section,
+            context_bundle=context_bundle,
+            native_call=lambda service, route_context_bundle: service.synthesize_acp_prompt_section(
+                payload,
+                context_bundle=route_context_bundle,
+            ),
+            codex_call=lambda service, route_context_bundle: service.synthesize_acp_prompt_section(
+                payload,
+                context_bundle=route_context_bundle,
+            ),
         )
 
     def _native_service(self) -> BuilderProviderService:
