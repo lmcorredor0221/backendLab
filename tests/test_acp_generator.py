@@ -281,18 +281,36 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert "ACP/conformance/portability-report.md" in paths
     manifest = next(item for item in preview.files if item.path == "ACP/manifest.yaml")
     assert "generated_by: Lean Agent Builder" in manifest.content_text
+    assert "context_version: project-generation-context.v1" in manifest.content_text
+    assert "context_source_refs:" in manifest.content_text
+    readme = next(item for item in preview.files if item.path == "ACP/README.md")
+    assert "Arquitecto de soluciones" in readme.content_text
+    assert "Estado de Tools:" in readme.content_text
+    assert "Estado de Memoria/RAG:" in readme.content_text
+    assert "Primera Pregunta Accionable:" in readme.content_text
+    assert "Usuario operativo" not in readme.content_text
     tool_contract = next(item for item in preview.files if item.path == "ACP/tools/external/tool-build-blueprint.yaml")
     assert "name: build_blueprint" in tool_contract.content_text
+    assert "binding_category: design_contract" in tool_contract.content_text
+    assert "invented_endpoint" in tool_contract.content_text
     connector_catalog = next(item for item in preview.files if item.path == "ACP/tools/connectors/catalog.yaml")
     assert "custom_client_tools_supported: true" in connector_catalog.content_text
     connector_profile = next(item for item in preview.files if item.path == "ACP/tools/connectors/build-blueprint.yaml")
     assert "schema_version: tool-connector-profile.v1" in connector_profile.content_text
     assert "custom_provider_supported: true" in connector_profile.content_text
+    assert "binding_category: design_contract" in connector_profile.content_text
     production_binding = next(
         item for item in preview.files if item.path == "ACP/tools/bindings/build-blueprint.production.yaml"
     )
+    assert "binding_category: pending_binding" in production_binding.content_text
     assert "secret:BUILD_BLUEPRINT_PRODUCTION_AUTH" in production_binding.content_text
     assert "fail_closed_when_binding_missing: true" in production_binding.content_text
+    assert "http://" not in production_binding.content_text
+    assert "https://" not in production_binding.content_text
+    memory_strategy = next(item for item in preview.files if item.path == "ACP/memory/strategy.yaml")
+    assert "retrieval_design_category:" in memory_strategy.content_text
+    knowledge_sources = next(item for item in preview.files if item.path == "ACP/knowledge/sources.yaml")
+    assert "retrieval_design_category:" in knowledge_sources.content_text
     readiness_overview = next(
         item for item in preview.files if item.path == "ACP/construction-readiness/overview.yaml"
     )

@@ -43,6 +43,7 @@ from app.services.acp_serialization import (
 )
 from app.services.acp_visualization import build_acp_visualization_files
 from app.services.acp_validation import build_acp_file_entry, build_acp_preview
+from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
 from app.services.deliverable_catalog.registry_service import list_registry_entries
 from app.services.objective_contracts import active_objective, build_objective_contract_bundle, objective_requires_runtime_loop
 
@@ -138,6 +139,122 @@ def _is_placeholder_value(value: Any) -> bool:
             "placeholder",
         )
     )
+
+
+def _build_acp_generation_context(
+    snapshot: SessionSnapshot,
+    response_records: list[ConstructionQuestionResponseRecord] | None = None,
+    extra_readiness_gaps: list[ConstructionGapEntry] | None = None,
+) -> ProjectGenerationContext:
+    raw_snapshot = snapshot.model_dump(mode="json")
+    discovery = snapshot.discovery
+    canvas = snapshot.canvas
+    blueprint = snapshot.blueprint
+    knowledge_profile = blueprint.knowledge_profile if blueprint is not None else None
+    snapshot_payload: dict[str, Any] = {
+        "raw_snapshot": raw_snapshot,
+        "session_id": str(snapshot.session.id),
+        "workspace_id": str(getattr(snapshot.session, "workspace_id", "") or ""),
+        "project_title": snapshot.session.title,
+        "problem_statement": discovery.problem_statement if discovery else "",
+        "current_process": discovery.current_process if discovery else "",
+        "current_user": discovery.current_user if discovery else "",
+        "desired_outcome": discovery.desired_outcome if discovery else "",
+        "objectives": [canvas.user_goal] if canvas and canvas.user_goal else [],
+        "mvp_scope": canvas.mvp_scope if canvas else [],
+        "out_of_scope": canvas.out_of_scope if canvas else [],
+        "constraints": discovery.constraints if discovery else [],
+        "nondelegable_decisions": discovery.mvp_definition.non_delegable_decisions if discovery else [],
+        "architecture": blueprint.architecture if blueprint else "",
+        "reasoning_pattern": blueprint.reasoning_pattern if blueprint else "",
+        "tools": [tool.model_dump(mode="json") for tool in blueprint.tools] if blueprint else [],
+        "memory_strategy": blueprint.memory_strategy if blueprint else "",
+        "rag_required": bool(knowledge_profile and knowledge_profile.mode == "rag"),
+        "knowledge_sources": [source.model_dump(mode="json") for source in knowledge_profile.sources] if knowledge_profile else [],
+        "guardrails": blueprint.guardrails if blueprint else [],
+        "risks": [canvas.primary_risk] if canvas and canvas.primary_risk else [],
+        "acceptance_criteria": [canvas.success_metric] if canvas and canvas.success_metric else [],
+    }
+    questions = [item.model_dump(mode="json") for item in response_records or []]
+    artifacts = {
+        "extra_readiness_gaps": [item.model_dump(mode="json") for item in extra_readiness_gaps or []],
+        "journey_latest_artifacts": raw_snapshot.get("journey_latest_artifacts", {}),
+    }
+    return ProjectGenerationContext.from_acp_inputs(
+        snapshot_payload,
+        questions,
+        artifacts,
+        deliverable_key="acp.preview",
+    )
+
+
+def _context_source_refs(context: ProjectGenerationContext | None) -> list[str]:
+    if context is None:
+        return []
+    return [source.ref for source in context.source_refs[:12]]
+
+
+def _context_anchor_values(context: ProjectGenerationContext | None) -> list[str]:
+    if context is None:
+        return []
+    return [anchor.value for anchor in context.specificity_anchors[:8] if anchor.value]
+
+
+def _tool_binding_category(tool: Any) -> str:
+    registered_ref = str(getattr(tool, "registered_api_ref", "") or "").strip()
+    if registered_ref and not _is_placeholder_value(registered_ref):
+        return "design_contract"
+    if getattr(tool, "inputs", None) or getattr(tool, "outputs", None) or getattr(tool, "request_schema", None) or getattr(tool, "response_schema", None):
+        return "design_contract"
+    return "pending_binding"
+
+
+def _retrieval_design_category(snapshot: SessionSnapshot, context: ProjectGenerationContext | None) -> str:
+    blueprint = snapshot.blueprint
+    knowledge_profile = blueprint.knowledge_profile if blueprint is not None else None
+    source_count = len(knowledge_profile.sources) if knowledge_profile is not None else 0
+    mode = str(getattr(knowledge_profile, "mode", "") or "").strip().lower() if knowledge_profile is not None else ""
+    memory_strategy = (context.memory_strategy if context is not None else "") or (blueprint.memory_strategy if blueprint else "")
+    mentions_retrieval = any(token in memory_strategy.lower() for token in ("rag", "retrieval", "vector", "knowledge", "conocimiento"))
+    if mode == "none" or context is not None and context.rag_required is False:
+        return "not_required"
+    if mode == "rag" or (context is not None and context.rag_required is True) or mentions_retrieval:
+        return "approved_retrieval_design" if source_count or (context is not None and context.knowledge_sources) else "pending_knowledge_foundation"
+    return "not_required"
+
+
+def _first_actionable_construction_question(context: ProjectGenerationContext | None) -> str:
+    if context is None:
+        return "Revisar `ACP/construction-readiness/open-questions.yaml` antes de activar integraciones."
+    for question in context.construction_questions:
+        if question.answer_text.strip():
+            continue
+        if question.question_text.strip():
+            impacted = ", ".join(question.impacted_artifacts[:3])
+            suffix = f" Impacta: {impacted}." if impacted else ""
+            return f"{question.question_text.strip()}{suffix}"
+    if context.missing_fields:
+        return f"Completar dato pendiente: {context.missing_fields[0].field}."
+    return "Revisar `ACP/construction-readiness/open-questions.yaml` antes de activar integraciones."
+
+
+def _tool_state_summary(snapshot: SessionSnapshot) -> str:
+    blueprint = snapshot.blueprint
+    if blueprint is None or not blueprint.tools:
+        return "Sin herramientas externas confirmadas; mantener categoria pending_binding hasta definir contratos."
+    categories = [_tool_binding_category(tool) for tool in blueprint.tools]
+    design_count = sum(1 for category in categories if category == "design_contract")
+    pending_count = sum(1 for category in categories if category == "pending_binding")
+    return f"{design_count} design_contract, {pending_count} pending_binding, 0 operational_binding."
+
+
+def _retrieval_state_summary(snapshot: SessionSnapshot, context: ProjectGenerationContext | None) -> str:
+    category = _retrieval_design_category(snapshot, context)
+    return {
+        "approved_retrieval_design": "approved_retrieval_design: usar fuentes y politicas aprobadas antes de implementar retrieval.",
+        "pending_knowledge_foundation": "pending_knowledge_foundation: fijar fuentes, ingestion y vector store antes de activar retrieval.",
+        "not_required": "not_required: el diseno aprobado no exige retrieval documental.",
+    }.get(category, category)
 
 
 def _source_entries_from_answer(answer_text: str) -> list[dict[str, str]]:
@@ -406,10 +523,21 @@ def _build_estimation_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
 
 def _tool_contract_file(tool: Any, index: int) -> ACPFileEntry:
     tool_type = getattr(tool, "tool_type", "external") or "external"
+    binding_category = _tool_binding_category(tool)
     payload = {
         "name": tool.name or f"tool_{index}",
         "purpose": tool.purpose,
         "tool_type": tool_type,
+        "binding_category": binding_category,
+        "binding_guidance": {
+            "category": binding_category,
+            "expected_next_step": (
+                "Completar provider, endpoint permitido y secretos como referencias de entorno antes de activar la tool."
+                if binding_category == "pending_binding"
+                else "Implementar contra este contrato de diseno; no asumir binding operacional hasta confirmarlo."
+            ),
+            "forbidden_in_acp": ["plain_secret", "real_token", "cookie_value", "invented_endpoint"],
+        },
         "execution_stage": getattr(tool, "execution_stage", "tools") or "tools",
         "when_to_use": getattr(tool, "when_to_use", "") or "",
         "type": "write" if tool.has_side_effects else "read",
@@ -451,10 +579,11 @@ def _tool_contract_file(tool: Any, index: int) -> ACPFileEntry:
     )
 
 
-def _build_manifest_file(snapshot: SessionSnapshot) -> ACPFileEntry:
+def _build_manifest_file(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> ACPFileEntry:
     discovery = snapshot.discovery
     blueprint = snapshot.blueprint
     runtime = _runtime_defaults(snapshot)
+    retrieval_category = _retrieval_design_category(snapshot, context)
     payload = {
         "metadata": {
             "id": _slugify(snapshot.session.title, default="agent"),
@@ -462,21 +591,25 @@ def _build_manifest_file(snapshot: SessionSnapshot) -> ACPFileEntry:
             "version": "1.0.0",
             "maturity": "MVP",
             "generated_by": "Lean Agent Builder",
+            "context_version": context.context_version if context is not None else "",
+            "context_fingerprint": context.input_fingerprint if context is not None else "",
+            "context_source_refs": _context_source_refs(context),
         },
         "business": {
-            "objective": discovery.desired_outcome if discovery else "",
-            "users": [discovery.current_user] if discovery and discovery.current_user else [],
+            "objective": (context.desired_outcome if context and context.desired_outcome else discovery.desired_outcome if discovery else ""),
+            "users": [context.current_user] if context and context.current_user else [discovery.current_user] if discovery and discovery.current_user else [],
             "kpis": [discovery.mvp_definition.north_star_metric] if discovery and discovery.mvp_definition.north_star_metric else [],
         },
         "architecture": {
-            "topology": blueprint.architecture if blueprint else "",
-            "reasoning_pattern": blueprint.reasoning_pattern if blueprint else "",
+            "topology": (context.architecture if context and context.architecture else blueprint.architecture if blueprint else ""),
+            "reasoning_pattern": (context.reasoning_pattern if context and context.reasoning_pattern else blueprint.reasoning_pattern if blueprint else ""),
             "autonomy_level": discovery.autonomy_level if discovery else "",
         },
         "memory": {
-            "strategy": blueprint.memory_profile.strategy if blueprint else "",
+            "strategy": (context.memory_strategy if context and context.memory_strategy else blueprint.memory_profile.strategy if blueprint else ""),
+            "retrieval_design_category": retrieval_category,
             "short_term": "session",
-            "long_term": "needs_review",
+            "long_term": "approved_sources" if retrieval_category == "approved_retrieval_design" else retrieval_category,
         },
         "runtime": runtime,
         "delivery": {
@@ -494,20 +627,35 @@ def _build_manifest_file(snapshot: SessionSnapshot) -> ACPFileEntry:
     )
 
 
-def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
+def _build_readme_file(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> ACPFileEntry:
     discovery = snapshot.discovery
     blueprint = snapshot.blueprint
     canvas = snapshot.canvas
     title = snapshot.session.title or "Agent Construction Package"
 
-    desired_outcome = discovery.desired_outcome if discovery and discovery.desired_outcome else "Automatizar flujos operativos con garantías de trazabilidad y gobernanza."
-    problem_statement = discovery.problem_statement if discovery and discovery.problem_statement else "Optimización operativa mediante agentes de IA."
-    primary_user = (canvas.agent_profile.primary_user if canvas and canvas.agent_profile else None) or (discovery.current_user if discovery else "Usuario operativo")
-    architecture = blueprint.architecture if blueprint and blueprint.architecture else "Arquitectura agéntica estructurada"
-    reasoning_pattern = blueprint.reasoning_pattern if blueprint and blueprint.reasoning_pattern else "Plan-and-Execute"
-    memory_strategy = blueprint.memory_strategy if blueprint and blueprint.memory_strategy else "Memoria dual (sesión + RAG)"
+    desired_outcome = (context.desired_outcome if context and context.desired_outcome else discovery.desired_outcome if discovery and discovery.desired_outcome else "needs_review")
+    problem_statement = (context.problem_statement if context and context.problem_statement else discovery.problem_statement if discovery and discovery.problem_statement else "needs_review")
+    primary_user = (
+        context.current_user
+        if context and context.current_user
+        else (canvas.agent_profile.primary_user if canvas and canvas.agent_profile else None)
+        or (discovery.current_user if discovery and discovery.current_user else "needs_review")
+    )
+    architecture = (context.architecture if context and context.architecture else blueprint.architecture if blueprint and blueprint.architecture else "needs_review")
+    reasoning_pattern = (
+        context.reasoning_pattern
+        if context and context.reasoning_pattern
+        else blueprint.reasoning_pattern if blueprint and blueprint.reasoning_pattern else "needs_review"
+    )
+    memory_strategy = (
+        context.memory_strategy
+        if context and context.memory_strategy
+        else blueprint.memory_strategy if blueprint and blueprint.memory_strategy else "needs_review"
+    )
     autonomy_level = discovery.autonomy_level if discovery and discovery.autonomy_level else "Supervisada (HITL)"
     tool_count = len(blueprint.tools) if blueprint and blueprint.tools else 0
+    anchors = _context_anchor_values(context)
+    first_question = _first_actionable_construction_question(context)
 
     sections = [
         f"# {title} — Agent Construction Package (ACP v2)",
@@ -524,6 +672,11 @@ def _build_readme_file(snapshot: SessionSnapshot) -> ACPFileEntry:
         f"- **Estrategia de Memoria:** `{memory_strategy}`",
         f"- **Nivel de Autonomía:** `{autonomy_level}`",
         f"- **Herramientas Gobernadas:** `{tool_count}` herramientas con contratos de interfaz.",
+        f"- **Estado de Tools:** {_tool_state_summary(snapshot)}",
+        f"- **Estado de Memoria/RAG:** {_retrieval_state_summary(snapshot, context)}",
+        f"- **Primera Pregunta Accionable:** {first_question}",
+        f"- **Fuentes de Contexto:** `{len(_context_source_refs(context))}` referencias trazadas.",
+        f"- **Anclas de Especificidad:** {', '.join(anchors) if anchors else 'needs_review'}",
         "",
         "## 2. Estructura de Directorios del Paquete",
         "```text",
@@ -1629,14 +1782,16 @@ def _build_cognition_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     ]
 
 
-def _build_memory_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+def _build_memory_files(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> list[ACPFileEntry]:
     blueprint = snapshot.blueprint
     if blueprint is None:
         return []
     memory_profile = blueprint.memory_profile
     grounding_payload = memory_profile.grounding_policy.model_dump(mode="json")
+    retrieval_category = _retrieval_design_category(snapshot, context)
     strategy_payload = {
         "strategy": memory_profile.strategy or blueprint.memory_strategy,
+        "retrieval_design_category": retrieval_category,
         "short_term": {
             "enabled": True,
             "type": "session_state",
@@ -1654,6 +1809,7 @@ def _build_memory_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
         },
     }
     retrieval_payload = {
+        "retrieval_design_category": retrieval_category,
         "retrieval_policy": memory_profile.retrieval_policy,
         "storage_layers": memory_profile.storage_layers,
         "grounding_policy": grounding_payload,
@@ -1702,6 +1858,7 @@ def _build_memory_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
 def _build_knowledge_files(
     snapshot: SessionSnapshot,
     continuity_answers: dict[str, str] | None = None,
+    context: ProjectGenerationContext | None = None,
 ) -> list[ACPFileEntry]:
     discovery = snapshot.discovery
     blueprint = snapshot.blueprint
@@ -1749,6 +1906,7 @@ def _build_knowledge_files(
     )
 
     knowledge_mode = knowledge_profile.mode if knowledge_profile is not None else ""
+    retrieval_category = _retrieval_design_category(snapshot, context)
     owner_sources = _knowledge_sources_from_owner_entries(source_entries) if source_entries else []
     explicit_sources = []
     if knowledge_profile is not None and knowledge_profile.sources:
@@ -1772,6 +1930,7 @@ def _build_knowledge_files(
     explicit_lineage = [item["lineage_key"] for item in source_payload_entries if item.get("lineage_key")]
 
     sources_payload = {
+        "retrieval_design_category": retrieval_category,
         "known_sources": source_payload_entries,
         "current_process_context": current_process,
         "mode": knowledge_mode or "none",
@@ -1785,6 +1944,7 @@ def _build_knowledge_files(
             "notes": knowledge_profile.notes or "Knowledge deshabilitado para este caso.",
         }
         disabled_ingestion_payload = {
+            "retrieval_design_category": "not_required",
             "strategy": "not_required",
             "frequency": "not_required",
             "owner": "not_required",
@@ -1792,6 +1952,7 @@ def _build_knowledge_files(
             "notes": knowledge_profile.notes or "No hay ingestion porque el caso no usa retrieval documental.",
         }
         disabled_embeddings_payload = {
+            "retrieval_design_category": "not_required",
             "provider": "not_required",
             "vector_store": "not_required",
             "chunking_policy": "not_required",
@@ -1829,6 +1990,7 @@ def _build_knowledge_files(
         ]
 
     ingestion_payload = {
+        "retrieval_design_category": retrieval_category,
         "strategy": ingestion_pairs.get("strategy")
         or (knowledge_profile.ingestion_policy.parser if knowledge_profile is not None else "")
         or ("captured_from_owner" if ingestion_answer else "needs_review"),
@@ -1855,6 +2017,7 @@ def _build_knowledge_files(
         if runtime_vector_answer and is_no_applicable_answer(runtime_vector_answer):
             vector_store_value = "not_required"
         embeddings_payload = {
+            "retrieval_design_category": retrieval_category,
             "provider": embedding_provider,
             "vector_store": vector_store_value or ("captured_from_owner" if runtime_vector_answer else "pending_review"),
             "chunking_policy": chunking_policy,
@@ -1898,6 +2061,7 @@ def _build_knowledge_files(
             vector_store_value = "not_required"
 
         embeddings_payload = {
+            "retrieval_design_category": retrieval_category,
             "provider": embeddings_provider,
             "vector_store": vector_store_value or ("captured_from_owner" if runtime_vector_answer else "needs_review"),
             "chunking_policy": embeddings_chunking,
@@ -1937,14 +2101,17 @@ def _build_knowledge_files(
     ]
 
 
-def _build_tools_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+def _build_tools_files(snapshot: SessionSnapshot, context: ProjectGenerationContext | None = None) -> list[ACPFileEntry]:
     blueprint = snapshot.blueprint
     if blueprint is None:
         return []
     permissions_payload = {
+        "context_version": context.context_version if context is not None else "",
+        "context_source_refs": _context_source_refs(context),
         "tools": [
             {
                 "name": item.name,
+                "binding_category": _tool_binding_category(item),
                 "requires_approval": item.requires_approval,
                 "approval_reason": item.approval_reason,
                 "risk_level": item.risk_level,
@@ -1997,6 +2164,7 @@ def _tool_connector_profile_payload(tool: Any, index: int) -> dict[str, Any]:
         "label": getattr(tool, "name", "") or f"Tool {index}",
         "source_tool_contract": _tool_contract_ref(tool, index),
         "tool_type": getattr(tool, "tool_type", "external") or "external",
+        "binding_category": _tool_binding_category(tool),
         "provider_model": {
             "known_provider_required": False,
             "custom_provider_supported": True,
@@ -2040,6 +2208,7 @@ def _tool_binding_payload(tool: Any, index: int, environment: str) -> dict[str, 
         "connector_key": slug,
         "tool_name": tool_name,
         "source_tool_contract": _tool_contract_ref(tool, index),
+        "binding_category": "pending_binding",
         "binding": {
             "binding_type": "needs_review",
             "provider": "custom_or_client_specific",
@@ -5738,19 +5907,21 @@ def generate_acp_files(
     continuity_answers: dict[str, str] | None = None,
     response_records: list[ConstructionQuestionResponseRecord] | None = None,
     extra_readiness_gaps: list[ConstructionGapEntry] | None = None,
+    context: ProjectGenerationContext | None = None,
 ) -> list[ACPFileEntry]:
+    acp_context = context or _build_acp_generation_context(snapshot, response_records, extra_readiness_gaps)
     files: list[ACPFileEntry] = []
-    files.append(_build_manifest_file(snapshot))
-    files.append(_build_readme_file(snapshot))
+    files.append(_build_manifest_file(snapshot, acp_context))
+    files.append(_build_readme_file(snapshot, acp_context))
     files.extend(_build_deliverable_catalog_files(snapshot))
     files.extend(_build_launcher_files(snapshot))
     files.extend(_build_adapter_files(snapshot))
     files.extend(_build_business_files(snapshot))
     files.extend(_build_architecture_files(snapshot))
     files.extend(_build_cognition_files(snapshot))
-    files.extend(_build_memory_files(snapshot))
-    files.extend(_build_knowledge_files(snapshot, continuity_answers))
-    files.extend(_build_tools_files(snapshot))
+    files.extend(_build_memory_files(snapshot, acp_context))
+    files.extend(_build_knowledge_files(snapshot, continuity_answers, acp_context))
+    files.extend(_build_tools_files(snapshot, acp_context))
     files.extend(_build_tool_connector_files(snapshot))
     files.extend(_build_objective_files(snapshot, response_records))
     files.extend(_build_workflow_files(snapshot))
@@ -5798,8 +5969,9 @@ def generate_acp_preview(
     response_records: list[ConstructionQuestionResponseRecord] | None = None,
     extra_readiness_gaps: list[ConstructionGapEntry] | None = None,
 ) -> ACPPreview:
+    acp_context = _build_acp_generation_context(snapshot, response_records, extra_readiness_gaps)
     preview = build_acp_preview(
         snapshot,
-        generate_acp_files(snapshot, continuity_answers, response_records, extra_readiness_gaps),
+        generate_acp_files(snapshot, continuity_answers, response_records, extra_readiness_gaps, acp_context),
     )
     return append_construction_readiness_gaps(preview, extra_readiness_gaps)
