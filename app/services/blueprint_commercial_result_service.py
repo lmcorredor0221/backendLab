@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import re
 from typing import Any
 from uuid import UUID
 
@@ -33,6 +34,81 @@ def _text(value: Any, fallback: str = "No disponible en el snapshot aprobado.") 
     if isinstance(value, str):
         return value.strip() or fallback
     return str(value)
+
+
+def _mermaid_label(value: Any, fallback: str, *, limit: int = 72) -> str:
+    text = _text(value, fallback=fallback)
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace('"', "'").replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")")
+    return text[:limit] or fallback
+
+
+def _tool_name(tool: Any) -> str:
+    return _text(getattr(tool, "name", None) or (tool.get("name") if isinstance(tool, dict) else None), fallback="")
+
+
+def _build_architecture_diagram(blueprint: dict[str, Any]) -> str:
+    tools = [_tool_name(tool) for tool in blueprint["tools"][:3] if _tool_name(tool)]
+    if not tools:
+        tools = ["Tool pendiente de confirmar"]
+    tool_nodes = [f'  Tool{i}["{_mermaid_label(name, "Tool")}"]' for i, name in enumerate(tools, start=1)]
+    tool_edges = [f"  Architecture --> Tool{i}" for i, _name in enumerate(tools, start=1)]
+    return "\n".join(
+        [
+            "```mermaid",
+            "flowchart LR",
+            f'  Business["{_mermaid_label(blueprint["problem"], "Necesidad de negocio")}"] --> Architecture["{_mermaid_label(blueprint["architecture"], "Arquitectura propuesta")}"]',
+            f'  Architecture --> Reasoning["{_mermaid_label(blueprint["reasoning"], "Razonamiento")}"]',
+            f'  Architecture --> Memory["{_mermaid_label(blueprint["memory"], "Memoria")}"]',
+            *tool_nodes,
+            *tool_edges,
+            f'  Reasoning --> HumanGate["{_mermaid_label(blueprint["human_approvals"][0] if blueprint["human_approvals"] else "", "Aprobacion humana")}"]',
+            f'  Memory --> Outcome["{_mermaid_label(blueprint["desired_outcome"], "Resultado esperado")}"]',
+            "  HumanGate --> Outcome",
+            *[f"  Tool{i} --> Outcome" for i, _name in enumerate(tools, start=1)],
+            "```",
+        ]
+    )
+
+
+def _build_value_diagram(blueprint: dict[str, Any], estimation: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "```mermaid",
+            "flowchart TB",
+            f'  Discover["{_mermaid_label(blueprint["primary_user"], "Usuario principal")}"] --> Problem["{_mermaid_label(blueprint["problem"], "Problema")}"]',
+            f'  Problem --> Scope["{_mermaid_label(blueprint["in_scope"][0] if blueprint["in_scope"] else "", "Alcance MVP")}"]',
+            f'  Scope --> Design["{_mermaid_label(blueprint["architecture"], "Diseno agentico")}"]',
+            f'  Design --> Control["{_mermaid_label(blueprint["guardrails"][0] if blueprint["guardrails"] else "", "Control")}"]',
+            f'  Control --> Estimate["Ahorro { _mermaid_label(estimation["savings_percent"], "estimado") }"]',
+            f'  Estimate --> Result["{_mermaid_label(blueprint["desired_outcome"], "Resultado comercial")}"]',
+            "```",
+        ]
+    )
+
+
+def _build_scope_diagram(blueprint: dict[str, Any]) -> str:
+    in_scope = [_mermaid_label(item, "En alcance") for item in blueprint["in_scope"][:4]]
+    out_scope = [_mermaid_label(item, "Fuera de alcance") for item in blueprint["out_of_scope"][:3]]
+    return "\n".join(
+        [
+            "```mermaid",
+            "mindmap",
+            f'  root(("{_mermaid_label(blueprint["title"], "Blueprint comercial")}"))',
+            "    En alcance",
+            *[f"      {item}" for item in in_scope],
+            "    Fuera de alcance",
+            *[f"      {item}" for item in out_scope],
+            "    Arquitectura",
+            f'      {_mermaid_label(blueprint["architecture"], "Arquitectura pendiente")}',
+            "    Herramientas",
+            *[f"      {_mermaid_label(_tool_name(tool), 'Tool pendiente')}" for tool in blueprint["tools"][:3]],
+            "    Memoria",
+            f'      {_mermaid_label(blueprint["memory"], "Memoria pendiente")}',
+            "```",
+        ]
+    )
 
 
 def _latest_blueprint_version_number(snapshot: SessionSnapshot) -> int | None:
@@ -344,47 +420,9 @@ def _build_commercial_specs(snapshot: SessionSnapshot) -> list[CommercialArtifac
             "- **Servicios e Integraciones Externas:** Las credenciales de APIs de terceros, infraestructura cloud dedicada, bases de datos vectoriales propietarias y sistemas legacy del cliente se configuran en el entorno final de despliegue.",
         ]
     )
-    architecture_diagram = "\n".join(
-        [
-            "```mermaid",
-            "flowchart LR",
-            '  Business["Necesidad de negocio"] --> Blueprint["Blueprint Basico"]',
-            '  Blueprint --> Architecture["Arquitectura propuesta"]',
-            '  Blueprint --> Tools["Herramientas minimas"]',
-            '  Blueprint --> Memory["Memoria y conocimiento"]',
-            '  Architecture --> Value["Valor comercial"]',
-            '  Tools --> Value',
-            '  Memory --> Value',
-            "```",
-        ]
-    )
-    value_diagram = "\n".join(
-        [
-            "```mermaid",
-            "flowchart TB",
-            '  Discover["Descubrir"] --> Define["Definir"]',
-            '  Define --> Design["Disenar"]',
-            '  Design --> Tools["Herramientas"]',
-            '  Tools --> Memory["Memoria"]',
-            '  Memory --> Estimate["Estimar valor"]',
-            '  Estimate --> Result["Resultado comercial Blueprint"]',
-            "```",
-        ]
-    )
-    scope_diagram = "\n".join(
-        [
-            "```mermaid",
-            "mindmap",
-            "  root((Blueprint comercial))",
-            "    Arquitectura",
-            "    Patrones agenticos",
-            "    Herramientas minimas",
-            "    Memoria y conocimiento",
-            "    Estimacion de valor",
-            "    Oportunidades Premium",
-            "```",
-        ]
-    )
+    architecture_diagram = _build_architecture_diagram(blueprint)
+    value_diagram = _build_value_diagram(blueprint, estimation)
+    scope_diagram = _build_scope_diagram(blueprint)
 
     raw_specs = [
         (

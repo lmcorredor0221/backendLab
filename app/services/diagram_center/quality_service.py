@@ -222,6 +222,53 @@ def _semantic_checks(model: DiagramModel, checks: dict[str, bool], warnings: lis
             warnings.append("El diagrama agentico deberia diferenciar visualmente orquestadores, memorias RAG y herramientas MCP.")
 
 
+def _context_specificity_checks(
+    model: DiagramModel,
+    checks: dict[str, bool],
+    warnings: list[str],
+    errors: list[str],
+) -> None:
+    if str(model.metadata.get("context_version") or "") != "project-generation-context.v1":
+        return
+
+    anchors = [
+        str(anchor or "").strip()
+        for anchor in (model.metadata.get("specificity_anchors") if isinstance(model.metadata.get("specificity_anchors"), list) else [])
+        if str(anchor or "").strip()
+    ]
+    missing_fields = [
+        str(field or "").strip()
+        for field in (model.metadata.get("missing_fields") if isinstance(model.metadata.get("missing_fields"), list) else [])
+        if str(field or "").strip()
+    ]
+    fingerprint = str(model.metadata.get("input_fingerprint") or "").strip()
+    rendered_text = _kind(
+        " ".join(
+            [
+                model.title,
+                model.description,
+                *[node.label for node in model.nodes],
+                *[node.description for node in model.nodes],
+                *[edge.label for edge in model.edges],
+            ]
+        )
+    )
+
+    checks["context_has_input_fingerprint"] = bool(fingerprint)
+    checks["context_has_specificity_anchors"] = len(anchors) >= 2 or bool(missing_fields)
+    checks["context_declares_missing_fields"] = bool(missing_fields)
+    checks["context_anchors_are_rendered"] = any(_kind(anchor) in rendered_text for anchor in anchors)
+
+    if not checks["context_has_input_fingerprint"]:
+        errors.append("El diagrama contextual no declara input_fingerprint.")
+    if not checks["context_has_specificity_anchors"]:
+        errors.append("El diagrama contextual no incluye anclas de especificidad suficientes ni campos faltantes declarados.")
+    if anchors and not checks["context_anchors_are_rendered"]:
+        errors.append("El diagrama contextual no refleja sus anclas de especificidad en nodos o relaciones.")
+    if missing_fields:
+        warnings.append("El diagrama contextual declara informacion pendiente: " + ", ".join(missing_fields[:6]) + ".")
+
+
 def evaluate_diagram_quality(model: DiagramModel) -> DiagramQualityReport:
     errors: list[str] = []
     warnings: list[str] = []
@@ -287,6 +334,7 @@ def evaluate_diagram_quality(model: DiagramModel) -> DiagramQualityReport:
 
     _semantic_checks(model, checks, warnings)
     _agent_orchestration_checks(model, checks, warnings, errors)
+    _context_specificity_checks(model, checks, warnings, errors)
 
     score = 100 - (30 * len(errors)) - (8 * len(warnings))
     if _kind(model.diagram_key) == "agent_orchestration" and not errors and score < 90:

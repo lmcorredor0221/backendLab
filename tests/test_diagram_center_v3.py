@@ -21,6 +21,7 @@ from app.services.diagram_center.contracts import (
     DiagramLane,
     DiagramModel,
     DiagramNode,
+    DiagramNotation,
     DiagramPool,
     StructuredDiagramModel,
     StructuredDiagramNode,
@@ -29,6 +30,7 @@ from app.services.diagram_center.contracts import (
     StructuredDiagramLane,
 )
 from app.services.diagram_center.catalog_service import _renderings_need_refresh, build_catalog_v3, build_diagram_detail_v3
+from app.services.diagram_center.deterministic_builders import build_deterministic_diagram
 from app.services.diagram_center.generation_service import _source_context, run_generation_job
 from app.services.diagram_center.persistence import DiagramGovernanceRecord, DiagramVersionRecord
 from app.services.diagram_center.policy_service import resolve_diagram_policy
@@ -289,6 +291,171 @@ def test_diagram_model_quality_and_renderers_use_canonical_graph() -> None:
     assert "@startuml" in renderings["plantuml"]
     assert '"diagram_key": "sequence_diagram"' in renderings["presentation"]
     assert '"schema_version": "diagram-model.v1"' in renderings["json"]
+
+
+def _deterministic_input(*, diagram_key: str = "agent_orchestration", domain: str = "clinical") -> DiagramGenerationInput:
+    if domain == "clinical":
+        discover = {
+            "problem_statement": "Las solicitudes de soporte clinico se clasifican tarde.",
+            "current_user": "Coordinador de soporte clinico",
+            "current_process": "Radicacion manual en correo.",
+            "desired_outcome": "Priorizar casos urgentes en menos de cinco minutos.",
+        }
+        define = {
+            "mvp_scope": ["Clasificar solicitudes por urgencia", "Escalar casos criticos"],
+            "non_delegable_decisions": ["Aprobar cambio de prioridad clinica"],
+        }
+        design = {
+            "selected_design": {
+                "architecture_pattern": "router_triage_with_human_gate",
+                "reasoning_pattern": "structured_triage",
+                "roles": [
+                    {"title": "Clasificador clinico", "responsibility": "Prioriza casos"},
+                    {"title": "Validador humano", "responsibility": "Aprueba cambios sensibles"},
+                ],
+            },
+            "guardrails": ["No emitir diagnosticos medicos"],
+        }
+        tools = {"recommended_tools": [{"name": "Zendesk Salud", "purpose": "Leer tickets aprobados"}]}
+        memory = {"memory_strategy": "case_summary_checkpoints"}
+    else:
+        discover = {
+            "problem_statement": "Los leads B2B llegan sin priorizacion comercial.",
+            "current_user": "Gerente comercial",
+            "current_process": "Revision manual de formularios.",
+            "desired_outcome": "Asignar score de oportunidad antes de contactar.",
+        }
+        define = {
+            "mvp_scope": ["Calcular score comercial", "Enviar leads calientes a ventas"],
+            "non_delegable_decisions": ["Aprobar descuento fuera de politica"],
+        }
+        design = {
+            "selected_design": {
+                "architecture_pattern": "lead_scoring_router",
+                "reasoning_pattern": "score_then_route",
+                "roles": [
+                    {"title": "Scorer comercial", "responsibility": "Calcula fit"},
+                    {"title": "Ejecutivo ventas", "responsibility": "Contacta oportunidades"},
+                ],
+            },
+            "guardrails": ["No prometer descuentos no aprobados"],
+        }
+        tools = {"recommended_tools": [{"name": "HubSpot CRM", "purpose": "Consultar leads"}]}
+        memory = {"memory_strategy": "crm_interaction_summary"}
+    return DiagramGenerationInput(
+        diagram_key=diagram_key,
+        title="Diagrama deterministico",
+        objective="Construir diagrama contextual",
+        notation=DiagramNotation.flowchart,
+        required_inputs=["session.discovery", "definition.requirements", "blueprint.architecture_spec", "tools.minimum_set", "memory.strategy"],
+        source_refs=["journey:discover:v1", "journey:define:v1", "journey:design:v1", "journey:tools:v1", "journey:memory:v1"],
+        resolved_inputs=[
+            {
+                "input_key": "session.discovery",
+                "artifact_refs": ["journey:discover:v1"],
+                "brief": "Discovery aprobado",
+                "evidence": [{"content": discover}],
+            },
+            {
+                "input_key": "definition.requirements",
+                "artifact_refs": ["journey:define:v1"],
+                "brief": "Definicion aprobada",
+                "evidence": [{"content": define}],
+            },
+            {
+                "input_key": "blueprint.architecture_spec",
+                "artifact_refs": ["journey:design:v1"],
+                "brief": "Arquitectura aprobada",
+                "evidence": [{"content": design}],
+            },
+            {
+                "input_key": "tools.minimum_set",
+                "artifact_refs": ["journey:tools:v1"],
+                "brief": "Tools aprobadas",
+                "evidence": [{"content": tools}],
+            },
+            {
+                "input_key": "memory.strategy",
+                "artifact_refs": ["journey:memory:v1"],
+                "brief": "Memoria aprobada",
+                "evidence": [{"content": memory}],
+            },
+        ],
+        source_context={"project": {"title": f"Proyecto {domain}"}},
+        source_contract="diagram-model.v1",
+        renderer_key="renderer.svg.generic.v1",
+        prompt_spec_version="diagram-prompts.v1.0.0",
+    )
+
+
+def test_deterministic_diagram_uses_project_specific_labels_and_metadata() -> None:
+    model = build_deterministic_diagram(_deterministic_input())
+
+    labels = {node.id: node.label for node in model.nodes}
+
+    assert labels["user_request"] == "Coordinador de soporte clinico"
+    assert labels["supervisor"] == "router_triage_with_human_gate"
+    assert labels["planner_agent"] == "Clasificador clinico"
+    assert labels["tool_layer"] == "Zendesk Salud"
+    assert labels["memory_context"] == "case_summary_checkpoints"
+    assert labels["hitl_gate"] == "Aprobar cambio de prioridad clinica"
+    assert model.metadata["context_version"] == "project-generation-context.v1"
+    assert model.metadata["input_fingerprint"]
+    assert "Zendesk Salud" in model.metadata["specificity_anchors"]
+    assert evaluate_diagram_quality(model).valid is True
+
+
+def test_deterministic_diagrams_differ_for_distinct_project_contexts() -> None:
+    clinical = build_deterministic_diagram(_deterministic_input(domain="clinical"))
+    sales = build_deterministic_diagram(_deterministic_input(domain="sales"))
+
+    clinical_labels = [node.label for node in clinical.nodes]
+    sales_labels = [node.label for node in sales.nodes]
+
+    assert clinical.metadata["input_fingerprint"] != sales.metadata["input_fingerprint"]
+    assert clinical_labels != sales_labels
+    assert "Coordinador de soporte clinico" in clinical_labels
+    assert "Gerente comercial" in sales_labels
+
+
+def test_contextual_diagram_quality_requires_fingerprint_and_rendered_anchors() -> None:
+    model = DiagramModel(
+        diagram_key="agent_orchestration",
+        title="Orquestacion",
+        notation=DiagramNotation.flowchart,
+        nodes=[
+            DiagramNode(id="supervisor", label="Supervisor", kind="orchestrator", source_refs=["journey:design:v1"]),
+            DiagramNode(id="worker_one", label="Worker A", kind="worker_agent", source_refs=["journey:design:v1"]),
+            DiagramNode(id="worker_two", label="Worker B", kind="worker_agent", source_refs=["journey:design:v1"]),
+            DiagramNode(id="tools", label="Herramientas", kind="tool_layer", source_refs=["journey:tools:v1"]),
+            DiagramNode(id="memory", label="Memoria", kind="memory", source_refs=["journey:memory:v1"]),
+            DiagramNode(id="guardrails", label="Guardrails", kind="guardrail_gate", source_refs=["journey:design:v1"]),
+            DiagramNode(id="hitl", label="HITL", kind="human_gate", source_refs=["journey:define:v1"]),
+            DiagramNode(id="output", label="Resultado", kind="output", source_refs=["journey:validate:v1"]),
+            DiagramNode(id="fallback", label="Fallback", kind="fallback", source_refs=["journey:validate:v1"]),
+        ],
+        edges=[
+            DiagramEdge(id="e1", source="supervisor", target="worker_one", label="handoff"),
+            DiagramEdge(id="e2", source="worker_one", target="worker_two", label="delega"),
+            DiagramEdge(id="e3", source="worker_two", target="tools", label="tool call"),
+            DiagramEdge(id="e4", source="supervisor", target="memory", label="contexto"),
+            DiagramEdge(id="e5", source="supervisor", target="guardrails", label="control"),
+            DiagramEdge(id="e6", source="guardrails", target="hitl", label="approval"),
+            DiagramEdge(id="e7", source="hitl", target="output", label="entregable"),
+            DiagramEdge(id="e8", source="guardrails", target="fallback", label="error"),
+        ],
+        source_refs=["journey:design:v1"],
+        metadata={
+            "context_version": "project-generation-context.v1",
+            "specificity_anchors": ["Zendesk Salud", "Coordinador clinico"],
+        },
+    )
+
+    report = evaluate_diagram_quality(model)
+
+    assert report.valid is False
+    assert "El diagrama contextual no declara input_fingerprint." in report.errors
+    assert "El diagrama contextual no refleja sus anclas de especificidad" in " ".join(report.errors)
 
 
 def test_standard_specific_renderers_and_quality_warnings() -> None:
