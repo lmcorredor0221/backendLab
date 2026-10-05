@@ -34,6 +34,7 @@ from app.services.stage5_service import (
     FEATURE_FLAG_BLUEPRINT_TIER_POLICY,
     FEATURE_FLAG_ACP_INHERITED_UNCERTAINTY,
     FEATURE_FLAG_ACP_PROMPT_SYNTHESIS,
+    FEATURE_FLAG_DELIVERABLE_CACHE_REUSE,
     FEATURE_FLAG_DELIVERABLE_CATALOG,
     FEATURE_FLAG_DELIVERABLE_GOVERNANCE_ADMIN,
     FEATURE_FLAG_DESIGN_INTELLIGENCE,
@@ -127,6 +128,12 @@ DEFAULT_FEATURE_FLAGS = [
         "enabled": False,
         "description": "Activa micro-sintesis LLM acotada para secciones narrativas del prompt pack ACP.",
         "stage_hint": "acp",
+    },
+    {
+        "key": FEATURE_FLAG_DELIVERABLE_CACHE_REUSE,
+        "enabled": False,
+        "description": "Permite reutilizar entregables verificados solo cuando la observacion previa no encontro divergencias.",
+        "stage_hint": "cache",
     },
     {
         "key": FEATURE_FLAG_LEGACY_PREMIUM_MIGRATION,

@@ -12,6 +12,7 @@ from app.models import ArtifactRegistryRecord, SessionStage, WorkspaceRole, utc_
 from app.services.deliverable_catalog.contracts import (
     DeliverableGenerationResult,
     DeliverableGenerationTask,
+    DeliverableGenerationTraceStep,
     DeliverablePolicyContext,
 )
 from app.services.deliverable_catalog.deliverable_generation_agent import DeliverableGenerationAgent, LLMExecutor
@@ -23,6 +24,7 @@ from app.services.deliverable_catalog.quality_service import record_deliverable_
 from app.services.deliverable_catalog.registry_service import get_registry_entry
 from app.services.product_processing.contracts import UncertaintyBacklogStatus
 from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.stage5_service import FEATURE_FLAG_DELIVERABLE_CACHE_REUSE, is_feature_flag_enabled
 
 
 TERMINAL_RETRYABLE_JOB_STATUSES = {"error", "failed", "requires_attention"}
@@ -215,6 +217,18 @@ def _source_version_signature(identity: dict[str, Any]) -> list[dict[str, str]]:
     return sorted(normalized, key=lambda item: (item["source_ref"], item["version"]))
 
 
+def _candidate_reuse_ready(candidate: DeliverableGenerationJobRecord) -> bool:
+    if not isinstance(candidate.request_metadata, dict):
+        return False
+    observation = candidate.request_metadata.get("cache_observation")
+    if not isinstance(observation, dict):
+        return False
+    comparison = observation.get("comparison")
+    if not isinstance(comparison, dict):
+        return False
+    return bool(comparison.get("performed")) and comparison.get("divergence") == "none"
+
+
 def _cache_observation_for_generation(
     db: Session,
     *,
@@ -300,6 +314,7 @@ def _cache_observation_for_generation(
                 "quality_state": snapshot.state,
                 "quality_score": snapshot.score,
                 "source_version_count": len(candidate_source_versions),
+                "reuse_ready": _candidate_reuse_ready(candidate),
             }
         )
 
@@ -322,6 +337,102 @@ def _cache_observation_for_generation(
     else:
         observation.update({"decision": "bypass", "reason": "no_valid_candidate"})
     return observation
+
+
+def _reuse_enabled(db: Session, *, workspace_id) -> bool:
+    try:
+        return is_feature_flag_enabled(db, FEATURE_FLAG_DELIVERABLE_CACHE_REUSE, workspace_id=workspace_id)
+    except Exception:
+        return False
+
+
+def _reuse_candidate_from_observation(observation: dict[str, Any]) -> dict[str, Any] | None:
+    if observation.get("decision") != "would_reuse":
+        return None
+    candidate = observation.get("candidate") if isinstance(observation.get("candidate"), dict) else None
+    if not candidate or not candidate.get("reuse_ready"):
+        return None
+    return candidate
+
+
+def _reuse_verified_cache_candidate(
+    db: Session,
+    *,
+    job: DeliverableGenerationJobRecord,
+    task: DeliverableGenerationTask,
+    observation: dict[str, Any],
+) -> tuple[DeliverableGenerationJobRecord, DeliverableGenerationResult]:
+    candidate = _reuse_candidate_from_observation(observation)
+    if candidate is None:
+        raise ValueError("cache candidate is not ready for reuse")
+    output_version_id = UUID(str(candidate["output_version_id"]))
+    now = utc_now()
+    reuse_payload = {
+        "decision": "reused_verified_artifact",
+        "candidate_job_id": str(candidate.get("job_id") or ""),
+        "candidate_artifact_id": str(candidate.get("artifact_id") or ""),
+        "candidate_output_version_id": str(candidate.get("output_version_id") or ""),
+        "input_fingerprint_prefix": str(observation.get("input_fingerprint_prefix") or ""),
+        "builder_version": str(observation.get("builder_version") or ""),
+        "generation_profile_version": str(observation.get("generation_profile_version") or ""),
+        "quality_state": str(candidate.get("quality_state") or ""),
+        "quality_score": int(candidate.get("quality_score") or 0),
+    }
+    job.status = "available"
+    job.provider_key = "deliverable_cache"
+    job.model_name = "verified_artifact"
+    job.output_version_id = output_version_id
+    job.tokens_input = 0
+    job.tokens_output = 0
+    job.estimated_cost_usd = 0.0
+    job.error_code = ""
+    job.error_message = ""
+    job.completed_at = now
+    job.updated_at = now
+    job.request_metadata = {
+        **(job.request_metadata or {}),
+        "cache_observation": {
+            **observation,
+            "reuse_executed": True,
+            "comparison": {
+                "performed": False,
+                "reason": "reused_verified_artifact",
+                "source_observation_job_id": str(candidate.get("job_id") or ""),
+            },
+        },
+        "cache_reuse": reuse_payload,
+        "public_trace": [
+            {
+                "step": "reused_verified_artifact",
+                "public_summary": (
+                    "Se reutilizo un artefacto verificado con la misma identidad de entrada, builder y calidad previa."
+                ),
+                "status": "completed",
+            }
+        ],
+    }
+    db.add(job)
+    db.flush()
+    result = DeliverableGenerationResult(
+        deliverable_key=task.deliverable_key,
+        status="available",
+        public_trace=[
+            DeliverableGenerationTraceStep(
+                step="observe",
+                public_summary="Se encontro un artefacto verificado reutilizable para la misma identidad de entrada.",
+            ),
+            DeliverableGenerationTraceStep(
+                step="finish",
+                public_summary="Reuse de cache verificada finalizado sin regenerar contenido.",
+            ),
+        ],
+        internal_trace_hash=_content_hash(json.dumps(reuse_payload, ensure_ascii=True, sort_keys=True, default=str)),
+        iteration_count=0,
+        provider_key="deliverable_cache",
+        model_name="verified_artifact",
+        used_fallback=False,
+    )
+    return job, result
 
 
 def _cache_observation_with_comparison(
@@ -541,6 +652,15 @@ def run_deliverable_generation_task(
     }
     db.add(job)
     db.flush()
+    if _reuse_enabled(db, workspace_id=task.workspace_id) and _reuse_candidate_from_observation(cache_observation) is not None:
+        reused_job, reused_result = _reuse_verified_cache_candidate(
+            db,
+            job=job,
+            task=task,
+            observation=cache_observation,
+        )
+        commit_without_expiring(db)
+        return reused_job, reused_result
     job_id = job.id
     commit_without_expiring(db)
 

@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.models import ArtifactRegistryRecord, CommercialTier, WorkspaceRole
+from app.models import ArtifactRegistryRecord, CommercialTier, RuntimeFeatureFlagRecord, WorkspaceRole
 from app.services.deliverable_catalog import (
     DeliverableGenerationTask,
     DeliverableGovernanceUpdate,
@@ -21,6 +21,7 @@ from app.services.deliverable_catalog.persistence import (
 )
 from app.services.product_processing.contracts import UncertaintyBacklogStatus
 from app.services.product_processing.persistence import UncertaintyBacklogRecord
+from app.services.stage5_service import FEATURE_FLAG_DELIVERABLE_CACHE_REUSE
 
 
 def _session() -> Session:
@@ -261,6 +262,140 @@ def test_generation_service_cache_observation_does_not_cross_sessions() -> None:
     assert observation["candidate_count"] == 0
     assert observation["valid_candidate_count"] == 0
     assert observation["comparison"]["performed"] is False
+
+
+def test_generation_service_cache_observation_does_not_cross_workspaces() -> None:
+    session_id = uuid4()
+    context = {"summary": "El usuario necesita un agente para clasificar solicitudes internas."}
+    with _session() as db:
+        first_task = _task(context=context).model_copy(update={"session_id": session_id})
+        first_job, first_result = run_deliverable_generation_task(db, first_task)
+        first_job_status = first_job.status
+        db.commit()
+
+        second_task = _task(context=context).model_copy(update={"session_id": session_id})
+        second_job, second_result = run_deliverable_generation_task(db, second_task)
+        db.commit()
+
+        second_job = db.exec(
+            select(DeliverableGenerationJobRecord).where(
+                DeliverableGenerationJobRecord.workspace_id == second_task.workspace_id,
+                DeliverableGenerationJobRecord.idempotency_key == second_task.idempotency_key,
+            )
+        ).one()
+
+    assert first_result is not None
+    assert first_result.status == "available"
+    assert first_job_status == "available"
+    assert second_result is not None
+    assert second_result.status == "available"
+    assert second_job.status == "available"
+    observation = second_job.request_metadata["cache_observation"]
+    assert observation["mode"] == "observation"
+    assert observation["decision"] == "bypass"
+    assert observation["reason"] == "no_valid_candidate"
+    assert observation["candidate_count"] == 0
+    assert observation["valid_candidate_count"] == 0
+
+
+def test_generation_service_cache_flag_does_not_reuse_unverified_candidate() -> None:
+    with _session() as db:
+        first_task = _task(context={"summary": "El usuario necesita un agente para clasificar solicitudes internas."})
+        first_job, first_result = run_deliverable_generation_task(db, first_task)
+        first_job_id = str(first_job.id)
+        db.add(
+            RuntimeFeatureFlagRecord(
+                workspace_id=first_task.workspace_id,
+                flag_key=FEATURE_FLAG_DELIVERABLE_CACHE_REUSE,
+                enabled=True,
+                description="test flag",
+                stage_hint="cache",
+            )
+        )
+        db.commit()
+
+        second_task = first_task.model_copy(update={"idempotency_key": f"job-{uuid4()}"})
+        second_job, second_result = run_deliverable_generation_task(db, second_task)
+        db.commit()
+
+        second_job = db.exec(
+            select(DeliverableGenerationJobRecord).where(
+                DeliverableGenerationJobRecord.workspace_id == second_task.workspace_id,
+                DeliverableGenerationJobRecord.idempotency_key == second_task.idempotency_key,
+            )
+        ).one()
+        artifact = next(
+            record
+            for record in db.exec(select(ArtifactRegistryRecord).where(ArtifactRegistryRecord.session_id == second_task.session_id)).all()
+            if record.artifact_metadata.get("deliverable_key") == "discovery.analysis"
+        )
+
+    assert first_result is not None
+    assert first_result.status == "available"
+    assert second_result is not None
+    assert second_result.status == "available"
+    assert second_result.provider_key != "deliverable_cache"
+    assert second_job.provider_key != "deliverable_cache"
+    observation = second_job.request_metadata["cache_observation"]
+    assert observation["decision"] == "would_reuse"
+    assert observation["candidate"]["job_id"] == first_job_id
+    assert observation["candidate"]["reuse_ready"] is False
+    assert observation["comparison"]["performed"] is True
+    assert "cache_reuse" not in second_job.request_metadata
+    assert artifact.artifact_metadata["generation_job_id"] == str(second_job.id)
+
+
+def test_generation_service_reuses_verified_cache_candidate_only_after_clean_observation() -> None:
+    with _session() as db:
+        first_task = _task(context={"summary": "El usuario necesita un agente para clasificar solicitudes internas."})
+        first_job, first_result = run_deliverable_generation_task(db, first_task)
+        db.commit()
+
+        second_task = first_task.model_copy(update={"idempotency_key": f"job-{uuid4()}"})
+        second_job, second_result = run_deliverable_generation_task(db, second_task)
+        second_job_id = str(second_job.id)
+        second_output_version_id = str(second_job.output_version_id)
+        db.add(
+            RuntimeFeatureFlagRecord(
+                workspace_id=first_task.workspace_id,
+                flag_key=FEATURE_FLAG_DELIVERABLE_CACHE_REUSE,
+                enabled=True,
+                description="test flag",
+                stage_hint="cache",
+            )
+        )
+        db.commit()
+
+        third_task = first_task.model_copy(update={"idempotency_key": f"job-{uuid4()}"})
+        third_job, third_result = run_deliverable_generation_task(db, third_task)
+        db.commit()
+
+        third_job = db.exec(
+            select(DeliverableGenerationJobRecord).where(
+                DeliverableGenerationJobRecord.workspace_id == third_task.workspace_id,
+                DeliverableGenerationJobRecord.idempotency_key == third_task.idempotency_key,
+            )
+        ).one()
+        artifact = next(
+            record
+            for record in db.exec(select(ArtifactRegistryRecord).where(ArtifactRegistryRecord.session_id == third_task.session_id)).all()
+            if record.artifact_metadata.get("deliverable_key") == "discovery.analysis"
+        )
+
+    assert first_result is not None
+    assert first_result.status == "available"
+    assert second_result is not None
+    assert second_result.status == "available"
+    assert third_result is not None
+    assert third_result.status == "available"
+    assert third_result.provider_key == "deliverable_cache"
+    assert third_job.status == "available"
+    assert third_job.provider_key == "deliverable_cache"
+    assert str(third_job.output_version_id) == second_output_version_id
+    assert third_job.request_metadata["cache_observation"]["reuse_executed"] is True
+    assert third_job.request_metadata["cache_reuse"]["decision"] == "reused_verified_artifact"
+    assert third_job.request_metadata["cache_reuse"]["candidate_job_id"] == second_job_id
+    assert artifact.artifact_metadata["generation_job_id"] == second_job_id
 
 
 def test_generation_service_uses_deterministic_acceptance_trace_without_llm_executor() -> None:
