@@ -18,6 +18,9 @@ SCHEDULE_KEYWORDS = (
     "semanal",
     "mensual",
 )
+MANUAL_REFRESH_FREQUENCIES = ("manual", "manual_review", "on_demand")
+LEGACY_MANUAL_REFRESH_FREQUENCY = "monthly"
+LEGACY_MANUAL_REFRESH_TRIGGERS = {"source_change", "manual_review", "manual"}
 APPROVAL_KEYWORDS = ("approval", "aprob", "human")
 ORDERED_KNOWLEDGE_TOOL_KEYS = (
     "knowledge_retrieval",
@@ -41,6 +44,28 @@ def _contains_keywords(*parts: str | None, keywords: tuple[str, ...]) -> bool:
     return any(keyword in haystack for keyword in keywords)
 
 
+def _normalized_tokens(items: list[str] | tuple[str, ...] | None) -> set[str]:
+    return {str(item or "").strip().lower() for item in (items or []) if str(item or "").strip()}
+
+
+def _refresh_policy_requires_scheduler(knowledge_profile: KnowledgeProfile) -> bool:
+    frequency = str(knowledge_profile.refresh_policy.frequency or "").strip().lower()
+    triggers = _normalized_tokens(knowledge_profile.refresh_policy.triggers)
+    if frequency in MANUAL_REFRESH_FREQUENCIES:
+        return False
+    if (
+        frequency == LEGACY_MANUAL_REFRESH_FREQUENCY
+        and triggers
+        and triggers.issubset(LEGACY_MANUAL_REFRESH_TRIGGERS)
+    ):
+        return False
+    return _contains_keywords(
+        frequency,
+        " ".join(triggers),
+        keywords=SCHEDULE_KEYWORDS,
+    )
+
+
 def build_knowledge_tool_policy(
     *,
     knowledge_profile: KnowledgeProfile,
@@ -50,11 +75,7 @@ def build_knowledge_tool_policy(
     knowledge_mode = knowledge_profile.mode.strip().lower()
     has_sources = bool(knowledge_profile.sources)
     rag_enabled = knowledge_mode == "rag"
-    scheduler_required = rag_enabled and _contains_keywords(
-        knowledge_profile.refresh_policy.frequency,
-        " ".join(knowledge_profile.refresh_policy.triggers),
-        keywords=SCHEDULE_KEYWORDS,
-    )
+    scheduler_required = rag_enabled and _refresh_policy_requires_scheduler(knowledge_profile)
     approval_required = _contains_keywords(
         memory_profile.write_policy,
         memory_profile.retention_policy,

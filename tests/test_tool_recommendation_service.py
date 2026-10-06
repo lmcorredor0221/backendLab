@@ -102,6 +102,7 @@ def build_blueprint(
     knowledge_mode: str = "none",
     knowledge_sources: list[dict[str, str]] | None = None,
     knowledge_refresh_frequency: str = "",
+    knowledge_refresh_triggers: list[str] | None = None,
     workflow_steps: list[dict[str, object]] | None = None,
 ) -> BlueprintArtifact:
     return BlueprintArtifact(
@@ -114,6 +115,7 @@ def build_blueprint(
             "sources": knowledge_sources or [],
             "refresh_policy": {
                 "frequency": knowledge_refresh_frequency,
+                "triggers": knowledge_refresh_triggers or [],
             },
         },
         delivery_package={
@@ -518,6 +520,48 @@ def test_manual_rag_refresh_does_not_require_scheduler() -> None:
                 }
             ],
             knowledge_refresh_frequency="manual_review",
+        ),
+        blueprint_version_number=2,
+    )
+
+    candidate_map = {item.family_key: item for item in artifact.preflight.candidate_tool_families}
+
+    assert [item.tool_key for item in artifact.recommended_tools] == [
+        "knowledge_retrieval",
+        "document_ingestion",
+    ]
+    assert "scheduler" not in candidate_map or candidate_map["scheduler"].status != "required"
+
+
+def test_legacy_monthly_manual_rag_refresh_does_not_require_scheduler() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder preguntas sobre procedimientos vigentes.",
+            current_process="Busca procedimientos internos cuando el usuario pregunta, sin refresco programado.",
+            desired_outcome="Responder con citas consistentes desde fuentes aprobadas.",
+        ),
+        canvas=build_canvas(
+            user_goal="Responder con grounding documental bajo demanda.",
+            expected_outputs=["Respuesta con citas"],
+        ),
+        blueprint=build_blueprint(
+            knowledge_mode="rag",
+            knowledge_sources=[
+                {
+                    "key": "ops-playbook",
+                    "title": "Ops Playbook",
+                    "description": "Playbook operativo",
+                    "source_type": "document",
+                    "uri": "kb://ops-playbook",
+                    "owner": "Ops",
+                    "license": "internal",
+                    "sensitivity": "internal",
+                    "source_version": "2026-07",
+                }
+            ],
+            knowledge_refresh_frequency="monthly",
+            knowledge_refresh_triggers=["source_change", "manual_review"],
         ),
         blueprint_version_number=2,
     )
@@ -1280,6 +1324,39 @@ def test_memory_dependency_policy_requires_document_ingestion_for_rag_sources() 
     assert dependency_map["knowledge_retrieval"].status == "missing"
     assert dependency_map["document_ingestion"].required is True
     assert dependency_map["document_ingestion"].status == "missing"
+
+
+def test_memory_dependency_policy_ignores_legacy_monthly_manual_refresh_default() -> None:
+    blueprint = build_blueprint(
+        knowledge_mode="rag",
+        knowledge_sources=[
+            {
+                "key": "manual-rh",
+                "title": "Manual RH",
+                "description": "Politicas internas",
+                "source_type": "document",
+                "uri": "kb://manual-rh",
+                "owner": "People Ops",
+                "license": "internal",
+                "sensitivity": "internal",
+                "source_version": "2026-07",
+            }
+        ],
+        knowledge_refresh_frequency="monthly",
+        knowledge_refresh_triggers=["source_change", "manual_review"],
+    )
+
+    dependencies = build_memory_tool_dependencies(
+        approved_tools_digest=None,
+        knowledge_profile=blueprint.knowledge_profile,
+        memory_profile=blueprint.memory_profile,
+    )
+    dependency_map = {item.tool_key: item for item in dependencies}
+
+    assert dependency_map["knowledge_retrieval"].required is True
+    assert dependency_map["document_ingestion"].required is True
+    assert dependency_map["scheduler"].required is False
+    assert dependency_map["scheduler"].status == "optional"
 
 
 def test_memory_profile_consumes_only_approved_tools_digest() -> None:
