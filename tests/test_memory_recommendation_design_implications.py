@@ -187,3 +187,17 @@ def test_memory_reconciliation_defaults_pending_rag_refresh_to_manual_review() -
     reconciled = auto_reconcile_memory_artifact(artifact)
 
     assert reconciled.proposed_knowledge_profile.refresh_policy.frequency == "manual_review"
+
+
+def test_memory_reconciliation_defaults_template_monthly_refresh_to_manual_review() -> None:
+    artifact = MemoryRecommendationArtifact(
+        summary="RAG propuesto con refresh mensual heredado de plantilla.",
+        proposed_knowledge_profile=KnowledgeProfile(
+            mode="rag",
+            refresh_policy=RefreshPolicy(frequency="monthly", triggers=["source_change", "manual_review"]),
+        ),
+    )
+
+    reconciled = auto_reconcile_memory_artifact(artifact)
+
+    assert reconciled.proposed_knowledge_profile.refresh_policy.frequency == "manual_review"

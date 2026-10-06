@@ -133,6 +133,8 @@ MEMORY_TOOL_DEPENDENCY_ALIASES = {
     "notifier": "outbound_notification",
 }
 
+MANUAL_REFRESH_TRIGGERS = {"source_change", "manual_review", "manual"}
+
 
 def _canonical_memory_tool_dependency(value: str) -> str:
     normalized = str(value or "").strip().lower()
@@ -140,6 +142,16 @@ def _canonical_memory_tool_dependency(value: str) -> str:
     if ":" in normalized:
         normalized = normalized.split(":", 1)[0].strip()
     return MEMORY_TOOL_DEPENDENCY_ALIASES.get(normalized, "")
+
+
+def _looks_like_manual_refresh_default(refresh_policy: Any) -> bool:
+    frequency = str(getattr(refresh_policy, "frequency", "") or "").strip().lower()
+    triggers = {
+        str(trigger or "").strip().lower()
+        for trigger in (getattr(refresh_policy, "triggers", None) or [])
+        if str(trigger or "").strip()
+    }
+    return frequency == "monthly" and bool(triggers) and triggers.issubset(MANUAL_REFRESH_TRIGGERS)
 
 
 def _default_ttl(strategy: str, *, sensitive: bool) -> str:
@@ -1771,7 +1783,10 @@ def auto_reconcile_memory_artifact(
             kp_update["ingestion_policy"] = knowledge_profile.ingestion_policy.model_copy(
                 update={"chunking_policy": "recursive_character_512"}
             )
-        if str(knowledge_profile.refresh_policy.frequency or "").lower() in {"pending", "pending_review", ""}:
+        refresh_frequency = str(knowledge_profile.refresh_policy.frequency or "").lower()
+        if refresh_frequency in {"pending", "pending_review", ""} or _looks_like_manual_refresh_default(
+            knowledge_profile.refresh_policy
+        ):
             kp_update["refresh_policy"] = knowledge_profile.refresh_policy.model_copy(
                 update={"frequency": "manual_review"}
             )

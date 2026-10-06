@@ -326,7 +326,7 @@ def test_stage_payload_maps_guided_questions_to_attention_options() -> None:
     assert items[0].source_ref.entity_id == "owner_policy"
 
 
-def test_attention_surfaces_memory_dependency_gap_as_resolvable_decision() -> None:
+def test_blueprint_attention_defers_memory_dependency_gap_to_acp() -> None:
     session = _create_memory_engine_session()
     try:
         user, workspace, record = _seed_minimal_records(session)
@@ -377,6 +377,58 @@ def test_attention_surfaces_memory_dependency_gap_as_resolvable_decision() -> No
             current_stage="memory",
         )
 
+        assert not any(
+            entry.source_ref.field_path == "dependency_gaps"
+            and entry.source_ref.entity_id == "memory_dependency:outbound_notification"
+            for entry in response.items
+        )
+        assert not any(
+            entry.type == "decision"
+            and entry.source_ref.entity_id == "missing-tool:outbound_notification"
+            for entry in response.items
+        )
+    finally:
+        session.close()
+
+
+def test_acp_attention_surfaces_memory_dependency_gap_as_resolvable_decision() -> None:
+    session = _create_memory_engine_session()
+    try:
+        user, workspace, record = _seed_minimal_records(session)
+        now = utc_now()
+        artifact = JourneyStageArtifactRecord(
+            workspace_id=workspace.id,
+            session_id=record.id,
+            artifact_kind="memory_recommendation_artifact",
+            stage_key="memory",
+            version_number=1,
+            state=JourneyArtifactState.generated,
+            source_action="recommend_memory",
+            proposal_payload=_memory_dependency_payload(),
+            schema_version="memory-recommendation.v1",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(artifact)
+        session.commit()
+        session.refresh(artifact)
+        snapshot = _snapshot(record)
+        snapshot.journey_latest_artifacts = {"memory": _journey_entry_from_record(artifact)}
+
+        response = build_attention_response_v2(
+            session,
+            record=record,
+            snapshot=snapshot,
+            readiness=ConstructionReadinessReport(),
+            access=CommercialAccessSnapshotV2(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                user_id=user.id,
+                tier=CommercialTier.acp,
+            ),
+            current_stage="acp",
+        )
+
         item = next(
             entry
             for entry in response.items
@@ -423,7 +475,7 @@ def test_attention_memory_dependency_resolution_defers_gap_and_unblocks_memory_a
             workspace_id=record.workspace_id,
             session_id=record.id,
             user_id=user.id,
-            tier=CommercialTier.blueprint,
+            tier=CommercialTier.acp,
         )
         before = build_attention_response_v2(
             session,
@@ -431,7 +483,7 @@ def test_attention_memory_dependency_resolution_defers_gap_and_unblocks_memory_a
             snapshot=snapshot,
             readiness=ConstructionReadinessReport(),
             access=access,
-            current_stage="memory",
+            current_stage="acp",
         )
         item = next(entry for entry in before.items if entry.source_ref.field_path == "dependency_gaps")
 
@@ -469,7 +521,7 @@ def test_attention_memory_dependency_resolution_defers_gap_and_unblocks_memory_a
             snapshot=snapshot_after,
             readiness=ConstructionReadinessReport(),
             access=access,
-            current_stage="memory",
+            current_stage="acp",
         )
         assert item.key not in {entry.key for entry in after.items}
     finally:

@@ -26,8 +26,6 @@ def _is_basic_blueprint_noise(item: AttentionItemV2) -> bool:
         return False
     if item.type in _BASIC_SURFACED_TYPES:
         return False
-    if _is_memory_dependency_gap(item):
-        return False
     if item.type == "approval":
         entity_id = getattr(item.source_ref, "entity_id", "") or ""
         field_path = getattr(item.source_ref, "field_path", "") or ""
