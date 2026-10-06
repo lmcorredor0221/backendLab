@@ -120,25 +120,39 @@ class AntigravityLocalBuilderService:
         return bool(cfg.executable or cfg.executable_found or cfg.available)
 
     def is_available(self) -> bool:
-        return (
+        if not (
             self.can_attempt()
             and self.runtime_settings.antigravity.executable_found is not False
             and self._has_resolved_executable()
-        )
+        ):
+            return False
+        auth_resolver = getattr(self.execution_service, "resolve_auth_session", None)
+        if callable(auth_resolver) and not auth_resolver().usable:
+            return False
+        return True
 
     def provider_summary(self) -> dict[str, str | bool]:
         cfg = self.runtime_settings.antigravity
         executable_found = self._has_resolved_executable()
+        auth_resolver = getattr(self.execution_service, "resolve_auth_session", None)
+        auth_session = auth_resolver() if callable(auth_resolver) else None
         return {
             "provider": self.runtime_settings.active_provider.value,
             "mode": "local_exec",
             "configured": bool(cfg.executable and cfg.model),
-            "sdk_ready": executable_found,
+            "sdk_ready": executable_found and (auth_session.usable if auth_session is not None else True),
             "fast_model": cfg.model,
             "reasoning_model": cfg.model,
             "executable": cfg.executable,
             "effort": cfg.effort,
-            "status_note": cfg.status_note or ("Binario agy detectado." if executable_found else "No se encontro el binario agy."),
+            "status_note": cfg.status_note
+            or (
+                auth_session.blocking_reason
+                if auth_session is not None and not auth_session.usable
+                else "Binario agy detectado."
+                if executable_found
+                else "No se encontro el binario agy."
+            ),
         }
 
     # ------------------------------------------------------------------

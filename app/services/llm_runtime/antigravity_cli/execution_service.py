@@ -5,6 +5,8 @@ import os
 import re
 import shutil
 import subprocess
+import ctypes
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -97,6 +99,16 @@ def resolve_agy_executable(configured: str | None = None) -> str | None:
 # Servicio principal de ejecucion
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class AgyAuthSessionStatus:
+    mode: str
+    detected: bool
+    usable: bool
+    source_path: str = ""
+    cli_app_data_path: str = ""
+    blocking_reason: str = ""
+
+
 class AgyExecutionService:
     """
     Servicio de ejecucion del proveedor Antigravity CLI.
@@ -170,42 +182,133 @@ class AgyExecutionService:
         env_home = os.getenv("ANTIGRAVITY_HOME", "").strip()
         return Path(env_home) if env_home else (Path.home() / ".antigravity")
 
-    def resolve_auth_mode(self) -> tuple[str, bool]:
+    def resolve_cli_app_data_dir(self) -> Path:
+        env_path = os.getenv("ANTIGRAVITY_CLI_APP_DATA", "").strip()
+        return Path(env_path) if env_path else (Path.home() / ".gemini" / "antigravity-cli")
+
+    def _can_write_directory(self, path: Path) -> bool:
+        if path.exists():
+            return os.access(path, os.W_OK)
+        parent = path.parent
+        return parent.exists() and os.access(parent, os.W_OK)
+
+    def _current_process_username(self) -> str:
+        if os.name == "nt":
+            try:
+                size = ctypes.c_ulong(256)
+                buffer = ctypes.create_unicode_buffer(size.value)
+                if ctypes.windll.advapi32.GetUserNameW(buffer, ctypes.byref(size)):  # type: ignore[attr-defined]
+                    return buffer.value.strip().lower()
+            except Exception:
+                pass
+        return (os.getenv("USER") or os.getenv("USERNAME") or "").strip().lower()
+
+    def _profile_owner_for_path(self, path: Path) -> str:
+        parts = [part.lower() for part in path.parts]
+        for marker in ("users", "usuarios"):
+            if marker in parts:
+                index = parts.index(marker)
+                if index + 1 < len(parts):
+                    return parts[index + 1].strip().lower()
+        return ""
+
+    def _is_cross_user_profile(self, path: Path) -> tuple[bool, str, str]:
+        owner = self._profile_owner_for_path(path)
+        current = self._current_process_username()
+        return bool(owner and current and owner != current), owner, current
+
+    def _session_auth_candidates(self) -> list[tuple[str, Path]]:
+        agy_home = self.resolve_agy_home()
+        gemini_home = Path.home() / ".gemini"
+        candidates = [
+            ("antigravity_home_credentials", agy_home / "credentials.json"),
+            ("gemini_oauth_credentials", gemini_home / "oauth_creds.json"),
+            ("gemini_google_accounts", gemini_home / "google_accounts.json"),
+            ("antigravity_argv", Path.home() / ".antigravity" / "argv.json"),
+        ]
+        return [(label, path) for label, path in candidates if path.exists()]
+
+    def resolve_auth_session(self) -> AgyAuthSessionStatus:
         """
         Detecta el modo de autenticacion activo en orden de prioridad:
         1. auth_mode configurado explicitamente en runtime_settings
         2. Variable de entorno ANTIGRAVITY_API_KEY
         3. Archivos de sesion/credenciales ~/.antigravity/credentials.json o ~/.gemini
-        4. Deteccion del ejecutable agy autenticado en la plataforma
+        4. Verificacion de que el proceso actual pueda usar el app-data del CLI
         5. Fallback: 'unknown'
         """
         configured_mode = (self._agy_cfg.auth_mode or "auto").strip()
 
-        has_api_key = bool(os.getenv("ANTIGRAVITY_API_KEY", "").strip())
-        has_credentials = (
-            (self.resolve_agy_home() / "credentials.json").exists()
-            or (Path.home() / ".gemini" / "oauth_creds.json").exists()
-            or (Path.home() / ".gemini" / "google_accounts.json").exists()
-            or (Path.home() / ".antigravity" / "argv.json").exists()
-        )
-        has_executable = resolve_agy_executable(self._agy_cfg.executable) is not None
+        if os.getenv("ANTIGRAVITY_API_KEY", "").strip():
+            return AgyAuthSessionStatus(
+                mode="api_key" if configured_mode in {"", "auto", "unknown"} else configured_mode,
+                detected=True,
+                usable=True,
+                source_path="ANTIGRAVITY_API_KEY",
+                cli_app_data_path=str(self.resolve_cli_app_data_dir()),
+            )
+
+        candidates = self._session_auth_candidates()
+        if candidates:
+            source_label, source_path = candidates[0]
+            app_data_path = self.resolve_cli_app_data_dir()
+            cross_user_profile, owner, current = self._is_cross_user_profile(app_data_path)
+            if cross_user_profile:
+                return AgyAuthSessionStatus(
+                    mode="session" if configured_mode in {"", "auto", "unknown"} else configured_mode,
+                    detected=True,
+                    usable=False,
+                    source_path=f"{source_label}:{source_path}",
+                    cli_app_data_path=str(app_data_path),
+                    blocking_reason=(
+                        "Se encontro una sesion de Antigravity, pero pertenece al perfil "
+                        f"{owner} y el proceso actual corre como {current}. LAB debe ejecutar agy "
+                        "con el mismo usuario de la sesion autenticada o configurar una sesion propia utilizable."
+                    ),
+                )
+            if not self._can_write_directory(app_data_path):
+                return AgyAuthSessionStatus(
+                    mode="session" if configured_mode in {"", "auto", "unknown"} else configured_mode,
+                    detected=True,
+                    usable=False,
+                    source_path=f"{source_label}:{source_path}",
+                    cli_app_data_path=str(app_data_path),
+                    blocking_reason=(
+                        "Se encontro una sesion de Antigravity, pero el proceso actual no puede escribir "
+                        f"en {app_data_path}. El CLI necesita ese app-data para usar la sesion autenticada."
+                    ),
+                )
+            return AgyAuthSessionStatus(
+                mode="session" if configured_mode in {"", "auto", "unknown"} else configured_mode,
+                detected=True,
+                usable=True,
+                source_path=f"{source_label}:{source_path}",
+                cli_app_data_path=str(app_data_path),
+            )
 
         if configured_mode not in {"", "auto", "unknown"}:
-            is_available = (
-                has_api_key
-                or has_credentials
-                or (configured_mode in {"platform", "session", "auto"} and has_executable)
+            return AgyAuthSessionStatus(
+                mode=configured_mode,
+                detected=False,
+                usable=False,
+                cli_app_data_path=str(self.resolve_cli_app_data_dir()),
+                blocking_reason=(
+                    f"auth_mode={configured_mode} esta configurado, pero no se encontro una sesion "
+                    "o credencial utilizable para el proceso actual."
+                ),
             )
-            return configured_mode, is_available
 
-        # Deteccion automatica
-        if has_api_key:
-            return "api_key", True
+        return AgyAuthSessionStatus(
+            mode="unknown",
+            detected=False,
+            usable=False,
+            cli_app_data_path=str(self.resolve_cli_app_data_dir()),
+            blocking_reason="No se encontro una sesion autenticada de Antigravity utilizable.",
+        )
 
-        if has_credentials or has_executable:
-            return "session", True
-
-        return "unknown", False
+    def resolve_auth_mode(self) -> tuple[str, bool]:
+        session = self.resolve_auth_session()
+        return session.mode, session.usable
 
     def resolve_version(self) -> str | None:
         executable = resolve_agy_executable(self._agy_cfg.executable)
@@ -229,7 +332,7 @@ class AgyExecutionService:
     def get_runtime_status(self) -> dict[str, Any]:
         """Equivalente a CodexExecutionService.get_runtime_status()."""
         executable = resolve_agy_executable(self._agy_cfg.executable)
-        auth_mode, auth_detected = self.resolve_auth_mode()
+        auth_session = self.resolve_auth_session()
         version = self.resolve_version()
         configured_model = self._agy_cfg.model.strip() or None
         configured_fallbacks = list(self._agy_cfg.fallback_models)
@@ -239,8 +342,10 @@ class AgyExecutionService:
             smoke_blocking_reasons.append("No se pudo resolver el ejecutable agy en el entorno actual.")
         if not configured_model:
             smoke_blocking_reasons.append("No hay modelo default configurado para antigravity_cli.")
-        if not auth_detected:
-            smoke_blocking_reasons.append("No se detecto autenticacion utilizable para Antigravity CLI.")
+        if not auth_session.usable:
+            smoke_blocking_reasons.append(
+                auth_session.blocking_reason or "No se detecto autenticacion utilizable para Antigravity CLI."
+            )
 
         smoke_ready = not smoke_blocking_reasons
         status = "healthy" if smoke_ready else "degraded"
@@ -253,8 +358,12 @@ class AgyExecutionService:
             "version": version,
             "implementation_backend": "agy_cli_wrapper",
             "implementation_detail": "Antigravity CLI (agy) staged workspace runtime",
-            "auth_mode": auth_mode,
-            "auth_detected": auth_detected,
+            "auth_mode": auth_session.mode,
+            "auth_detected": auth_session.detected,
+            "auth_usable": auth_session.usable,
+            "auth_source": auth_session.source_path,
+            "auth_blocking_reason": auth_session.blocking_reason,
+            "cli_app_data_path": auth_session.cli_app_data_path,
             "smoke_ready": smoke_ready,
             "smoke_blocking_reasons": smoke_blocking_reasons,
             "agy_home_path": str(self.resolve_agy_home()),

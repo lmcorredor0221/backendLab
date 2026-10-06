@@ -153,7 +153,9 @@ def test_resolve_auth_mode_from_credentials_file(tmp_path):
     settings = LLMRuntimeSettings()
     svc = AgyExecutionService(settings)
     with patch.dict(os.environ, {"ANTIGRAVITY_API_KEY": ""}), \
-         patch.object(svc, "resolve_agy_home", return_value=tmp_path):
+         patch.object(svc, "resolve_agy_home", return_value=tmp_path), \
+         patch.object(svc, "resolve_cli_app_data_dir", return_value=tmp_path), \
+         patch.object(svc, "_current_process_username", return_value="messi"):
         creds = tmp_path / "credentials.json"
         creds.write_text('{"token": "xyz"}', encoding="utf-8")
         mode, is_avail = svc.resolve_auth_mode()
@@ -161,10 +163,48 @@ def test_resolve_auth_mode_from_credentials_file(tmp_path):
         assert is_avail is True
 
 
+def test_resolve_auth_session_reports_detected_but_unusable_session(tmp_path):
+    settings = LLMRuntimeSettings()
+    svc = AgyExecutionService(settings)
+    with patch.dict(os.environ, {"ANTIGRAVITY_API_KEY": ""}), \
+         patch.object(svc, "resolve_agy_home", return_value=tmp_path), \
+         patch.object(svc, "resolve_cli_app_data_dir", return_value=tmp_path / "antigravity-cli"), \
+         patch.object(svc, "_current_process_username", return_value="messi"), \
+         patch.object(svc, "_can_write_directory", return_value=False):
+        creds = tmp_path / "credentials.json"
+        creds.write_text('{"token": "xyz"}', encoding="utf-8")
+
+        session = svc.resolve_auth_session()
+
+    assert session.detected is True
+    assert session.usable is False
+    assert "no puede escribir" in session.blocking_reason
+
+
+def test_resolve_auth_session_reports_cross_user_profile(tmp_path):
+    settings = LLMRuntimeSettings()
+    svc = AgyExecutionService(settings)
+    profile_root = tmp_path / "Users" / "Messi" / ".gemini" / "antigravity-cli"
+    with patch.dict(os.environ, {"ANTIGRAVITY_API_KEY": ""}), \
+         patch.object(svc, "resolve_agy_home", return_value=tmp_path), \
+         patch.object(svc, "resolve_cli_app_data_dir", return_value=profile_root), \
+         patch.object(svc, "_current_process_username", return_value="codexsandboxoffline"):
+        creds = tmp_path / "credentials.json"
+        creds.write_text('{"token": "xyz"}', encoding="utf-8")
+
+        session = svc.resolve_auth_session()
+
+    assert session.detected is True
+    assert session.usable is False
+    assert "pertenece al perfil messi" in session.blocking_reason
+    assert "codexsandboxoffline" in session.blocking_reason
+
+
 def test_get_runtime_status_no_executable():
     settings = LLMRuntimeSettings()
     svc = AgyExecutionService(settings)
-    with patch("app.services.llm_runtime.antigravity_cli.execution_service.resolve_agy_executable", return_value=None):
+    with patch("app.services.llm_runtime.antigravity_cli.execution_service.resolve_agy_executable", return_value=None), \
+         patch.object(svc, "_session_auth_candidates", return_value=[]):
         status = svc.get_runtime_status()
         assert status["provider"] == "antigravity_cli"
         assert status["smoke_ready"] is False
