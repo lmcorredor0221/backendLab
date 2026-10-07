@@ -24,6 +24,7 @@ from app.services.auth_service import hash_password
 from app.services.deliverable_catalog.contracts import DeliverableGenerationResult, DeliverableGenerationTask
 from app.services.deliverable_catalog.persistence import DeliverableGenerationJobRecord
 from app.services.diagram_center.persistence import DiagramGenerationJobRecord
+from app.services.product_processing.persistence import ProductBuildRunRecord
 from app.services.product_processing import (
     ACP_REQUIRED_STAGE_KEYS,
     ProductBuildCommandRequest,
@@ -143,7 +144,7 @@ def _fake_run_diagram_job(job_id, database_engine=None, *, db_session=None):
             db.close()
 
 
-def test_stage_approval_sync_auto_executes_blueprint_pro_build(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stage_approval_does_not_auto_execute_blueprint_pro_build(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
     generated_tasks: list[tuple[str, str]] = []
@@ -159,12 +160,12 @@ def test_stage_approval_sync_auto_executes_blueprint_pro_build(monkeypatch: pyte
         statuses = sync_product_builds_after_stage_approval(
             db,
             record=record,
-            stage_key="package",
+            stage_key="memory",
             current_user=user,
         )
 
-    assert any(status.product_key == ProductBuildProductKey.blueprint_pro for status in statuses)
-    assert any(product_mode == "premium_enrichment" for product_mode, _ in generated_tasks)
+    assert statuses == []
+    assert generated_tasks == []
 
 
 def test_stage_approval_persists_the_next_actionable_journey_state() -> None:
@@ -188,7 +189,7 @@ def test_stage_approval_persists_the_next_actionable_journey_state() -> None:
     assert current.stage_key == "memory"
 
 
-def test_stage_approval_sync_auto_executes_acp_when_package_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stage_approval_does_not_auto_execute_acp_when_package_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _engine()
     SQLModel.metadata.create_all(engine)
     generated_tasks: list[tuple[str, str]] = []
@@ -212,8 +213,8 @@ def test_stage_approval_sync_auto_executes_acp_when_package_is_ready(monkeypatch
             current_user=user,
         )
 
-    assert any(status.product_key == ProductBuildProductKey.acp for status in statuses)
-    assert any(product_mode == "acp_implementation" for product_mode, _ in generated_tasks)
+    assert statuses == []
+    assert generated_tasks == []
 
 
 def test_post_product_build_action_route_uses_acp_orchestration(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,6 +251,23 @@ def test_post_product_build_action_route_uses_acp_orchestration(monkeypatch: pyt
 
     with Session(engine) as db:
         user, record = _seed_session(db, tier=CommercialTier.acp)
+        db.add(
+            ProductBuildRunRecord(
+                workspace_id=record.workspace_id,
+                session_id=record.id,
+                product_key=ProductBuildProductKey.blueprint_pro.value,
+                product_mode="premium_enrichment",
+                entitlement_tier=CommercialTier.blueprint_pro.value,
+                access_state="allowed",
+                lifecycle="completed",
+                progress_percent=100,
+                completed_units=1,
+                total_units=1,
+                idempotency_key=f"test-blueprint-pro-completed:{record.id}",
+                is_sealed=True,
+            )
+        )
+        db.commit()
         response = post_product_build_action_route(
             record.id,
             ProductBuildProductKey.acp,

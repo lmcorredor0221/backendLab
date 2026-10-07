@@ -30,6 +30,18 @@ def _build_engine_kwargs():
     host = (parsed.host or "").strip().lower()
     explicit_pool_config = settings.database_pool_size is not None or settings.database_max_overflow is not None
     if host in {"127.0.0.1", "localhost"} and not explicit_pool_config:
+        kwargs.update(
+            {
+                # Local LAB runs combine long background LLM jobs with frequent UI
+                # polling. Keep enough headroom so polling/auth requests do not
+                # starve while a generation is in progress.
+                "pool_size": 20,
+                "max_overflow": 20,
+                "pool_timeout": settings.database_pool_timeout_seconds,
+                "pool_recycle": settings.database_pool_recycle_seconds,
+                "pool_use_lifo": True,
+            }
+        )
         return kwargs
 
     if not parsed.drivername.startswith("sqlite"):

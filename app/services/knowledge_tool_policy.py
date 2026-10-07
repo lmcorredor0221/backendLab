@@ -146,6 +146,12 @@ def build_memory_tool_dependencies(
         if approved_tools_digest is not None
         else set()
     )
+    if approved_tools_digest is not None:
+        approved_keys.update(
+            item.strip().lower()
+            for item in approved_tools_digest.knowledge_tool_keys
+            if item.strip()
+        )
     policy = build_knowledge_tool_policy(
         knowledge_profile=knowledge_profile,
         memory_profile=memory_profile,

@@ -2101,15 +2101,22 @@ def ensure_document_ingestion_for_knowledge_retrieval(
             else []
         )
     )
-    if not knowledge_signalled or "document_ingestion" in approved_keys:
+    if not knowledge_signalled:
+        return artifact, False
+    required_tool_keys = [
+        tool_key
+        for tool_key in ("knowledge_retrieval", "document_ingestion")
+        if tool_key not in approved_keys
+    ]
+    if not required_tool_keys:
         return artifact, False
     remediated, added_tool_keys = ensure_memory_tool_dependencies(
         artifact=artifact,
         blueprint=blueprint,
-        required_tool_keys=["document_ingestion"],
+        required_tool_keys=required_tool_keys,
         source_reason=(
-            "Remediacion automatica: knowledge_retrieval implica una capacidad minima de ingesta, refresh y lineage "
-            "para que Memoria pueda declarar RAG sin depender de una herramienta inexistente."
+            "Remediacion automatica: knowledge_retrieval y document_ingestion deben quedar aprobadas juntas "
+            "para que Memoria pueda declarar RAG gobernado sin depender de herramientas inexistentes."
         ),
     )
     return remediated, bool(added_tool_keys)
@@ -2194,6 +2201,60 @@ def build_tool_recommendation_context_fingerprint(artifact: ToolRecommendationAr
     prompt_payload.pop("source_session_id", None)
     prompt_payload.pop("source_blueprint_version", None)
     return _stable_payload_hash(prompt_payload)
+
+
+def _blueprint_without_downstream_memory_context(blueprint: BlueprintArtifact) -> BlueprintArtifact:
+    """Keep the Tools stale check scoped to upstream design context.
+
+    Memory approval projects memory-only fields back into the blueprint. Those
+    fields may legitimately change after Tools has been approved and should not
+    force Tools regeneration by themselves.
+    """
+
+    defaults = BlueprintArtifact()
+    return blueprint.model_copy(
+        update={
+            "memory_strategy": defaults.memory_strategy,
+            "memory_profile": defaults.memory_profile,
+            "knowledge_profile": defaults.knowledge_profile,
+        }
+    )
+
+
+def _tool_context_fingerprint_for_current_blueprint(
+    *,
+    artifact: ToolRecommendationArtifact,
+    discovery: DiscoveryArtifact,
+    canvas: CanvasArtifact,
+    blueprint: BlueprintArtifact,
+    definition_artifact: RequirementsDefinitionOutput | None,
+    design_artifact: DesignRecommendationArtifact | None,
+    current_blueprint_version: int | None,
+) -> str:
+    current_artifact = build_placeholder_tool_recommendation(
+        session_id=artifact.source_session_id or UUID(int=0),
+        discovery=discovery,
+        canvas=canvas,
+        blueprint=blueprint,
+        definition_artifact=definition_artifact,
+        design_artifact=design_artifact,
+        instructions=artifact.generation_instructions,
+        blueprint_version_number=current_blueprint_version,
+    )
+    return current_artifact.context_digest.digest_sha256 or build_tool_recommendation_context_fingerprint(current_artifact)
+
+
+def _tool_source_stage_versions_match(
+    stored: ToolRecommendationSourceStageVersions,
+    current: ToolRecommendationSourceStageVersions | None,
+) -> bool:
+    if current is None:
+        return False
+    return (
+        stored.discover == current.discover
+        and stored.define == current.define
+        and stored.design == current.design
+    )
 
 
 def _memory_implications_for_tool(tool: BlueprintTool) -> list[str]:
@@ -2620,12 +2681,30 @@ def build_approved_tools_digest_from_blueprint_tools(
     optional_tool_keys: list[str] | None = None,
 ) -> ApprovedToolsDigest:
     normalized_tools = [item for item in tools if _normalize_text(item.name)]
-    approved_tool_keys = [_normalize_text(item.name) for item in normalized_tools]
-    mandatory_tool_keys = [_normalize_text(item) for item in (mandatory_tool_keys or []) if _normalize_text(item)]
-    optional_tool_keys = [_normalize_text(item) for item in (optional_tool_keys or []) if _normalize_text(item)]
+    approved_tool_keys: list[str] = []
+    for item in normalized_tools:
+        _append_unique(approved_tool_keys, item.name)
+        if _normalize_text(item.archetype) in CAPABILITY_CATALOG:
+            _append_unique(approved_tool_keys, item.archetype)
+    approved_tool_key_set = set(approved_tool_keys)
+    mandatory_tool_keys = [
+        _normalize_text(item)
+        for item in (mandatory_tool_keys or [])
+        if _normalize_text(item) and _normalize_text(item) in approved_tool_key_set
+    ]
+    optional_tool_keys = [
+        _normalize_text(item)
+        for item in (optional_tool_keys or [])
+        if _normalize_text(item) and _normalize_text(item) in approved_tool_key_set
+    ]
     side_effect_tool_keys = [_normalize_text(item.name) for item in normalized_tools if item.has_side_effects]
     approval_required_tool_keys = [_normalize_text(item.name) for item in normalized_tools if item.requires_approval]
-    knowledge_tool_keys = [_normalize_text(item.name) for item in normalized_tools if item.name in KNOWLEDGE_TOOL_KEYS]
+    knowledge_tool_keys: list[str] = []
+    for item in normalized_tools:
+        for candidate in (item.name, item.archetype):
+            normalized_candidate = _normalize_text(candidate)
+            if normalized_candidate in KNOWLEDGE_TOOL_KEYS:
+                _append_unique(knowledge_tool_keys, normalized_candidate)
     retrieval_scopes = ["approved_tools_digest"]
     memory_hints = ["approved_tools_only"]
     if knowledge_tool_keys:
@@ -4090,6 +4169,7 @@ def annotate_tool_recommendation_status(
     definition_artifact: RequirementsDefinitionOutput | None = None,
     design_artifact: DesignRecommendationArtifact | None = None,
     current_blueprint_version: int | None = None,
+    current_source_stage_versions: ToolRecommendationSourceStageVersions | None = None,
 ) -> ToolRecommendationArtifact:
     status_artifact = (
         artifact
@@ -4102,25 +4182,35 @@ def annotate_tool_recommendation_status(
     )
     stale_reasons: list[str] = []
 
-    if discovery is not None and canvas is not None and blueprint is not None:
-        current_artifact = build_placeholder_tool_recommendation(
-            session_id=artifact.source_session_id or UUID(int=0),
+    if (
+        discovery is not None
+        and canvas is not None
+        and blueprint is not None
+        and not _tool_source_stage_versions_match(status_artifact.source_stage_versions, current_source_stage_versions)
+    ):
+        current_fingerprint = _tool_context_fingerprint_for_current_blueprint(
+            artifact=artifact,
             discovery=discovery,
             canvas=canvas,
             blueprint=blueprint,
             definition_artifact=definition_artifact,
             design_artifact=design_artifact,
-            instructions=artifact.generation_instructions,
-            blueprint_version_number=current_blueprint_version,
-        )
-        current_fingerprint = (
-            current_artifact.context_digest.digest_sha256
-            or build_tool_recommendation_context_fingerprint(current_artifact)
+            current_blueprint_version=current_blueprint_version,
         )
         if stored_fingerprint != current_fingerprint:
-            stale_reasons.append("tool_recommendation_context_changed")
-            if artifact.approved_tools_digest is not None:
-                stale_reasons.append("approved_tools_digest_outdated")
+            upstream_fingerprint = _tool_context_fingerprint_for_current_blueprint(
+                artifact=artifact,
+                discovery=discovery,
+                canvas=canvas,
+                blueprint=_blueprint_without_downstream_memory_context(blueprint),
+                definition_artifact=definition_artifact,
+                design_artifact=design_artifact,
+                current_blueprint_version=current_blueprint_version,
+            )
+            if stored_fingerprint != upstream_fingerprint:
+                stale_reasons.append("tool_recommendation_context_changed")
+                if artifact.approved_tools_digest is not None:
+                    stale_reasons.append("approved_tools_digest_outdated")
 
     annotated = status_artifact.model_copy(
         update={

@@ -42,6 +42,13 @@ def activate_product_builds_for_paid_order(
 
     statuses: list[ProductBuildStatus] = []
     for product_key in _ordered_build_products_for_order(db, order):
+        if not _product_activation_prerequisites_met(
+            db,
+            record=record,
+            product_key=product_key,
+            current_user=current_user,
+        ):
+            continue
         transition_for_paid_product_activation(
             db,
             record=record,
@@ -100,6 +107,33 @@ def _ordered_build_products_for_order(db: Session, order: CommercialOrderRecord)
         seen.add(product)
         products.append(product)
     return products
+
+
+def _product_activation_prerequisites_met(
+    db: Session,
+    *,
+    record: SessionRecord,
+    product_key: ProductBuildProductKey,
+    current_user: UserRecord | None,
+) -> bool:
+    if product_key == ProductBuildProductKey.blueprint_pro:
+        from app.services.product_processing.blueprint_basic_service import is_blueprint_basic_completed
+
+        is_ready, _ = is_blueprint_basic_completed(db, record=record)
+        return is_ready
+    if product_key == ProductBuildProductKey.acp:
+        from app.services.product_processing.contracts import ProductBuildLifecycle
+        from app.services.product_processing.product_build_status_service import build_product_build_status
+
+        pro_status = build_product_build_status(
+            db,
+            record=record,
+            product_key=ProductBuildProductKey.blueprint_pro,
+            current_user=current_user,
+            catalog_stage_override="package",
+        )
+        return pro_status.lifecycle == ProductBuildLifecycle.completed
+    return True
 
 
 def _activation_payload(

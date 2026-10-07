@@ -458,6 +458,34 @@ def test_contextual_diagram_quality_requires_fingerprint_and_rendered_anchors() 
     assert "El diagrama contextual no refleja sus anclas de especificidad" in " ".join(report.errors)
 
 
+def test_contextual_diagram_quality_accepts_semantic_anchor_terms() -> None:
+    model = DiagramModel(
+        diagram_key="tool_capability_map",
+        title="Mapa de herramientas",
+        description="Capacidad soportada por Zendesk y aprobacion clinica con trazabilidad.",
+        notation=DiagramNotation.flowchart,
+        nodes=[
+            DiagramNode(id="capability", label="Triage clinico", kind="capability", source_refs=["journey:tools:v1"]),
+            DiagramNode(id="tool", label="Zendesk Salud", kind="tool_contract", source_refs=["journey:tools:v1"]),
+        ],
+        edges=[DiagramEdge(id="e1", source="capability", target="tool", label="requiere aprobacion clinica")],
+        source_refs=["journey:tools:v1"],
+        metadata={
+            "context_version": "project-generation-context.v1",
+            "input_fingerprint": "fingerprint-1",
+            "specificity_anchors": [
+                "Zendesk Salud como herramienta de soporte clinico",
+                "Coordinador clinico aprueba cambios de prioridad",
+            ],
+        },
+    )
+
+    report = evaluate_diagram_quality(model)
+
+    assert report.checks["context_anchors_are_rendered"] is True
+    assert "El diagrama contextual no refleja sus anclas de especificidad en nodos o relaciones." not in report.errors
+
+
 def test_standard_specific_renderers_and_quality_warnings() -> None:
     use_case_model = DiagramModel(
         diagram_key="use_case_diagram",

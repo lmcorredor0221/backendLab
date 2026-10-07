@@ -194,6 +194,60 @@ def test_agent_orchestration_visual_score_warning_does_not_block_complete_model(
     assert not report.errors
 
 
+def test_agent_orchestration_quality_gate_counts_structural_workers_with_supervisor_label() -> None:
+    model = DiagramModel(
+        diagram_key="agent_orchestration",
+        title="Orquestacion agentiva",
+        notation="flowchart",
+        nodes=[
+            {
+                "id": "orchestrator",
+                "label": "orquestador principal",
+                "kind": "orchestrator",
+                "agent_kind": "orchestrator",
+                "source_refs": ["design:1"],
+            },
+            {
+                "id": "planner_agent",
+                "label": "Supervisor",
+                "kind": "worker_agent",
+                "agent_kind": "worker",
+                "source_refs": ["design:1"],
+            },
+            {
+                "id": "executor_agent",
+                "label": "Especialistas",
+                "kind": "worker_agent",
+                "agent_kind": "worker",
+                "source_refs": ["design:1"],
+            },
+            {"id": "memory", "label": "Memoria de contexto", "kind": "memory", "source_refs": ["memory:1"]},
+            {"id": "tools", "label": "Herramientas internas", "kind": "tool_layer", "source_refs": ["tools:1"]},
+            {"id": "guardrail", "label": "Guardrails de seguridad", "kind": "guardrail_gate", "source_refs": ["design:2"]},
+            {"id": "hitl", "label": "Aprobacion humana", "kind": "human_gate", "source_refs": ["define:1"]},
+            {"id": "output", "label": "Resultado verificable", "kind": "output", "source_refs": ["define:1"]},
+            {"id": "fallback", "label": "Escalamiento ante error", "kind": "fallback", "source_refs": ["design:3"]},
+        ],
+        edges=[
+            {"id": "e1", "source": "orchestrator", "target": "planner_agent", "kind": "handoff", "label": "handoff"},
+            {"id": "e2", "source": "planner_agent", "target": "executor_agent", "kind": "handoff", "label": "delega"},
+            {"id": "e3", "source": "executor_agent", "target": "tools", "label": "tool call"},
+            {"id": "e4", "source": "orchestrator", "target": "memory", "label": "contexto"},
+            {"id": "e5", "source": "orchestrator", "target": "guardrail", "label": "policy"},
+            {"id": "e6", "source": "guardrail", "target": "hitl", "label": "approval"},
+            {"id": "e7", "source": "hitl", "target": "output", "label": "entregable"},
+            {"id": "e8", "source": "guardrail", "target": "fallback", "label": "fallback error"},
+        ],
+        source_refs=["design:1"],
+    )
+
+    report = evaluate_diagram_quality(model)
+
+    assert report.valid is True
+    assert report.checks["agent_orchestration_has_orchestrator"] is True
+    assert report.checks["agent_orchestration_has_multiple_agents"] is True
+
+
 def test_agent_orchestration_semantic_repair_fixes_missing_orchestrator_and_output() -> None:
     # Model that reproduces the production error: missing supervisor/orchestrator and missing output/deliverable
     raw_unrepaired = StructuredDiagramModel(

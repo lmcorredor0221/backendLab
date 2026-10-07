@@ -13,10 +13,14 @@ from app.models import (
     DesignRole,
     DiscoveryArtifact,
     JourneyStageArtifactRecord,
+    KnowledgeProfile,
+    KnowledgeSource,
+    MemoryProfile,
     ReviewState,
     SessionRecord,
     ToolPatternLearningCandidateRecord,
     ToolRecommendationArtifact,
+    ToolRecommendationSourceStageVersions,
     WorkspaceRecord,
 )
 from app.services.llm_runtime.builder_contracts import FunctionalRequirement, NonFunctionalRequirement, RequirementsDefinitionOutput
@@ -448,6 +452,81 @@ def test_auto_remediation_adds_ingestion_for_legacy_retrieval_digest() -> None:
     approved_tools, _, digest = promote_tool_recommendation_to_blueprint_tools(remediated)
     assert [item.name for item in approved_tools] == ["knowledge_retrieval", "document_ingestion"]
     assert digest.knowledge_tool_keys == ["knowledge_retrieval", "document_ingestion"]
+
+
+def test_auto_remediation_adds_retrieval_when_digest_only_approved_ingestion() -> None:
+    base_artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Coordinar correos y calendario con conocimiento aprobado.",
+            current_process="Revisa email, calendario y documentos antes de responder.",
+            desired_outcome="Preparar resumenes y borradores con citas.",
+        ),
+        canvas=build_canvas(user_goal="Asistente de productividad con grounding documental."),
+        blueprint=build_blueprint(knowledge_mode="rag"),
+        blueprint_version_number=23,
+    )
+    ingestion_entry = next(item for item in base_artifact.recommended_tools if item.tool_key == "document_ingestion")
+    assert ingestion_entry.contract_seed is not None
+    legacy_digest = build_approved_tools_digest_from_blueprint_tools(
+        [ingestion_entry.contract_seed],
+        source_session_id=base_artifact.source_session_id,
+        source_blueprint_version=base_artifact.source_blueprint_version,
+        mandatory_tool_keys=["knowledge_retrieval", "document_ingestion"],
+    ).model_copy(
+        update={
+            "mandatory_tool_keys": ["knowledge_retrieval", "document_ingestion"],
+            "retrieval_scopes": ["approved_tools_digest", "knowledge.approved_sources"],
+        }
+    )
+    legacy_artifact = base_artifact.model_copy(
+        update={
+            "recommended_tools": [ingestion_entry],
+            "optional_tools": [],
+            "rejected_tools": [],
+            "approved_tools_digest": legacy_digest,
+        },
+        deep=True,
+    )
+
+    remediated, changed = ensure_document_ingestion_for_knowledge_retrieval(
+        artifact=legacy_artifact,
+        blueprint=build_blueprint(knowledge_mode="rag"),
+    )
+
+    assert changed is True
+    approved_tools, _, digest = promote_tool_recommendation_to_blueprint_tools(remediated)
+    assert {"knowledge_retrieval", "document_ingestion"}.issubset({item.name for item in approved_tools})
+    assert {"knowledge_retrieval", "document_ingestion"}.issubset(set(digest.approved_tool_keys))
+    assert set(digest.mandatory_tool_keys).issubset(set(digest.approved_tool_keys))
+    assert digest.knowledge_tool_keys == ["document_ingestion", "knowledge_retrieval"]
+
+
+def test_approved_tools_digest_never_publishes_unapproved_mandatory_keys() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="Responder con documentos aprobados.",
+            current_process="Consulta politicas.",
+            desired_outcome="Responder con evidencia.",
+        ),
+        canvas=build_canvas(user_goal="Responder con knowledge aprobado."),
+        blueprint=build_blueprint(knowledge_mode="rag"),
+        blueprint_version_number=24,
+    )
+    ingestion_entry = next(item for item in artifact.recommended_tools if item.tool_key == "document_ingestion")
+    assert ingestion_entry.contract_seed is not None
+
+    digest = build_approved_tools_digest_from_blueprint_tools(
+        [ingestion_entry.contract_seed],
+        source_session_id=artifact.source_session_id,
+        source_blueprint_version=artifact.source_blueprint_version,
+        mandatory_tool_keys=["knowledge_retrieval", "document_ingestion"],
+    )
+
+    assert digest.approved_tool_keys == ["document_ingestion"]
+    assert digest.mandatory_tool_keys == ["document_ingestion"]
+    assert set(digest.mandatory_tool_keys).issubset(set(digest.approved_tool_keys))
 
 
 def test_scheduled_rag_refresh_requires_scheduler() -> None:
@@ -1541,7 +1620,21 @@ def test_tool_recommendation_ignores_downstream_memory_changes_after_promotion()
         update={
             "tools": approved_tools,
             "memory_strategy": "semantic_rag_with_short_term_checkpoints",
-            "narrative": "Memoria aprobo una estrategia downstream sin cambiar Discover, Define ni Design.",
+            "memory_profile": MemoryProfile(
+                strategy="semantic_rag_with_short_term_checkpoints",
+                storage_layers=["working_memory", "long_term_knowledge"],
+                retrieval_policy="recuperar fuentes aprobadas antes de responder",
+            ),
+            "knowledge_profile": KnowledgeProfile(
+                mode="rag",
+                sources=[
+                    KnowledgeSource(
+                        key="approved_policy",
+                        title="Politicas aprobadas por Memoria",
+                        source_type="document",
+                    )
+                ],
+            ),
         }
     )
 
@@ -1551,6 +1644,11 @@ def test_tool_recommendation_ignores_downstream_memory_changes_after_promotion()
         canvas=canvas,
         blueprint=downstream_blueprint,
         current_blueprint_version=14,
+        current_source_stage_versions=ToolRecommendationSourceStageVersions(
+            discover=promoted_artifact.source_stage_versions.discover,
+            define=promoted_artifact.source_stage_versions.define,
+            design=promoted_artifact.source_stage_versions.design,
+        ),
     )
 
     assert annotated.current_blueprint_version == 14

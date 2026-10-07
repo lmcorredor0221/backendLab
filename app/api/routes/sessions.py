@@ -1329,12 +1329,22 @@ def load_latest_tool_recommendation(
     artifact = ToolRecommendationArtifact.model_validate(json.loads(record.content_text))
     definition_artifact = None
     design_artifact = None
+    approved_discover_record = load_latest_approved_stage_artifact_record(
+        session,
+        session_id=session_id,
+        stage_key="discover",
+    )
     approved_define_record = load_latest_approved_stage_artifact_record(session, session_id=session_id, stage_key="define")
     if approved_define_record is not None:
         definition_artifact = RequirementsDefinitionOutput.model_validate(approved_define_record.proposal_payload)
     approved_design_record = load_latest_approved_stage_artifact_record(session, session_id=session_id, stage_key="design")
     if approved_design_record is not None:
         design_artifact = DesignRecommendationArtifact.model_validate(approved_design_record.proposal_payload)
+    current_source_stage_versions = ToolRecommendationSourceStageVersions(
+        discover=approved_discover_record.version_number if approved_discover_record is not None else None,
+        define=approved_define_record.version_number if approved_define_record is not None else None,
+        design=approved_design_record.version_number if approved_design_record is not None else None,
+    )
     annotated = annotate_tool_recommendation_status(
         artifact,
         discovery=discovery,
@@ -1343,6 +1353,7 @@ def load_latest_tool_recommendation(
         definition_artifact=definition_artifact,
         design_artifact=design_artifact,
         current_blueprint_version=current_blueprint_version_number,
+        current_source_stage_versions=current_source_stage_versions,
     )
     latest_tools_record = load_latest_stage_artifact_record(session, session_id=session_id, stage_key="tools")
     if latest_tools_record is None:
@@ -3626,6 +3637,37 @@ def sync_short_term_memory_checkpoint(
         source_action=source_action,
         branch_key=branch_key,
     )
+
+
+def run_post_approval_housekeeping(
+    session_id: UUID,
+    *,
+    source_action: str,
+    bind,
+) -> None:
+    with Session(bind) as session:
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            return
+        try:
+            sync_short_term_memory_checkpoint(session, record=record, source_action=source_action)
+            capture_operational_state(session, session_id=session_id, source_action=source_action)
+            session.commit()
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            write_log(
+                session,
+                session_id=session_id,
+                stage=record.current_stage,
+                status_value=ArtifactStatus.needs_review,
+                message="post_approval_housekeeping_failed",
+                payload={
+                    "source_action": source_action,
+                    "error_message": str(exc) or type(exc).__name__,
+                    "technical_detail": type(exc).__name__,
+                },
+            )
+            session.commit()
 
 
 def build_stage_context_bundle(
@@ -8529,11 +8571,21 @@ def recommend_memory_route(
                     "se resolvieron en una unica remediacion controlada."
                 ),
             )
+    approved_keys_before_knowledge_pair_remediation = {
+        str(item or "").strip().lower()
+        for item in latest_recommendation.approved_tools_digest.approved_tool_keys
+    }
     remediated_recommendation, tools_remediated = ensure_document_ingestion_for_knowledge_retrieval(
         artifact=latest_recommendation,
         blueprint=blueprint,
     )
     if tools_remediated:
+        knowledge_pair_added_tool_keys = [
+            str(item.tool_key or "").strip().lower()
+            for item in remediated_recommendation.recommended_tools
+            if str(item.tool_key or "").strip().lower()
+            and str(item.tool_key or "").strip().lower() not in approved_keys_before_knowledge_pair_remediation
+        ]
         (
             blueprint,
             latest_recommendation,
@@ -8547,8 +8599,8 @@ def recommend_memory_route(
             blueprint=blueprint,
             latest_recommendation=remediated_recommendation,
             latest_tools_artifact=latest_tools_artifact,
-            added_tool_keys=["document_ingestion"],
-            source_reason="knowledge_retrieval requiere ingesta/refresh/lineage para RAG gobernado",
+            added_tool_keys=knowledge_pair_added_tool_keys or ["knowledge_retrieval", "document_ingestion"],
+            source_reason="knowledge_retrieval y document_ingestion deben quedar aprobadas juntas para RAG gobernado",
         )
 
     definition_artifact = (
@@ -8933,6 +8985,7 @@ def _is_memory_pre_approval_retry_from_approved(
 @router.post("/{session_id}/approve-memory-profile", response_model=SessionSnapshot)
 def approve_memory_profile_route(
     session_id: UUID,
+    background_tasks: BackgroundTasks,
     payload: JourneyStageArtifactApprovalRequest,
     db: Session = Depends(get_session),
     current_user: UserRecord = Depends(get_current_user),
@@ -8963,7 +9016,7 @@ def approve_memory_profile_route(
         latest_memory_artifact,
         latest_approved_memory_artifact,
     ):
-        return build_snapshot(db, record)
+        return build_snapshot(db, record, include_short_term=False)
     opportunity = db.exec(select(OpportunityRecord).where(OpportunityRecord.session_id == session_id)).first()
     canvas_record = db.exec(select(CanvasRecord).where(CanvasRecord.session_id == session_id)).first()
     blueprint_record = db.exec(select(BlueprintRecord).where(BlueprintRecord.session_id == session_id)).first()
@@ -9053,16 +9106,20 @@ def approve_memory_profile_route(
         )
     except Exception as exc:  # noqa: BLE001
         _raise_stage_proposal_http_error(exc)
-    sync_short_term_memory_checkpoint(db, record=record, source_action="approve_memory_profile")
     sync_product_builds_after_stage_approval(
         db,
         record=record,
         stage_key="memory",
         current_user=current_user,
     )
-    capture_operational_state(db, session_id=session_id, source_action="approve_memory_profile")
     db.commit()
-    return build_snapshot(db, record)
+    background_tasks.add_task(
+        run_post_approval_housekeeping,
+        session_id,
+        source_action="approve_memory_profile",
+        bind=db.get_bind(),
+    )
+    return build_snapshot(db, record, include_short_term=False)
 
 
 @router.post("/{session_id}/generate-validation-scenarios", response_model=JourneyStageArtifactEntry)

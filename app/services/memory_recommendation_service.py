@@ -541,6 +541,12 @@ def _build_tool_dependencies(
         if approved_tools_digest is not None
         else set()
     )
+    if approved_tools_digest is not None:
+        approved_keys.update(
+            item.strip().lower()
+            for item in approved_tools_digest.knowledge_tool_keys
+            if item.strip()
+        )
     dependency_by_key = {dependency.tool_key: dependency for dependency in dependencies}
     selected_design = _selected_design(design_artifact)
     if selected_design is not None:
@@ -1648,11 +1654,20 @@ def reconcile_memory_artifact_with_approved_tools(
             str(item or "").strip().lower()
             for item in approved_tools_digest.approved_tool_keys
         )
+        approved_tool_keys.update(
+            str(item or "").strip().lower()
+            for item in approved_tools_digest.knowledge_tool_keys
+        )
     if blueprint is not None:
         approved_tool_keys.update(
             str(item.name or "").strip().lower()
             for item in blueprint.tools
             if item.name
+        )
+        approved_tool_keys.update(
+            str(item.archetype or "").strip().lower()
+            for item in blueprint.tools
+            if item.archetype
         )
     approved_tool_keys.discard("")
     if not approved_tool_keys:
@@ -1703,23 +1718,23 @@ def reconcile_memory_artifact_with_approved_tools(
             and str(item.finding_key or "").split(":", 1)[-1].strip().lower() in reconciled_keys
         )
     ]
-    dry_compile_status = (
-        _build_dry_compile_status(session_snapshot, artifact)
-        if session_snapshot is not None
-        else artifact.dry_compile_status
-    )
     reconciled = artifact.model_copy(
         update={
             "tool_dependencies": updated_dependencies,
             "dependency_gaps": dependency_gaps,
             "missing_information": missing_information,
             "critic_findings": critic_findings,
-            "dry_compile_status": dry_compile_status,
             "architecture_resolution": artifact.architecture_resolution.model_copy(
                 update={"dependency_gaps": [gap.gap_key for gap in dependency_gaps]}
             ),
         }
     )
+    dry_compile_status = (
+        _build_dry_compile_status(session_snapshot, reconciled)
+        if session_snapshot is not None
+        else reconciled.dry_compile_status
+    )
+    reconciled = reconciled.model_copy(update={"dry_compile_status": dry_compile_status})
     return auto_reconcile_memory_artifact(
         reconciled,
         blueprint=blueprint,
@@ -1738,8 +1753,10 @@ def auto_reconcile_memory_artifact(
     approved_tool_keys = set()
     if approved_tools_digest is not None:
         approved_tool_keys.update(approved_tools_digest.approved_tool_keys)
+        approved_tool_keys.update(approved_tools_digest.knowledge_tool_keys)
     if blueprint is not None:
         approved_tool_keys.update(item.name for item in blueprint.tools if item.name)
+        approved_tool_keys.update(item.archetype for item in blueprint.tools if item.archetype)
 
     # 1. Sanitize write policy to not reference missing tools like human_handoff if not in approved tools
     write_policy = artifact.proposed_memory_profile.write_policy or ""

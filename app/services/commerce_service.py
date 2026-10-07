@@ -1729,11 +1729,16 @@ def _sync_blueprint_pro_build_after_access_approval(
     if access_request.product_key != "blueprint_pro":
         return
 
+    from app.services.product_processing.blueprint_basic_service import is_blueprint_basic_completed
     from app.services.product_processing.contracts import ProductBuildProductKey
     from app.services.product_processing.product_build_orchestrator import (
         enqueue_product_build_processing,
         run_product_build_processing,
     )
+
+    is_ready, _ = is_blueprint_basic_completed(db, record=session_record)
+    if not is_ready:
+        return
 
     stage_val = getattr(session_record.current_stage, "value", str(session_record.current_stage or "discover"))
     run, _, queued_now = enqueue_product_build_processing(

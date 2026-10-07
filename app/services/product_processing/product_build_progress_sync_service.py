@@ -43,14 +43,10 @@ def sync_product_builds_after_stage_approval(
         # while retried work in the same transaction remains idempotent.
         correlation_id=f"stage-approval:{record.id}:{normalized_stage}:{record.updated_at.isoformat()}",
     )
-    return sync_product_builds_for_stage_progress(
-        db,
-        record=record,
-        snapshot=snapshot,
-        current_stage=normalized_stage,
-        current_user=current_user,
-        source=f"stage_approval:{normalized_stage}",
-    )
+    # Stage approval is part of the LEAN journey. Paid-product processing must
+    # only start from an explicit product activation/request flow, not from an
+    # upstream stage approval such as Memory.
+    return []
 
 
 def sync_product_builds_for_stage_progress(
@@ -61,6 +57,7 @@ def sync_product_builds_for_stage_progress(
     snapshot: SessionSnapshot | None = None,
     current_user: UserRecord | None = None,
     source: str,
+    auto_execute_paid_products: bool = False,
 ) -> list[ProductBuildStatus]:
     statuses: list[ProductBuildStatus] = []
     normalized_stage = _normalize_stage_key(current_stage)
@@ -75,8 +72,8 @@ def sync_product_builds_for_stage_progress(
             current_user=current_user,
             source=source,
             current_stage=normalized_stage,
-            auto_execute_when_ready=True,
-            allow_llm=True,
+            auto_execute_when_ready=auto_execute_paid_products,
+            allow_llm=auto_execute_paid_products,
         )
         if premium_status is not None:
             statuses.append(premium_status)
@@ -84,7 +81,7 @@ def sync_product_builds_for_stage_progress(
     if tier_rank(current_tier) < tier_rank(CommercialTier.acp):
         return statuses
 
-    if normalized_stage == "package":
+    if normalized_stage == "package" and auto_execute_paid_products:
         statuses.append(
             ensure_acp_product_orchestration(
                 db,
@@ -109,7 +106,8 @@ def sync_product_builds_for_stage_progress(
         current_stage=normalized_stage,
         current_user=current_user,
         source=source,
-        allow_llm=True,
+        allow_llm=auto_execute_paid_products,
+        auto_execute=auto_execute_paid_products,
     )
     if acp_status is not None:
         statuses.append(acp_status)
@@ -125,6 +123,7 @@ def _sync_stage_scoped_product_build(
     current_user: UserRecord | None,
     source: str,
     allow_llm: bool,
+    auto_execute: bool,
 ) -> ProductBuildStatus:
     normalized_stage = _normalize_stage_key(current_stage)
     status = ensure_product_build_orchestration(
@@ -141,6 +140,8 @@ def _sync_stage_scoped_product_build(
         ),
         catalog_stage_override=normalized_stage,
     )
+    if not auto_execute:
+        return status
     if not _should_auto_execute_stage_build(status, normalized_stage):
         return status
     return ensure_product_build_orchestration(

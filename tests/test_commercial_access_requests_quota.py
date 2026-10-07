@@ -215,6 +215,12 @@ def test_authorized_entitlement_closes_stale_pending_access_request() -> None:
             )
         ).one()
         entitlements = session.exec(select(CommercialEntitlementRecord)).all()
+        pro_runs = session.exec(
+            select(ProductBuildRunRecord).where(
+                ProductBuildRunRecord.session_id == record.id,
+                ProductBuildRunRecord.product_key == "blueprint_pro",
+            )
+        ).all()
 
         assert resolved == [access_request]
         assert access_request.status == CommercialAccessRequestStatus.approved
@@ -223,6 +229,7 @@ def test_authorized_entitlement_closes_stale_pending_access_request() -> None:
         assert event.metadata_payload["approval_mode"] == "entitlement_already_authorized"
         assert event.metadata_payload["effective_tier"] == "blueprint_pro"
         assert len(entitlements) == 1
+        assert pro_runs == []
 
 
 def test_grant_balance_auto_approves_oldest_pending_requests_in_fifo_order() -> None:

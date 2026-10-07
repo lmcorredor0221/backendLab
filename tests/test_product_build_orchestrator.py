@@ -100,6 +100,25 @@ def _approve_acp_required_stages(db: Session, record: SessionRecord) -> None:
         )
 
 
+def _mark_blueprint_basic_completed(db: Session, record: SessionRecord, user: UserRecord) -> None:
+    db.add(
+        ProductBuildRunRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            product_key=ProductBuildProductKey.blueprint_basic.value,
+            product_mode="basic_free",
+            entitlement_tier=CommercialTier.blueprint.value,
+            access_state="allowed",
+            lifecycle=ProductBuildLifecycle.completed.value,
+            progress_percent=100,
+            completed_units=1,
+            total_units=1,
+            idempotency_key=f"test-blueprint-basic-completed:{record.id}",
+            created_by_user_id=user.id,
+        )
+    )
+
+
 def _test_estimate(
     key: str,
     *,
@@ -362,6 +381,7 @@ def test_activate_product_builds_for_paid_order_queues_blueprint_pro_run() -> No
 
     with Session(engine) as db:
         user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        _mark_blueprint_basic_completed(db, record, user)
         order = CommercialOrderRecord(
             workspace_id=record.workspace_id,
             session_id=record.id,
@@ -396,6 +416,57 @@ def test_activate_product_builds_for_paid_order_queues_blueprint_pro_run() -> No
 
     assert len(statuses) == 1
     assert statuses[0].product_key == ProductBuildProductKey.blueprint_pro
+
+
+def test_activate_product_builds_for_paid_order_waits_for_blueprint_free_before_blueprint_pro() -> None:
+    from app.models import CommercialOrderRecord, CommercialOrderLineRecord, CommercialOrderStatus
+    from app.services.product_processing.product_build_activation_service import activate_product_builds_for_paid_order
+
+    engine = _engine()
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        user, record = _seed_session(db, tier=CommercialTier.blueprint_pro)
+        order = CommercialOrderRecord(
+            workspace_id=record.workspace_id,
+            session_id=record.id,
+            buyer_user_id=user.id,
+            status=CommercialOrderStatus.paid,
+            currency="USD",
+            subtotal_cents=9900,
+            total_cents=9900,
+            provider="sandbox",
+            checkout_ref=f"sandbox_{uuid4().hex}",
+            idempotency_key=f"idemp_{uuid4().hex}",
+        )
+        db.add(order)
+        db.flush()
+        db.add(
+            CommercialOrderLineRecord(
+                order_id=order.id,
+                product_key="blueprint_pro",
+                price_code="price_pro",
+                quantity=1,
+                unit_amount_cents=9900,
+                total_amount_cents=9900,
+            )
+        )
+        db.commit()
+
+        statuses = activate_product_builds_for_paid_order(
+            db,
+            order=order,
+            current_user=user,
+        )
+        runs = db.exec(
+            select(ProductBuildRunRecord).where(
+                ProductBuildRunRecord.session_id == record.id,
+                ProductBuildRunRecord.product_key == ProductBuildProductKey.blueprint_pro.value,
+            )
+        ).all()
+
+    assert statuses == []
+    assert runs == []
 
 
 def test_enqueue_product_build_processing_persists_queue_selection() -> None:

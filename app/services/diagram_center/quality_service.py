@@ -53,6 +53,96 @@ def _contains_any(values: list[str], *tokens: str) -> bool:
     return any(token in value for value in values for token in normalized_tokens)
 
 
+def _agent_role_text(node: Any) -> str:
+    return _kind(" ".join([str(getattr(node, "kind", "") or ""), str(getattr(node, "agent_kind", "") or "")]))
+
+
+def _is_structural_worker_node(node: Any) -> bool:
+    role_text = _agent_role_text(node)
+    return _contains_any(
+        [role_text],
+        "worker",
+        "worker_agent",
+        "subagent",
+        "subagente",
+        "evaluator",
+        "evaluador",
+        "capability",
+        "capacidad",
+        "planner",
+        "analyst",
+        "designer",
+    )
+
+
+def _is_orchestrator_node(node: Any) -> bool:
+    role_text = _agent_role_text(node)
+    node_text = _node_text(node)
+    if _contains_any([role_text], "orchestrator", "orquestador", "coordinator", "coordinador"):
+        return True
+    if _is_structural_worker_node(node):
+        return False
+    return _contains_any([node_text], "orchestrator", "orquestador", "supervisor", "coordinator", "coordinador")
+
+
+def _is_worker_node(node: Any) -> bool:
+    if _is_orchestrator_node(node):
+        return False
+    node_text = _node_text(node)
+    return _is_structural_worker_node(node) or _contains_any(
+        [node_text],
+        "agent",
+        "agente",
+        "worker",
+        "subagent",
+        "subagente",
+        "evaluator",
+        "evaluador",
+        "capability",
+        "capacidad",
+        "planner",
+        "analyst",
+        "designer",
+    )
+
+
+def _anchor_terms(anchor: str) -> list[str]:
+    normalized = _kind(anchor)
+    stopwords = {
+        "con",
+        "del",
+        "desde",
+        "para",
+        "por",
+        "que",
+        "una",
+        "uno",
+        "the",
+        "and",
+        "with",
+        "from",
+        "pendiente",
+    }
+    terms = [
+        term
+        for term in normalized.replace(".", "_").replace("/", "_").split("_")
+        if len(term) >= 4 and term not in stopwords
+    ]
+    return list(dict.fromkeys(terms))
+
+
+def _anchor_rendered(anchor: str, rendered_text: str) -> bool:
+    normalized_anchor = _kind(anchor)
+    if normalized_anchor in rendered_text:
+        return True
+    terms = _anchor_terms(anchor)
+    if not terms:
+        return False
+    hits = sum(1 for term in terms if term in rendered_text)
+    required_hits = min(2, len(terms))
+    return hits >= required_hits
+
+
 def _agent_orchestration_checks(
     model: DiagramModel,
     checks: dict[str, bool],
@@ -65,33 +155,14 @@ def _agent_orchestration_checks(
     node_texts = [_node_text(node) for node in model.nodes]
     edge_texts = [_edge_text(edge) for edge in model.edges]
     all_texts = [*node_texts, *edge_texts, _kind(model.description), _kind(_metadata_text(model.metadata))]
-    worker_texts = [
-        text
-        for text in node_texts
-        if not _contains_any([text], "orchestrator", "orquestador", "supervisor")
-        and _contains_any(
-            [text],
-            "agent",
-            "agente",
-            "worker",
-            "subagent",
-            "subagente",
-            "evaluator",
-            "evaluador",
-            "capability",
-            "capacidad",
-            "planner",
-            "analyst",
-            "designer",
-        )
-    ]
+    worker_nodes = [node for node in model.nodes if _is_worker_node(node)]
 
     required_checks = {
         "agent_orchestration_has_orchestrator": (
-            _contains_any(node_texts, "orchestrator", "orquestador", "supervisor", "coordinator", "coordinador"),
+            any(_is_orchestrator_node(node) for node in model.nodes),
             "orquestador/supervisor",
         ),
-        "agent_orchestration_has_multiple_agents": (len(worker_texts) >= 2, "al menos dos agentes o capacidades"),
+        "agent_orchestration_has_multiple_agents": (len(worker_nodes) >= 2, "al menos dos agentes o capacidades"),
         "agent_orchestration_has_handoffs": (
             _contains_any(edge_texts, "handoff", "handover", "delegate", "delegacion", "delega", "route", "enruta"),
             "handoffs explicitos",
@@ -257,7 +328,7 @@ def _context_specificity_checks(
     checks["context_has_input_fingerprint"] = bool(fingerprint)
     checks["context_has_specificity_anchors"] = len(anchors) >= 2 or bool(missing_fields)
     checks["context_declares_missing_fields"] = bool(missing_fields)
-    checks["context_anchors_are_rendered"] = any(_kind(anchor) in rendered_text for anchor in anchors)
+    checks["context_anchors_are_rendered"] = any(_anchor_rendered(anchor, rendered_text) for anchor in anchors)
 
     if not checks["context_has_input_fingerprint"]:
         errors.append("El diagrama contextual no declara input_fingerprint.")

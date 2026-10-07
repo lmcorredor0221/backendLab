@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services.diagram_center.contracts import (
     AgentNodeKind,
@@ -12,7 +12,9 @@ from app.services.diagram_center.contracts import (
     DiagramNotation,
     ToolNodeKind,
 )
-from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
+
+if TYPE_CHECKING:
+    from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
 
 
 DETERMINISTIC_DIAGRAM_KEYS = frozenset(
@@ -131,6 +133,8 @@ def _context_payload(input_payload: DiagramGenerationInput) -> dict[str, object]
 
 
 def _generation_context(input_payload: DiagramGenerationInput) -> ProjectGenerationContext:
+    from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
+
     return ProjectGenerationContext.from_approved_payload(
         _context_payload(input_payload),
         deliverable_key=f"diagram.{input_payload.diagram_key}",
@@ -162,6 +166,15 @@ def _context_metadata(context: ProjectGenerationContext) -> dict[str, Any]:
         "missing_fields": [field.field for field in context.missing_fields],
         "estimated_input_tokens": context.estimated_input_tokens,
     }
+
+
+def _anchor_note(context: ProjectGenerationContext | None) -> str:
+    if context is None:
+        return ""
+    anchors = [" ".join(anchor.value.split()).strip() for anchor in context.specificity_anchors if anchor.value]
+    if not anchors:
+        return ""
+    return " Context anchors: " + " | ".join(anchors[:2])
 
 
 def _node(node_id: str, label: str, kind: str, refs: list[str], **metadata: Any) -> DiagramNode:
@@ -200,10 +213,11 @@ def _model(
     direction: str = "LR",
 ) -> DiagramModel:
     refs = _source_refs(input_payload)
+    contextual_description = f"{description}{_anchor_note(context)}" if context is not None else description
     return DiagramModel(
         diagram_key=input_payload.diagram_key,
         title=input_payload.title,
-        description=description,
+        description=contextual_description,
         notation=notation or input_payload.notation,
         direction=direction,  # type: ignore[arg-type]
         nodes=nodes,
