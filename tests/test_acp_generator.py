@@ -489,6 +489,39 @@ def test_generate_acp_preview_expands_whatsapp_connector_end_to_end() -> None:
     assert "LAB ya entrega el contrato tecnico del webhook" in builder_handoff.content_text
 
 
+def test_generate_acp_preview_canonicalizes_legacy_whatsapp_aliases() -> None:
+    snapshot = build_ready_snapshot()
+    assert snapshot.blueprint is not None
+    snapshot.blueprint.tools.append(
+        BlueprintTool(
+            name="whatsapp_cloud_api_connector",
+            purpose="Canal de WhatsApp para ventas y soporte.",
+            archetype="notification",
+            integration_kind="webhook",
+            tool_type="external",
+            connector_key="whatsapp_cloud_api_connector",
+            registered_api_ref="whatsapp_cloud_api_connector",
+            risk_level="medium",
+            has_side_effects=True,
+            request_schema={"type": "object", "properties": {"wa_id": {"type": "string"}}},
+            response_schema={"type": "object", "properties": {"provider_message_id": {"type": "string"}}},
+            contract_review_state="connector-detected",
+        )
+    )
+
+    preview = generate_acp_preview(snapshot)
+    paths = {item.path for item in preview.files}
+
+    assert "ACP/tools/external/tool-whatsapp-business-messaging.yaml" in paths
+    assert "ACP/tools/connectors/whatsapp-cloud-api.yaml" in paths
+    assert "ACP/tools/bindings/whatsapp-cloud-api.production.yaml" in paths
+    assert "ACP/tools/external/tool-whatsapp-cloud-api-connector.yaml" not in paths
+
+    connector_catalog = next(item for item in preview.files if item.path == "ACP/tools/connectors/catalog.yaml")
+    assert "tool_name: whatsapp_business_messaging" in connector_catalog.content_text
+    assert "whatsapp_cloud_api_connector" not in connector_catalog.content_text
+
+
 def test_generate_acp_preview_expands_google_workspace_connector_family_end_to_end() -> None:
     snapshot = build_ready_snapshot()
     assert snapshot.blueprint is not None
@@ -601,6 +634,41 @@ def test_generate_acp_preview_expands_google_workspace_connector_family_end_to_e
     assert "no conviertas LAB en runtime Google" in builder_handoff.content_text
 
 
+def test_generate_acp_preview_canonicalizes_google_workspace_aliases() -> None:
+    snapshot = build_ready_snapshot()
+    assert snapshot.blueprint is not None
+    snapshot.blueprint.tools.append(
+        BlueprintTool(
+            name="google_sheets_api",
+            purpose="Leer leads desde una hoja de Google Sheets.",
+            archetype="read_only_lookup",
+            integration_kind="oauth2_rest_api",
+            tool_type="external",
+            connector_key="google_sheets_api",
+            registered_api_ref="google_sheets_api",
+            risk_level="low",
+            has_side_effects=False,
+            request_schema={"type": "object", "properties": {"spreadsheet_id": {"type": "string"}}},
+            response_schema={"type": "object", "properties": {"rows": {"type": "array"}}},
+            contract_review_state="connector-detected",
+        )
+    )
+
+    preview = generate_acp_preview(snapshot)
+    paths = {item.path for item in preview.files}
+
+    assert "ACP/tools/external/tool-google-sheets-read-table.yaml" in paths
+    assert "ACP/tools/connectors/google-sheets-read-table.yaml" in paths
+    assert "ACP/integrations/google-sheets/read-table.contract.yaml" in paths
+    assert "ACP/tools/external/tool-google-sheets-api.yaml" not in paths
+
+    required_contracts = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/required-api-contracts.yaml"
+    )
+    assert "google_sheets_read_table" in required_contracts.content_text
+    assert "google_sheets_api" not in required_contracts.content_text
+
+
 def test_generate_acp_preview_expands_odoo_connector_family_end_to_end() -> None:
     snapshot = build_ready_snapshot()
     assert snapshot.blueprint is not None
@@ -680,6 +748,55 @@ def test_generate_acp_preview_expands_odoo_connector_family_end_to_end() -> None
     builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
     assert "Odoo public/external APIs" in builder_handoff.content_text
     assert "no conviertas LAB en runtime Odoo" in builder_handoff.content_text
+
+
+def test_generate_acp_preview_expands_legacy_odoo_crm_api_to_sales_contracts() -> None:
+    snapshot = build_ready_snapshot()
+    assert snapshot.blueprint is not None
+    snapshot.blueprint.tools.append(
+        BlueprintTool(
+            name="odoo_crm_api",
+            purpose="Consultar Odoo CRM para preparar propuestas comerciales y cotizaciones.",
+            archetype="read_only_lookup",
+            integration_kind="jsonrpc",
+            tool_type="external",
+            connector_key="odoo_crm_api",
+            registered_api_ref="odoo_crm_api",
+            risk_level="medium",
+            has_side_effects=False,
+            request_schema={"type": "object", "properties": {"record_id": {"type": "string"}}},
+            response_schema={"type": "object", "properties": {"data": {"type": "object"}}},
+            contract_review_state="connector-detected",
+        )
+    )
+
+    preview = generate_acp_preview(snapshot)
+    paths = {item.path for item in preview.files}
+
+    assert "ACP/integrations/odoo/api-profile.yaml" in paths
+    assert "ACP/integrations/odoo/quote-policy.yaml" in paths
+    assert "ACP/integrations/odoo/write-approval-policy.yaml" in paths
+    assert "ACP/tools/connectors/odoo-partner-read.yaml" in paths
+    assert "ACP/tools/connectors/odoo-sale-quote-create.yaml" in paths
+    assert "ACP/tools/external/tool-odoo-sale-quote-create.yaml" in paths
+    assert "ACP/tools/external/tool-odoo-crm-api.yaml" not in paths
+
+    required_contracts = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/required-api-contracts.yaml"
+    )
+    assert "odoo_sale_quote_create" in required_contracts.content_text
+    assert "odoo_crm_api" not in required_contracts.content_text
+    assert "sale.order" in required_contracts.content_text
+    assert "pricelist" in required_contracts.content_text
+
+    connector_catalog = next(item for item in preview.files if item.path == "ACP/tools/connectors/catalog.yaml")
+    assert "odoo_crm_api" not in connector_catalog.content_text
+
+    open_questions = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/open-questions.yaml"
+    )
+    assert "odoo_version_context" in open_questions.content_text
+    assert "odoo_quote_policy" in open_questions.content_text
 
 
 def test_generate_acp_preview_applies_valid_prompt_section_synthesis() -> None:
@@ -942,6 +1059,71 @@ def test_generate_acp_preview_accepts_extra_backlog_readiness_gaps() -> None:
     assert preview.construction_readiness.open_questions >= 1
     assert "uncertainty_backlog:11111111-1111-4111-8111-111111111111" in open_questions_file.content_text
     assert "side_effect_approval_gate" in blocking_gaps_file.content_text
+
+
+def test_generate_acp_preview_removes_delegated_backlog_gap_from_blocking_files() -> None:
+    session_id = uuid4()
+    snapshot = build_ready_snapshot(session_id=session_id)
+    question_key = "uncertainty_backlog:22222222-2222-4222-8222-222222222222"
+    gap_key = "uncertainty_backlog:acp_implementation:side_effect_approval_gate"
+    inherited_gap = ConstructionGapEntry(
+        gap_key=gap_key,
+        title="Definir aprobacion para side effects",
+        domain="security",
+        severity="blocking",
+        status="open",
+        blocking_stage="acp",
+        summary="Toda tool con side effects debe pausar y justificar aprobacion.",
+        remediation="Definir gate HITL antes de empaquetar.",
+        evidence_paths=["ACP/tools/external/tool-create-ticket.yaml"],
+        source_sections=["uncertainty_backlog.acp_implementation", "journey.tools"],
+        closure_criteria=["Registrar respuesta, owner o delegacion explicita."],
+        questions=[
+            ConstructionQuestionEntry(
+                question_key=question_key,
+                question_text="Como se aprueban acciones con side effects?",
+                rationale="Afecta seguridad y auditoria.",
+                target_owner="security_owner",
+                blocking=True,
+            )
+        ],
+    )
+    records = [
+        ConstructionQuestionResponseRecord(
+            session_id=session_id,
+            question_key=question_key,
+            gap_key=gap_key,
+            gap_title="Definir aprobacion para side effects",
+            domain="security",
+            question_text="Como se aprueban acciones con side effects?",
+            rationale="Afecta seguridad y auditoria.",
+            target_owner="security_owner",
+            blocking=True,
+            status="deferred",
+            answer_text="Delegado a implementacion. Resolver durante la construccion con trazabilidad ACP.",
+            impacted_artifacts=["ACP/tools/external/tool-create-ticket.yaml"],
+        )
+    ]
+
+    preview = generate_acp_preview(snapshot, None, records, [inherited_gap])
+
+    blocking_gaps_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/blocking-gaps.yaml"
+    )
+    open_questions_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/open-questions.yaml"
+    )
+    deferred_file = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/deferred-decisions.yaml"
+    )
+    overview_file = next(item for item in preview.files if item.path == "ACP/construction-readiness/overview.yaml")
+
+    gap = next(item for item in preview.construction_readiness.gaps if item.gap_key == gap_key)
+    assert gap.status == "answered"
+    assert "side_effect_approval_gate" not in blocking_gaps_file.content_text
+    assert question_key not in open_questions_file.content_text
+    assert question_key in deferred_file.content_text
+    assert "side_effect_approval_gate" not in overview_file.content_text
 
 
 def test_build_acp_zip_contains_construction_readiness_block() -> None:

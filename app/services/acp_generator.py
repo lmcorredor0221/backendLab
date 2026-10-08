@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape
+from types import SimpleNamespace
 from typing import Any
 
 from app.models import (
@@ -18,6 +19,7 @@ from app.services.acp_continuity import (
     build_deferred_construction_decision_backlog,
     build_construction_question_views,
     is_no_applicable_answer,
+    overlay_construction_readiness,
     parse_answer_list,
     parse_answer_pairs,
     parse_contract_answer_entries,
@@ -52,6 +54,14 @@ from app.services.acp_validation import build_acp_file_entry, build_acp_preview
 from app.services.deliverable_catalog.project_generation_context import ProjectGenerationContext
 from app.services.deliverable_catalog.registry_service import list_registry_entries
 from app.services.objective_contracts import active_objective, build_objective_contract_bundle, objective_requires_runtime_loop
+from app.services.tool_family_projection import (
+    odoo_connector_keys_for_snapshot as projected_odoo_connector_keys_for_snapshot,
+    project_blueprint_tools_for_construction,
+    resolve_google_workspace_connector_key,
+    resolve_odoo_connector_key,
+    resolve_whatsapp_connector_key,
+    snapshot_has_odoo_quote_signal,
+)
 
 
 def _slugify(value: str, default: str = "item") -> str:
@@ -259,7 +269,7 @@ def _tool_state_summary(snapshot: SessionSnapshot) -> str:
     blueprint = snapshot.blueprint
     if blueprint is None or not blueprint.tools:
         return "Sin herramientas externas confirmadas; mantener categoria pending_binding hasta definir contratos."
-    categories = [_tool_binding_category(tool) for tool in blueprint.tools]
+    categories = [_tool_binding_category(tool) for tool in project_blueprint_tools_for_construction(snapshot)]
     design_count = sum(1 for category in categories if category == "design_contract")
     pending_count = sum(1 for category in categories if category == "pending_binding")
     return f"{design_count} design_contract, {pending_count} pending_binding, 0 operational_binding."
@@ -2126,6 +2136,16 @@ def _build_tools_files(snapshot: SessionSnapshot, context: ProjectGenerationCont
     blueprint = snapshot.blueprint
     if blueprint is None:
         return []
+    tools: list[Any] = project_blueprint_tools_for_construction(snapshot)
+    existing_odoo_keys = {
+        key
+        for key in (_odoo_connector_key(tool) for tool in tools)
+        if key
+    }
+    inferred_odoo_keys = _odoo_connector_keys_for_snapshot(snapshot) - existing_odoo_keys
+    base_tool_count = len(tools)
+    for offset, key in enumerate(sorted(inferred_odoo_keys), start=1):
+        tools.append(_synthetic_odoo_tool(key, index=base_tool_count + offset))
     permissions_payload = {
         "context_version": context.context_version if context is not None else "",
         "context_source_refs": _context_source_refs(context),
@@ -2138,7 +2158,7 @@ def _build_tools_files(snapshot: SessionSnapshot, context: ProjectGenerationCont
                 "risk_level": item.risk_level,
                 "side_effects": item.has_side_effects,
             }
-            for item in blueprint.tools
+            for item in tools
         ]
     }
     files = [
@@ -2151,7 +2171,7 @@ def _build_tools_files(snapshot: SessionSnapshot, context: ProjectGenerationCont
             content_text=serialize_yaml_document(permissions_payload),
         )
     ]
-    files.extend(_tool_contract_file(tool, index) for index, tool in enumerate(blueprint.tools, start=1))
+    files.extend(_tool_contract_file(tool, index) for index, tool in enumerate(tools, start=1))
     return files
 
 
@@ -2183,13 +2203,7 @@ def _tool_permission_mode(tool: Any) -> str:
 
 
 def _is_whatsapp_cloud_tool(tool: Any) -> bool:
-    values = {
-        str(getattr(tool, "connector_key", "") or ""),
-        str(getattr(tool, "registered_api_ref", "") or ""),
-        str(getattr(tool, "name", "") or ""),
-    }
-    normalized = {item.strip().lower().replace("-", "_") for item in values if item}
-    return bool({"whatsapp_cloud_api", "whatsapp_business_messaging"} & normalized)
+    return bool(resolve_whatsapp_connector_key(tool))
 
 
 GOOGLE_WORKSPACE_CONNECTOR_PROFILES: dict[str, dict[str, Any]] = {
@@ -2269,16 +2283,7 @@ GOOGLE_WORKSPACE_CONNECTOR_PROFILES: dict[str, dict[str, Any]] = {
 
 
 def _google_workspace_connector_key(tool: Any) -> str:
-    values = {
-        str(getattr(tool, "connector_key", "") or ""),
-        str(getattr(tool, "registered_api_ref", "") or ""),
-        str(getattr(tool, "name", "") or ""),
-    }
-    normalized = {item.strip().lower().replace("-", "_") for item in values if item}
-    for key in GOOGLE_WORKSPACE_CONNECTOR_PROFILES:
-        if key in normalized:
-            return key
-    return ""
+    return resolve_google_workspace_connector_key(tool)
 
 
 def _is_google_workspace_tool(tool: Any) -> bool:
@@ -2354,22 +2359,54 @@ ODOO_CONNECTOR_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
-
 def _odoo_connector_key(tool: Any) -> str:
-    values = {
-        str(getattr(tool, "connector_key", "") or ""),
-        str(getattr(tool, "registered_api_ref", "") or ""),
-        str(getattr(tool, "name", "") or ""),
-    }
-    normalized = {item.strip().lower().replace("-", "_") for item in values if item}
-    for key in ODOO_CONNECTOR_PROFILES:
-        if key in normalized:
-            return key
-    return ""
+    return resolve_odoo_connector_key(tool)
 
 
 def _is_odoo_tool(tool: Any) -> bool:
     return bool(_odoo_connector_key(tool))
+
+
+def _snapshot_has_odoo_quote_signal(snapshot: SessionSnapshot) -> bool:
+    return snapshot_has_odoo_quote_signal(snapshot)
+
+
+def _odoo_connector_keys_for_snapshot(snapshot: SessionSnapshot) -> set[str]:
+    return projected_odoo_connector_keys_for_snapshot(snapshot)
+
+
+def _synthetic_odoo_tool(key: str, *, index: int) -> SimpleNamespace:
+    profile = ODOO_CONNECTOR_PROFILES[key]
+    return SimpleNamespace(
+        name=key,
+        purpose=profile["label"],
+        archetype="transactional_write" if profile["side_effects"] else "read_only_lookup",
+        integration_kind="versioned_rpc_api",
+        tool_type="external",
+        execution_stage="execution",
+        when_to_use=f"Usar cuando el flujo aprobado requiera {profile['label']} contra Odoo.",
+        connector_key=key,
+        registered_api_ref=key,
+        risk_level="high" if profile["side_effects"] else "medium",
+        requires_approval=bool(profile["side_effects"]),
+        has_side_effects=bool(profile["side_effects"]),
+        inputs=[],
+        outputs=[],
+        request_schema={"type": "object", "properties": {"odoo_model": {"type": "string", "enum": [profile["model"]]}}},
+        response_schema={"type": "object", "properties": {"status": {"type": "string"}, "odoo_record_id": {"type": "integer"}}},
+        usage_examples=[],
+        security_config={},
+        permissions=profile["actions"],
+        scopes=["workspace", "odoo"],
+        typed_errors=["ODOO_AUTH_FAILED", "ODOO_ACCESS_DENIED", "ODOO_MODEL_UNAVAILABLE", "ODOO_VALIDATION_ERROR"],
+        audit_rules=["Registrar request_id, modelo, accion, payload_hash y record_id devuelto por Odoo."],
+        retry_strategy="Retry corto solo para fallas transitorias sin mutacion confirmada.",
+        timeout_policy="10s",
+        failure_mode="Fallar cerrado y escalar si version, permisos o modelo no estan confirmados.",
+        compensation_strategy="No repetir escrituras sin idempotency_key y recibo auditable.",
+        approval_reason="Requiere aprobacion humana para escrituras comerciales en Odoo." if profile["side_effects"] else "",
+        contract_review_state="connector-detected",
+    )
 
 
 def _tool_connector_profile_payload(tool: Any, index: int) -> dict[str, Any]:
@@ -2841,7 +2878,8 @@ def _build_tool_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]
 
     catalog_items: list[dict[str, Any]] = []
     files: list[ACPFileEntry] = []
-    for index, tool in enumerate(blueprint.tools, start=1):
+
+    def append_connector_files(tool: Any, index: int, *, warnings: list[str] | None = None) -> None:
         slug = _tool_connector_slug(tool, index)
         catalog_items.append(
             {
@@ -2865,7 +2903,7 @@ def _build_tool_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]
                 format="yaml",
                 source_sections=["blueprint.tools", "tool_contracts", "client_integrations"],
                 content_text=serialize_yaml_document(_tool_connector_profile_payload(tool, index)),
-                warnings=["Perfil generico: completar proveedor, autenticacion y acciones segun la herramienta real del cliente."],
+                warnings=warnings or ["Perfil generico: completar proveedor, autenticacion y acciones segun la herramienta real del cliente."],
             )
         )
         for environment in ("sandbox", "production"):
@@ -2889,6 +2927,26 @@ def _build_tool_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]
                 source_sections=["blueprint.tools", "evaluation", "release_readiness"],
                 content_text=serialize_yaml_document(_tool_smoke_test_payload(tool, index)),
             )
+        )
+
+    tools = project_blueprint_tools_for_construction(snapshot)
+    for index, tool in enumerate(tools, start=1):
+        append_connector_files(tool, index)
+
+    existing_odoo_keys = {
+        key
+        for key in (_odoo_connector_key(tool) for tool in tools)
+        if key
+    }
+    inferred_odoo_keys = _odoo_connector_keys_for_snapshot(snapshot) - existing_odoo_keys
+    base_tool_count = len(tools)
+    for offset, key in enumerate(sorted(inferred_odoo_keys), start=1):
+        append_connector_files(
+            _synthetic_odoo_tool(key, index=base_tool_count + offset),
+            base_tool_count + offset,
+            warnings=[
+                "Connector Odoo inferido desde senales legacy del Blueprint; confirmar version, modelos, permisos y alcance antes de construir."
+            ],
         )
 
     catalog_payload = {
@@ -2915,7 +2973,8 @@ def _build_whatsapp_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEn
     blueprint = snapshot.blueprint
     if blueprint is None or not blueprint.tools:
         return []
-    whatsapp_tools = [(index, tool) for index, tool in enumerate(blueprint.tools, start=1) if _is_whatsapp_cloud_tool(tool)]
+    tools = project_blueprint_tools_for_construction(snapshot)
+    whatsapp_tools = [(index, tool) for index, tool in enumerate(tools, start=1) if _is_whatsapp_cloud_tool(tool)]
     if not whatsapp_tools:
         return []
     index, tool = whatsapp_tools[0]
@@ -3045,7 +3104,7 @@ def _build_google_workspace_connector_files(snapshot: SessionSnapshot) -> list[A
         return []
     google_tools = [
         (index, tool, _google_workspace_connector_key(tool))
-        for index, tool in enumerate(blueprint.tools, start=1)
+        for index, tool in enumerate(project_blueprint_tools_for_construction(snapshot), start=1)
         if _is_google_workspace_tool(tool)
     ]
     if not google_tools:
@@ -3356,15 +3415,10 @@ def _build_odoo_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]
     blueprint = snapshot.blueprint
     if blueprint is None or not blueprint.tools:
         return []
-    odoo_tools = [
-        (index, tool, _odoo_connector_key(tool))
-        for index, tool in enumerate(blueprint.tools, start=1)
-        if _is_odoo_tool(tool)
-    ]
-    if not odoo_tools:
+    keys = _odoo_connector_keys_for_snapshot(snapshot)
+    if not keys:
         return []
 
-    keys = {key for _, _, key in odoo_tools}
     models = sorted({ODOO_CONNECTOR_PROFILES[key]["model"] for key in keys})
     has_write = any(ODOO_CONNECTOR_PROFILES[key]["side_effects"] for key in keys)
     files: list[ACPFileEntry] = []
@@ -3594,7 +3648,7 @@ def _agent_flow_map_payload(snapshot: SessionSnapshot) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
 
-    tool_items = list(enumerate(blueprint.tools, start=1)) if blueprint is not None else []
+    tool_items = list(enumerate(project_blueprint_tools_for_construction(snapshot), start=1)) if blueprint is not None else []
     workflow_steps = blueprint.delivery_package.workflow_profile.steps if blueprint is not None else []
     has_knowledge = bool(
         blueprint is not None
@@ -4598,9 +4652,10 @@ def _iter_external_tools(snapshot: SessionSnapshot) -> list[tuple[int, Any]]:
     blueprint = snapshot.blueprint
     if blueprint is None:
         return []
+    tools = project_blueprint_tools_for_construction(snapshot)
     return [
         (index, tool)
-        for index, tool in enumerate(blueprint.tools, start=1)
+        for index, tool in enumerate(tools, start=1)
         if tool.name not in INTERNAL_BUILDER_TOOL_NAMES and getattr(tool, "tool_type", "external") != "internal"
     ]
 
@@ -4926,7 +4981,11 @@ def _build_construction_readiness_files(
     readiness = preview.construction_readiness
     validation = preview.validation
     response_records = response_records or []
-    blocking_gaps = [gap for gap in readiness.gaps if gap.severity == "blocking"]
+    blocking_gaps = [
+        gap
+        for gap in readiness.gaps
+        if gap.severity == "blocking" and gap.status not in {"answered", "resolved"}
+    ]
     open_questions = _flatten_open_questions(preview, response_records)
     assumptions = _flatten_assumption_entries(preview)
     external_dependencies = _external_dependency_entries(preview)
@@ -5034,6 +5093,25 @@ def _build_construction_readiness_files(
                 "owner_notes": contract_entry.get("notes", ""),
             }
         )
+
+    represented_odoo_keys = {
+        key
+        for key in (_odoo_connector_key(tool) for _, tool in external_tools)
+        if key
+    }
+    inferred_odoo_keys = _odoo_connector_keys_for_snapshot(snapshot) - represented_odoo_keys
+    if inferred_odoo_keys:
+        required_api_contracts_warning = (
+            "Odoo requiere version/API mode, modelos permitidos, permisos y credenciales referenciadas antes de conectar sandbox o produccion."
+        )
+        next_index = len(external_tools) + 1
+        for offset, key in enumerate(sorted(inferred_odoo_keys)):
+            required_api_contracts.append(
+                _odoo_required_api_contract(
+                    _synthetic_odoo_tool(key, index=next_index + offset),
+                    next_index + offset,
+                )
+            )
 
     overview_payload = {
         **_context_trace_payload(context),
@@ -5275,6 +5353,16 @@ def _build_construction_readiness_files(
             content_text=serialize_yaml_document(resolution_workflow_payload),
         ),
     ]
+
+
+def _apply_question_readiness_overlay(
+    preview: ACPPreview,
+    response_records: list[ConstructionQuestionResponseRecord] | None,
+) -> ACPPreview:
+    if not response_records:
+        return preview
+    readiness = overlay_construction_readiness(preview, response_records)
+    return preview.model_copy(update={"construction_readiness": readiness})
 
 
 def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
@@ -5657,7 +5745,7 @@ def _implementation_target_selector(snapshot: SessionSnapshot, preview: ACPPrevi
     blueprint = snapshot.blueprint
     readiness = preview.construction_readiness
     external_tools = _iter_external_tools(snapshot)
-    tool_count = len(blueprint.tools) if blueprint is not None else 0
+    tool_count = len(project_blueprint_tools_for_construction(snapshot)) if blueprint is not None else 0
     external_tool_count = len(external_tools)
     workflow_steps = len(blueprint.delivery_package.workflow_profile.steps) if blueprint is not None else 0
     workflow_profile = blueprint.delivery_package.workflow_profile if blueprint is not None else None
@@ -6870,17 +6958,14 @@ def _build_deployment_files(
     ]
     environment_refs = ["OPENAI_API_KEY", "DATABASE_URL"]
     blueprint = snapshot.blueprint
-    has_whatsapp = bool(blueprint and any(_is_whatsapp_cloud_tool(tool) for tool in blueprint.tools))
+    projected_tools = project_blueprint_tools_for_construction(snapshot) if blueprint else []
+    has_whatsapp = bool(projected_tools and any(_is_whatsapp_cloud_tool(tool) for tool in projected_tools))
     google_keys = {
         _google_workspace_connector_key(tool)
-        for tool in blueprint.tools
-        if blueprint and _is_google_workspace_tool(tool)
-    } if blueprint else set()
-    odoo_keys = {
-        _odoo_connector_key(tool)
-        for tool in blueprint.tools
-        if blueprint and _is_odoo_tool(tool)
-    } if blueprint else set()
+        for tool in projected_tools
+        if _is_google_workspace_tool(tool)
+    } if projected_tools else set()
+    odoo_keys = _odoo_connector_keys_for_snapshot(snapshot) if blueprint else set()
     if has_whatsapp:
         env_lines.extend(
             [
@@ -7116,7 +7201,7 @@ def _governance_tool_items(snapshot: SessionSnapshot) -> list[dict[str, Any]]:
     if blueprint is None:
         return []
     items: list[dict[str, Any]] = []
-    for index, tool in enumerate(blueprint.tools, start=1):
+    for index, tool in enumerate(project_blueprint_tools_for_construction(snapshot), start=1):
         slug = _tool_connector_slug(tool, index)
         items.append(
             {
@@ -7585,6 +7670,7 @@ def generate_acp_files(
     base_files = sorted(files, key=lambda item: item.path)
     base_preview = build_acp_preview(snapshot, base_files)
     base_preview = append_construction_readiness_gaps(base_preview, extra_readiness_gaps)
+    base_preview = _apply_question_readiness_overlay(base_preview, response_records)
     continuity_files = _build_construction_readiness_files(
         snapshot,
         base_preview,
@@ -7599,6 +7685,7 @@ def generate_acp_files(
     acp_without_conformance = sorted(acp_without_diagrams + visualization_files, key=lambda item: item.path)
     conformance_preview = build_acp_preview(snapshot, acp_without_conformance)
     conformance_preview = append_construction_readiness_gaps(conformance_preview, extra_readiness_gaps)
+    conformance_preview = _apply_question_readiness_overlay(conformance_preview, response_records)
     conformance_files = build_acp_conformance_files(
         conformance_preview,
         acp_without_conformance,
@@ -7607,6 +7694,7 @@ def generate_acp_files(
     acp_without_viewer = sorted(acp_without_conformance + conformance_files, key=lambda item: item.path)
     viewer_preview = build_acp_preview(snapshot, acp_without_viewer)
     viewer_preview = append_construction_readiness_gaps(viewer_preview, extra_readiness_gaps)
+    viewer_preview = _apply_question_readiness_overlay(viewer_preview, response_records)
     viewer_files = _build_acp_viewer_files(snapshot, viewer_preview, response_records)
     return sorted(acp_without_viewer + viewer_files, key=lambda item: item.path)
 
@@ -7630,4 +7718,5 @@ def generate_acp_preview(
             prompt_synthesizer,
         ),
     )
-    return append_construction_readiness_gaps(preview, extra_readiness_gaps)
+    preview = append_construction_readiness_gaps(preview, extra_readiness_gaps)
+    return _apply_question_readiness_overlay(preview, response_records)

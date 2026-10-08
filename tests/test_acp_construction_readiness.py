@@ -10,7 +10,12 @@ from app.models import (
     BlueprintConsistencyReport,
     BlueprintTool,
     FeatureFlagEntry,
+    JourneyArtifactState,
+    JourneyStageArtifactEntry,
+    MemoryDependencyGap,
     MemoryProfile,
+    MemoryRecommendationArtifact,
+    MemoryToolDependency,
     ReviewState,
     SessionCreateResponse,
     SessionSnapshot,
@@ -199,6 +204,74 @@ def test_blueprint_handoff_process_debt_does_not_become_acp_blocker() -> None:
     assert readiness.overall_status == "ready_to_build"
     assert readiness.blocking_gaps == 0
     assert not any(item.gap_key == "cross_stage_consistency_drift" for item in readiness.gaps)
+
+
+def test_memory_dependency_gaps_become_acp_questions_without_blocking_lean() -> None:
+    snapshot = build_snapshot()
+    now = utc_now()
+    memory = MemoryRecommendationArtifact(
+        summary="Memoria con dependencia pendiente para implementacion.",
+        tool_dependencies=[
+            MemoryToolDependency(
+                tool_key="outbound_notification",
+                required=True,
+                status="missing",
+                reason="Memory declaro outbound_notification como dependencia requerida durante su ejecucion.",
+            )
+        ],
+        dependency_gaps=[
+            MemoryDependencyGap(
+                gap_key="memory_dependency:outbound_notification",
+                capability_key="outbound_notification",
+                required=True,
+                status="open",
+                remediation_policy="human_review",
+                batch_key="memory_tools_dependency_batch",
+                candidate_pattern_id="candidate_tool_pattern:outbound_notification",
+                reason="Memory declaro outbound_notification como dependencia requerida durante su ejecucion.",
+                source_refs=["memory.tool_dependencies", "approved_tools_digest"],
+            )
+        ],
+    )
+    snapshot = snapshot.model_copy(
+        update={
+            "journey_latest_artifacts": {
+                "memory": JourneyStageArtifactEntry(
+                    id=uuid4(),
+                    workspace_id=uuid4(),
+                    session_id=snapshot.session.id,
+                    artifact_kind="memory_recommendation_artifact",
+                    stage_key="memory",
+                    version_number=1,
+                    state=JourneyArtifactState.generated,
+                    source_action="recommend_memory",
+                    proposal_payload=memory.model_dump(mode="json"),
+                    schema_version="memory-recommendation.v1",
+                    created_at=now,
+                    updated_at=now,
+                )
+            }
+        }
+    )
+
+    readiness = build_initial_construction_readiness(
+        snapshot,
+        build_complete_acp_files(),
+        build_valid_validation_report(),
+    )
+
+    gap = next(item for item in readiness.gaps if item.gap_key == "memory_dependency_questions")
+    question = gap.questions[0]
+
+    assert readiness.overall_status == "ready_to_build"
+    assert readiness.can_start_build is True
+    assert gap.severity == "warning"
+    assert question.blocking is False
+    assert question.question_key == "memory_dependency:outbound_notification"
+    assert question.subject_type == "memory_dependency"
+    assert question.subject_id == "memory_dependency:outbound_notification"
+    assert question.answer_semantics == "resolve_memory_dependency_gap"
+    assert {option.key for option in question.options} == {"defer_to_acp", "exclude_from_mvp"}
 
 
 def test_design_blueprint_projection_drift_is_traced_without_blocking_acp() -> None:

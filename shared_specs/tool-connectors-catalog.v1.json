@@ -1,1084 +1,544 @@
 {
-  "version": "2.0",
-  "description": "Catálogo de conectores tecnológicos de tendencia para el motor de recomendación de herramientas de LAB. Clasificación multi-categoría no excluyente (CRM, ERP, ITSM, Service Manager, Gestión Documental, Mensajería y Finanzas).",
+  "schema_version": "tool-connectors-catalog.v1",
   "connectors": [
     {
-      "connector_key": "odoo_crm_api",
-      "connector_label": "Odoo CRM / ERP — Lectura (JSON-RPC)",
-      "categories": ["crm", "erp", "document_management"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "odoo",
-        "odoo crm",
-        "odoo erp",
-        "gestion en odoo",
-        "gestion odoo",
-        "consultar odoo",
-        "datos de odoo",
-        "odoo sales",
-        "odoo contacts",
-        "sistema odoo",
-        "modulo odoo"
-      ],
-      "use_case_hint": "Consultar clientes, leads, presupuestos, inventario o expedientes en Odoo vía JSON-RPC",
-      "env_vars": [
-        "ODOO_URL",
-        "ODOO_DATABASE",
-        "ODOO_USERNAME",
-        "ODOO_API_KEY"
-      ],
-      "endpoint_pattern": "{ODOO_URL}/jsonrpc",
-      "auth_scheme": "api_key",
-      "integration_kind": "jsonrpc",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://www.odoo.com/documentation/17.0/developer/api/external_api.html"
-    },
-    {
-      "connector_key": "odoo_write_api",
-      "connector_label": "Odoo CRM / ERP — Escritura y Flujos (JSON-RPC)",
-      "categories": ["crm", "erp", "document_management", "invoicing"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "actualizar flujos del crm de odoo",
-        "actualizar crm de odoo",
-        "flujos del crm de odoo",
-        "crear en odoo",
-        "actualizar en odoo",
-        "registrar en odoo",
-        "crear cotizacion odoo",
-        "crear pedido odoo",
-        "crear contacto odoo",
-        "escribir en odoo",
-        "enviar a odoo",
-        "facturar en odoo",
-        "modificar odoo"
-      ],
-      "use_case_hint": "Crear y actualizar flujos de ventas, leads, pedidos, facturas o contactos en Odoo tras aprobación",
-      "env_vars": [
-        "ODOO_URL",
-        "ODOO_DATABASE",
-        "ODOO_USERNAME",
-        "ODOO_API_KEY"
-      ],
-      "endpoint_pattern": "{ODOO_URL}/jsonrpc",
-      "auth_scheme": "api_key",
-      "integration_kind": "jsonrpc",
-      "risk_level": "high",
-      "has_side_effects": true,
-      "docs_url": "https://www.odoo.com/documentation/17.0/developer/api/external_api.html"
-    },
-    {
-      "connector_key": "salesforce_crm_api",
-      "connector_label": "Salesforce Sales Cloud REST API (Leads, Deals)",
-      "categories": ["crm", "service_manager"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "salesforce",
-        "sales force",
-        "salesforce crm",
-        "sfdc",
-        "consultar salesforce",
-        "leads salesforce",
-        "oportunidad salesforce"
-      ],
-      "use_case_hint": "Consultar cuentas, contactos, leads y oportunidades en Salesforce CRM para contextualizar decisiones",
-      "env_vars": [
-        "SALESFORCE_INSTANCE_URL",
-        "SALESFORCE_CLIENT_ID",
-        "SALESFORCE_CLIENT_SECRET",
-        "SALESFORCE_ACCESS_TOKEN"
-      ],
-      "endpoint_pattern": "{SALESFORCE_INSTANCE_URL}/services/data/v59.0/sobjects/{entity}/{id}",
-      "auth_scheme": "oauth2",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/"
-    },
-    {
-      "connector_key": "salesforce_write_api",
-      "connector_label": "Salesforce Sales Cloud — Mutaciones (Leads, Cases, Deals)",
-      "categories": ["crm", "service_manager"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "actualizar salesforce",
-        "crear lead en salesforce",
-        "crear caso salesforce",
-        "registrar en salesforce",
-        "modificar salesforce",
-        "cerrar deal salesforce"
-      ],
-      "use_case_hint": "Crear prospectos calificados, mutar oportunidades o abrir casos en Salesforce tras gate de aprobación",
-      "env_vars": [
-        "SALESFORCE_INSTANCE_URL",
-        "SALESFORCE_CLIENT_ID",
-        "SALESFORCE_CLIENT_SECRET",
-        "SALESFORCE_ACCESS_TOKEN"
-      ],
-      "endpoint_pattern": "{SALESFORCE_INSTANCE_URL}/services/data/v59.0/sobjects/{entity}",
-      "auth_scheme": "oauth2",
-      "integration_kind": "rest_api",
-      "risk_level": "high",
-      "has_side_effects": true,
-      "docs_url": "https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/"
-    },
-    {
-      "connector_key": "hubspot_crm_api",
-      "connector_label": "HubSpot CRM API (Contacts, Deals, Tickets)",
-      "categories": ["crm", "service_manager", "document_management"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "hubspot",
-        "hub spot",
-        "hubspot crm",
-        "contacto en hubspot",
-        "deal en hubspot",
-        "ticket en hubspot",
-        "consultar hubspot"
-      ],
-      "use_case_hint": "Consultar contactos, deals y tickets de soporte en HubSpot CRM",
-      "env_vars": [
-        "HUBSPOT_ACCESS_TOKEN"
-      ],
-      "endpoint_pattern": "https://api.hubapi.com/crm/v3/objects",
-      "auth_scheme": "bearer",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://developers.hubspot.com/docs/api/overview"
-    },
-    {
-      "connector_key": "hubspot_write_api",
-      "connector_label": "HubSpot CRM API — Escritura (Deals, Contacts, Tickets)",
-      "categories": ["crm", "service_manager"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "crear deal en hubspot",
-        "actualizar contacto hubspot",
-        "registrar en hubspot",
-        "crear contacto hubspot",
-        "pipeline hubspot",
-        "actualizar hubspot"
-      ],
-      "use_case_hint": "Crear o actualizar registros en HubSpot CRM: deals calificados, contactos o tickets",
-      "env_vars": [
-        "HUBSPOT_ACCESS_TOKEN"
-      ],
-      "endpoint_pattern": "https://api.hubapi.com/crm/v3/objects",
-      "auth_scheme": "bearer",
-      "integration_kind": "rest_api",
-      "risk_level": "high",
-      "has_side_effects": true,
-      "docs_url": "https://developers.hubspot.com/docs/api/overview"
-    },
-    {
-      "connector_key": "sap_erp_api",
-      "connector_label": "SAP S/4HANA / Business One API (OData & REST)",
-      "categories": ["erp"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "sap",
-        "sap s4hana",
-        "s4hana",
-        "sap business one",
-        "sap b1",
-        "erp sap",
-        "consultar sap",
-        "inventario sap",
-        "pedidos sap"
-      ],
-      "use_case_hint": "Consultar inventario, catálogos de productos, balances o pedidos en SAP ERP",
-      "env_vars": [
-        "SAP_BASE_URL",
-        "SAP_CLIENT_ID",
-        "SAP_CLIENT_SECRET",
-        "SAP_COMPANY_DB"
-      ],
-      "endpoint_pattern": "{SAP_BASE_URL}/b1s/v2/{entity}",
-      "auth_scheme": "basic_or_oauth",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://api.sap.com/"
-    },
-    {
-      "connector_key": "sap_write_api",
-      "connector_label": "SAP S/4HANA / B1 — Escritura Transaccional (OData/Service Layer)",
-      "categories": ["erp"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "crear pedido en sap",
-        "actualizar sap",
-        "registrar factura sap",
-        "mutar sap",
-        "escribir en sap"
-      ],
-      "use_case_hint": "Crear pedidos de venta, actualizar inventarios o emitir documentos en SAP con validación estricta",
-      "env_vars": [
-        "SAP_BASE_URL",
-        "SAP_CLIENT_ID",
-        "SAP_CLIENT_SECRET",
-        "SAP_COMPANY_DB"
-      ],
-      "endpoint_pattern": "{SAP_BASE_URL}/b1s/v2/{entity}",
-      "auth_scheme": "basic_or_oauth",
-      "integration_kind": "rest_api",
-      "risk_level": "critical",
-      "has_side_effects": true,
-      "docs_url": "https://api.sap.com/"
-    },
-    {
-      "connector_key": "netsuite_erp_api",
-      "connector_label": "Oracle NetSuite ERP REST API (SuiteTalk)",
-      "categories": ["erp"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "netsuite",
-        "net suite",
-        "oracle netsuite",
-        "oracle erp",
-        "erp netsuite",
-        "consultar netsuite"
-      ],
-      "use_case_hint": "Consultar órdenes de compra, clientes, facturación y estados de cuenta en NetSuite ERP",
-      "env_vars": [
-        "NETSUITE_ACCOUNT_ID",
-        "NETSUITE_CONSUMER_KEY",
-        "NETSUITE_CONSUMER_SECRET",
-        "NETSUITE_TOKEN_ID",
-        "NETSUITE_TOKEN_SECRET"
-      ],
-      "endpoint_pattern": "https://{NETSUITE_ACCOUNT_ID}.suitetalk.api.netsuite.com/services/rest/record/v1",
-      "auth_scheme": "tba_oauth1",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://docs.oracle.com/en/cloud/saas/netsuite/ns-online-help/"
-    },
-    {
-      "connector_key": "dynamics_365_api",
-      "connector_label": "Microsoft Dynamics 365 (Business Central & Sales)",
-      "categories": ["erp", "crm"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "dynamics",
-        "dynamics 365",
-        "business central",
-        "ms dynamics",
-        "navision",
-        "microsoft dynamics"
-      ],
-      "use_case_hint": "Consultar clientes, facturas, compras y operaciones en Microsoft Dynamics 365 Business Central",
-      "env_vars": [
-        "DYNAMICS_TENANT_ID",
-        "DYNAMICS_CLIENT_ID",
-        "DYNAMICS_CLIENT_SECRET",
-        "DYNAMICS_ENVIRONMENT"
-      ],
-      "endpoint_pattern": "https://api.businesscentral.dynamics.com/v2.0/{DYNAMICS_TENANT_ID}/{DYNAMICS_ENVIRONMENT}/api/v2.0",
-      "auth_scheme": "oauth2",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://learn.microsoft.com/en-us/dynamics365/business-central/dev-itpro/api-reference/v2.0/"
-    },
-    {
-      "connector_key": "siigo_erp_api",
-      "connector_label": "Siigo ERP & Facturación Electrónica API (LatAm)",
-      "categories": ["erp", "invoicing"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "siigo",
-        "siigo nube",
-        "factura siigo",
-        "facturacion siigo",
-        "crear factura en siigo",
-        "erp siigo"
-      ],
-      "use_case_hint": "Generar facturas electrónicas, registrar clientes y consultar cartera en Siigo Cloud (Colombia)",
-      "env_vars": [
-        "SIIGO_USERNAME",
-        "SIIGO_ACCESS_KEY"
-      ],
-      "endpoint_pattern": "https://api.siigo.com/v1/invoices",
-      "auth_scheme": "bearer",
-      "integration_kind": "rest_api",
-      "risk_level": "high",
-      "has_side_effects": true,
-      "docs_url": "https://developer.siigo.com/"
-    },
-    {
-      "connector_key": "alegra_erp_api",
-      "connector_label": "Alegra Cloud ERP & Facturación API",
-      "categories": ["erp", "invoicing"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "alegra",
-        "factura alegra",
-        "erp alegra",
-        "sistema alegra"
-      ],
-      "use_case_hint": "Emitir facturas electrónicas e integrar inventario contable para pymes en Colombia, México y LatAm",
-      "env_vars": [
-        "ALEGRA_EMAIL",
-        "ALEGRA_API_KEY"
-      ],
-      "endpoint_pattern": "https://api.alegra.com/api/v1",
-      "auth_scheme": "basic",
-      "integration_kind": "rest_api",
-      "risk_level": "high",
-      "has_side_effects": true,
-      "docs_url": "https://developer.alegra.com/"
-    },
-    {
-      "connector_key": "zoho_crm_api",
-      "connector_label": "Zoho CRM & Books API",
-      "categories": ["crm", "erp"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "zoho",
-        "zoho crm",
-        "zoho books",
-        "zoho one",
-        "consultar zoho"
-      ],
-      "use_case_hint": "Consultar leads, clientes y facturas en el ecosistema Zoho CRM y Zoho Books",
-      "env_vars": [
-        "ZOHO_CLIENT_ID",
-        "ZOHO_CLIENT_SECRET",
-        "ZOHO_REFRESH_TOKEN",
-        "ZOHO_ORG_ID"
-      ],
-      "endpoint_pattern": "https://www.zohoapis.com/crm/v3",
-      "auth_scheme": "oauth2",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://www.zoho.com/crm/developer/docs/api/v3/"
-    },
-    {
-      "connector_key": "pipedrive_api",
-      "connector_label": "Pipedrive Sales CRM API",
-      "categories": ["crm"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "pipedrive",
-        "pipe drive",
-        "crm pipedrive",
-        "deals pipedrive"
-      ],
-      "use_case_hint": "Monitorear embudos comerciales, etapas de prospectos y actividades en Pipedrive",
-      "env_vars": [
-        "PIPEDRIVE_API_TOKEN",
-        "PIPEDRIVE_COMPANY_DOMAIN"
-      ],
-      "endpoint_pattern": "https://{PIPEDRIVE_COMPANY_DOMAIN}.pipedrive.com/api/v1",
-      "auth_scheme": "api_key",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://developers.pipedrive.com/docs/api/v1"
-    },
-    {
-      "connector_key": "servicenow_itsm_api",
-      "connector_label": "ServiceNow ITSM & Incident Management API",
-      "categories": ["itsm", "service_manager"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "servicenow",
-        "service now",
-        "itsm servicenow",
-        "incidente servicenow",
-        "mesa de ayuda servicenow",
-        "cmdb servicenow",
-        "itsm",
-        "ticket itsm"
-      ],
-      "use_case_hint": "Consultar incidentes, problemas, solicitudes de servicio y elementos de configuración en ServiceNow",
-      "env_vars": [
-        "SERVICENOW_INSTANCE",
-        "SERVICENOW_USERNAME",
-        "SERVICENOW_PASSWORD"
-      ],
-      "endpoint_pattern": "https://{SERVICENOW_INSTANCE}.service-now.com/api/now/table/incident",
-      "auth_scheme": "basic_or_oauth",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": false,
-      "docs_url": "https://developer.servicenow.com/dev.do#!/reference/api/vancouver/rest/c_TableAPI"
-    },
-    {
-      "connector_key": "servicenow_write_api",
-      "connector_label": "ServiceNow ITSM — Creación y Resolución de Incidentes",
-      "categories": ["itsm", "service_manager"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "crear incidente en servicenow",
-        "abrir caso servicenow",
-        "actualizar ticket servicenow",
-        "cerrar incidente servicenow",
-        "escalar en servicenow"
-      ],
-      "use_case_hint": "Crear, categorizar, asignar o cerrar incidentes y solicitudes en ServiceNow ITSM",
-      "env_vars": [
-        "SERVICENOW_INSTANCE",
-        "SERVICENOW_USERNAME",
-        "SERVICENOW_PASSWORD"
-      ],
-      "endpoint_pattern": "https://{SERVICENOW_INSTANCE}.service-now.com/api/now/table/incident",
-      "auth_scheme": "basic_or_oauth",
-      "integration_kind": "rest_api",
-      "risk_level": "high",
-      "has_side_effects": true,
-      "docs_url": "https://developer.servicenow.com/dev.do#!/reference/api/vancouver/rest/c_TableAPI"
-    },
-    {
-      "connector_key": "jira_service_management_api",
-      "connector_label": "Jira Service Management REST API (ITSM / Help Desk)",
-      "categories": ["itsm", "service_manager"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "jira service management",
-        "jsm",
-        "jira service desk",
-        "jira it",
-        "ticket de soporte jira",
-        "portal jira service"
-      ],
-      "use_case_hint": "Crear solicitudes de clientes, gestionar colas de soporte IT y automatizar aprobaciones en JSM",
-      "env_vars": [
-        "JIRA_BASE_URL",
-        "JIRA_EMAIL",
-        "JIRA_API_TOKEN"
-      ],
-      "endpoint_pattern": "https://{JIRA_BASE_URL}.atlassian.net/rest/servicedeskapi/request",
-      "auth_scheme": "basic",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://developer.atlassian.com/cloud/jira/service-desk/rest/intro/"
-    },
-    {
-      "connector_key": "jira_api",
-      "connector_label": "Jira Cloud REST API (Issues y Proyectos)",
-      "categories": ["service_manager", "project_management"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "jira",
-        "crear issue en jira",
-        "ticket de jira",
-        "jira cloud",
-        "jira software",
-        "atlassian jira"
-      ],
-      "use_case_hint": "Crear y actualizar issues de desarrollo, tareas o bugs en Jira Cloud",
-      "env_vars": [
-        "JIRA_BASE_URL",
-        "JIRA_EMAIL",
-        "JIRA_API_TOKEN"
-      ],
-      "endpoint_pattern": "https://{JIRA_BASE_URL}.atlassian.net/rest/api/3/issue",
-      "auth_scheme": "basic",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://developer.atlassian.com/cloud/jira/platform/rest/v3/"
-    },
-    {
-      "connector_key": "zendesk_api",
-      "connector_label": "Zendesk Support Suite API (Tickets y Casos)",
-      "categories": ["service_manager", "itsm"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "zendesk",
-        "crear ticket",
-        "abrir ticket",
-        "ticket de soporte",
-        "mesa de ayuda zendesk",
-        "zendesk support",
-        "caso zendesk"
-      ],
-      "use_case_hint": "Crear, responder y gestionar tickets de soporte omnicanal en Zendesk",
-      "env_vars": [
-        "ZENDESK_SUBDOMAIN",
-        "ZENDESK_EMAIL",
-        "ZENDESK_API_TOKEN"
-      ],
-      "endpoint_pattern": "https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets",
-      "auth_scheme": "basic",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://developer.zendesk.com/api-reference"
-    },
-    {
-      "connector_key": "freshservice_itsm_api",
-      "connector_label": "Freshservice ITSM API (Tickets y Activos IT)",
-      "categories": ["itsm", "service_manager"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "freshservice",
-        "fresh service",
-        "itsm freshservice",
-        "mesa de ayuda freshservice"
-      ],
-      "use_case_hint": "Gestionar tickets de servicio tecnológico, inventario de hardware y cambios en Freshservice",
-      "env_vars": [
-        "FRESHSERVICE_DOMAIN",
-        "FRESHSERVICE_API_KEY"
-      ],
-      "endpoint_pattern": "https://{FRESHSERVICE_DOMAIN}.freshservice.com/api/v2/tickets",
-      "auth_scheme": "basic",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://api.freshservice.com/"
-    },
-    {
-      "connector_key": "freshdesk_api",
-      "connector_label": "Freshdesk Customer Support API",
-      "categories": ["service_manager"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "freshdesk",
-        "fresh desk",
-        "soporte freshdesk",
-        "tickets freshdesk"
-      ],
-      "use_case_hint": "Atender solicitudes de soporte de clientes y gestionar tickets en Freshdesk",
-      "env_vars": [
-        "FRESHDESK_DOMAIN",
-        "FRESHDESK_API_KEY"
-      ],
-      "endpoint_pattern": "https://{FRESHDESK_DOMAIN}.freshdesk.com/api/v2/tickets",
-      "auth_scheme": "basic",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://developers.freshdesk.com/api/"
-    },
-    {
-      "connector_key": "zoho_desk_api",
-      "connector_label": "Zoho Desk Customer Support API",
-      "categories": ["service_manager", "itsm"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "zoho desk",
-        "desk zoho",
-        "soporte zoho",
-        "tickets zoho"
-      ],
-      "use_case_hint": "Recepcionar, asignar y responder tickets de soporte en Zoho Desk",
-      "env_vars": [
-        "ZOHO_DESK_ORG_ID",
-        "ZOHO_CLIENT_ID",
-        "ZOHO_CLIENT_SECRET",
-        "ZOHO_REFRESH_TOKEN"
-      ],
-      "endpoint_pattern": "https://desk.zoho.com/api/v1/tickets",
-      "auth_scheme": "oauth2",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://desk.zoho.com/support/APIDocument.do"
-    },
-    {
-      "connector_key": "sharepoint_documents_api",
-      "connector_label": "Microsoft SharePoint Online — Gestión Documental (Microsoft Graph)",
-      "categories": ["document_management", "knowledge_base"],
-      "archetype": "knowledge_retrieval",
-      "maps_to_capability": "knowledge_retrieval",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "sharepoint",
-        "share point",
-        "biblioteca sharepoint",
-        "archivos sharepoint",
-        "onedrive",
-        "carpeta compartida microsoft",
-        "repositorio sharepoint",
-        "documentos sharepoint",
-        "gestion documental sharepoint"
-      ],
-      "use_case_hint": "Buscar, descargar y extraer contenido de manuales, políticas y expedientes en bibliotecas SharePoint",
-      "env_vars": [
-        "MICROSOFT_TENANT_ID",
-        "MICROSOFT_CLIENT_ID",
-        "MICROSOFT_CLIENT_SECRET",
-        "SHAREPOINT_SITE_ID"
-      ],
-      "endpoint_pattern": "https://graph.microsoft.com/v1.0/sites/{SHAREPOINT_SITE_ID}/drive/root/search(q='{query}')",
-      "auth_scheme": "oauth2",
-      "integration_kind": "rest_api",
-      "risk_level": "low",
-      "has_side_effects": false,
-      "docs_url": "https://learn.microsoft.com/en-us/graph/api/resources/sharepoint"
-    },
-    {
-      "connector_key": "sharepoint_ingestion_api",
-      "connector_label": "Microsoft SharePoint — Carga y Versionado de Documentos",
-      "categories": ["document_management"],
-      "archetype": "document_ingestion",
-      "maps_to_capability": "document_ingestion",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "cargar archivo en sharepoint",
-        "guardar documento sharepoint",
-        "subir archivo sharepoint",
-        "archivar en sharepoint"
-      ],
-      "use_case_hint": "Subir comprobantes, informes o actas generadas por el agente a carpetas de SharePoint",
-      "env_vars": [
-        "MICROSOFT_TENANT_ID",
-        "MICROSOFT_CLIENT_ID",
-        "MICROSOFT_CLIENT_SECRET",
-        "SHAREPOINT_SITE_ID"
-      ],
-      "endpoint_pattern": "https://graph.microsoft.com/v1.0/sites/{SHAREPOINT_SITE_ID}/drive/items/{parent_id}:/{filename}:/content",
-      "auth_scheme": "oauth2",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://learn.microsoft.com/en-us/graph/api/driveitem-put-content"
-    },
-    {
-      "connector_key": "google_drive_api",
-      "connector_label": "Google Drive & Workspace API (Gestión Documental)",
-      "categories": ["document_management", "knowledge_base"],
-      "archetype": "knowledge_retrieval",
-      "maps_to_capability": "knowledge_retrieval",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "google drive",
-        "drive",
-        "carpeta de drive",
-        "archivos en drive",
-        "documento en drive",
-        "google docs",
-        "google workspace"
-      ],
-      "use_case_hint": "Indexar y recuperar información de manuales, PDFs y documentos almacenados en Google Drive",
-      "env_vars": [
-        "GOOGLE_SERVICE_ACCOUNT_JSON",
-        "GOOGLE_DRIVE_FOLDER_ID"
-      ],
-      "endpoint_pattern": "https://www.googleapis.com/drive/v3/files?q='{GOOGLE_DRIVE_FOLDER_ID}'+in+parents",
-      "auth_scheme": "service_account",
-      "integration_kind": "rest_api",
-      "risk_level": "low",
-      "has_side_effects": false,
-      "docs_url": "https://developers.google.com/drive/api/v3/about-sdk"
-    },
-    {
-      "connector_key": "google_drive_ingestion_api",
-      "connector_label": "Google Drive API — Carga y Almacenamiento Documental",
-      "categories": ["document_management"],
-      "archetype": "document_ingestion",
-      "maps_to_capability": "document_ingestion",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "subir a drive",
-        "guardar en drive",
-        "guardar en google drive",
-        "archivar en drive",
-        "cargar pdf en drive"
-      ],
-      "use_case_hint": "Almacenar archivos procesados, facturas descargadas o reportes generados en Google Drive",
-      "env_vars": [
-        "GOOGLE_SERVICE_ACCOUNT_JSON",
-        "GOOGLE_DRIVE_FOLDER_ID"
-      ],
-      "endpoint_pattern": "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-      "auth_scheme": "service_account",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://developers.google.com/drive/api/guides/manage-uploads"
-    },
-    {
-      "connector_key": "notion_documents_api",
-      "connector_label": "Notion Workspace API (Wikis, SOPs y Documentación)",
-      "categories": ["document_management", "knowledge_base"],
-      "archetype": "knowledge_retrieval",
-      "maps_to_capability": "knowledge_retrieval",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "notion",
-        "pagina de notion",
-        "wiki notion",
-        "sop notion",
-        "base de datos notion",
-        "documentacion en notion"
-      ],
-      "use_case_hint": "Consultar bases de datos de conocimiento, procedimientos y políticas redactadas en Notion",
-      "env_vars": [
-        "NOTION_API_KEY",
-        "NOTION_DATABASE_ID"
-      ],
-      "endpoint_pattern": "https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
-      "auth_scheme": "bearer",
-      "integration_kind": "rest_api",
-      "risk_level": "low",
-      "has_side_effects": false,
-      "docs_url": "https://developers.notion.com/reference/intro"
-    },
-    {
-      "connector_key": "confluence_knowledge_api",
-      "connector_label": "Atlassian Confluence Cloud REST API (Base de Conocimiento)",
-      "categories": ["document_management", "knowledge_base"],
-      "archetype": "knowledge_retrieval",
-      "maps_to_capability": "knowledge_retrieval",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "confluence",
-        "atlassian confluence",
-        "wiki confluence",
-        "espacio confluence",
-        "manuales en confluence"
-      ],
-      "use_case_hint": "Extraer lineamientos técnicos, manuales operativos y arquitectura documentada en Confluence",
-      "env_vars": [
-        "CONFLUENCE_BASE_URL",
-        "CONFLUENCE_EMAIL",
-        "CONFLUENCE_API_TOKEN"
-      ],
-      "endpoint_pattern": "https://{CONFLUENCE_BASE_URL}.atlassian.net/wiki/rest/api/content/search",
-      "auth_scheme": "basic",
-      "integration_kind": "rest_api",
-      "risk_level": "low",
-      "has_side_effects": false,
-      "docs_url": "https://developer.atlassian.com/cloud/confluence/rest/v1/intro/"
-    },
-    {
-      "connector_key": "docusign_api",
-      "connector_label": "DocuSign eSignature API (Gestión de Firmas y Contratos)",
-      "categories": ["document_management", "transactional_write"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "docusign",
-        "docu sign",
-        "firma electronica",
-        "firmar contrato",
-        "enviar contrato a firma",
-        "envelopes docusign"
-      ],
-      "use_case_hint": "Generar sobres de firma electrónica y verificar el estado contractual de documentos",
-      "env_vars": [
-        "DOCUSIGN_ACCOUNT_ID",
-        "DOCUSIGN_INTEGRATION_KEY",
-        "DOCUSIGN_USER_ID",
-        "DOCUSIGN_RSA_PRIVATE_KEY"
-      ],
-      "endpoint_pattern": "https://account.docusign.com/restapi/v2.1/accounts/{DOCUSIGN_ACCOUNT_ID}/envelopes",
-      "auth_scheme": "jwt_oauth",
-      "integration_kind": "rest_api",
-      "risk_level": "high",
-      "has_side_effects": true,
-      "docs_url": "https://developers.docusign.com/docs/esign-rest-api/"
-    },
-    {
-      "connector_key": "box_documents_api",
-      "connector_label": "Box Enterprise Content API (Almacenamiento y Archivo)",
-      "categories": ["document_management"],
-      "archetype": "document_ingestion",
-      "maps_to_capability": "document_ingestion",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "box",
-        "box.com",
-        "almacenamiento box",
-        "archivos box"
-      ],
-      "use_case_hint": "Custodiar y sincronizar expedientes corporativos en Box con políticas de retención",
-      "env_vars": [
-        "BOX_CLIENT_ID",
-        "BOX_CLIENT_SECRET",
-        "BOX_ENTERPRISE_ID"
-      ],
-      "endpoint_pattern": "https://api.box.com/2.0/files/content",
-      "auth_scheme": "oauth2_or_jwt",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://developer.box.com/"
-    },
-    {
-      "connector_key": "s3_document_store_api",
-      "connector_label": "Amazon S3 / Cloudflare R2 Document Store (Object Storage)",
-      "categories": ["document_management", "object_storage"],
-      "archetype": "document_ingestion",
-      "maps_to_capability": "document_ingestion",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "s3",
-        "amazon s3",
-        "aws s3",
-        "bucket s3",
-        "cloudflare r2",
-        "storage bucket",
-        "guardar pdf",
-        "almacenar adjunto"
-      ],
-      "use_case_hint": "Almacenar archivos binarios, comprobantes de pago y PDFs procesados por el agente",
-      "env_vars": [
-        "AWS_S3_BUCKET",
-        "AWS_REGION",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY"
-      ],
-      "endpoint_pattern": "https://{AWS_S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}",
-      "auth_scheme": "aws_iam_signature",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
-      "has_side_effects": true,
-      "docs_url": "https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html"
-    },
-    {
-      "connector_key": "google_sheets_api",
-      "connector_label": "Google Sheets API v4 (Planillas y Datos)",
-      "categories": ["spreadsheet", "database"],
-      "archetype": "read_only_lookup",
-      "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "google sheets",
-        "hoja de calculo",
-        "excel google",
-        "spreadsheet",
-        "gsheet",
-        "planilla google",
-        "google spreadsheet"
-      ],
-      "use_case_hint": "Leer datos estructurados desde Google Sheets como fuente operativa del agente",
-      "env_vars": [
-        "GOOGLE_SERVICE_ACCOUNT_JSON",
-        "GOOGLE_SHEETS_SPREADSHEET_ID"
-      ],
-      "endpoint_pattern": "https://sheets.googleapis.com/v4/spreadsheets/{GOOGLE_SHEETS_SPREADSHEET_ID}/values/{range}",
-      "auth_scheme": "service_account",
-      "integration_kind": "rest_api",
-      "risk_level": "low",
-      "has_side_effects": false,
-      "docs_url": "https://developers.google.com/sheets/api"
-    },
-    {
       "connector_key": "whatsapp_cloud_api",
-      "connector_label": "WhatsApp Business Cloud API (Meta)",
-      "categories": ["messaging", "channels"],
+      "connector_label": "WhatsApp Business Cloud API",
+      "family_key": "messaging_gateway",
       "archetype": "messaging_gateway",
       "maps_to_capability": "outbound_notification",
-      "is_inbound_trigger": true,
+      "maps_to_capabilities": [
+        "inbound_message_trigger",
+        "outbound_notification",
+        "template_message_send",
+        "delivery_status_event"
+      ],
       "detection_signals": [
-        "whatsapp",
-        "whats app",
+        "whatsapp business",
         "mensajes de whatsapp",
         "bot de whatsapp",
         "canal de whatsapp",
-        "responder por whatsapp",
-        "whatsapp business"
+        "whats app",
+        "whatsapp"
       ],
-      "use_case_hint": "Canal conversacional de entrada y salida para agentes que reciben y responden usuarios por WhatsApp",
+      "integration_kind": "webhook_plus_rest_api",
+      "provider": "meta",
+      "direct_api_supported": true,
+      "partner_supported": true,
+      "auth_scheme": "bearer_token",
+      "is_inbound_trigger": true,
+      "risk_level": "medium",
+      "categories": [
+        "messaging",
+        "customer_channel",
+        "latam",
+        "conversational"
+      ],
       "env_vars": [
-        "WHATSAPP_ACCESS_TOKEN",
+        "WHATSAPP_GRAPH_API_VERSION",
+        "WHATSAPP_BUSINESS_ACCOUNT_ID",
         "WHATSAPP_PHONE_NUMBER_ID",
+        "WHATSAPP_WEBHOOK_CALLBACK_URL"
+      ],
+      "required_secret_refs": [
+        "WHATSAPP_ACCESS_TOKEN",
         "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
-        "WHATSAPP_APP_ID"
+        "WHATSAPP_APP_SECRET"
       ],
-      "endpoint_pattern": "https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
-      "webhook_endpoint_pattern": "POST /webhooks/whatsapp  (verificacion y recepcion de mensajes entrantes)",
-      "auth_scheme": "bearer",
-      "integration_kind": "webhook_and_rest",
-      "risk_level": "low",
-      "has_side_effects": true,
-      "docs_url": "https://developers.facebook.com/docs/whatsapp/cloud-api"
+      "required_env_refs": [
+        "WHATSAPP_GRAPH_API_VERSION",
+        "WHATSAPP_GRAPH_API_BASE_URL",
+        "WHATSAPP_BUSINESS_ACCOUNT_ID",
+        "WHATSAPP_PHONE_NUMBER_ID",
+        "WHATSAPP_WEBHOOK_CALLBACK_URL"
+      ],
+      "endpoint_pattern": "https://graph.facebook.com/{version}/{phone_number_id}/messages",
+      "endpoint_patterns": {
+        "send_message": "https://graph.facebook.com/{version}/{phone_number_id}/messages",
+        "webhook_callback": "/webhooks/whatsapp"
+      },
+      "docs_url": "https://whatsappbusiness.com/es-la/developers/developer-hub/?lang=es_LA",
+      "docs_refs": [
+        "https://whatsappbusiness.com/es-la/developers/developer-hub/?lang=es_LA",
+        "https://whatsappbusiness.com/es-la/resources/faq/?lang=es_LA"
+      ]
     },
     {
-      "connector_key": "telegram_bot_api",
-      "connector_label": "Telegram Bot API",
-      "categories": ["messaging", "channels"],
-      "archetype": "messaging_gateway",
-      "maps_to_capability": "outbound_notification",
-      "is_inbound_trigger": true,
+      "connector_key": "google_drive_file_picker",
+      "connector_label": "Google Drive Picker — archivos seleccionados",
+      "family_key": "google_workspace_public_tools",
+      "archetype": "document_selector",
+      "maps_to_capability": "knowledge_retrieval",
+      "maps_to_capabilities": ["knowledge_retrieval", "document_ingestion"],
       "detection_signals": [
-        "telegram",
-        "bot de telegram",
-        "canal telegram",
-        "mensajes por telegram",
-        "notificar por telegram",
-        "telegram bot"
+        "google drive",
+        "carpeta de drive",
+        "archivos en drive",
+        "documentos en drive",
+        "archivo en drive",
+        "seleccionar archivo",
+        "drive"
       ],
-      "use_case_hint": "Canal conversacional Telegram para recibir y responder mensajes de usuarios mediante un bot",
-      "env_vars": [
-        "TELEGRAM_BOT_TOKEN"
-      ],
-      "endpoint_pattern": "https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-      "webhook_endpoint_pattern": "POST /webhooks/telegram  (recepcion de updates del bot)",
-      "auth_scheme": "bot_token",
-      "integration_kind": "webhook_and_rest",
-      "risk_level": "low",
-      "has_side_effects": true,
-      "docs_url": "https://core.telegram.org/bots/api"
-    },
-    {
-      "connector_key": "slack_api",
-      "connector_label": "Slack Events API & Web API",
-      "categories": ["messaging", "collaboration"],
-      "archetype": "messaging_gateway",
-      "maps_to_capability": "outbound_notification",
-      "is_inbound_trigger": true,
-      "detection_signals": [
-        "slack",
-        "canal de slack",
-        "workspace de slack",
-        "notificar por slack",
-        "bot de slack",
-        "mensaje de slack",
-        "slack channel"
-      ],
-      "use_case_hint": "Enviar notificaciones o responder a usuarios en canales de Slack usando el Web API",
-      "env_vars": [
-        "SLACK_BOT_TOKEN",
-        "SLACK_SIGNING_SECRET",
-        "SLACK_APP_TOKEN"
-      ],
-      "endpoint_pattern": "https://slack.com/api/chat.postMessage",
-      "webhook_endpoint_pattern": "POST /webhooks/slack  (recepcion de eventos y comandos slash)",
-      "auth_scheme": "bearer",
-      "integration_kind": "webhook_and_rest",
-      "risk_level": "low",
-      "has_side_effects": true,
-      "docs_url": "https://api.slack.com/events"
-    },
-    {
-      "connector_key": "mercadopago_api",
-      "connector_label": "MercadoPago Payments API (LatAm)",
-      "categories": ["payment", "fintech"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
+      "integration_kind": "oauth2_rest_api",
+      "provider": "google_workspace",
+      "auth_scheme": "oauth2",
+      "default_scope_policy": "drive.file via Google Picker; evitar drive.readonly amplio por defecto",
       "is_inbound_trigger": false,
-      "detection_signals": [
-        "mercadopago",
-        "mercado pago",
-        "mp checkout",
-        "pago con mercadopago",
-        "cobrar con mp",
-        "cobro mercadopago"
+      "risk_level": "low",
+      "has_side_effects": false,
+      "categories": ["google_workspace", "drive", "document_management", "knowledge_base"],
+      "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES"],
+      "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+      "endpoint_pattern": "https://www.googleapis.com/drive/v3/files/{fileId}",
+      "endpoint_patterns": {
+        "picker": "Google Picker OAuth flow with drive.file",
+        "file_metadata": "GET https://www.googleapis.com/drive/v3/files/{fileId}",
+        "file_download": "GET https://www.googleapis.com/drive/v3/files/{fileId}?alt=media",
+        "file_export": "GET https://www.googleapis.com/drive/v3/files/{fileId}/export"
+      },
+      "docs_url": "https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker",
+      "docs_refs": [
+        "https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth",
+        "https://developers.google.com/workspace/drive/api/guides/limits"
       ],
-      "use_case_hint": "Procesar pagos y generar preferencias de cobro en MercadoPago",
-      "env_vars": [
-        "MP_ACCESS_TOKEN",
-        "MP_PUBLIC_KEY"
-      ],
-      "endpoint_pattern": "https://api.mercadopago.com/v1/payments",
-      "auth_scheme": "bearer",
-      "integration_kind": "rest_api",
-      "risk_level": "critical",
-      "has_side_effects": true,
-      "docs_url": "https://www.mercadopago.com.co/developers/es/docs"
+      "cost_model_note": "Uso estandar sin cargo adicional bajo umbrales/cuotas; evitar polling y cachear snapshots.",
+      "verification_note": "Usar scopes minimos. Scopes amplios o restringidos pueden requerir verificacion OAuth adicional."
     },
     {
-      "connector_key": "stripe_api",
-      "connector_label": "Stripe Payments and Invoicing API",
-      "categories": ["payment", "fintech", "invoicing"],
-      "archetype": "transactional_write",
-      "maps_to_capability": "transactional_write",
-      "is_inbound_trigger": false,
-      "detection_signals": [
-        "stripe",
-        "stripe payments",
-        "cobrar con stripe",
-        "stripe invoice",
-        "stripe checkout",
-        "cobro con stripe"
-      ],
-      "use_case_hint": "Crear payment intents, facturas y cobros programáticos mediante Stripe API",
-      "env_vars": [
-        "STRIPE_SECRET_KEY",
-        "STRIPE_WEBHOOK_SECRET"
-      ],
-      "endpoint_pattern": "https://api.stripe.com/v1",
-      "auth_scheme": "bearer",
-      "integration_kind": "rest_api",
-      "risk_level": "critical",
-      "has_side_effects": true,
-      "docs_url": "https://stripe.com/docs/api"
-    },
-    {
-      "connector_key": "supabase_api",
-      "connector_label": "Supabase / PostgreSQL Database Client",
-      "categories": ["database"],
+      "connector_key": "google_sheets_read_table",
+      "connector_label": "Google Sheets API — lectura tabular",
+      "family_key": "google_workspace_public_tools",
       "archetype": "read_only_lookup",
       "maps_to_capability": "read_system_of_record",
-      "is_inbound_trigger": false,
+      "maps_to_capabilities": ["read_system_of_record", "knowledge_retrieval"],
       "detection_signals": [
-        "supabase",
-        "postgres",
-        "postgresql",
-        "base de datos sql",
-        "consulta sql",
-        "mysql",
-        "neon",
-        "base de datos propia"
+        "google sheets",
+        "hoja de calculo",
+        "hoja de cálculo",
+        "planilla google",
+        "gsheet",
+        "spreadsheet",
+        "sheet",
+        "datos en una hoja",
+        "excel google"
       ],
-      "use_case_hint": "Consultar bases de datos PostgreSQL/Supabase como sistema de registro del agente",
-      "env_vars": [
-        "DATABASE_URL",
-        "SUPABASE_URL",
-        "SUPABASE_SERVICE_ROLE_KEY"
-      ],
-      "endpoint_pattern": "{SUPABASE_URL}/rest/v1/{table}",
-      "auth_scheme": "api_key",
-      "integration_kind": "rest_api",
-      "risk_level": "medium",
+      "integration_kind": "oauth2_rest_api",
+      "provider": "google_workspace",
+      "auth_scheme": "oauth2",
+      "default_scope_policy": "lectura sobre spreadsheet seleccionado; evitar escritura por defecto",
+      "is_inbound_trigger": false,
+      "risk_level": "low",
       "has_side_effects": false,
-      "docs_url": "https://supabase.com/docs/reference/python/introduction"
+      "categories": ["google_workspace", "sheets", "spreadsheet", "database"],
+      "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES", "GOOGLE_SHEETS_SPREADSHEET_ID"],
+      "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+      "endpoint_pattern": "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheetId}/values/{range}",
+      "endpoint_patterns": {
+        "read_values": "GET https://sheets.googleapis.com/v4/spreadsheets/{spreadsheetId}/values/{range}",
+        "spreadsheet_metadata": "GET https://sheets.googleapis.com/v4/spreadsheets/{spreadsheetId}"
+      },
+      "docs_url": "https://developers.google.com/workspace/sheets/api",
+      "docs_refs": [
+        "https://developers.google.com/workspace/sheets/api",
+        "https://developers.google.com/workspace/sheets/api/limits"
+      ],
+      "cost_model_note": "Sheets API tiene uso estandar sin costo adicional bajo cuotas; cachear lecturas frecuentes.",
+      "verification_note": "Definir spreadsheet_id, range, columnas requeridas, cache y politica de escritura antes de construir."
+    },
+    {
+      "connector_key": "google_calendar_availability_reader",
+      "connector_label": "Google Calendar API — disponibilidad",
+      "family_key": "google_workspace_public_tools",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "maps_to_capabilities": ["read_system_of_record", "scheduler"],
+      "detection_signals": [
+        "google calendar",
+        "calendario de google",
+        "disponibilidad en calendario",
+        "consultar disponibilidad",
+        "agenda de google",
+        "agenda",
+        "calendario"
+      ],
+      "integration_kind": "oauth2_rest_api",
+      "provider": "google_workspace",
+      "auth_scheme": "oauth2",
+      "default_scope_policy": "usar scope minimo de disponibilidad cuando aplique",
+      "is_inbound_trigger": false,
+      "risk_level": "low",
+      "has_side_effects": false,
+      "categories": ["google_workspace", "calendar", "scheduling"],
+      "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES", "GOOGLE_CALENDAR_DEFAULT_ID"],
+      "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+      "endpoint_pattern": "https://www.googleapis.com/calendar/v3/freeBusy",
+      "endpoint_patterns": {
+        "freebusy": "POST https://www.googleapis.com/calendar/v3/freeBusy",
+        "list_events": "GET https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events"
+      },
+      "docs_url": "https://developers.google.com/workspace/calendar/api/guides/quota",
+      "docs_refs": [
+        "https://developers.google.com/workspace/calendar/api/guides/quota",
+        "https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query"
+      ],
+      "cost_model_note": "Calendar API tiene uso estandar sin cargo adicional bajo umbrales/cuotas para bajo volumen.",
+      "verification_note": "Definir calendar_id, timezone, ventana de disponibilidad y cache antes de activar."
+    },
+    {
+      "connector_key": "google_calendar_event_creator",
+      "connector_label": "Google Calendar API — crear evento",
+      "family_key": "google_workspace_public_tools",
+      "archetype": "scheduler",
+      "maps_to_capability": "scheduler",
+      "maps_to_capabilities": ["scheduler", "transactional_write"],
+      "detection_signals": [
+        "agendar cita",
+        "crear evento",
+        "crear cita",
+        "reservar reunion",
+        "programar reunion",
+        "calendarizar",
+        "agendar en google calendar"
+      ],
+      "integration_kind": "oauth2_rest_api",
+      "provider": "google_workspace",
+      "auth_scheme": "oauth2",
+      "default_scope_policy": "crear eventos solo con approval policy explicita",
+      "is_inbound_trigger": false,
+      "risk_level": "medium",
+      "has_side_effects": true,
+      "categories": ["google_workspace", "calendar", "scheduling", "side_effect"],
+      "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES", "GOOGLE_CALENDAR_DEFAULT_ID"],
+      "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+      "endpoint_pattern": "https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events",
+      "endpoint_patterns": {
+        "create_event": "POST https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events",
+        "update_event": "PATCH https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events/{eventId}"
+      },
+      "docs_url": "https://developers.google.com/workspace/calendar/api/guides/quota",
+      "docs_refs": [
+        "https://developers.google.com/workspace/calendar/api/guides/quota",
+        "https://developers.google.com/calendar/api/v3/reference/events/insert"
+      ],
+      "cost_model_note": "Bajo volumen puede operar en uso estandar; evitar escrituras repetidas sobre el mismo calendario.",
+      "verification_note": "Requiere approval policy, attendee policy, timezone y reglas de idempotencia."
+    },
+    {
+      "connector_key": "gmail_draft_creator",
+      "connector_label": "Gmail API — crear borrador",
+      "family_key": "google_workspace_public_tools",
+      "archetype": "notification",
+      "maps_to_capability": "outbound_notification",
+      "maps_to_capabilities": ["outbound_notification"],
+      "detection_signals": [
+        "crear borrador",
+        "borrador gmail",
+        "draft gmail",
+        "preparar correo",
+        "gmail"
+      ],
+      "integration_kind": "oauth2_rest_api",
+      "provider": "google_workspace",
+      "auth_scheme": "oauth2",
+      "default_scope_policy": "preferir borrador para revision humana antes de enviar",
+      "is_inbound_trigger": false,
+      "risk_level": "medium",
+      "has_side_effects": true,
+      "categories": ["google_workspace", "gmail", "email", "human_review"],
+      "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES"],
+      "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+      "endpoint_pattern": "https://gmail.googleapis.com/gmail/v1/users/{userId}/drafts",
+      "endpoint_patterns": {
+        "create_draft": "POST https://gmail.googleapis.com/gmail/v1/users/{userId}/drafts"
+      },
+      "docs_url": "https://developers.google.com/workspace/gmail/api/auth/scopes",
+      "docs_refs": [
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/reference/quota"
+      ],
+      "cost_model_note": "Gmail API tiene uso estandar bajo umbrales/cuotas; respetar limites de envio y destinatarios.",
+      "verification_note": "Evitar lectura amplia de inbox. Crear drafts puede requerir scopes sensibles/restringidos segun alcance."
+    },
+    {
+      "connector_key": "gmail_send_message",
+      "connector_label": "Gmail API — enviar mensaje",
+      "family_key": "google_workspace_public_tools",
+      "archetype": "notification",
+      "maps_to_capability": "outbound_notification",
+      "maps_to_capabilities": ["outbound_notification"],
+      "detection_signals": [
+        "enviar correo",
+        "enviar email",
+        "mandar correo",
+        "correo de gmail",
+        "email al cliente",
+        "notificar por gmail"
+      ],
+      "integration_kind": "oauth2_rest_api",
+      "provider": "google_workspace",
+      "auth_scheme": "oauth2",
+      "default_scope_policy": "gmail.send con approval humano salvo regla explicita",
+      "is_inbound_trigger": false,
+      "risk_level": "medium",
+      "has_side_effects": true,
+      "categories": ["google_workspace", "gmail", "email", "side_effect"],
+      "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES"],
+      "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+      "endpoint_pattern": "https://gmail.googleapis.com/gmail/v1/users/{userId}/messages/send",
+      "endpoint_patterns": {
+        "send_message": "POST https://gmail.googleapis.com/gmail/v1/users/{userId}/messages/send"
+      },
+      "docs_url": "https://developers.google.com/workspace/gmail/api/auth/scopes",
+      "docs_refs": [
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/reference/quota"
+      ],
+      "cost_model_note": "Gmail API tiene uso estandar bajo umbrales/cuotas; aplicar rate limits y politicas de destinatarios.",
+      "verification_note": "gmail.send es sensible; lectura amplia de Gmail queda fuera del MVP."
+    },
+    {
+      "connector_key": "odoo_partner_read",
+      "connector_label": "Odoo - leer clientes/contactos",
+      "family_key": "odoo_business_management_tools",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "maps_to_capabilities": ["read_system_of_record"],
+      "detection_signals": [
+        "odoo",
+        "cliente en odoo",
+        "contacto en odoo",
+        "partner odoo",
+        "res.partner",
+        "odoo crm"
+      ],
+      "integration_kind": "versioned_rpc_api",
+      "provider": "odoo",
+      "auth_scheme": "odoo_api_key_or_password",
+      "api_modes": ["xmlrpc_17_18", "json2_19"],
+      "model": "res.partner",
+      "is_inbound_trigger": false,
+      "risk_level": "low",
+      "has_side_effects": false,
+      "categories": ["odoo", "erp", "crm", "customer_data"],
+      "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS"],
+      "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+      "endpoint_pattern": "{ODOO_BASE_URL}/xmlrpc/2/object or {ODOO_BASE_URL}/json/2/res.partner/read",
+      "endpoint_patterns": {
+        "xmlrpc_object": "{ODOO_BASE_URL}/xmlrpc/2/object",
+        "json2_read": "{ODOO_BASE_URL}/json/2/res.partner/read",
+        "search_read": "execute_kw/res.partner/search_read"
+      },
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+      "docs_refs": [
+        "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/18.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html"
+      ],
+      "cost_model_note": "Odoo Community expone APIs publicas sin costo adicional de licencia, pero el hosting, permisos y modulos instalados son responsabilidad del cliente.",
+      "verification_note": "Confirmar version Odoo, hosting, base de datos, usuario/API key, modelo permitido y reglas de campos antes de construir."
+    },
+    {
+      "connector_key": "odoo_crm_lead_read",
+      "connector_label": "Odoo CRM - leer leads/oportunidades",
+      "family_key": "odoo_business_management_tools",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "maps_to_capabilities": ["read_system_of_record"],
+      "detection_signals": [
+        "lead en odoo",
+        "oportunidad odoo",
+        "crm odoo",
+        "pipeline odoo",
+        "crm.lead",
+        "odoo ventas"
+      ],
+      "integration_kind": "versioned_rpc_api",
+      "provider": "odoo",
+      "auth_scheme": "odoo_api_key_or_password",
+      "api_modes": ["xmlrpc_17_18", "json2_19"],
+      "model": "crm.lead",
+      "is_inbound_trigger": false,
+      "risk_level": "low",
+      "has_side_effects": false,
+      "categories": ["odoo", "crm", "sales_pipeline"],
+      "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS"],
+      "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+      "endpoint_pattern": "{ODOO_BASE_URL}/xmlrpc/2/object or {ODOO_BASE_URL}/json/2/crm.lead/read",
+      "endpoint_patterns": {
+        "xmlrpc_object": "{ODOO_BASE_URL}/xmlrpc/2/object",
+        "json2_read": "{ODOO_BASE_URL}/json/2/crm.lead/read",
+        "search_read": "execute_kw/crm.lead/search_read"
+      },
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+      "docs_refs": [
+        "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/18.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html"
+      ],
+      "cost_model_note": "El uso depende de tener CRM instalado y permisos de lectura sobre crm.lead.",
+      "verification_note": "Confirmar etapas, campos custom y dominios de busqueda permitidos."
+    },
+    {
+      "connector_key": "odoo_sale_order_read",
+      "connector_label": "Odoo Sales - leer cotizaciones/pedidos",
+      "family_key": "odoo_business_management_tools",
+      "archetype": "read_only_lookup",
+      "maps_to_capability": "read_system_of_record",
+      "maps_to_capabilities": ["read_system_of_record"],
+      "detection_signals": [
+        "pedido odoo",
+        "cotizacion odoo",
+        "presupuesto odoo",
+        "sale.order",
+        "orden de venta odoo",
+        "ventas odoo"
+      ],
+      "integration_kind": "versioned_rpc_api",
+      "provider": "odoo",
+      "auth_scheme": "odoo_api_key_or_password",
+      "api_modes": ["xmlrpc_17_18", "json2_19"],
+      "model": "sale.order",
+      "is_inbound_trigger": false,
+      "risk_level": "low",
+      "has_side_effects": false,
+      "categories": ["odoo", "sales", "quotes", "orders"],
+      "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS"],
+      "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+      "endpoint_pattern": "{ODOO_BASE_URL}/xmlrpc/2/object or {ODOO_BASE_URL}/json/2/sale.order/read",
+      "endpoint_patterns": {
+        "xmlrpc_object": "{ODOO_BASE_URL}/xmlrpc/2/object",
+        "json2_read": "{ODOO_BASE_URL}/json/2/sale.order/read",
+        "search_read": "execute_kw/sale.order/search_read"
+      },
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+      "docs_refs": [
+        "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/18.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html"
+      ],
+      "cost_model_note": "Requiere modulo Sales instalado y permisos de lectura sobre sale.order.",
+      "verification_note": "Confirmar si se leeran cotizaciones, pedidos confirmados, lineas, impuestos y listas de precio."
+    },
+    {
+      "connector_key": "odoo_sale_quote_create",
+      "connector_label": "Odoo Sales - crear cotizacion",
+      "family_key": "odoo_business_management_tools",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "maps_to_capabilities": ["transactional_write"],
+      "detection_signals": [
+        "crear cotizacion odoo",
+        "crear presupuesto odoo",
+        "cotizar en odoo",
+        "generar cotizacion odoo",
+        "crear oferta odoo"
+      ],
+      "integration_kind": "versioned_rpc_api",
+      "provider": "odoo",
+      "auth_scheme": "odoo_api_key_or_password",
+      "api_modes": ["xmlrpc_17_18", "json2_19"],
+      "model": "sale.order",
+      "is_inbound_trigger": false,
+      "risk_level": "high",
+      "has_side_effects": true,
+      "categories": ["odoo", "sales", "quotes", "side_effect"],
+      "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS", "ODOO_ALLOWED_WRITE_ACTIONS"],
+      "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+      "endpoint_pattern": "{ODOO_BASE_URL}/xmlrpc/2/object or {ODOO_BASE_URL}/json/2/sale.order/create",
+      "endpoint_patterns": {
+        "xmlrpc_object": "{ODOO_BASE_URL}/xmlrpc/2/object",
+        "json2_create": "{ODOO_BASE_URL}/json/2/sale.order/create",
+        "create": "execute_kw/sale.order/create"
+      },
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+      "docs_refs": [
+        "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/18.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html"
+      ],
+      "cost_model_note": "No requiere costo API adicional por si mismo, pero depende de modulo Sales, listas de precio, impuestos y permisos.",
+      "verification_note": "Crear cotizaciones exige approval, idempotencia, productos/partners validos y politica de precios confirmada."
+    },
+    {
+      "connector_key": "odoo_activity_create",
+      "connector_label": "Odoo - crear actividad de seguimiento",
+      "family_key": "odoo_business_management_tools",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "maps_to_capabilities": ["transactional_write"],
+      "detection_signals": [
+        "actividad odoo",
+        "tarea seguimiento odoo",
+        "crear actividad en odoo",
+        "mail.activity",
+        "seguimiento en odoo"
+      ],
+      "integration_kind": "versioned_rpc_api",
+      "provider": "odoo",
+      "auth_scheme": "odoo_api_key_or_password",
+      "api_modes": ["xmlrpc_17_18", "json2_19"],
+      "model": "mail.activity",
+      "is_inbound_trigger": false,
+      "risk_level": "medium",
+      "has_side_effects": true,
+      "categories": ["odoo", "crm", "task", "side_effect"],
+      "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS", "ODOO_ALLOWED_WRITE_ACTIONS"],
+      "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+      "endpoint_pattern": "{ODOO_BASE_URL}/xmlrpc/2/object or {ODOO_BASE_URL}/json/2/mail.activity/create",
+      "endpoint_patterns": {
+        "xmlrpc_object": "{ODOO_BASE_URL}/xmlrpc/2/object",
+        "json2_create": "{ODOO_BASE_URL}/json/2/mail.activity/create",
+        "create": "execute_kw/mail.activity/create"
+      },
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+      "docs_refs": [
+        "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/18.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html"
+      ],
+      "cost_model_note": "Depende de permisos y modelos instalados; usar como side effect controlado.",
+      "verification_note": "Confirmar modelo destino, activity_type, responsable, deadline y reglas de duplicados."
+    },
+    {
+      "connector_key": "odoo_crm_lead_update",
+      "connector_label": "Odoo CRM - actualizar lead/oportunidad",
+      "family_key": "odoo_business_management_tools",
+      "archetype": "transactional_write",
+      "maps_to_capability": "transactional_write",
+      "maps_to_capabilities": ["transactional_write"],
+      "detection_signals": [
+        "actualizar lead odoo",
+        "cambiar etapa odoo",
+        "actualizar oportunidad odoo",
+        "mover oportunidad odoo",
+        "editar crm odoo"
+      ],
+      "integration_kind": "versioned_rpc_api",
+      "provider": "odoo",
+      "auth_scheme": "odoo_api_key_or_password",
+      "api_modes": ["xmlrpc_17_18", "json2_19"],
+      "model": "crm.lead",
+      "is_inbound_trigger": false,
+      "risk_level": "high",
+      "has_side_effects": true,
+      "categories": ["odoo", "crm", "sales_pipeline", "side_effect"],
+      "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS", "ODOO_ALLOWED_WRITE_ACTIONS"],
+      "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+      "endpoint_pattern": "{ODOO_BASE_URL}/xmlrpc/2/object or {ODOO_BASE_URL}/json/2/crm.lead/write",
+      "endpoint_patterns": {
+        "xmlrpc_object": "{ODOO_BASE_URL}/xmlrpc/2/object",
+        "json2_write": "{ODOO_BASE_URL}/json/2/crm.lead/write",
+        "write": "execute_kw/crm.lead/write"
+      },
+      "docs_url": "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+      "docs_refs": [
+        "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/18.0/developer/reference/external_api.html",
+        "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html"
+      ],
+      "cost_model_note": "Depende de CRM instalado y permisos de escritura; usar con owner comercial definido.",
+      "verification_note": "Confirmar etapas permitidas, campos editables, reglas de aprobacion e idempotencia."
     }
   ]
 }

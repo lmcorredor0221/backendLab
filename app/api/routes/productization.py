@@ -136,6 +136,7 @@ def _context(
     preview = resolve_acp_preview(db, record, allow_auto_bootstrap=False)
     response_records = load_construction_question_response_records_for_preview(db, record.id)
     readiness = build_construction_readiness_view(preview, response_records)
+    preview = preview.model_copy(update={"construction_readiness": readiness})
     access = build_commercial_access_snapshot_v2(db, record, current_user=current_user)
     return snapshot, preview, readiness, access
 

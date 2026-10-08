@@ -9,6 +9,8 @@ from app.models import (
     ConstructionQuestionEntry,
     ConstructionQuestionOption,
     ConstructionReadinessReport,
+    MemoryDependencyGap,
+    MemoryRecommendationArtifact,
     SessionSnapshot,
 )
 from app.services.blueprint_consistency_service import ensure_blueprint_consistency_report
@@ -19,6 +21,15 @@ from app.services.objective_contracts import (
     objective_gate_enabled,
     objective_questions_enabled,
 )
+from app.services.tool_family_projection import (
+    ODOO_CANONICAL_CONNECTOR_KEYS,
+    ODOO_LEGACY_CONNECTOR_ALIASES,
+    project_blueprint_tools_for_construction,
+    resolve_google_workspace_connector_key,
+    resolve_odoo_connector_key,
+    resolve_whatsapp_connector_key,
+    snapshot_has_odoo_quote_signal,
+)
 
 
 INTERNAL_BUILDER_TOOL_NAMES = {
@@ -28,23 +39,8 @@ INTERNAL_BUILDER_TOOL_NAMES = {
     "promote_blueprint_for_implementation",
 }
 
-GOOGLE_WORKSPACE_CONNECTOR_KEYS = {
-    "google_drive_file_picker",
-    "google_sheets_read_table",
-    "google_calendar_availability_reader",
-    "google_calendar_event_creator",
-    "gmail_draft_creator",
-    "gmail_send_message",
-}
-
-ODOO_CONNECTOR_KEYS = {
-    "odoo_partner_read",
-    "odoo_crm_lead_read",
-    "odoo_sale_order_read",
-    "odoo_sale_quote_create",
-    "odoo_activity_create",
-    "odoo_crm_lead_update",
-}
+def _snapshot_has_odoo_quote_signal(snapshot: SessionSnapshot) -> bool:
+    return snapshot_has_odoo_quote_signal(snapshot)
 
 CONSTRUCTION_GAP_CATALOG: dict[str, dict[str, str]] = {
     "acp_package_validation_blocked": {
@@ -70,6 +66,10 @@ CONSTRUCTION_GAP_CATALOG: dict[str, dict[str, str]] = {
     "objective_contract_validation": {
         "severity": "warning",
         "remediation": "Confirmar, corregir o rechazar el objetivo inferido antes de activar Objective Loop o runtime operacional.",
+    },
+    "memory_dependency_questions": {
+        "severity": "warning",
+        "remediation": "Resolver, diferir o excluir dependencias de memoria desde preguntas ACP; no bloquear aprobacion LEAN por decisiones de construccion.",
     },
 }
 
@@ -675,44 +675,47 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
     blueprint = snapshot.blueprint
     if blueprint is None or not blueprint.tools:
         return None
-    def _normalized_tool_values(tool: object) -> set[str]:
-        return {
-            str(getattr(tool, "connector_key", "") or "").strip().lower().replace("-", "_"),
-            str(getattr(tool, "name", "") or "").strip().lower().replace("-", "_"),
-            str(getattr(tool, "registered_api_ref", "") or "").strip().lower().replace("-", "_"),
-        }
 
+    tools = project_blueprint_tools_for_construction(snapshot)
     whatsapp_tools = [
         tool
-        for tool in blueprint.tools
-        if "whatsapp_cloud_api" in _normalized_tool_values(tool)
-        or "whatsapp_business_messaging" in _normalized_tool_values(tool)
+        for tool in tools
+        if resolve_whatsapp_connector_key(tool)
     ]
     google_workspace_tools = [
         tool
-        for tool in blueprint.tools
-        if GOOGLE_WORKSPACE_CONNECTOR_KEYS & _normalized_tool_values(tool)
+        for tool in tools
+        if resolve_google_workspace_connector_key(tool)
     ]
     odoo_tools = [
         tool
-        for tool in blueprint.tools
-        if ODOO_CONNECTOR_KEYS & _normalized_tool_values(tool)
+        for tool in tools
+        if resolve_odoo_connector_key(tool)
     ]
     google_keys = set().union(
         *[
-            GOOGLE_WORKSPACE_CONNECTOR_KEYS & _normalized_tool_values(tool)
+            {resolve_google_workspace_connector_key(tool)}
             for tool in google_workspace_tools
         ]
     ) if google_workspace_tools else set()
     odoo_keys = set().union(
         *[
-            ODOO_CONNECTOR_KEYS & _normalized_tool_values(tool)
+            {resolve_odoo_connector_key(tool)}
             for tool in odoo_tools
         ]
     ) if odoo_tools else set()
+    if odoo_keys:
+        odoo_keys = {
+            ODOO_LEGACY_CONNECTOR_ALIASES.get(key, key)
+            for key in odoo_keys
+            if key in ODOO_CANONICAL_CONNECTOR_KEYS or key in ODOO_LEGACY_CONNECTOR_ALIASES
+        }
+        odoo_keys.update({"odoo_partner_read", "odoo_crm_lead_read"})
+        if _snapshot_has_odoo_quote_signal(snapshot):
+            odoo_keys.update({"odoo_sale_order_read", "odoo_sale_quote_create"})
     external_tool_paths = [
         build_tool_contract_path_for_tool(tool, index)
-        for index, tool in enumerate(blueprint.tools, start=1)
+        for index, tool in enumerate(tools, start=1)
         if tool.name not in INTERNAL_BUILDER_TOOL_NAMES and getattr(tool, "tool_type", "external") != "internal"
     ]
     required_contracts = files.get("ACP/construction-readiness/required-api-contracts.yaml")
@@ -990,6 +993,100 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
     )
 
 
+def _latest_memory_artifact(snapshot: SessionSnapshot) -> MemoryRecommendationArtifact | None:
+    latest = snapshot.journey_latest_artifacts.get("memory") if snapshot.journey_latest_artifacts else None
+    if latest is None or not latest.proposal_payload:
+        return None
+    try:
+        return MemoryRecommendationArtifact.model_validate(latest.proposal_payload)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _memory_dependency_question(gap: MemoryDependencyGap) -> ConstructionQuestionEntry:
+    capability = gap.capability_key.strip() or gap.gap_key.split(":", 1)[-1]
+    reason = gap.reason.strip() or "Memoria declaro una dependencia de herramienta no aprobada en Tools."
+    return _question(
+        question_key=gap.gap_key or f"memory_dependency:{capability}",
+        question_text=(
+            f"Como quieres tratar la dependencia de memoria `{capability}` durante la construccion ACP?"
+        ),
+        rationale=reason,
+        purpose=(
+            "Mantener la aprobacion LEAN separada de decisiones tecnicas de implementacion y conservar "
+            "trazabilidad hasta el ACP."
+        ),
+        expected_answer_format=(
+            "Elige defer_to_acp o exclude_from_mvp y agrega una nota con owner, contrato afectado o criterio de cierre."
+        ),
+        target_owner="solution_owner",
+        blocking=False,
+        options=[
+            ConstructionQuestionOption(
+                key="defer_to_acp",
+                label="Diferir al ACP",
+                description="Conservar la dependencia como decision de implementacion para que el builder la cierre.",
+                impact="El ACP mantiene la pregunta abierta sin bloquear la aprobacion de Memoria.",
+                example=f"defer_to_acp; owner=integration_owner; dependency={capability}",
+                recommended=True,
+                source_refs=list(gap.source_refs),
+            ),
+            ConstructionQuestionOption(
+                key="exclude_from_mvp",
+                label="Excluir del MVP",
+                description="Marcar que esta dependencia no se construira en el alcance inicial.",
+                impact="El builder debe ajustar memoria, prompts o flujo para operar sin esa dependencia.",
+                example=f"exclude_from_mvp; dependency={capability}; reason=fuera_de_alcance",
+                source_refs=list(gap.source_refs),
+            ),
+        ],
+        question_kind="memory_dependency_resolution",
+        subject_type="memory_dependency",
+        subject_id=gap.gap_key or capability,
+        allowed_decisions=["defer_to_acp", "exclude_from_mvp"],
+        answer_semantics="resolve_memory_dependency_gap",
+        contract_version=1,
+    )
+
+
+def _collect_memory_dependency_gap(snapshot: SessionSnapshot) -> ConstructionGapEntry | None:
+    memory = _latest_memory_artifact(snapshot)
+    if memory is None:
+        return None
+    open_gaps = [
+        gap
+        for gap in memory.dependency_gaps
+        if gap.status == "open" and (gap.required or gap.remediation_policy in {"human_review", "implementation_pending"})
+    ]
+    if not open_gaps:
+        return None
+    questions = [_memory_dependency_question(gap) for gap in open_gaps]
+    return _gap(
+        gap_key="memory_dependency_questions",
+        title="Dependencias de memoria pendientes para construccion ACP",
+        domain="memory",
+        severity="warning",
+        blocking_stage="acp_questions_resolution",
+        summary=(
+            "Memoria detecto dependencias requeridas que no deben bloquear LEAN; deben resolverse, diferirse "
+            "o excluirse como preguntas ACP con trazabilidad."
+        ),
+        evidence_paths=[
+            "ACP/memory/strategy.yaml",
+            "ACP/memory/lifecycle.yaml",
+            "ACP/construction-readiness/open-questions.yaml",
+        ],
+        source_sections=["memory.dependency_gaps", "memory.tool_dependencies"],
+        current_assumptions=[gap.reason for gap in open_gaps if gap.reason],
+        closure_criteria=[
+            "Cada dependencia abierta debe quedar diferida al ACP o excluida del MVP.",
+            "La decision debe conservar `question_key`, owner y artefactos ACP impactados.",
+            "El builder no debe inventar integraciones, credenciales ni herramientas faltantes.",
+        ],
+        questions=questions,
+    )
+
+
 def _collect_consistency_gap(snapshot: SessionSnapshot) -> ConstructionGapEntry | None:
     report = ensure_blueprint_consistency_report(snapshot)
     actionable_issues = [
@@ -1124,6 +1221,7 @@ def build_initial_construction_readiness(
         _collect_runtime_gap(snapshot, mapped_files),
         _collect_deployment_gap(mapped_files),
         _collect_external_api_gap(snapshot, mapped_files),
+        _collect_memory_dependency_gap(snapshot),
         _collect_consistency_gap(snapshot),
     ]:
         if candidate is not None:
