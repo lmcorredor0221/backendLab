@@ -489,6 +489,199 @@ def test_generate_acp_preview_expands_whatsapp_connector_end_to_end() -> None:
     assert "LAB ya entrega el contrato tecnico del webhook" in builder_handoff.content_text
 
 
+def test_generate_acp_preview_expands_google_workspace_connector_family_end_to_end() -> None:
+    snapshot = build_ready_snapshot()
+    assert snapshot.blueprint is not None
+    snapshot.blueprint.tools.extend(
+        [
+            BlueprintTool(
+                name="google_drive_file_picker",
+                purpose="Seleccionar archivos concretos de Drive como fuente de conocimiento.",
+                archetype="document_selector",
+                integration_kind="oauth2_rest_api",
+                tool_type="external",
+                connector_key="google_drive_file_picker",
+                registered_api_ref="google_drive_file_picker",
+                risk_level="low",
+                has_side_effects=False,
+                request_schema={"type": "object", "properties": {"file_ids": {"type": "array"}}},
+                response_schema={"type": "object", "properties": {"files": {"type": "array"}}},
+                contract_review_state="connector-detected",
+            ),
+            BlueprintTool(
+                name="google_sheets_read_table",
+                purpose="Leer una tabla de leads desde Google Sheets.",
+                archetype="read_only_lookup",
+                integration_kind="oauth2_rest_api",
+                tool_type="external",
+                connector_key="google_sheets_read_table",
+                registered_api_ref="google_sheets_read_table",
+                risk_level="low",
+                has_side_effects=False,
+                request_schema={"type": "object", "properties": {"spreadsheet_id": {"type": "string"}, "range": {"type": "string"}}},
+                response_schema={"type": "object", "properties": {"rows": {"type": "array"}}},
+                contract_review_state="connector-detected",
+            ),
+            BlueprintTool(
+                name="google_calendar_event_creator",
+                purpose="Crear eventos aprobados en Google Calendar.",
+                archetype="scheduler",
+                integration_kind="oauth2_rest_api",
+                tool_type="external",
+                connector_key="google_calendar_event_creator",
+                registered_api_ref="google_calendar_event_creator",
+                risk_level="medium",
+                requires_approval=True,
+                has_side_effects=True,
+                request_schema={"type": "object", "properties": {"calendar_id": {"type": "string"}, "idempotency_key": {"type": "string"}}},
+                response_schema={"type": "object", "properties": {"event_id": {"type": "string"}}},
+                contract_review_state="connector-detected",
+            ),
+            BlueprintTool(
+                name="gmail_draft_creator",
+                purpose="Crear borradores Gmail para revision humana.",
+                archetype="notification",
+                integration_kind="oauth2_rest_api",
+                tool_type="external",
+                connector_key="gmail_draft_creator",
+                registered_api_ref="gmail_draft_creator",
+                risk_level="medium",
+                requires_approval=True,
+                has_side_effects=True,
+                request_schema={"type": "object", "properties": {"to": {"type": "array"}, "subject": {"type": "string"}}},
+                response_schema={"type": "object", "properties": {"draft_id": {"type": "string"}}},
+                contract_review_state="connector-detected",
+            ),
+        ]
+    )
+
+    preview = generate_acp_preview(snapshot)
+    paths = {item.path for item in preview.files}
+
+    assert "ACP/integrations/google-workspace/oauth-policy.yaml" in paths
+    assert "ACP/integrations/google-workspace/scopes-matrix.yaml" in paths
+    assert "ACP/integrations/google-drive/file-picker.contract.yaml" in paths
+    assert "ACP/integrations/google-drive/selected-file-reader.contract.yaml" in paths
+    assert "ACP/integrations/google-sheets/read-table.contract.yaml" in paths
+    assert "ACP/integrations/google-sheets/schema-mapping.yaml" in paths
+    assert "ACP/integrations/google-calendar/create-event.contract.yaml" in paths
+    assert "ACP/integrations/google-calendar/approval-policy.yaml" in paths
+    assert "ACP/integrations/gmail/create-draft.contract.yaml" in paths
+    assert "ACP/integrations/gmail/restricted-scope-warning.yaml" in paths
+    assert "ACP/tools/connectors/google-sheets-read-table.yaml" in paths
+    assert "ACP/tools/bindings/google-calendar-event-creator.production.yaml" in paths
+    assert "ACP/tools/tests/gmail-draft-creator-smoke-test.yaml" in paths
+
+    env_template = next(item for item in preview.files if item.path == "ACP/deployment/env.template")
+    assert "GOOGLE_ALLOWED_SCOPES=" in env_template.content_text
+    assert "GOOGLE_SHEETS_SPREADSHEET_ID=" in env_template.content_text
+    assert "GOOGLE_CALENDAR_DEFAULT_ID=" in env_template.content_text
+    assert "GMAIL_SENDER_ACCOUNT=" in env_template.content_text
+    assert "GOOGLE_OAUTH_CLIENT_SECRET_REF=" in env_template.content_text
+
+    open_questions = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/open-questions.yaml"
+    )
+    assert "google_workspace_activation_context" in open_questions.content_text
+    assert "google_drive_resource_scope" in open_questions.content_text
+    assert "google_sheets_table_contract" in open_questions.content_text
+    assert "google_calendar_booking_policy" in open_questions.content_text
+    assert "gmail_message_policy" in open_questions.content_text
+
+    required_contracts = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/required-api-contracts.yaml"
+    )
+    assert "Google Workspace" in required_contracts.content_text
+    assert "spreadsheet_id" in required_contracts.content_text
+    assert "calendar_id" in required_contracts.content_text
+    assert "sender_account" in required_contracts.content_text
+
+    builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
+    assert "Google Workspace public APIs" in builder_handoff.content_text
+    assert "no conviertas LAB en runtime Google" in builder_handoff.content_text
+
+
+def test_generate_acp_preview_expands_odoo_connector_family_end_to_end() -> None:
+    snapshot = build_ready_snapshot()
+    assert snapshot.blueprint is not None
+    snapshot.blueprint.tools.extend(
+        [
+            BlueprintTool(
+                name="odoo_partner_read",
+                purpose="Leer clientes/contactos desde Odoo.",
+                archetype="read_only_lookup",
+                integration_kind="versioned_rpc_api",
+                tool_type="external",
+                connector_key="odoo_partner_read",
+                registered_api_ref="odoo_partner_read",
+                risk_level="low",
+                has_side_effects=False,
+                request_schema={"type": "object", "properties": {"model": {"type": "string"}, "fields": {"type": "array"}}},
+                response_schema={"type": "object", "properties": {"records": {"type": "array"}}},
+                contract_review_state="connector-detected",
+            ),
+            BlueprintTool(
+                name="odoo_sale_quote_create",
+                purpose="Crear cotizaciones Odoo aprobadas.",
+                archetype="transactional_write",
+                integration_kind="versioned_rpc_api",
+                tool_type="external",
+                connector_key="odoo_sale_quote_create",
+                registered_api_ref="odoo_sale_quote_create",
+                risk_level="high",
+                requires_approval=True,
+                has_side_effects=True,
+                request_schema={"type": "object", "properties": {"model": {"type": "string"}, "idempotency_key": {"type": "string"}}},
+                response_schema={"type": "object", "properties": {"odoo_record_id": {"type": "integer"}}},
+                contract_review_state="connector-detected",
+            ),
+        ]
+    )
+
+    preview = generate_acp_preview(snapshot)
+    paths = {item.path for item in preview.files}
+
+    assert "ACP/integrations/odoo/api-profile.yaml" in paths
+    assert "ACP/integrations/odoo/version-policy.yaml" in paths
+    assert "ACP/integrations/odoo/rpc-17-18.contract.yaml" in paths
+    assert "ACP/integrations/odoo/json2-19.contract.yaml" in paths
+    assert "ACP/integrations/odoo/models-scope.yaml" in paths
+    assert "ACP/integrations/odoo/quote-policy.yaml" in paths
+    assert "ACP/integrations/odoo/write-approval-policy.yaml" in paths
+    assert "ACP/tools/connectors/odoo-partner-read.yaml" in paths
+    assert "ACP/tools/bindings/odoo-sale-quote-create.production.yaml" in paths
+    assert "ACP/tools/tests/odoo-sale-quote-create-smoke-test.yaml" in paths
+
+    env_template = next(item for item in preview.files if item.path == "ACP/deployment/env.template")
+    assert "ODOO_API_MODE=" in env_template.content_text
+    assert "ODOO_BASE_URL=" in env_template.content_text
+    assert "ODOO_DATABASE=" in env_template.content_text
+    assert "ODOO_ALLOWED_MODELS=" in env_template.content_text
+    assert "ODOO_ALLOWED_WRITE_ACTIONS=" in env_template.content_text
+    assert "ODOO_API_KEY_REF=" in env_template.content_text
+
+    open_questions = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/open-questions.yaml"
+    )
+    assert "odoo_version_context" in open_questions.content_text
+    assert "odoo_api_access_context" in open_questions.content_text
+    assert "odoo_module_scope" in open_questions.content_text
+    assert "odoo_write_policy" in open_questions.content_text
+    assert "odoo_quote_policy" in open_questions.content_text
+
+    required_contracts = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/required-api-contracts.yaml"
+    )
+    assert "Odoo" in required_contracts.content_text
+    assert "ODOO_API_MODE" in required_contracts.content_text
+    assert "sale.order" in required_contracts.content_text
+    assert "pricelist" in required_contracts.content_text
+
+    builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
+    assert "Odoo public/external APIs" in builder_handoff.content_text
+    assert "no conviertas LAB en runtime Odoo" in builder_handoff.content_text
+
+
 def test_generate_acp_preview_applies_valid_prompt_section_synthesis() -> None:
     snapshot = build_ready_snapshot()
 

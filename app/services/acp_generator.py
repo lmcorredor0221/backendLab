@@ -2158,6 +2158,12 @@ def _build_tools_files(snapshot: SessionSnapshot, context: ProjectGenerationCont
 def _tool_connector_slug(tool: Any, index: int) -> str:
     if _is_whatsapp_cloud_tool(tool):
         return "whatsapp-cloud-api"
+    google_key = _google_workspace_connector_key(tool)
+    if google_key:
+        return google_key.replace("_", "-")
+    odoo_key = _odoo_connector_key(tool)
+    if odoo_key:
+        return odoo_key.replace("_", "-")
     registered_ref = str(getattr(tool, "registered_api_ref", "") or "").strip()
     source = registered_ref.rsplit("/", 1)[-1] if registered_ref else str(getattr(tool, "name", "") or "")
     return _slugify(source, default=f"tool-{index}")
@@ -2184,6 +2190,186 @@ def _is_whatsapp_cloud_tool(tool: Any) -> bool:
     }
     normalized = {item.strip().lower().replace("-", "_") for item in values if item}
     return bool({"whatsapp_cloud_api", "whatsapp_business_messaging"} & normalized)
+
+
+GOOGLE_WORKSPACE_CONNECTOR_PROFILES: dict[str, dict[str, Any]] = {
+    "google_drive_file_picker": {
+        "label": "Google Drive Picker - selected files",
+        "service": "drive",
+        "binding_type": "oauth2_rest_api",
+        "actions": ["picker_select_file", "read_file_metadata", "download_or_export_selected_file"],
+        "required_fields": ["oauth_client_id_ref", "oauth_client_secret_ref", "redirect_uri_ref", "allowed_scopes", "selected_file_policy"],
+        "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES"],
+        "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+        "contract_refs": ["ACP/integrations/google-drive/file-picker.contract.yaml", "ACP/integrations/google-drive/selected-file-reader.contract.yaml"],
+        "minimum_scope_policy": "Preferir drive.file con Google Picker; evitar drive.readonly amplio salvo decision explicita.",
+        "side_effects": False,
+    },
+    "google_sheets_read_table": {
+        "label": "Google Sheets API - read table",
+        "service": "sheets",
+        "binding_type": "oauth2_rest_api",
+        "actions": ["read_values", "read_spreadsheet_metadata"],
+        "required_fields": ["oauth_client_id_ref", "oauth_client_secret_ref", "spreadsheet_id", "range", "header_row", "cache_policy"],
+        "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES", "GOOGLE_SHEETS_SPREADSHEET_ID"],
+        "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+        "contract_refs": ["ACP/integrations/google-sheets/read-table.contract.yaml", "ACP/integrations/google-sheets/schema-mapping.yaml"],
+        "minimum_scope_policy": "Lectura sobre spreadsheet seleccionado; no habilitar escritura por defecto.",
+        "side_effects": False,
+    },
+    "google_calendar_availability_reader": {
+        "label": "Google Calendar API - availability",
+        "service": "calendar",
+        "binding_type": "oauth2_rest_api",
+        "actions": ["query_freebusy", "list_events_readonly"],
+        "required_fields": ["oauth_client_id_ref", "oauth_client_secret_ref", "calendar_id", "timezone", "availability_window"],
+        "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES", "GOOGLE_CALENDAR_DEFAULT_ID"],
+        "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+        "contract_refs": ["ACP/integrations/google-calendar/availability.contract.yaml"],
+        "minimum_scope_policy": "Usar disponibilidad/lectura minima; evitar lectura amplia de eventos cuando no sea necesaria.",
+        "side_effects": False,
+    },
+    "google_calendar_event_creator": {
+        "label": "Google Calendar API - create event",
+        "service": "calendar",
+        "binding_type": "oauth2_rest_api",
+        "actions": ["create_event", "update_event_if_approved"],
+        "required_fields": ["oauth_client_id_ref", "oauth_client_secret_ref", "calendar_id", "timezone", "attendee_policy", "idempotency_key"],
+        "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES", "GOOGLE_CALENDAR_DEFAULT_ID"],
+        "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+        "contract_refs": ["ACP/integrations/google-calendar/create-event.contract.yaml", "ACP/integrations/google-calendar/approval-policy.yaml"],
+        "minimum_scope_policy": "Crear eventos solo con approval policy o regla de negocio explicita.",
+        "side_effects": True,
+    },
+    "gmail_draft_creator": {
+        "label": "Gmail API - create draft",
+        "service": "gmail",
+        "binding_type": "oauth2_rest_api",
+        "actions": ["create_draft"],
+        "required_fields": ["oauth_client_id_ref", "oauth_client_secret_ref", "sender_account", "recipient_policy", "draft_review_policy"],
+        "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES"],
+        "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+        "contract_refs": ["ACP/integrations/gmail/create-draft.contract.yaml", "ACP/integrations/gmail/restricted-scope-warning.yaml"],
+        "minimum_scope_policy": "Preferir borradores para revision humana antes de enviar.",
+        "side_effects": True,
+    },
+    "gmail_send_message": {
+        "label": "Gmail API - send message",
+        "service": "gmail",
+        "binding_type": "oauth2_rest_api",
+        "actions": ["send_message"],
+        "required_fields": ["oauth_client_id_ref", "oauth_client_secret_ref", "sender_account", "recipient_policy", "approval_policy", "idempotency_key"],
+        "required_env_refs": ["GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ALLOWED_SCOPES"],
+        "required_secret_refs": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN_REF"],
+        "contract_refs": ["ACP/integrations/gmail/send-message.contract.yaml", "ACP/integrations/gmail/restricted-scope-warning.yaml"],
+        "minimum_scope_policy": "gmail.send requiere approval_gate o politica explicita; no habilitar lectura amplia del inbox en MVP.",
+        "side_effects": True,
+    },
+}
+
+
+def _google_workspace_connector_key(tool: Any) -> str:
+    values = {
+        str(getattr(tool, "connector_key", "") or ""),
+        str(getattr(tool, "registered_api_ref", "") or ""),
+        str(getattr(tool, "name", "") or ""),
+    }
+    normalized = {item.strip().lower().replace("-", "_") for item in values if item}
+    for key in GOOGLE_WORKSPACE_CONNECTOR_PROFILES:
+        if key in normalized:
+            return key
+    return ""
+
+
+def _is_google_workspace_tool(tool: Any) -> bool:
+    return bool(_google_workspace_connector_key(tool))
+
+
+ODOO_CONNECTOR_PROFILES: dict[str, dict[str, Any]] = {
+    "odoo_partner_read": {
+        "label": "Odoo - leer clientes/contactos",
+        "model": "res.partner",
+        "binding_type": "versioned_rpc_api",
+        "actions": ["search_read", "read"],
+        "required_fields": ["api_mode", "base_url_ref", "database_ref", "username_ref", "auth_secret_ref", "allowed_models"],
+        "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS"],
+        "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+        "contract_refs": ["ACP/integrations/odoo/rpc-17-18.contract.yaml", "ACP/integrations/odoo/json2-19.contract.yaml", "ACP/integrations/odoo/models-scope.yaml"],
+        "side_effects": False,
+    },
+    "odoo_crm_lead_read": {
+        "label": "Odoo CRM - leer leads/oportunidades",
+        "model": "crm.lead",
+        "binding_type": "versioned_rpc_api",
+        "actions": ["search_read", "read"],
+        "required_fields": ["api_mode", "base_url_ref", "database_ref", "username_ref", "auth_secret_ref", "allowed_models"],
+        "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS"],
+        "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+        "contract_refs": ["ACP/integrations/odoo/rpc-17-18.contract.yaml", "ACP/integrations/odoo/json2-19.contract.yaml", "ACP/integrations/odoo/models-scope.yaml"],
+        "side_effects": False,
+    },
+    "odoo_sale_order_read": {
+        "label": "Odoo Sales - leer cotizaciones/pedidos",
+        "model": "sale.order",
+        "binding_type": "versioned_rpc_api",
+        "actions": ["search_read", "read"],
+        "required_fields": ["api_mode", "base_url_ref", "database_ref", "username_ref", "auth_secret_ref", "allowed_models"],
+        "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS"],
+        "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+        "contract_refs": ["ACP/integrations/odoo/rpc-17-18.contract.yaml", "ACP/integrations/odoo/json2-19.contract.yaml", "ACP/integrations/odoo/models-scope.yaml"],
+        "side_effects": False,
+    },
+    "odoo_sale_quote_create": {
+        "label": "Odoo Sales - crear cotizacion",
+        "model": "sale.order",
+        "binding_type": "versioned_rpc_api",
+        "actions": ["create_quote"],
+        "required_fields": ["api_mode", "base_url_ref", "database_ref", "username_ref", "auth_secret_ref", "allowed_models", "allowed_write_actions"],
+        "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS", "ODOO_ALLOWED_WRITE_ACTIONS"],
+        "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+        "contract_refs": ["ACP/integrations/odoo/rpc-17-18.contract.yaml", "ACP/integrations/odoo/json2-19.contract.yaml", "ACP/integrations/odoo/models-scope.yaml", "ACP/integrations/odoo/quote-policy.yaml", "ACP/integrations/odoo/write-approval-policy.yaml"],
+        "side_effects": True,
+    },
+    "odoo_activity_create": {
+        "label": "Odoo - crear actividad de seguimiento",
+        "model": "mail.activity",
+        "binding_type": "versioned_rpc_api",
+        "actions": ["create_activity"],
+        "required_fields": ["api_mode", "base_url_ref", "database_ref", "username_ref", "auth_secret_ref", "allowed_models", "allowed_write_actions"],
+        "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS", "ODOO_ALLOWED_WRITE_ACTIONS"],
+        "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+        "contract_refs": ["ACP/integrations/odoo/rpc-17-18.contract.yaml", "ACP/integrations/odoo/json2-19.contract.yaml", "ACP/integrations/odoo/models-scope.yaml", "ACP/integrations/odoo/write-approval-policy.yaml"],
+        "side_effects": True,
+    },
+    "odoo_crm_lead_update": {
+        "label": "Odoo CRM - actualizar lead/oportunidad",
+        "model": "crm.lead",
+        "binding_type": "versioned_rpc_api",
+        "actions": ["update_lead"],
+        "required_fields": ["api_mode", "base_url_ref", "database_ref", "username_ref", "auth_secret_ref", "allowed_models", "allowed_write_actions"],
+        "required_env_refs": ["ODOO_API_MODE", "ODOO_BASE_URL", "ODOO_DATABASE", "ODOO_ALLOWED_MODELS", "ODOO_ALLOWED_WRITE_ACTIONS"],
+        "required_secret_refs": ["ODOO_USERNAME", "ODOO_PASSWORD", "ODOO_API_KEY"],
+        "contract_refs": ["ACP/integrations/odoo/rpc-17-18.contract.yaml", "ACP/integrations/odoo/json2-19.contract.yaml", "ACP/integrations/odoo/models-scope.yaml", "ACP/integrations/odoo/write-approval-policy.yaml"],
+        "side_effects": True,
+    },
+}
+
+
+def _odoo_connector_key(tool: Any) -> str:
+    values = {
+        str(getattr(tool, "connector_key", "") or ""),
+        str(getattr(tool, "registered_api_ref", "") or ""),
+        str(getattr(tool, "name", "") or ""),
+    }
+    normalized = {item.strip().lower().replace("-", "_") for item in values if item}
+    for key in ODOO_CONNECTOR_PROFILES:
+        if key in normalized:
+            return key
+    return ""
+
+
+def _is_odoo_tool(tool: Any) -> bool:
+    return bool(_odoo_connector_key(tool))
 
 
 def _tool_connector_profile_payload(tool: Any, index: int) -> dict[str, Any]:
@@ -2243,6 +2429,103 @@ def _tool_connector_profile_payload(tool: Any, index: int) -> dict[str, Any]:
                 "timeout_policy": getattr(tool, "timeout_policy", "5000ms") or "5000ms",
                 "failure_mode": getattr(tool, "failure_mode", "") or "Escalar a owner si el canal falla o falta binding.",
                 "compensation_strategy": getattr(tool, "compensation_strategy", "") or "Evitar reenvios duplicados y registrar fallo.",
+            },
+        }
+    google_key = _google_workspace_connector_key(tool)
+    if google_key:
+        profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[google_key]
+        return {
+            "schema_version": "tool-connector-profile.v1",
+            "connector_key": google_key,
+            "label": profile["label"],
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "tool_type": "external",
+            "binding_category": "pending_binding",
+            "provider_model": {
+                "known_provider_required": True,
+                "provider": "google_workspace",
+                "custom_provider_supported": True,
+                "registered_api_ref": google_key,
+                "supported_binding_types": ["oauth2_rest_api"],
+                "lab_runtime_boundary": "LAB entrega contrato de construccion; no opera OAuth ni Google APIs por el usuario final.",
+            },
+            "contract_surface": {
+                "purpose": getattr(tool, "purpose", "") or f"Conectar {profile['label']} con scopes minimos.",
+                "permission_mode": "write" if profile["side_effects"] else "read",
+                "actions": list(profile["actions"]),
+                "inputs": getattr(tool, "request_schema", {}) or {},
+                "outputs": getattr(tool, "response_schema", {}) or {},
+                "when_to_use": getattr(tool, "when_to_use", "") or "",
+                "contract_refs": list(profile["contract_refs"]),
+            },
+            "configuration_schema": {
+                "required_fields": list(profile["required_fields"]),
+                "expected_auth_schemes": ["oauth2"],
+                "required_env_refs": list(profile["required_env_refs"]),
+                "required_secret_refs": list(profile["required_secret_refs"]),
+                "minimum_scope_policy": profile["minimum_scope_policy"],
+                "secret_policy": "references_only_no_plaintext_values",
+                "environment_specific_bindings": True,
+            },
+            "governance": {
+                "risk_level": getattr(tool, "risk_level", "") or ("medium" if profile["side_effects"] else "low"),
+                "requires_approval": bool(getattr(tool, "requires_approval", False) or profile["side_effects"]),
+                "approval_reason": getattr(tool, "approval_reason", "") or profile["minimum_scope_policy"],
+                "allowed_roles": list(getattr(tool, "permissions", []) or profile["actions"]),
+                "side_effects": bool(getattr(tool, "has_side_effects", False) or profile["side_effects"]),
+                "retry_policy": getattr(tool, "retry_strategy", "") or "Retry corto para 429/5xx con backoff y limite por workspace.",
+                "timeout_policy": getattr(tool, "timeout_policy", "10s") or "10s",
+                "failure_mode": getattr(tool, "failure_mode", "") or "Fallar cerrado cuando falten scopes, recurso permitido o token OAuth.",
+                "compensation_strategy": getattr(tool, "compensation_strategy", "") or "No repetir side effects sin idempotency_key y evidencia.",
+            },
+        }
+    odoo_key = _odoo_connector_key(tool)
+    if odoo_key:
+        profile = ODOO_CONNECTOR_PROFILES[odoo_key]
+        return {
+            "schema_version": "tool-connector-profile.v1",
+            "connector_key": odoo_key,
+            "label": profile["label"],
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "tool_type": "external",
+            "binding_category": "pending_binding",
+            "provider_model": {
+                "known_provider_required": True,
+                "provider": "odoo",
+                "custom_provider_supported": True,
+                "registered_api_ref": odoo_key,
+                "supported_binding_types": ["xmlrpc_17_18", "json2_19"],
+                "lab_runtime_boundary": "LAB entrega contrato de construccion; no opera Odoo ni almacena credenciales del usuario final.",
+            },
+            "contract_surface": {
+                "purpose": getattr(tool, "purpose", "") or f"Conectar {profile['label']} con Odoo.",
+                "permission_mode": "write" if profile["side_effects"] else "read",
+                "actions": list(profile["actions"]),
+                "model": profile["model"],
+                "inputs": getattr(tool, "request_schema", {}) or {},
+                "outputs": getattr(tool, "response_schema", {}) or {},
+                "when_to_use": getattr(tool, "when_to_use", "") or "",
+                "contract_refs": list(profile["contract_refs"]),
+            },
+            "configuration_schema": {
+                "required_fields": list(profile["required_fields"]),
+                "expected_auth_schemes": ["odoo_api_key_or_password"],
+                "required_env_refs": list(profile["required_env_refs"]),
+                "required_secret_refs": list(profile["required_secret_refs"]),
+                "secret_policy": "references_only_no_plaintext_values",
+                "environment_specific_bindings": True,
+                "version_policy_ref": "ACP/integrations/odoo/version-policy.yaml",
+            },
+            "governance": {
+                "risk_level": getattr(tool, "risk_level", "") or ("high" if profile["side_effects"] else "low"),
+                "requires_approval": bool(getattr(tool, "requires_approval", False) or profile["side_effects"]),
+                "approval_reason": getattr(tool, "approval_reason", "") or "Odoo writes require explicit owner approval, allowlisted model/action and idempotency.",
+                "allowed_roles": list(getattr(tool, "permissions", []) or profile["actions"]),
+                "side_effects": bool(getattr(tool, "has_side_effects", False) or profile["side_effects"]),
+                "retry_policy": getattr(tool, "retry_strategy", "") or "Retry corto solo en fallas transitorias confirmadas sin duplicar writes.",
+                "timeout_policy": getattr(tool, "timeout_policy", "10s") or "10s",
+                "failure_mode": getattr(tool, "failure_mode", "") or "Fallar cerrado cuando falte version, modelo permitido, permiso Odoo o secret ref.",
+                "compensation_strategy": getattr(tool, "compensation_strategy", "") or "No repetir writes sin idempotency_key; escalar fallo parcial al owner.",
             },
         }
     security_config = getattr(tool, "security_config", {}) or {}
@@ -2337,6 +2620,96 @@ def _tool_binding_payload(tool: Any, index: int, environment: str) -> dict[str, 
                 "No almacenar secretos planos en el ACP; usar referencias de entorno o vault.",
             ],
         }
+    google_key = _google_workspace_connector_key(tool)
+    if google_key:
+        profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[google_key]
+        env_prefix = environment.upper()
+        return {
+            "schema_version": "tool-environment-binding.v1",
+            "environment": environment,
+            "connector_key": google_key,
+            "tool_name": tool_name,
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "binding_category": "pending_binding",
+            "binding": {
+                "binding_type": "oauth2_rest_api",
+                "provider": "google_workspace",
+                "oauth_client_id_ref": "secret:GOOGLE_OAUTH_CLIENT_ID",
+                "oauth_client_secret_ref": "secret:GOOGLE_OAUTH_CLIENT_SECRET",
+                "refresh_token_ref": f"secret:GOOGLE_{env_prefix}_REFRESH_TOKEN_REF",
+                "redirect_uri_ref": f"env:GOOGLE_{env_prefix}_OAUTH_REDIRECT_URI",
+                "allowed_scopes_ref": "env:GOOGLE_ALLOWED_SCOPES",
+                "enabled_actions": list(profile["actions"]),
+                "resource_refs": {
+                    "drive_file_policy_ref": "ACP/integrations/google-drive/file-picker.contract.yaml" if profile["service"] == "drive" else "",
+                    "spreadsheet_id_ref": "env:GOOGLE_SHEETS_SPREADSHEET_ID" if google_key == "google_sheets_read_table" else "",
+                    "calendar_id_ref": "env:GOOGLE_CALENDAR_DEFAULT_ID" if profile["service"] == "calendar" else "",
+                    "sender_account_ref": "env:GMAIL_SENDER_ACCOUNT" if profile["service"] == "gmail" else "",
+                },
+                "client_owned_contract": True,
+            },
+            "approval_overrides": {
+                "requires_approval": bool(getattr(tool, "requires_approval", False) or profile["side_effects"]),
+                "side_effects": bool(profile["side_effects"]),
+                "approval_reason": getattr(tool, "approval_reason", "") or profile["minimum_scope_policy"],
+                "production_write_actions_require_named_owner": bool(profile["side_effects"]),
+            },
+            "validation": {
+                "contract_refs": list(profile["contract_refs"]),
+                "smoke_test_ref": f"ACP/tools/tests/{slug}-smoke-test.yaml",
+                "contract_must_match_blueprint_tool": True,
+                "fail_closed_when_binding_missing": environment == "production",
+            },
+            "notes": [
+                "LAB entrega instrucciones y contratos; el builder debe crear/configurar OAuth en el proyecto destino.",
+                "No almacenar client_secret, refresh_token ni otros secretos planos en el ACP.",
+                "Usar scopes minimos y pedir decision si el caso requiere scopes sensibles o restringidos.",
+            ],
+        }
+    odoo_key = _odoo_connector_key(tool)
+    if odoo_key:
+        profile = ODOO_CONNECTOR_PROFILES[odoo_key]
+        return {
+            "schema_version": "tool-environment-binding.v1",
+            "environment": environment,
+            "connector_key": odoo_key,
+            "tool_name": tool_name,
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "binding_category": "pending_binding",
+            "binding": {
+                "binding_type": "versioned_rpc_api",
+                "provider": "odoo",
+                "api_mode_ref": "env:ODOO_API_MODE",
+                "base_url_ref": "env:ODOO_BASE_URL",
+                "database_ref": "env:ODOO_DATABASE",
+                "username_ref": "secret:ODOO_USERNAME",
+                "password_ref": "secret:ODOO_PASSWORD",
+                "api_key_ref": "secret:ODOO_API_KEY",
+                "allowed_models_ref": "env:ODOO_ALLOWED_MODELS",
+                "allowed_write_actions_ref": "env:ODOO_ALLOWED_WRITE_ACTIONS",
+                "model": profile["model"],
+                "enabled_actions": list(profile["actions"]),
+                "client_owned_contract": True,
+            },
+            "approval_overrides": {
+                "requires_approval": bool(getattr(tool, "requires_approval", False) or profile["side_effects"]),
+                "side_effects": bool(profile["side_effects"]),
+                "approval_reason": getattr(tool, "approval_reason", "") or "Odoo writes require approval_gate, allowlist and idempotency.",
+                "production_write_actions_require_named_owner": bool(profile["side_effects"]),
+            },
+            "validation": {
+                "contract_refs": list(profile["contract_refs"]),
+                "version_policy_ref": "ACP/integrations/odoo/version-policy.yaml",
+                "smoke_test_ref": f"ACP/tools/tests/{slug}-smoke-test.yaml",
+                "contract_must_match_blueprint_tool": True,
+                "fail_closed_when_binding_missing": environment == "production",
+            },
+            "notes": [
+                "LAB entrega instrucciones y contratos; el builder debe configurar Odoo en el proyecto destino.",
+                "No almacenar base URL privada, usuario, password ni API key como valores planos en el ACP.",
+                "Confirmar si el Odoo destino usa XML-RPC/JSON-RPC en 17/18 o JSON-2 en 19 antes de construir.",
+            ],
+        }
     return {
         "schema_version": "tool-environment-binding.v1",
         "environment": environment,
@@ -2390,6 +2763,58 @@ def _tool_smoke_test_payload(tool: Any, index: int) -> dict[str, Any]:
                 {"check": "typed_errors_map_provider_failures", "description": "Errores de Meta/proveedor se mapean a typed_errors del contrato."},
             ],
             "expected_result": "ready_for_sandbox_activation_after_all_checks_pass",
+        }
+    google_key = _google_workspace_connector_key(tool)
+    if google_key:
+        profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[google_key]
+        checks = [
+            {"check": "binding_resolves", "description": "El binding sandbox/production existe y usa referencias, no secretos planos."},
+            {"check": "oauth_client_resolves", "description": "Client ID, client secret y redirect URI estan referenciados desde vault/env."},
+            {"check": "scopes_match_minimum_policy", "description": "Los scopes solicitados coinciden con la matriz aprobada para esta tool."},
+            {"check": "resource_allowlist_enforced", "description": "Solo se accede a archivos, hojas, calendarios o cuentas aprobadas."},
+            {"check": "typed_errors_map_google_failures", "description": "401/403/404/429/5xx se mapean a typed_errors del contrato."},
+        ]
+        if profile["side_effects"]:
+            checks.extend(
+                [
+                    {"check": "approval_gate_enforced", "description": "La accion con side effect exige approval_gate o politica aprobada."},
+                    {"check": "idempotency_enforced", "description": "Reintentos no crean eventos/correos duplicados."},
+                ]
+            )
+        return {
+            "schema_version": "tool-smoke-test.v1",
+            "connector_key": google_key,
+            "tool_name": getattr(tool, "name", "") or google_key,
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "checks": checks,
+            "expected_result": "ready_for_sandbox_activation_after_oauth_and_scope_checks_pass",
+        }
+    odoo_key = _odoo_connector_key(tool)
+    if odoo_key:
+        profile = ODOO_CONNECTOR_PROFILES[odoo_key]
+        checks = [
+            {"check": "binding_resolves", "description": "El binding sandbox/production existe y usa referencias, no secretos planos."},
+            {"check": "version_policy_selected", "description": "ODOO_API_MODE coincide con la version real: XML-RPC/JSON-RPC para 17/18 o JSON-2 para 19."},
+            {"check": "auth_and_database_resolve", "description": "Base URL, database, usuario y secret ref existen en el vault/runtime seleccionado."},
+            {"check": "allowed_model_enforced", "description": f"Solo se permite operar el modelo {profile['model']} u otros modelos aprobados."},
+            {"check": "access_rights_validated", "description": "El usuario tecnico tiene permisos Odoo minimos para la accion."},
+            {"check": "typed_errors_map_odoo_failures", "description": "401/403/404/429/5xx y errores de modelo se mapean a typed_errors del contrato."},
+        ]
+        if profile["side_effects"]:
+            checks.extend(
+                [
+                    {"check": "approval_gate_enforced", "description": "La accion con side effect exige approval_gate o politica aprobada."},
+                    {"check": "write_action_allowlisted", "description": "La accion aparece en ODOO_ALLOWED_WRITE_ACTIONS antes de ejecutar."},
+                    {"check": "idempotency_enforced", "description": "Reintentos no crean cotizaciones, actividades ni updates duplicados."},
+                ]
+            )
+        return {
+            "schema_version": "tool-smoke-test.v1",
+            "connector_key": odoo_key,
+            "tool_name": getattr(tool, "name", "") or odoo_key,
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "checks": checks,
+            "expected_result": "ready_for_sandbox_activation_after_version_auth_model_and_approval_checks_pass",
         }
     return {
         "schema_version": "tool-smoke-test.v1",
@@ -2612,6 +3037,510 @@ def _build_whatsapp_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEn
             warnings=["Completar templates aprobados antes de activar mensajes iniciados por negocio."],
         ),
     ]
+
+
+def _build_google_workspace_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    blueprint = snapshot.blueprint
+    if blueprint is None or not blueprint.tools:
+        return []
+    google_tools = [
+        (index, tool, _google_workspace_connector_key(tool))
+        for index, tool in enumerate(blueprint.tools, start=1)
+        if _is_google_workspace_tool(tool)
+    ]
+    if not google_tools:
+        return []
+
+    keys = {key for _, _, key in google_tools}
+    files: list[ACPFileEntry] = []
+    oauth_policy = {
+        "schema_version": "google-workspace-oauth-policy.v1",
+        "lab_boundary": "LAB entrega contrato ACP; el builder configura OAuth y Google APIs en el proyecto destino.",
+        "secret_policy": "references_only_no_plaintext_values",
+        "required_common_refs": [
+            "GOOGLE_OAUTH_CLIENT_ID",
+            "GOOGLE_OAUTH_CLIENT_SECRET",
+            "GOOGLE_REFRESH_TOKEN_REF",
+            "GOOGLE_OAUTH_REDIRECT_URI",
+            "GOOGLE_ALLOWED_SCOPES",
+        ],
+        "lifecycle": {
+            "pending": "falta respuesta del cliente o owner tecnico",
+            "answered": "dato capturado como referencia, no valor secreto plano",
+            "delegated": "decision transferida al builder antes de construir",
+            "resolved": "binding validado en entorno sandbox/production",
+            "reopened": "scope/recurso cambió y requiere nueva aprobación",
+        },
+        "rules": [
+            "Usar scopes minimos por tool.",
+            "Pedir decision explicita antes de scopes sensibles/restringidos.",
+            "No mezclar OAuth de LAB con OAuth del producto construido para el cliente.",
+            "Fallar cerrado cuando falte recurso permitido, refresh token o scope aprobado.",
+        ],
+    }
+    scopes_matrix = {
+        "schema_version": "google-workspace-scopes-matrix.v1",
+        "tools": [
+            {
+                "connector_key": key,
+                "label": GOOGLE_WORKSPACE_CONNECTOR_PROFILES[key]["label"],
+                "minimum_scope_policy": GOOGLE_WORKSPACE_CONNECTOR_PROFILES[key]["minimum_scope_policy"],
+                "side_effects": GOOGLE_WORKSPACE_CONNECTOR_PROFILES[key]["side_effects"],
+                "approval_required": GOOGLE_WORKSPACE_CONNECTOR_PROFILES[key]["side_effects"],
+                "scope_values": "to_be_selected_by_builder_from_google_docs_and_client_policy",
+            }
+            for key in sorted(keys)
+        ],
+    }
+    risk_notes = {
+        "schema_version": "google-workspace-connector-risk-notes.v1",
+        "cost_note": "Uso estandar de APIs publicas Google Workspace suele no requerir costo adicional bajo cuotas; controlar volumen, cache y retries.",
+        "verification_note": "Algunos scopes sensibles/restringidos pueden requerir verificacion OAuth; el ACP debe dejarlo como decision visible.",
+        "not_in_scope": [
+            "LAB no ejecuta OAuth ni almacena tokens del cliente final.",
+            "LAB no lee Drive, Gmail, Calendar ni Sheets por cuenta propia.",
+            "El builder debe implementar consent screen, redirect URI, vault y revocacion.",
+        ],
+    }
+    files.extend(
+        [
+            build_acp_file_entry(
+                path="ACP/integrations/google-workspace/oauth-policy.yaml",
+                domain="integrations",
+                title="Google Workspace OAuth policy",
+                format="yaml",
+                source_sections=["blueprint.tools", "construction_readiness.gaps.questions"],
+                content_text=serialize_yaml_document(oauth_policy),
+            ),
+            build_acp_file_entry(
+                path="ACP/integrations/google-workspace/scopes-matrix.yaml",
+                domain="integrations",
+                title="Google Workspace scopes matrix",
+                format="yaml",
+                source_sections=["blueprint.tools", "tool_contracts"],
+                content_text=serialize_yaml_document(scopes_matrix),
+                warnings=["Validar scopes finales contra documentacion de Google y politica del cliente antes de construir."],
+            ),
+            build_acp_file_entry(
+                path="ACP/integrations/google-workspace/connector-risk-notes.yaml",
+                domain="integrations",
+                title="Google Workspace connector risk notes",
+                format="yaml",
+                source_sections=["blueprint.tools", "risk_summary"],
+                content_text=serialize_yaml_document(risk_notes),
+            ),
+        ]
+    )
+
+    if "google_drive_file_picker" in keys:
+        file_picker_contract = {
+            "schema_version": "google-drive-file-picker-contract.v1",
+            "connector_key": "google_drive_file_picker",
+            "purpose": "Permitir que el usuario seleccione archivos concretos de Drive para lectura/ingesta.",
+            "preferred_scope_policy": "drive.file via Google Picker",
+            "actions": {
+                "picker_select_file": {"requires": ["oauth_client", "picker_api_key_or_app_config", "allowed_mime_types"]},
+                "read_file_metadata": {"endpoint": "GET /drive/v3/files/{fileId}", "requires": ["file_id_allowlist"]},
+                "download_or_export_selected_file": {"requires": ["file_id", "mime_type", "export_format_if_google_native"]},
+            },
+            "unknowns_to_ask": ["allowed_mime_types", "max_file_size_mb", "refresh_mode", "owner_email_domain_policy"],
+            "source_tool_contracts": [
+                _tool_contract_ref(tool, index)
+                for index, tool, key in google_tools
+                if key == "google_drive_file_picker"
+            ],
+        }
+        files.extend(
+            [
+                build_acp_file_entry(
+                    path="ACP/integrations/google-drive/file-picker.contract.yaml",
+                    domain="integrations",
+                    title="Google Drive file picker contract",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "tool_contracts"],
+                    content_text=serialize_yaml_document(file_picker_contract),
+                ),
+                build_acp_file_entry(
+                    path="ACP/integrations/google-drive/selected-file-reader.contract.yaml",
+                    domain="integrations",
+                    title="Google Drive selected file reader contract",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "knowledge"],
+                    content_text=serialize_yaml_document(
+                        {
+                            "schema_version": "google-drive-selected-file-reader.v1",
+                            "connector_key": "google_drive_file_picker",
+                            "read_policy": "Solo archivos seleccionados/permitidos; no crawler general de Drive en MVP.",
+                            "normalization": ["metadata", "download_or_export", "parse", "chunk_if_rag_required", "audit_source_revision"],
+                            "typed_errors": ["DRIVE_FILE_NOT_FOUND", "DRIVE_SCOPE_NOT_GRANTED", "FILE_TOO_LARGE", "PARSER_FAILURE"],
+                        }
+                    ),
+                ),
+            ]
+        )
+
+    if "google_sheets_read_table" in keys:
+        files.extend(
+            [
+                build_acp_file_entry(
+                    path="ACP/integrations/google-sheets/read-table.contract.yaml",
+                    domain="integrations",
+                    title="Google Sheets read table contract",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "tool_contracts"],
+                    content_text=serialize_yaml_document(
+                        {
+                            "schema_version": "google-sheets-read-table-contract.v1",
+                            "connector_key": "google_sheets_read_table",
+                            "endpoint": "GET https://sheets.googleapis.com/v4/spreadsheets/{spreadsheetId}/values/{range}",
+                            "required_configuration": ["spreadsheet_id", "range", "header_row", "column_schema", "cache_policy"],
+                            "read_policy": "Solo lectura tabular sobre rangos permitidos.",
+                            "unknowns_to_ask": ["spreadsheet_id", "range", "column_schema", "owner", "refresh_frequency"],
+                        }
+                    ),
+                ),
+                build_acp_file_entry(
+                    path="ACP/integrations/google-sheets/schema-mapping.yaml",
+                    domain="integrations",
+                    title="Google Sheets schema mapping",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "construction_readiness.gaps.questions"],
+                    content_text=serialize_yaml_document(
+                        {
+                            "schema_version": "google-sheets-schema-mapping.v1",
+                            "columns": "needs_client_answer",
+                            "primary_key": "needs_client_answer",
+                            "required_columns": [],
+                            "normalization_rules": [],
+                        }
+                    ),
+                    warnings=["Completar columnas y llave primaria antes de construir lookup real sobre Sheets."],
+                ),
+                build_acp_file_entry(
+                    path="ACP/integrations/google-sheets/data-quality-rules.yaml",
+                    domain="integrations",
+                    title="Google Sheets data quality rules",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "validation"],
+                    content_text=serialize_yaml_document(
+                        {
+                            "schema_version": "google-sheets-data-quality.v1",
+                            "rules": ["reject_empty_header", "dedupe_by_primary_key_when_defined", "limit_rows_per_request", "log_schema_drift"],
+                        }
+                    ),
+                ),
+            ]
+        )
+
+    if {"google_calendar_availability_reader", "google_calendar_event_creator"} & keys:
+        calendar_files = []
+        if "google_calendar_availability_reader" in keys:
+            calendar_files.append(
+                build_acp_file_entry(
+                    path="ACP/integrations/google-calendar/availability.contract.yaml",
+                    domain="integrations",
+                    title="Google Calendar availability contract",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "tool_contracts"],
+                    content_text=serialize_yaml_document(
+                        {
+                            "schema_version": "google-calendar-availability-contract.v1",
+                            "connector_key": "google_calendar_availability_reader",
+                            "endpoint": "POST https://www.googleapis.com/calendar/v3/freeBusy",
+                            "required_configuration": ["calendar_ids", "timezone", "availability_window", "slot_duration_minutes"],
+                            "privacy_policy": "No exponer detalles de eventos privados; devolver busy/available slots.",
+                        }
+                    ),
+                )
+            )
+        if "google_calendar_event_creator" in keys:
+            calendar_files.extend(
+                [
+                    build_acp_file_entry(
+                        path="ACP/integrations/google-calendar/create-event.contract.yaml",
+                        domain="integrations",
+                        title="Google Calendar create event contract",
+                        format="yaml",
+                        source_sections=["blueprint.tools", "tool_contracts"],
+                        content_text=serialize_yaml_document(
+                            {
+                                "schema_version": "google-calendar-create-event-contract.v1",
+                                "connector_key": "google_calendar_event_creator",
+                                "endpoint": "POST https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events",
+                                "required_configuration": ["calendar_id", "timezone", "attendee_policy", "idempotency_key"],
+                                "side_effects": True,
+                                "unknowns_to_ask": ["calendar_id", "timezone", "attendee_policy", "approval_policy", "conflict_policy"],
+                            }
+                        ),
+                    ),
+                    build_acp_file_entry(
+                        path="ACP/integrations/google-calendar/approval-policy.yaml",
+                        domain="integrations",
+                        title="Google Calendar approval policy",
+                        format="yaml",
+                        source_sections=["blueprint.tools", "approvals"],
+                        content_text=serialize_yaml_document(
+                            {
+                                "schema_version": "google-calendar-approval-policy.v1",
+                                "create_event_requires": ["valid_availability_check", "idempotency_key", "approved_attendee_policy"],
+                                "human_approval_required_when": ["external_attendees", "paid_service", "sensitive_context", "policy_unknown"],
+                            }
+                        ),
+                    ),
+                ]
+            )
+        files.extend(calendar_files)
+
+    if {"gmail_draft_creator", "gmail_send_message"} & keys:
+        if "gmail_draft_creator" in keys:
+            files.append(
+                build_acp_file_entry(
+                    path="ACP/integrations/gmail/create-draft.contract.yaml",
+                    domain="integrations",
+                    title="Gmail create draft contract",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "tool_contracts"],
+                    content_text=serialize_yaml_document(
+                        {
+                            "schema_version": "gmail-create-draft-contract.v1",
+                            "connector_key": "gmail_draft_creator",
+                            "endpoint": "POST https://gmail.googleapis.com/gmail/v1/users/{userId}/drafts",
+                            "required_configuration": ["sender_account", "recipient_policy", "draft_review_policy"],
+                            "preferred_policy": "Crear borrador y dejar revision humana antes de envio.",
+                        }
+                    ),
+                )
+            )
+        if "gmail_send_message" in keys:
+            files.append(
+                build_acp_file_entry(
+                    path="ACP/integrations/gmail/send-message.contract.yaml",
+                    domain="integrations",
+                    title="Gmail send message contract",
+                    format="yaml",
+                    source_sections=["blueprint.tools", "tool_contracts"],
+                    content_text=serialize_yaml_document(
+                        {
+                            "schema_version": "gmail-send-message-contract.v1",
+                            "connector_key": "gmail_send_message",
+                            "endpoint": "POST https://gmail.googleapis.com/gmail/v1/users/{userId}/messages/send",
+                            "required_configuration": ["sender_account", "recipient_policy", "approval_policy", "idempotency_key"],
+                            "side_effects": True,
+                            "human_approval_required_when": ["message_initiated_by_business", "recipient_policy_unknown", "sensitive_content"],
+                        }
+                    ),
+                    warnings=["Gmail send requiere politica explicita; preferir borrador si no hay aprobacion."],
+                )
+            )
+        files.append(
+            build_acp_file_entry(
+                path="ACP/integrations/gmail/restricted-scope-warning.yaml",
+                domain="integrations",
+                title="Gmail scope warning",
+                format="yaml",
+                source_sections=["blueprint.tools", "risk_summary"],
+                content_text=serialize_yaml_document(
+                    {
+                        "schema_version": "gmail-scope-warning.v1",
+                        "rule": "Evitar lectura amplia de inbox en MVP. Usar gmail.compose/gmail.send solo si el cliente aprueba el alcance.",
+                        "requires_review": ["oauth_consent_screen", "scope_sensitivity", "recipient_policy", "data_retention_policy"],
+                    }
+                ),
+            )
+        )
+
+    return files
+
+
+def _build_odoo_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    blueprint = snapshot.blueprint
+    if blueprint is None or not blueprint.tools:
+        return []
+    odoo_tools = [
+        (index, tool, _odoo_connector_key(tool))
+        for index, tool in enumerate(blueprint.tools, start=1)
+        if _is_odoo_tool(tool)
+    ]
+    if not odoo_tools:
+        return []
+
+    keys = {key for _, _, key in odoo_tools}
+    models = sorted({ODOO_CONNECTOR_PROFILES[key]["model"] for key in keys})
+    has_write = any(ODOO_CONNECTOR_PROFILES[key]["side_effects"] for key in keys)
+    files: list[ACPFileEntry] = []
+    api_profile = {
+        "schema_version": "odoo-api-profile.v1",
+        "provider": "odoo",
+        "lab_boundary": "LAB entrega contrato ACP; el builder configura Odoo, permisos y credenciales en el proyecto destino.",
+        "supported_versions": {
+            "odoo_17_18": "External API via XML-RPC/JSON-RPC execute_kw.",
+            "odoo_19": "External JSON-2 API where available; legacy XML-RPC/JSON-RPC is planned for removal.",
+        },
+        "required_common_refs": [
+            "ODOO_API_MODE",
+            "ODOO_BASE_URL",
+            "ODOO_DATABASE",
+            "ODOO_USERNAME",
+            "ODOO_PASSWORD",
+            "ODOO_API_KEY",
+            "ODOO_ALLOWED_MODELS",
+            "ODOO_ALLOWED_WRITE_ACTIONS",
+        ],
+        "secret_policy": "references_only_no_plaintext_values",
+        "not_in_scope": [
+            "LAB no inicia sesion en Odoo del cliente.",
+            "LAB no descubre modelos custom en vivo.",
+            "LAB no confirma permisos ni modulos instalados sin respuesta del owner tecnico.",
+        ],
+    }
+    version_policy = {
+        "schema_version": "odoo-version-policy.v1",
+        "selection_required": True,
+        "allowed_api_modes": ["xmlrpc_17_18", "json2_19"],
+        "rules": [
+            "Si version es Odoo 17 u 18, construir adaptador con execute_kw sobre /xmlrpc/2/common y /xmlrpc/2/object, o equivalente JSON-RPC si el proyecto lo decide.",
+            "Si version es Odoo 19, preferir JSON-2 y validar endpoints por modelo antes de escribir codigo.",
+            "No mezclar modos en una misma tool sin decision explicita.",
+            "Si la version es desconocida, dejar binding en pending y preguntar odoo_version_context.",
+        ],
+        "source_docs": [
+            "https://www.odoo.com/documentation/17.0/developer/reference/external_api.html",
+            "https://www.odoo.com/documentation/18.0/developer/reference/external_api.html",
+            "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html",
+        ],
+    }
+    rpc_contract = {
+        "schema_version": "odoo-rpc-17-18-contract.v1",
+        "api_mode": "xmlrpc_17_18",
+        "common_endpoint": "{ODOO_BASE_URL}/xmlrpc/2/common",
+        "object_endpoint": "{ODOO_BASE_URL}/xmlrpc/2/object",
+        "auth_flow": ["authenticate database, username and password/api_key", "execute_kw only on allowed models/actions"],
+        "read_actions": ["search_read", "read"],
+        "write_actions": ["create", "write"] if has_write else [],
+        "required_guards": ["allowed_model_validation", "field_allowlist_validation", "access_rights_check", "typed_error_mapping"],
+    }
+    json2_contract = {
+        "schema_version": "odoo-json2-19-contract.v1",
+        "api_mode": "json2_19",
+        "base_endpoint_pattern": "{ODOO_BASE_URL}/json/2/{model}/{method}",
+        "read_actions": ["search_read", "read"],
+        "write_actions": ["create", "write"] if has_write else [],
+        "required_guards": ["allowed_model_validation", "field_allowlist_validation", "access_rights_check", "typed_error_mapping"],
+        "activation_note": "Validar disponibilidad real de JSON-2 en el Odoo destino antes de construir.",
+    }
+    models_scope = {
+        "schema_version": "odoo-models-scope.v1",
+        "allowed_models": [
+            {
+                "model": model,
+                "tools": [
+                    key
+                    for key in sorted(keys)
+                    if ODOO_CONNECTOR_PROFILES[key]["model"] == model
+                ],
+                "allowed_fields": "needs_client_answer",
+                "allowed_domains": "needs_client_answer",
+            }
+            for model in models
+        ],
+        "custom_models_policy": "No usar modelos custom sin respuesta explicita del owner tecnico y evidencia del modulo instalado.",
+    }
+    files.extend(
+        [
+            build_acp_file_entry(
+                path="ACP/integrations/odoo/api-profile.yaml",
+                domain="integrations",
+                title="Odoo API profile",
+                format="yaml",
+                source_sections=["blueprint.tools", "construction_readiness.gaps.questions"],
+                content_text=serialize_yaml_document(api_profile),
+            ),
+            build_acp_file_entry(
+                path="ACP/integrations/odoo/version-policy.yaml",
+                domain="integrations",
+                title="Odoo version policy",
+                format="yaml",
+                source_sections=["blueprint.tools", "tool_contracts"],
+                content_text=serialize_yaml_document(version_policy),
+                warnings=["Confirmar version Odoo y API mode antes de construir adaptadores."],
+            ),
+            build_acp_file_entry(
+                path="ACP/integrations/odoo/rpc-17-18.contract.yaml",
+                domain="integrations",
+                title="Odoo RPC 17/18 contract",
+                format="yaml",
+                source_sections=["blueprint.tools", "tool_contracts"],
+                content_text=serialize_yaml_document(rpc_contract),
+            ),
+            build_acp_file_entry(
+                path="ACP/integrations/odoo/json2-19.contract.yaml",
+                domain="integrations",
+                title="Odoo JSON-2 19 contract",
+                format="yaml",
+                source_sections=["blueprint.tools", "tool_contracts"],
+                content_text=serialize_yaml_document(json2_contract),
+            ),
+            build_acp_file_entry(
+                path="ACP/integrations/odoo/models-scope.yaml",
+                domain="integrations",
+                title="Odoo models scope",
+                format="yaml",
+                source_sections=["blueprint.tools", "construction_readiness.gaps.questions"],
+                content_text=serialize_yaml_document(models_scope),
+                warnings=["Completar campos, dominios y permisos por modelo antes de construir calls reales."],
+            ),
+        ]
+    )
+    if "odoo_sale_quote_create" in keys:
+        files.append(
+            build_acp_file_entry(
+                path="ACP/integrations/odoo/quote-policy.yaml",
+                domain="integrations",
+                title="Odoo quote policy",
+                format="yaml",
+                source_sections=["blueprint.tools", "approvals", "risk_summary"],
+                content_text=serialize_yaml_document(
+                    {
+                        "schema_version": "odoo-quote-policy.v1",
+                        "connector_key": "odoo_sale_quote_create",
+                        "model": "sale.order",
+                        "requires": ["valid_partner_id", "valid_product_ids", "pricelist_policy", "tax_policy", "approval_token", "idempotency_key"],
+                        "unknowns_to_ask": ["pricelist", "currency", "taxes", "discount_policy", "quote_expiration", "confirmation_policy"],
+                        "rules": [
+                            "Crear cotizacion en borrador salvo aprobacion explicita para confirmar pedido.",
+                            "No inventar productos, precios, impuestos ni descuentos.",
+                            "Registrar payload_hash y record_id para evitar duplicados.",
+                        ],
+                    }
+                ),
+                warnings=["Crear cotizaciones es side effect comercial; exigir approval y politica de precios."],
+            )
+        )
+    if has_write:
+        files.append(
+            build_acp_file_entry(
+                path="ACP/integrations/odoo/write-approval-policy.yaml",
+                domain="integrations",
+                title="Odoo write approval policy",
+                format="yaml",
+                source_sections=["blueprint.tools", "approvals", "governance"],
+                content_text=serialize_yaml_document(
+                    {
+                        "schema_version": "odoo-write-approval-policy.v1",
+                        "write_requires": ["approval_gate", "allowed_model", "allowed_write_action", "payload_schema", "idempotency_key"],
+                        "allowed_write_actions": sorted(
+                            action
+                            for key in keys
+                            for action in ODOO_CONNECTOR_PROFILES[key]["actions"]
+                            if ODOO_CONNECTOR_PROFILES[key]["side_effects"]
+                        ),
+                        "human_approval_required_when": ["production_environment", "price_or_discount_change", "stage_change", "customer_visible_document"],
+                        "failure_policy": "fail_closed_and_escalate_to_owner",
+                    }
+                ),
+            )
+        )
+    return files
 
 
 def _flow_node(
@@ -3708,6 +4637,75 @@ def _whatsapp_required_api_contract(tool: Any, index: int) -> dict[str, Any]:
     }
 
 
+def _google_workspace_required_api_contract(tool: Any, index: int) -> dict[str, Any]:
+    google_key = _google_workspace_connector_key(tool)
+    profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES.get(google_key, {})
+    service = str(profile.get("service") or "google_workspace")
+    unknowns_by_service = {
+        "drive": ["oauth_client", "redirect_uri", "selected_files_or_picker_policy", "allowed_mime_types", "refresh_mode"],
+        "sheets": ["oauth_client", "spreadsheet_id", "range", "column_schema", "primary_key", "cache_policy"],
+        "calendar": ["oauth_client", "calendar_id", "timezone", "availability_window", "attendee_policy", "approval_policy"],
+        "gmail": ["oauth_client", "sender_account", "recipient_policy", "draft_or_send_policy", "approval_policy", "data_retention_policy"],
+    }
+    return {
+        "system_name": "Google Workspace",
+        "connector_key": google_key or "google_workspace",
+        "tool_name": getattr(tool, "name", "") or google_key or f"tool_{index}",
+        "purpose": getattr(tool, "purpose", "") or str(profile.get("label") or "Integracion Google Workspace"),
+        "required_endpoints_or_actions": list(profile.get("actions") or ["oauth2_rest_api"]),
+        "expected_authentication": {
+            "auth_type": "OAuth 2.0",
+            "client_id_ref": "GOOGLE_OAUTH_CLIENT_ID",
+            "client_secret_ref": "GOOGLE_OAUTH_CLIENT_SECRET",
+            "refresh_token_ref": "GOOGLE_REFRESH_TOKEN_REF",
+            "allowed_scopes_ref": "GOOGLE_ALLOWED_SCOPES",
+        },
+        "unknown_payloads": unknowns_by_service.get(service, ["oauth_client", "allowed_scopes", "resource_policy"]),
+        "examples_required": True,
+        "impact_if_missing": "Permite generar contrato, pero bloquea activacion sandbox/produccion de la tool Google Workspace.",
+        "contract_path": build_tool_contract_path_for_tool(tool, index),
+        "integration_policy_path": "ACP/integrations/google-workspace/oauth-policy.yaml",
+        "scopes_matrix_path": "ACP/integrations/google-workspace/scopes-matrix.yaml",
+        "service_contract_paths": list(profile.get("contract_refs") or []),
+    }
+
+
+def _odoo_required_api_contract(tool: Any, index: int) -> dict[str, Any]:
+    odoo_key = _odoo_connector_key(tool)
+    profile = ODOO_CONNECTOR_PROFILES.get(odoo_key, {})
+    model = str(profile.get("model") or "needs_review")
+    side_effects = bool(profile.get("side_effects"))
+    unknowns = ["odoo_version", "api_mode", "base_url", "database", "technical_user", "allowed_models", "allowed_fields", "access_rights"]
+    if side_effects:
+        unknowns.extend(["allowed_write_actions", "approval_policy", "idempotency_key_policy"])
+    if odoo_key == "odoo_sale_quote_create":
+        unknowns.extend(["pricelist", "tax_policy", "discount_policy", "quote_expiration"])
+    return {
+        "system_name": "Odoo",
+        "connector_key": odoo_key or "odoo",
+        "tool_name": getattr(tool, "name", "") or odoo_key or f"tool_{index}",
+        "purpose": getattr(tool, "purpose", "") or str(profile.get("label") or "Integracion Odoo"),
+        "required_endpoints_or_actions": list(profile.get("actions") or ["search_read"]),
+        "expected_authentication": {
+            "auth_type": "Odoo API key/password",
+            "api_mode_ref": "ODOO_API_MODE",
+            "base_url_ref": "ODOO_BASE_URL",
+            "database_ref": "ODOO_DATABASE",
+            "username_ref": "ODOO_USERNAME",
+            "password_or_api_key_ref": "ODOO_PASSWORD or ODOO_API_KEY",
+        },
+        "target_model": model,
+        "unknown_payloads": unknowns,
+        "examples_required": True,
+        "impact_if_missing": "Permite generar contrato, pero bloquea activacion sandbox/produccion de la tool Odoo.",
+        "contract_path": build_tool_contract_path_for_tool(tool, index),
+        "api_profile_path": "ACP/integrations/odoo/api-profile.yaml",
+        "version_policy_path": "ACP/integrations/odoo/version-policy.yaml",
+        "models_scope_path": "ACP/integrations/odoo/models-scope.yaml",
+        "service_contract_paths": list(profile.get("contract_refs") or []),
+    }
+
+
 def _build_construction_step_guide_markdown(
     *,
     validation: Any,
@@ -3970,6 +4968,18 @@ def _build_construction_readiness_files(
                 required_api_contracts.append(_whatsapp_required_api_contract(tool, index))
                 required_api_contracts_warning = (
                     "WhatsApp Business Cloud API requiere datos de activacion del cliente antes de conectar sandbox o produccion."
+                )
+                continue
+            if _is_google_workspace_tool(tool):
+                required_api_contracts.append(_google_workspace_required_api_contract(tool, index))
+                required_api_contracts_warning = (
+                    "Google Workspace requiere OAuth, scopes minimos y recursos autorizados antes de conectar sandbox o produccion."
+                )
+                continue
+            if _is_odoo_tool(tool):
+                required_api_contracts.append(_odoo_required_api_contract(tool, index))
+                required_api_contracts_warning = (
+                    "Odoo requiere version/API mode, modelos permitidos, permisos y credenciales referenciadas antes de conectar sandbox o produccion."
                 )
                 continue
             required_api_contracts.append(
@@ -4270,6 +5280,8 @@ def _build_construction_readiness_files(
 def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
     readiness = preview.construction_readiness
     has_whatsapp = any(item.path == "ACP/webhooks/whatsapp-business-webhook.yaml" for item in preview.files)
+    has_google_workspace = any(item.path == "ACP/integrations/google-workspace/oauth-policy.yaml" for item in preview.files)
+    has_odoo = any(item.path == "ACP/integrations/odoo/api-profile.yaml" for item in preview.files)
     builder_handoff_lines = [
             "# Builder Handoff",
             "",
@@ -4303,6 +5315,28 @@ def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
                 "- Luego implementa `ACP/integrations/whatsapp/send-message.contract.yaml` y `ACP/integrations/whatsapp/templates.yaml`.",
                 "- Pide solo datos de activacion: WABA, phone number, callback URL publica, referencias de secretos, templates aprobados y opt-in.",
                 "- No actives produccion hasta pasar `ACP/tools/tests/whatsapp-cloud-api-smoke-test.yaml`.",
+            ]
+        )
+    if has_google_workspace:
+        builder_handoff_lines.extend(
+            [
+                "",
+                "## Google Workspace public APIs",
+                "- LAB ya entrega contratos de OAuth, scopes y recursos; no conviertas LAB en runtime Google.",
+                "- Revisa `ACP/integrations/google-workspace/oauth-policy.yaml` y `scopes-matrix.yaml` antes de implementar.",
+                "- Resuelve preguntas de Drive/Sheets/Calendar/Gmail desde `open-questions.yaml` antes de pedir scopes o recursos amplios.",
+                "- No guardes client secrets, refresh tokens ni contenido de Drive/Gmail/Calendar en texto plano.",
+            ]
+        )
+    if has_odoo:
+        builder_handoff_lines.extend(
+            [
+                "",
+                "## Odoo public/external APIs",
+                "- LAB ya entrega contratos de version, modelos y approval; no conviertas LAB en runtime Odoo.",
+                "- Revisa `ACP/integrations/odoo/version-policy.yaml` antes de escoger XML-RPC/JSON-RPC o JSON-2.",
+                "- Resuelve version, hosting, database, usuario tecnico, modelos/campos y permisos desde `open-questions.yaml`.",
+                "- No crees cotizaciones, actividades ni updates sin approval_gate, allowlist e idempotency_key.",
             ]
         )
     builder_handoff = "\n".join(builder_handoff_lines)
@@ -4355,6 +5389,8 @@ def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
 def _build_implementation_guidance_files(preview: ACPPreview) -> list[ACPFileEntry]:
     readiness = preview.construction_readiness
     has_whatsapp = any(item.path == "ACP/webhooks/whatsapp-business-webhook.yaml" for item in preview.files)
+    has_google_workspace = any(item.path == "ACP/integrations/google-workspace/oauth-policy.yaml" for item in preview.files)
+    has_odoo = any(item.path == "ACP/integrations/odoo/api-profile.yaml" for item in preview.files)
     lines = [
         "# Implementation Guide",
         "",
@@ -4390,6 +5426,28 @@ def _build_implementation_guidance_files(preview: ACPPreview) -> list[ACPFileEnt
                 "- Construir `POST /webhooks/whatsapp` con validacion de firma, normalizacion e idempotencia.",
                 "- Construir sender REST desacoplado para mensajes de sesion y templates.",
                 "- Resolver solo datos de activacion desde `open-questions.yaml`; no pedir al usuario que disene el webhook.",
+            ]
+        )
+    if has_google_workspace:
+        lines.extend(
+            [
+                "",
+                "## Google Workspace public APIs",
+                "- Construir OAuth, redirect URI, vault y refresh-token flow en el proyecto destino, no dentro de LAB.",
+                "- Usar `ACP/integrations/google-workspace/scopes-matrix.yaml` como contrato de scopes minimos.",
+                "- Para Drive/Sheets/Calendar/Gmail, implementar solo los contratos presentes bajo `ACP/integrations/google-*` o `ACP/integrations/gmail`.",
+                "- Antes de activar sandbox, cerrar las preguntas sobre recurso permitido, owner, scopes y politica de aprobacion.",
+            ]
+        )
+    if has_odoo:
+        lines.extend(
+            [
+                "",
+                "## Odoo public/external APIs",
+                "- Construir adaptador segun `ACP/integrations/odoo/version-policy.yaml`: XML-RPC/JSON-RPC para 17/18 o JSON-2 para 19 cuando aplique.",
+                "- Usar `ACP/integrations/odoo/models-scope.yaml` como allowlist de modelos, campos y dominios.",
+                "- Para cotizaciones, aplicar `ACP/integrations/odoo/quote-policy.yaml` antes de tocar `sale.order`.",
+                "- Antes de activar sandbox, cerrar version, base URL, database, usuario tecnico, permisos, modelos y write actions permitidas.",
             ]
         )
     checklist = [
@@ -5813,6 +6871,16 @@ def _build_deployment_files(
     environment_refs = ["OPENAI_API_KEY", "DATABASE_URL"]
     blueprint = snapshot.blueprint
     has_whatsapp = bool(blueprint and any(_is_whatsapp_cloud_tool(tool) for tool in blueprint.tools))
+    google_keys = {
+        _google_workspace_connector_key(tool)
+        for tool in blueprint.tools
+        if blueprint and _is_google_workspace_tool(tool)
+    } if blueprint else set()
+    odoo_keys = {
+        _odoo_connector_key(tool)
+        for tool in blueprint.tools
+        if blueprint and _is_odoo_tool(tool)
+    } if blueprint else set()
     if has_whatsapp:
         env_lines.extend(
             [
@@ -5837,6 +6905,60 @@ def _build_deployment_files(
                 "WHATSAPP_PHONE_NUMBER_ID",
                 "WHATSAPP_SANDBOX_WEBHOOK_CALLBACK_URL",
                 "WHATSAPP_PRODUCTION_WEBHOOK_CALLBACK_URL",
+            ]
+        )
+    if google_keys:
+        env_lines.extend(
+            [
+                "",
+                "# Google Workspace public APIs (referencias, no secretos planos)",
+                "GOOGLE_ALLOWED_SCOPES=",
+                "GOOGLE_SANDBOX_OAUTH_REDIRECT_URI=",
+                "GOOGLE_PRODUCTION_OAUTH_REDIRECT_URI=",
+                "GOOGLE_OAUTH_CLIENT_ID_REF=",
+                "GOOGLE_OAUTH_CLIENT_SECRET_REF=",
+                "GOOGLE_SANDBOX_REFRESH_TOKEN_REF=",
+                "GOOGLE_PRODUCTION_REFRESH_TOKEN_REF=",
+            ]
+        )
+        environment_refs.extend(
+            [
+                "GOOGLE_ALLOWED_SCOPES",
+                "GOOGLE_SANDBOX_OAUTH_REDIRECT_URI",
+                "GOOGLE_PRODUCTION_OAUTH_REDIRECT_URI",
+            ]
+        )
+        if "google_sheets_read_table" in google_keys:
+            env_lines.append("GOOGLE_SHEETS_SPREADSHEET_ID=")
+            environment_refs.append("GOOGLE_SHEETS_SPREADSHEET_ID")
+        if {"google_calendar_availability_reader", "google_calendar_event_creator"} & google_keys:
+            env_lines.append("GOOGLE_CALENDAR_DEFAULT_ID=")
+            environment_refs.append("GOOGLE_CALENDAR_DEFAULT_ID")
+        if {"gmail_draft_creator", "gmail_send_message"} & google_keys:
+            env_lines.append("GMAIL_SENDER_ACCOUNT=")
+            environment_refs.append("GMAIL_SENDER_ACCOUNT")
+    if odoo_keys:
+        env_lines.extend(
+            [
+                "",
+                "# Odoo public/external APIs (referencias, no secretos planos)",
+                "ODOO_API_MODE=",
+                "ODOO_BASE_URL=",
+                "ODOO_DATABASE=",
+                "ODOO_ALLOWED_MODELS=",
+                "ODOO_ALLOWED_WRITE_ACTIONS=",
+                "ODOO_USERNAME_REF=",
+                "ODOO_PASSWORD_REF=",
+                "ODOO_API_KEY_REF=",
+            ]
+        )
+        environment_refs.extend(
+            [
+                "ODOO_API_MODE",
+                "ODOO_BASE_URL",
+                "ODOO_DATABASE",
+                "ODOO_ALLOWED_MODELS",
+                "ODOO_ALLOWED_WRITE_ACTIONS",
             ]
         )
     env_lines.append("")
@@ -6446,6 +7568,8 @@ def generate_acp_files(
     files.extend(_build_tools_files(snapshot, acp_context))
     files.extend(_build_tool_connector_files(snapshot))
     files.extend(_build_whatsapp_connector_files(snapshot))
+    files.extend(_build_google_workspace_connector_files(snapshot))
+    files.extend(_build_odoo_connector_files(snapshot))
     files.extend(_build_objective_files(snapshot, response_records))
     files.extend(_build_workflow_files(snapshot, acp_context))
     files.extend(_build_prompt_files(snapshot, acp_context, prompt_synthesizer))

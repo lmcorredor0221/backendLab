@@ -5,6 +5,7 @@ import hashlib
 import json
 import pathlib
 import re
+from typing import Any
 from uuid import UUID
 
 
@@ -312,7 +313,7 @@ NOTIFICATION_CHANNEL_PATTERNS: dict[str, tuple[str, ...]] = {
 WRITE_ACTION_PATTERNS: dict[str, tuple[str, ...]] = {
     "update_record": ("actualizar", "update", "modificar", "registrar", "guardar"),
     "approve_request": ("aprobar", "approve", "autorizar"),
-    "create_case": ("crear ticket", "create ticket", "crear caso", "abrir caso", "crear registro"),
+    "create_case": ("crear ticket", "create ticket", "crear caso", "abrir caso", "crear registro", "crear cotizacion", "crear cotización", "generar cotizacion", "generar cotización"),
     "send_notification": ("notificar", "alertar", "avisar", "enviar mensaje", "enviar correo"),
     "schedule_execution": ("programar", "schedule", "agendar", "calendarizar"),
 }
@@ -2799,9 +2800,12 @@ def _build_blueprint_tool_from_recommendation(
 
     def _match_connector(maps_to_capability: str) -> dict | None:
         for c in detected:
+            if c.get("maps_to_capability") == maps_to_capability:
+                return c
+        for c in detected:
             mapped = c.get("maps_to_capabilities")
             mapped_list = mapped if isinstance(mapped, list) else []
-            if c.get("maps_to_capability") == maps_to_capability or maps_to_capability in mapped_list:
+            if maps_to_capability in mapped_list:
                 return c
         return None
 
@@ -2817,6 +2821,55 @@ def _build_blueprint_tool_from_recommendation(
         if isinstance(endpoint_patterns, dict) and endpoint_patterns.get(action):
             return str(endpoint_patterns[action])
         return str(connector.get("endpoint_pattern") or fallback)
+
+    def _connector_key(connector: dict | None) -> str:
+        return str((connector or {}).get("connector_key") or "").strip().lower()
+
+    def _is_google_workspace_connector(connector: dict | None) -> bool:
+        if not connector:
+            return False
+        return (
+            str(connector.get("family_key") or "").strip().lower() == "google_workspace_public_tools"
+            or _connector_key(connector).startswith(("google_", "gmail_"))
+        )
+
+    def _is_odoo_connector(connector: dict | None) -> bool:
+        if not connector:
+            return False
+        return (
+            str(connector.get("family_key") or "").strip().lower() == "odoo_business_management_tools"
+            or _connector_key(connector).startswith("odoo_")
+        )
+
+    def _google_oauth_security_config(connector: dict, *, secret_ref: str = "GOOGLE_REFRESH_TOKEN_REF") -> dict[str, Any]:
+        return {
+            "auth_type": "oauth2",
+            "client_id_ref": "GOOGLE_OAUTH_CLIENT_ID",
+            "client_secret_ref": "GOOGLE_OAUTH_CLIENT_SECRET",
+            "refresh_token_ref": secret_ref,
+            "allowed_scopes_ref": "GOOGLE_ALLOWED_SCOPES",
+            "redirect_uri_ref": "GOOGLE_OAUTH_REDIRECT_URI",
+            "minimum_scope_policy": connector.get("default_scope_policy", "least_privilege_scopes"),
+            "secret_policy": "references_only_no_plaintext_values",
+        }
+
+    def _odoo_security_config(connector: dict) -> dict[str, Any]:
+        return {
+            "auth_type": "odoo_api_key_or_password",
+            "api_mode_ref": "ODOO_API_MODE",
+            "base_url_ref": "ODOO_BASE_URL",
+            "database_ref": "ODOO_DATABASE",
+            "username_ref": "ODOO_USERNAME",
+            "password_ref": "ODOO_PASSWORD",
+            "api_key_ref": "ODOO_API_KEY",
+            "allowed_models_ref": "ODOO_ALLOWED_MODELS",
+            "allowed_write_actions_ref": "ODOO_ALLOWED_WRITE_ACTIONS",
+            "api_modes": list(connector.get("api_modes") or ["xmlrpc_17_18", "json2_19"]),
+            "secret_policy": "references_only_no_plaintext_values",
+        }
+
+    def _odoo_model(connector: dict | None, fallback: str = "res.partner") -> str:
+        return str((connector or {}).get("model") or fallback)
 
     if entry.tool_key == "read_system_of_record":
         connector = _match_connector("read_system_of_record")
@@ -2836,6 +2889,154 @@ def _build_blueprint_tool_from_recommendation(
         _integration = connector.get("integration_kind", "api") if connector else seed.integration_kind or "api"
         _risk = connector.get("risk_level", "medium") if connector else seed.risk_level or "medium"
         _env_comment = _connector_env_comment(connector) if connector else ""
+        request_schema = {
+            "type": "object",
+            "properties": {
+                "record_id": {"type": "string", "description": "Identificador unico del registro en el sistema fuente"},
+                "entity_type": {"type": "string", "description": "Tipo de entidad (customer, invoice, ticket)"},
+                "fields": {"type": "array", "items": {"type": "string"}, "description": "Campos especificos a recuperar"}
+            },
+            "required": ["record_id", "entity_type"]
+        }
+        response_schema = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["success", "error"]},
+                "data": {"type": "object", "description": "Objeto con los atributos recuperados del sistema fuente"},
+                "fetched_at": {"type": "string", "format": "date-time"}
+            },
+            "required": ["status", "data"]
+        }
+        usage_examples = [
+            {
+                "title": "Consulta de cliente por ID",
+                "request": {"record_id": "CUST-9842", "entity_type": "customer", "fields": ["name", "email", "status"]},
+                "response": {"status": "success", "data": {"id": "CUST-9842", "name": "Acme Corp", "status": "active"}, "fetched_at": "2026-07-29T10:00:00Z"}
+            }
+        ]
+        security_config = {"auth_type": "bearer", "secret_ref": "WORKSPACE_SOR_API_KEY", "encrypt_transit": True}
+        validations = ["tenant_scope_validation", "request_schema_validation", "response_schema_validation"]
+        typed_errors = ["RECORD_NOT_FOUND", "AUTH_EXPIRED", "RATE_LIMITED", "UPSTREAM_TIMEOUT"]
+        permissions = ["read_system_of_record"]
+        scopes = ["workspace", "read_only"]
+        sensitive_data = ["business_record"]
+        audit_rules = ["Registrar request_id, source_ref y latencia de cada lectura aprobada."]
+        if connector and _connector_key(connector) == "google_sheets_read_table":
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "spreadsheet_id": {"type": "string", "description": "ID del archivo Google Sheets autorizado"},
+                    "range": {"type": "string", "description": "Rango A1 autorizado, por ejemplo Leads!A1:H500"},
+                    "header_row": {"type": "integer", "default": 1},
+                    "filters": {"type": "object", "description": "Filtros deterministas sobre columnas permitidas"},
+                    "cache_policy": {"type": "string", "enum": ["no_cache", "short_ttl", "snapshot_per_run"]},
+                },
+                "required": ["spreadsheet_id", "range"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["success", "error"]},
+                    "columns": {"type": "array", "items": {"type": "string"}},
+                    "rows": {"type": "array", "items": {"type": "object"}},
+                    "source_revision": {"type": "string"},
+                    "fetched_at": {"type": "string", "format": "date-time"},
+                },
+                "required": ["status", "columns", "rows"],
+            }
+            usage_examples = [
+                {
+                    "title": "Leer tabla de leads desde Google Sheets",
+                    "request": {"spreadsheet_id": "sheet-id", "range": "Leads!A1:H500", "cache_policy": "short_ttl"},
+                    "response": {"status": "success", "columns": ["nombre", "telefono", "estado"], "rows": [{"nombre": "Ana", "estado": "nuevo"}]},
+                }
+            ]
+            security_config = _google_oauth_security_config(connector)
+            validations = ["spreadsheet_id_allowlist", "range_allowlist", "header_schema_validation", "row_limit_validation"]
+            typed_errors = ["GOOGLE_AUTH_EXPIRED", "SHEET_NOT_FOUND", "RANGE_NOT_ALLOWED", "GOOGLE_RATE_LIMITED"]
+            permissions = ["read_google_sheet"]
+            scopes = ["workspace", "read_only", "google_sheets"]
+            sensitive_data = ["spreadsheet_row", "sheet_metadata"]
+            audit_rules = ["Registrar spreadsheet_id hash, range, row_count, source_revision y fetched_at."]
+        elif connector and _connector_key(connector) == "google_calendar_availability_reader":
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "calendar_ids": {"type": "array", "items": {"type": "string"}},
+                    "time_min": {"type": "string", "format": "date-time"},
+                    "time_max": {"type": "string", "format": "date-time"},
+                    "timezone": {"type": "string", "default": "America/Bogota"},
+                    "slot_duration_minutes": {"type": "integer"},
+                },
+                "required": ["calendar_ids", "time_min", "time_max"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["success", "error"]},
+                    "busy": {"type": "array", "items": {"type": "object"}},
+                    "available_slots": {"type": "array", "items": {"type": "object"}},
+                },
+                "required": ["status", "busy"],
+            }
+            usage_examples = [
+                {
+                    "title": "Consultar disponibilidad de agenda",
+                    "request": {"calendar_ids": ["primary"], "time_min": "2026-10-09T14:00:00-05:00", "time_max": "2026-10-09T18:00:00-05:00"},
+                    "response": {"status": "success", "busy": [], "available_slots": [{"start": "2026-10-09T15:00:00-05:00", "end": "2026-10-09T15:30:00-05:00"}]},
+                }
+            ]
+            security_config = _google_oauth_security_config(connector)
+            validations = ["calendar_id_allowlist", "time_window_validation", "timezone_validation"]
+            typed_errors = ["GOOGLE_AUTH_EXPIRED", "CALENDAR_NOT_FOUND", "TIME_WINDOW_INVALID", "GOOGLE_RATE_LIMITED"]
+            permissions = ["read_calendar_availability"]
+            scopes = ["workspace", "read_only", "google_calendar"]
+            sensitive_data = ["calendar_busy_block"]
+            audit_rules = ["Registrar calendar_id hash, ventana consultada y resultado sin exponer detalles privados."]
+        elif connector and _is_odoo_connector(connector):
+            model_name = _odoo_model(connector)
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "api_mode": {"type": "string", "enum": ["xmlrpc_17_18", "json2_19"]},
+                    "model": {"type": "string", "enum": [model_name]},
+                    "domain": {"type": "array", "items": {"type": "array"}, "description": "Dominio Odoo permitido para search/read"},
+                    "fields": {"type": "array", "items": {"type": "string"}, "description": "Campos permitidos del modelo Odoo"},
+                    "limit": {"type": "integer", "default": 20, "maximum": 100},
+                    "context": {"type": "object", "description": "Contexto Odoo minimo, por ejemplo lang o tz"},
+                },
+                "required": ["model", "fields"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["success", "error"]},
+                    "records": {"type": "array", "items": {"type": "object"}},
+                    "source_model": {"type": "string", "enum": [model_name]},
+                    "fetched_at": {"type": "string", "format": "date-time"},
+                },
+                "required": ["status", "records", "source_model"],
+            }
+            usage_examples = [
+                {
+                    "title": f"Leer registros {model_name} desde Odoo",
+                    "request": {"api_mode": "xmlrpc_17_18", "model": model_name, "domain": [["active", "=", True]], "fields": ["id", "name"], "limit": 10},
+                    "response": {"status": "success", "source_model": model_name, "records": [{"id": 12, "name": "Cliente ejemplo"}]},
+                }
+            ]
+            security_config = _odoo_security_config(connector)
+            validations = [
+                "odoo_version_policy_validation",
+                "allowed_model_validation",
+                "domain_policy_validation",
+                "field_allowlist_validation",
+                "odoo_access_rights_validation",
+            ]
+            typed_errors = ["ODOO_AUTH_FAILED", "ODOO_MODEL_NOT_ALLOWED", "ODOO_ACCESS_DENIED", "ODOO_RATE_LIMITED", "ODOO_UPSTREAM_ERROR"]
+            permissions = [f"read_odoo_{model_name.replace('.', '_')}"]
+            scopes = ["workspace", "read_only", "odoo"]
+            sensitive_data = ["odoo_business_record"]
+            audit_rules = ["Registrar modelo, dominio hash, campos, row_count, usuario tecnico y fetched_at."]
 
         return BlueprintTool(
             name=_tool_name,
@@ -2855,38 +3056,17 @@ def _build_blueprint_tool_from_recommendation(
             inputs=read_inputs,
             outputs=["normalized_system_record"],
 
-            request_schema={
-                "type": "object",
-                "properties": {
-                    "record_id": {"type": "string", "description": "Identificador unico del registro en el sistema fuente"},
-                    "entity_type": {"type": "string", "description": "Tipo de entidad (customer, invoice, ticket)"},
-                    "fields": {"type": "array", "items": {"type": "string"}, "description": "Campos especificos a recuperar"}
-                },
-                "required": ["record_id", "entity_type"]
-            },
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["success", "error"]},
-                    "data": {"type": "object", "description": "Objeto con los atributos recuperados del sistema fuente"},
-                    "fetched_at": {"type": "string", "format": "date-time"}
-                },
-                "required": ["status", "data"]
-            },
-            usage_examples=[
-                {
-                    "title": "Consulta de cliente por ID",
-                    "request": {"record_id": "CUST-9842", "entity_type": "customer", "fields": ["name", "email", "status"]},
-                    "response": {"status": "success", "data": {"id": "CUST-9842", "name": "Acme Corp", "status": "active"}, "fetched_at": "2026-07-29T10:00:00Z"}
-                }
-            ],
-            security_config={"auth_type": "bearer", "secret_ref": "WORKSPACE_SOR_API_KEY", "encrypt_transit": True},
-            validations=["tenant_scope_validation", "request_schema_validation", "response_schema_validation"],
-            typed_errors=["RECORD_NOT_FOUND", "AUTH_EXPIRED", "RATE_LIMITED", "UPSTREAM_TIMEOUT"],
-            permissions=["read_system_of_record"],
-            scopes=["workspace", "read_only"],
-            sensitive_data=["business_record"],
-            audit_rules=["Registrar request_id, source_ref y latencia de cada lectura aprobada."],
+            request_schema=request_schema,
+            response_schema=response_schema,
+            usage_examples=usage_examples,
+            security_config=security_config,
+            registered_api_ref=connector.get("connector_key", "") if connector else seed.registered_api_ref,
+            validations=validations,
+            typed_errors=typed_errors,
+            permissions=permissions,
+            scopes=scopes,
+            sensitive_data=sensitive_data,
+            audit_rules=audit_rules,
             has_side_effects=False,
             execution_mode=seed.execution_mode or "sync",
             approval_policy="No requiere aprobacion adicional; solo lectura auditada.",
@@ -2980,6 +3160,104 @@ def _build_blueprint_tool_from_recommendation(
         _integration = connector.get("integration_kind", "api") if connector else seed.integration_kind or "api"
         _risk = connector.get("risk_level", "high") if connector else seed.risk_level or "high"
         _env_comment = _connector_env_comment(connector) if connector else ""
+        request_schema = {
+            "type": "object",
+            "properties": {
+                "action_name": {"type": "string", "description": "Nombre de la accion de escritura (create_ticket, update_customer)"},
+                "approval_token": {"type": "string", "description": "Token de autorizacion emitido por el approval_gate"},
+                "payload": {"type": "object", "description": "Campos a escribir o mutar"}
+            },
+            "required": ["action_name", "approval_token", "payload"]
+        }
+        response_schema = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["success", "failed"]},
+                "transaction_id": {"type": "string", "description": "Identificador unico de la transaccion"},
+                "receipt": {"type": "object", "description": "Estado resultante del objeto en la BD externa"}
+            },
+            "required": ["status", "transaction_id"]
+        }
+        usage_examples = [
+            {
+                "title": "Escritura transaccional de ticket",
+                "request": {"action_name": "create_ticket", "approval_token": "TOK-APP-9921", "payload": {"subject": "Falla en integracion", "priority": "high"}},
+                "response": {"status": "success", "transaction_id": "TX-88321", "receipt": {"ticket_id": "TCK-5512", "status": "open"}}
+            }
+        ]
+        security_config = {"auth_type": "bearer", "secret_ref": "WORKSPACE_WRITE_API_KEY", "idempotency_header": "X-Idempotency-Key"}
+        validations = ["approval_token_validation", "payload_schema_validation", "idempotency_key_validation"]
+        typed_errors = ["INVALID_APPROVAL_TOKEN", "WRITE_CONFLICT", "SCHEMA_VALIDATION_ERROR", "COMPENSATION_REQUIRED"]
+        permissions = write_inputs
+        scopes = ["workspace", "mutating_operation"]
+        sensitive_data = ["business_record"]
+        audit_rules = ["Persistir request_id, actor, approval_id, payload_hash y resultado de escritura."]
+        if connector and _is_odoo_connector(connector):
+            model_name = _odoo_model(connector, "sale.order")
+            action_name = "create_quote" if _connector_key(connector) == "odoo_sale_quote_create" else "write_record"
+            if _connector_key(connector) == "odoo_activity_create":
+                action_name = "create_activity"
+            elif _connector_key(connector) == "odoo_crm_lead_update":
+                action_name = "update_lead"
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "api_mode": {"type": "string", "enum": ["xmlrpc_17_18", "json2_19"]},
+                    "model": {"type": "string", "enum": [model_name]},
+                    "action": {"type": "string", "enum": [action_name]},
+                    "record_id": {"type": "integer", "description": "ID Odoo requerido para acciones de update/write"},
+                    "payload": {"type": "object", "description": "Campos permitidos para crear o actualizar el registro Odoo"},
+                    "approval_token": {"type": "string"},
+                    "idempotency_key": {"type": "string"},
+                },
+                "required": ["model", "action", "payload", "approval_token", "idempotency_key"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["success", "failed"]},
+                    "odoo_model": {"type": "string", "enum": [model_name]},
+                    "odoo_record_id": {"type": "integer"},
+                    "write_receipt": {"type": "object"},
+                },
+                "required": ["status", "odoo_model", "odoo_record_id"],
+            }
+            usage_examples = [
+                {
+                    "title": f"Ejecutar {action_name} aprobado en Odoo",
+                    "request": {
+                        "api_mode": "xmlrpc_17_18",
+                        "model": model_name,
+                        "action": action_name,
+                        "payload": {"name": "Cotizacion preparada por agente"},
+                        "approval_token": "approval-token-ref",
+                        "idempotency_key": "lead-123-quote-v1",
+                    },
+                    "response": {"status": "success", "odoo_model": model_name, "odoo_record_id": 8842},
+                }
+            ]
+            security_config = _odoo_security_config(connector)
+            validations = [
+                "approval_token_validation",
+                "odoo_version_policy_validation",
+                "allowed_model_validation",
+                "allowed_write_action_validation",
+                "payload_schema_validation",
+                "idempotency_key_validation",
+                "odoo_access_rights_validation",
+            ]
+            typed_errors = [
+                "INVALID_APPROVAL_TOKEN",
+                "ODOO_AUTH_FAILED",
+                "ODOO_MODEL_NOT_ALLOWED",
+                "ODOO_ACCESS_DENIED",
+                "ODOO_WRITE_CONFLICT",
+                "ODOO_UPSTREAM_ERROR",
+            ]
+            permissions = [f"write_odoo_{model_name.replace('.', '_')}"]
+            scopes = ["workspace", "mutating_operation", "odoo"]
+            sensitive_data = ["odoo_business_record"]
+            audit_rules = ["Persistir approval_id, modelo, accion, payload_hash, idempotency_key y record_id resultante."]
 
         return BlueprintTool(
             name=_tool_name,
@@ -2999,38 +3277,16 @@ def _build_blueprint_tool_from_recommendation(
             inputs=["approved_action", "approval_token", *write_inputs],
             outputs=["write_receipt", "updated_record_ref"],
 
-            request_schema={
-                "type": "object",
-                "properties": {
-                    "action_name": {"type": "string", "description": "Nombre de la accion de escritura (create_ticket, update_customer)"},
-                    "approval_token": {"type": "string", "description": "Token de autorizacion emitido por el approval_gate"},
-                    "payload": {"type": "object", "description": "Campos a escribir o mutar"}
-                },
-                "required": ["action_name", "approval_token", "payload"]
-            },
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["success", "failed"]},
-                    "transaction_id": {"type": "string", "description": "Identificador unico de la transaccion"},
-                    "receipt": {"type": "object", "description": "Estado resultante del objeto en la BD externa"}
-                },
-                "required": ["status", "transaction_id"]
-            },
-            usage_examples=[
-                {
-                    "title": "Escritura transaccional de ticket",
-                    "request": {"action_name": "create_ticket", "approval_token": "TOK-APP-9921", "payload": {"subject": "Falla en integracion", "priority": "high"}},
-                    "response": {"status": "success", "transaction_id": "TX-88321", "receipt": {"ticket_id": "TCK-5512", "status": "open"}}
-                }
-            ],
-            security_config={"auth_type": "bearer", "secret_ref": "WORKSPACE_WRITE_API_KEY", "idempotency_header": "X-Idempotency-Key"},
-            validations=["approval_token_validation", "payload_schema_validation", "idempotency_key_validation"],
-            typed_errors=["INVALID_APPROVAL_TOKEN", "WRITE_CONFLICT", "SCHEMA_VALIDATION_ERROR", "COMPENSATION_REQUIRED"],
-            permissions=write_inputs,
-            scopes=["workspace", "mutating_operation"],
-            sensitive_data=["business_record"],
-            audit_rules=["Persistir request_id, actor, approval_id, payload_hash y resultado de escritura."],
+            request_schema=request_schema,
+            response_schema=response_schema,
+            usage_examples=usage_examples,
+            security_config=security_config,
+            validations=validations,
+            typed_errors=typed_errors,
+            permissions=permissions,
+            scopes=scopes,
+            sensitive_data=sensitive_data,
+            audit_rules=audit_rules,
             has_side_effects=True,
             execution_mode=seed.execution_mode or "sync",
             approval_policy="Solo puede ejecutarse con approval gate resuelto y payload validado.",
@@ -3063,6 +3319,80 @@ def _build_blueprint_tool_from_recommendation(
         _integration = connector.get("integration_kind", "retrieval") if connector else seed.integration_kind or "retrieval"
         _risk = connector.get("risk_level", "low") if connector else seed.risk_level or "low"
         _env_comment = _connector_env_comment(connector) if connector else ""
+        request_schema = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Consulta o pregunta en lenguaje natural"},
+                "top_k": {"type": "integer", "default": 5, "description": "Cantidad maxima de pasajes a recuperar"},
+                "filters": {"type": "object", "description": "Filtros por dominio o fecha"}
+            },
+            "required": ["query"]
+        }
+        response_schema = {
+            "type": "object",
+            "properties": {
+                "passages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "source_document": {"type": "string"},
+                            "score": {"type": "number"}
+                        }
+                    }
+                }
+            },
+            "required": ["passages"]
+        }
+        usage_examples = [
+            {
+                "title": "Búsqueda en política de devoluciones",
+                "request": {"query": "Cual es el plazo limite para devoluciones de hardware?", "top_k": 3},
+                "response": {"passages": [{"content": "El plazo maximo de devolucion es de 30 dias calendario desde la compra.", "source_document": "politica_garantias_v2.pdf", "score": 0.92}]}
+            }
+        ]
+        security_config = {"auth_type": "internal_token", "read_only": True}
+        validations = ["query_schema_validation", "approved_source_validation"]
+        typed_errors = ["NO_EVIDENCE_FOUND", "INDEX_UNAVAILABLE", "RETRIEVAL_TIMEOUT"]
+        permissions = ["read_approved_knowledge"]
+        scopes = ["workspace", "knowledge"]
+        sensitive_data = ["knowledge_reference"]
+        audit_rules = ["Registrar corpus version, source ids y score de retrieval."]
+        if connector and _connector_key(connector) == "google_drive_file_picker":
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "file_ids": {"type": "array", "items": {"type": "string"}, "description": "IDs seleccionados por el usuario via Google Picker"},
+                    "mime_types": {"type": "array", "items": {"type": "string"}},
+                    "export_format": {"type": "string", "description": "Formato de exportacion cuando el archivo es Google Docs/Sheets/Slides"},
+                    "refresh_mode": {"type": "string", "enum": ["manual", "on_demand", "scheduled_snapshot"]},
+                },
+                "required": ["file_ids"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["success", "error"]},
+                    "files": {"type": "array", "items": {"type": "object"}},
+                    "source_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["status", "files"],
+            }
+            usage_examples = [
+                {
+                    "title": "Leer archivos seleccionados de Google Drive",
+                    "request": {"file_ids": ["drive-file-id"], "mime_types": ["application/pdf"], "refresh_mode": "on_demand"},
+                    "response": {"status": "success", "files": [{"file_id": "drive-file-id", "name": "catalogo.pdf"}]},
+                }
+            ]
+            security_config = _google_oauth_security_config(connector)
+            validations = ["picker_selection_required", "file_id_allowlist", "mime_type_allowlist", "file_size_limit"]
+            typed_errors = ["GOOGLE_AUTH_EXPIRED", "DRIVE_FILE_NOT_FOUND", "DRIVE_SCOPE_NOT_GRANTED", "GOOGLE_RATE_LIMITED"]
+            permissions = ["read_selected_drive_files"]
+            scopes = ["workspace", "knowledge", "google_drive_selected_files"]
+            sensitive_data = ["drive_file_metadata", "document_content"]
+            audit_rules = ["Registrar file_id hash, mime_type, version y usuario autorizador sin almacenar secretos."]
 
         return BlueprintTool(
             name=_tool_name,
@@ -3081,46 +3411,17 @@ def _build_blueprint_tool_from_recommendation(
             connector_key=connector.get("connector_key") if connector else None,
             inputs=["question", "approved_source_filters"],
             outputs=["grounded_answer_context", "citations_bundle"],
-            request_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Consulta o pregunta en lenguaje natural"},
-                    "top_k": {"type": "integer", "default": 5, "description": "Cantidad maxima de pasajes a recuperar"},
-                    "filters": {"type": "object", "description": "Filtros por dominio o fecha"}
-                },
-                "required": ["query"]
-            },
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "passages": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": {"type": "string"},
-                                "source_document": {"type": "string"},
-                                "score": {"type": "number"}
-                            }
-                        }
-                    }
-                },
-                "required": ["passages"]
-            },
-            usage_examples=[
-                {
-                    "title": "Búsqueda en política de devoluciones",
-                    "request": {"query": "Cual es el plazo limite para devoluciones de hardware?", "top_k": 3},
-                    "response": {"passages": [{"content": "El plazo maximo de devolucion es de 30 dias calendario desde la compra.", "source_document": "politica_garantias_v2.pdf", "score": 0.92}]}
-                }
-            ],
-            security_config={"auth_type": "internal_token", "read_only": True},
-            validations=["query_schema_validation", "approved_source_validation"],
-            typed_errors=["NO_EVIDENCE_FOUND", "INDEX_UNAVAILABLE", "RETRIEVAL_TIMEOUT"],
-            permissions=["read_approved_knowledge"],
-            scopes=["workspace", "knowledge"],
-            sensitive_data=["knowledge_reference"],
-            audit_rules=["Registrar corpus version, source ids y score de retrieval."],
+            request_schema=request_schema,
+            response_schema=response_schema,
+            usage_examples=usage_examples,
+            security_config=security_config,
+            registered_api_ref=connector.get("connector_key", "") if connector else seed.registered_api_ref,
+            validations=validations,
+            typed_errors=typed_errors,
+            permissions=permissions,
+            scopes=scopes,
+            sensitive_data=sensitive_data,
+            audit_rules=audit_rules,
             has_side_effects=False,
             execution_mode=seed.execution_mode or "sync",
             approval_policy="Usar solo fuentes aprobadas y trazables del workspace.",
@@ -3152,6 +3453,71 @@ def _build_blueprint_tool_from_recommendation(
         _integration = connector.get("integration_kind", "pipeline") if connector else seed.integration_kind or "pipeline"
         _risk = connector.get("risk_level", "medium") if connector else seed.risk_level or "medium"
         _env_comment = _connector_env_comment(connector) if connector else ""
+        request_schema = {
+            "type": "object",
+            "properties": {
+                "source_uri": {"type": "string", "description": "URI del repositorio documental o archivo"},
+                "refresh_mode": {"type": "string", "enum": ["full", "incremental"]}
+            },
+            "required": ["source_uri"]
+        }
+        response_schema = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["completed", "indexing", "failed"]},
+                "processed_documents": {"type": "integer"},
+                "chunks_created": {"type": "integer"}
+            },
+            "required": ["status", "processed_documents"]
+        }
+        usage_examples = [
+            {
+                "title": "Ingesta incremental de manuales",
+                "request": {"source_uri": "s3://company-docs/manuals/2026/", "refresh_mode": "incremental"},
+                "response": {"status": "completed", "processed_documents": 12, "chunks_created": 480}
+            }
+        ]
+        security_config = {"auth_type": "iam_role", "secret_ref": "KNOWLEDGE_INGESTION_CREDENTIALS"}
+        validations = ["document_schema_validation", "approved_source_validation"]
+        typed_errors = ["PARSER_FAILURE", "STORAGE_UNREACHABLE", "FILE_SIZE_EXCEEDED"]
+        permissions = ["ingest_approved_documents"]
+        scopes = ["workspace", "knowledge"]
+        sensitive_data = ["document_metadata"]
+        audit_rules = ["Registrar source_version, parser, chunking_policy y resultado del refresh."]
+        if connector and _connector_key(connector) == "google_drive_file_picker":
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "file_ids": {"type": "array", "items": {"type": "string"}},
+                    "folder_id": {"type": "string"},
+                    "refresh_mode": {"type": "string", "enum": ["manual", "incremental_snapshot"]},
+                    "allowed_mime_types": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["file_ids"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["completed", "indexing", "failed"]},
+                    "processed_files": {"type": "integer"},
+                    "indexed_source_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["status", "processed_files"],
+            }
+            usage_examples = [
+                {
+                    "title": "Ingestar archivos seleccionados de Drive",
+                    "request": {"file_ids": ["drive-file-id"], "refresh_mode": "incremental_snapshot", "allowed_mime_types": ["application/pdf"]},
+                    "response": {"status": "completed", "processed_files": 1, "indexed_source_refs": ["drive://drive-file-id"]},
+                }
+            ]
+            security_config = _google_oauth_security_config(connector)
+            validations = ["picker_selection_required", "approved_source_validation", "mime_type_allowlist", "dedupe_by_file_revision"]
+            typed_errors = ["GOOGLE_AUTH_EXPIRED", "DRIVE_FILE_NOT_FOUND", "FILE_SIZE_EXCEEDED", "PARSER_FAILURE"]
+            permissions = ["ingest_selected_drive_files"]
+            scopes = ["workspace", "knowledge", "google_drive_selected_files"]
+            sensitive_data = ["drive_file_metadata", "document_content"]
+            audit_rules = ["Registrar file_id hash, revision, parser, chunking_policy y resultado de indexacion."]
 
         return BlueprintTool(
             name=_tool_name,
@@ -3170,53 +3536,34 @@ def _build_blueprint_tool_from_recommendation(
             connector_key=connector.get("connector_key") if connector else None,
             inputs=["approved_documents", "ingestion_policy"],
             outputs=["ingestion_report", "indexed_source_refs"],
-            request_schema={
-                "type": "object",
-                "properties": {
-                    "source_uri": {"type": "string", "description": "URI del repositorio documental o archivo"},
-                    "refresh_mode": {"type": "string", "enum": ["full", "incremental"]}
-                },
-                "required": ["source_uri"]
-            },
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["completed", "indexing", "failed"]},
-                    "processed_documents": {"type": "integer"},
-                    "chunks_created": {"type": "integer"}
-                },
-                "required": ["status", "processed_documents"]
-            },
-            usage_examples=[
-                {
-                    "title": "Ingesta incremental de manuales",
-                    "request": {"source_uri": "s3://company-docs/manuals/2026/", "refresh_mode": "incremental"},
-                    "response": {"status": "completed", "processed_documents": 12, "chunks_created": 480}
-                }
-            ],
-            security_config={"auth_type": "iam_role", "secret_ref": "KNOWLEDGE_INGESTION_CREDENTIALS"},
-            validations=["document_schema_validation", "approved_source_validation"],
-            typed_errors=["PARSER_FAILURE", "STORAGE_UNREACHABLE", "FILE_SIZE_EXCEEDED"],
-            permissions=["ingest_approved_documents"],
-            scopes=["workspace", "knowledge"],
-            sensitive_data=["document_metadata"],
-            audit_rules=["Registrar source_version, parser, chunking_policy y resultado del refresh."],
+            request_schema=request_schema,
+            response_schema=response_schema,
+            usage_examples=usage_examples,
+            security_config=security_config,
+            registered_api_ref=connector.get("connector_key", "") if connector else seed.registered_api_ref,
+            validations=validations,
+            typed_errors=typed_errors,
+            permissions=permissions,
+            scopes=scopes,
+            sensitive_data=sensitive_data,
+            audit_rules=audit_rules,
             has_side_effects=True,
             execution_mode=seed.execution_mode or "async",
             approval_policy="Solo ingestar documentos previamente aprobados para el agente.",
             retry_strategy="Retry asincrono con backoff y deduplicacion por source_version.",
             idempotency_strategy="Evitar doble indexacion del mismo documento y version.",
             compensation_strategy="Revertir o aislar lotes corruptos del indice aprobado.",
-            approval_reason="",
+            approval_reason=_env_comment,
             failure_mode="Congelar el refresh y escalar si el indice queda inconsistente.",
             rate_limit_policy="Maximo 5 ejecuciones de ingesta simultaneas.",
             timeout_policy="Timeout de 60000ms con monitoreo de progreso.",
-            contract_review_state="needs-review",
+            contract_review_state="connector-detected" if connector else "needs-review",
         )
 
     if entry.tool_key == "outbound_notification":
         connector = _match_connector("outbound_notification")
         is_whatsapp_connector = bool(connector and connector.get("connector_key") == "whatsapp_cloud_api")
+        is_gmail_connector = bool(connector and _connector_key(connector) in {"gmail_draft_creator", "gmail_send_message"})
         _tool_name = "whatsapp_business_messaging" if is_whatsapp_connector else connector["connector_key"] if connector else "outbound_notification"
         _tool_purpose = (
             f"Enviar mensajes y respuestas al usuario a traves de {connector['connector_label']}."
@@ -3339,6 +3686,49 @@ def _build_blueprint_tool_from_recommendation(
                 "Registrar connector_key, wa_id hash, provider_message_id, template_name y delivery_status.",
                 "Registrar eventos inbound normalizados sin persistir secretos ni tokens planos.",
             ]
+        elif is_gmail_connector:
+            action_enum = ["create_draft"] if _connector_key(connector) == "gmail_draft_creator" else ["send_message"]
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": action_enum},
+                    "user_id": {"type": "string", "default": "me"},
+                    "to": {"type": "array", "items": {"type": "string"}},
+                    "cc": {"type": "array", "items": {"type": "string"}},
+                    "subject": {"type": "string"},
+                    "body_text": {"type": "string"},
+                    "body_html": {"type": "string"},
+                    "approval_token": {"type": "string"},
+                },
+                "required": ["action", "to", "subject"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "accepted": {"type": "boolean"},
+                    "draft_id": {"type": "string"},
+                    "message_id": {"type": "string"},
+                    "thread_id": {"type": "string"},
+                },
+                "required": ["accepted"],
+            }
+            usage_examples = [
+                {
+                    "title": "Crear borrador Gmail para revision",
+                    "request": {"action": action_enum[0], "to": ["cliente@example.com"], "subject": "Seguimiento", "body_text": "Mensaje aprobado pendiente de revision."},
+                    "response": {"accepted": True, "draft_id": "draft-123" if action_enum[0] == "create_draft" else "", "message_id": "msg-123" if action_enum[0] == "send_message" else ""},
+                }
+            ]
+            security_config = _google_oauth_security_config(connector)
+            validations = ["recipient_policy_validation", "message_template_validation", "approval_policy_validation"]
+            typed_errors = ["GOOGLE_AUTH_EXPIRED", "GMAIL_SCOPE_NOT_GRANTED", "GMAIL_RECIPIENT_BLOCKED", "GOOGLE_RATE_LIMITED"]
+            permissions = ["create_gmail_draft"] if action_enum[0] == "create_draft" else ["send_gmail_message"]
+            scopes = ["workspace", "notification", "gmail"]
+            sensitive_data = ["recipient_email", "email_subject", "email_body"]
+            audit_rules = [
+                "Registrar recipient hash, action, draft_id/message_id y approval_ref.",
+                "No persistir cuerpos completos de correo salvo que exista politica explicita del cliente.",
+            ]
 
         return BlueprintTool(
             name=_tool_name,
@@ -3352,11 +3742,23 @@ def _build_blueprint_tool_from_recommendation(
             endpoint_reference=_endpoint,
             auth_reference=_auth,
             risk_level=_risk,
-            requires_approval=False,
+            requires_approval=bool(is_gmail_connector and _connector_key(connector) == "gmail_send_message"),
             categories=list(connector.get("categories", [])) if connector else [],
             connector_key=connector.get("connector_key") if connector else None,
-            inputs=["wa_id", "message_or_template", "delivery_channel"] if is_whatsapp_connector else ["recipient_ref", "approved_message_template", "delivery_channel"],
-            outputs=["delivery_receipt", "provider_message_id"] if is_whatsapp_connector else ["delivery_receipt"],
+            inputs=(
+                ["wa_id", "message_or_template", "delivery_channel"]
+                if is_whatsapp_connector
+                else ["recipient_email", "subject", "approved_message"]
+                if is_gmail_connector
+                else ["recipient_ref", "approved_message_template", "delivery_channel"]
+            ),
+            outputs=(
+                ["delivery_receipt", "provider_message_id"]
+                if is_whatsapp_connector
+                else ["draft_or_message_ref", "provider_message_id"]
+                if is_gmail_connector
+                else ["delivery_receipt"]
+            ),
 
             request_schema=request_schema,
             response_schema=response_schema,
@@ -3374,12 +3776,16 @@ def _build_blueprint_tool_from_recommendation(
             approval_policy=(
                 "Usar solo templates aprobados, opt-in valido y approval_gate para mensajes sensibles o iniciados por negocio."
                 if is_whatsapp_connector
+                else "Preferir create_draft para revision humana; gmail.send requiere approval_gate o politica explicita por caso."
+                if is_gmail_connector
                 else "Usar solo templates y canales aprobados para el workspace."
             ),
             retry_strategy="Retry asincrono con circuit breaker por canal.",
             idempotency_strategy=(
                 "Deduplicar eventos inbound por provider_message_id y envios por idempotency_key del workflow."
                 if is_whatsapp_connector
+                else "Deduplicar por recipient hash, subject hash y workflow_step; no reintentar envios sin idempotency_key."
+                if is_gmail_connector
                 else "Deduplicar mensajes por workflow_step y recipient_ref."
             ),
             compensation_strategy="Evitar reenvios duplicados y escalar cuando el canal falle.",
@@ -3453,63 +3859,136 @@ def _build_blueprint_tool_from_recommendation(
         )
 
     if entry.tool_key == "scheduler":
+        connector = _match_connector("scheduler")
+        is_google_calendar_event_creator = bool(connector and _connector_key(connector) == "google_calendar_event_creator")
+        _tool_name = connector["connector_key"] if connector else "scheduler"
+        _endpoint = _connector_endpoint(connector, "create_event") if connector else seed.endpoint_reference or "workflow://scheduler/trigger"
+        _auth = f"workspace_secret:{connector['auth_scheme']}" if connector else seed.auth_reference or "workspace_member_session"
+        _integration = connector.get("integration_kind", "event_trigger") if connector else seed.integration_kind or "event_trigger"
+        _risk = connector.get("risk_level", "low") if connector else seed.risk_level or "low"
+        _env_comment = _connector_env_comment(connector) if connector else ""
+        request_schema = {
+            "type": "object",
+            "properties": {
+                "cron_expression": {"type": "string", "description": "Expresion cron o sintaxis ISO-8601"},
+                "task_name": {"type": "string", "description": "Nombre de la tarea a agendar"},
+                "payload": {"type": "object"}
+            },
+            "required": ["cron_expression", "task_name"]
+        }
+        response_schema = {
+            "type": "object",
+            "properties": {
+                "schedule_id": {"type": "string"},
+                "next_run_at": {"type": "string", "format": "date-time"}
+            },
+            "required": ["schedule_id", "next_run_at"]
+        }
+        usage_examples = [
+            {
+                "title": "Programación de reporte diario",
+                "request": {"cron_expression": "0 8 * * 1-5", "task_name": "daily_summary_report", "payload": {"format": "pdf"}},
+                "response": {"schedule_id": "SCH-4410", "next_run_at": "2026-07-30T08:00:00Z"}
+            }
+        ]
+        security_config = {"auth_type": "internal_token"}
+        validations = ["schedule_validation", "payload_schema_validation"]
+        typed_errors = ["INVALID_CRON_SYNTAX", "SCHEDULER_UNAVAILABLE"]
+        permissions = ["schedule_execution"]
+        scopes = ["workspace", "scheduling"]
+        sensitive_data: list[str] = []
+        audit_rules = ["Registrar schedule_expression, actor y run_ref generado."]
+        if is_google_calendar_event_creator:
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "calendar_id": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "description": {"type": "string"},
+                    "start": {"type": "string", "format": "date-time"},
+                    "end": {"type": "string", "format": "date-time"},
+                    "timezone": {"type": "string", "default": "America/Bogota"},
+                    "attendees": {"type": "array", "items": {"type": "string"}},
+                    "approval_token": {"type": "string"},
+                    "idempotency_key": {"type": "string"},
+                },
+                "required": ["calendar_id", "summary", "start", "end", "idempotency_key"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "created": {"type": "boolean"},
+                    "event_id": {"type": "string"},
+                    "html_link": {"type": "string"},
+                    "status": {"type": "string"},
+                },
+                "required": ["created", "event_id"],
+            }
+            usage_examples = [
+                {
+                    "title": "Crear cita aprobada en Google Calendar",
+                    "request": {"calendar_id": "primary", "summary": "Demo comercial", "start": "2026-10-09T15:00:00-05:00", "end": "2026-10-09T15:30:00-05:00", "idempotency_key": "lead-123-demo"},
+                    "response": {"created": True, "event_id": "event-123", "status": "confirmed"},
+                }
+            ]
+            security_config = _google_oauth_security_config(connector)
+            validations = ["calendar_id_allowlist", "time_window_validation", "attendee_policy_validation", "idempotency_key_validation"]
+            typed_errors = ["GOOGLE_AUTH_EXPIRED", "CALENDAR_NOT_FOUND", "EVENT_CONFLICT", "GOOGLE_RATE_LIMITED"]
+            permissions = ["create_calendar_event"]
+            scopes = ["workspace", "scheduling", "google_calendar"]
+            sensitive_data = ["calendar_event_details", "attendee_email"]
+            audit_rules = ["Registrar calendar_id hash, event_id, attendees hash y approval_ref."]
         return BlueprintTool(
-            name="scheduler",
+            name=_tool_name,
             purpose=entry.capability_covered or "Disparar ejecuciones programadas o por evento dentro de ventanas controladas.",
             owner=seed.owner or "ops_owner_pending",
             archetype="scheduler",
-            tool_type="internal",
-            execution_stage="define",
-            when_to_use="Utilizada para agendar tareas recurrentes, temporizadores o monitoreo periódico de condiciones del negocio.",
-            integration_kind=seed.integration_kind or "event_trigger",
-            endpoint_reference=seed.endpoint_reference or "workflow://scheduler/trigger",
-            auth_reference=seed.auth_reference or "workspace_member_session",
-            risk_level=seed.risk_level or "low",
-            requires_approval=False,
-            inputs=["schedule_expression", "trigger_payload"],
-            outputs=["scheduled_run_ref"],
-            request_schema={
-                "type": "object",
-                "properties": {
-                    "cron_expression": {"type": "string", "description": "Expresion cron o sintaxis ISO-8601"},
-                    "task_name": {"type": "string", "description": "Nombre de la tarea a agendar"},
-                    "payload": {"type": "object"}
-                },
-                "required": ["cron_expression", "task_name"]
-            },
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "schedule_id": {"type": "string"},
-                    "next_run_at": {"type": "string", "format": "date-time"}
-                },
-                "required": ["schedule_id", "next_run_at"]
-            },
-            usage_examples=[
-                {
-                    "title": "Programación de reporte diario",
-                    "request": {"cron_expression": "0 8 * * 1-5", "task_name": "daily_summary_report", "payload": {"format": "pdf"}},
-                    "response": {"schedule_id": "SCH-4410", "next_run_at": "2026-07-30T08:00:00Z"}
-                }
-            ],
-            security_config={"auth_type": "internal_token"},
-            validations=["schedule_validation", "payload_schema_validation"],
-            typed_errors=["INVALID_CRON_SYNTAX", "SCHEDULER_UNAVAILABLE"],
-            permissions=["schedule_execution"],
-            scopes=["workspace", "scheduling"],
-            sensitive_data=[],
-            audit_rules=["Registrar schedule_expression, actor y run_ref generado."],
-            has_side_effects=False,
+            tool_type="external" if connector else "internal",
+            execution_stage="execution" if is_google_calendar_event_creator else "define",
+            when_to_use=(
+                f"Crear eventos en {connector['connector_label']} solo despues de validar disponibilidad, politica de asistentes e idempotencia."
+                if is_google_calendar_event_creator
+                else "Utilizada para agendar tareas recurrentes, temporizadores o monitoreo periódico de condiciones del negocio."
+            ),
+            integration_kind=_integration,
+            endpoint_reference=_endpoint,
+            auth_reference=_auth,
+            risk_level=_risk,
+            requires_approval=is_google_calendar_event_creator,
+            categories=list(connector.get("categories", [])) if connector else [],
+            connector_key=connector.get("connector_key") if connector else None,
+            inputs=["calendar_event_payload", "approval_token"] if is_google_calendar_event_creator else ["schedule_expression", "trigger_payload"],
+            outputs=["calendar_event_ref", "provider_receipt"] if is_google_calendar_event_creator else ["scheduled_run_ref"],
+            request_schema=request_schema,
+            response_schema=response_schema,
+            usage_examples=usage_examples,
+            security_config=security_config,
+            registered_api_ref=connector.get("connector_key", "") if connector else seed.registered_api_ref,
+            validations=validations,
+            typed_errors=typed_errors,
+            permissions=permissions,
+            scopes=scopes,
+            sensitive_data=sensitive_data,
+            audit_rules=audit_rules,
+            has_side_effects=is_google_calendar_event_creator,
             execution_mode=seed.execution_mode or "async",
-            approval_policy="Usar solo ventanas y triggers aprobados para el workflow.",
+            approval_policy=(
+                "Crear eventos solo con politica de agenda aprobada o approval_gate para citas sensibles."
+                if is_google_calendar_event_creator
+                else "Usar solo ventanas y triggers aprobados para el workflow."
+            ),
             retry_strategy="Reintentar registro del trigger cuando falle el scheduler.",
-            idempotency_strategy="Deduplicar alta de triggers por workflow y ventana.",
+            idempotency_strategy=(
+                "Exigir idempotency_key por cita para evitar eventos duplicados."
+                if is_google_calendar_event_creator
+                else "Deduplicar alta de triggers por workflow y ventana."
+            ),
             compensation_strategy="Eliminar triggers huerfanos o duplicados si la configuracion cambia.",
-            approval_reason="",
+            approval_reason=_env_comment,
             failure_mode="Escalar si el trigger no puede registrarse o queda inconsistente.",
             rate_limit_policy="Limitar frecuencia de altas y disparos por workspace.",
             timeout_policy="Timeout corto para el alta; ejecucion real fuera de banda.",
-            contract_review_state="needs-review",
+            contract_review_state="connector-detected" if connector else "needs-review",
         )
 
     if entry.tool_key in {

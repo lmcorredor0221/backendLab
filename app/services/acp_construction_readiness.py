@@ -28,6 +28,24 @@ INTERNAL_BUILDER_TOOL_NAMES = {
     "promote_blueprint_for_implementation",
 }
 
+GOOGLE_WORKSPACE_CONNECTOR_KEYS = {
+    "google_drive_file_picker",
+    "google_sheets_read_table",
+    "google_calendar_availability_reader",
+    "google_calendar_event_creator",
+    "gmail_draft_creator",
+    "gmail_send_message",
+}
+
+ODOO_CONNECTOR_KEYS = {
+    "odoo_partner_read",
+    "odoo_crm_lead_read",
+    "odoo_sale_order_read",
+    "odoo_sale_quote_create",
+    "odoo_activity_create",
+    "odoo_crm_lead_update",
+}
+
 CONSTRUCTION_GAP_CATALOG: dict[str, dict[str, str]] = {
     "acp_package_validation_blocked": {
         "severity": "blocking",
@@ -657,13 +675,41 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
     blueprint = snapshot.blueprint
     if blueprint is None or not blueprint.tools:
         return None
+    def _normalized_tool_values(tool: object) -> set[str]:
+        return {
+            str(getattr(tool, "connector_key", "") or "").strip().lower().replace("-", "_"),
+            str(getattr(tool, "name", "") or "").strip().lower().replace("-", "_"),
+            str(getattr(tool, "registered_api_ref", "") or "").strip().lower().replace("-", "_"),
+        }
+
     whatsapp_tools = [
         tool
         for tool in blueprint.tools
-        if str(getattr(tool, "connector_key", "") or "").strip().lower() == "whatsapp_cloud_api"
-        or str(getattr(tool, "name", "") or "").strip().lower() == "whatsapp_business_messaging"
-        or str(getattr(tool, "registered_api_ref", "") or "").strip().lower() == "whatsapp_cloud_api"
+        if "whatsapp_cloud_api" in _normalized_tool_values(tool)
+        or "whatsapp_business_messaging" in _normalized_tool_values(tool)
     ]
+    google_workspace_tools = [
+        tool
+        for tool in blueprint.tools
+        if GOOGLE_WORKSPACE_CONNECTOR_KEYS & _normalized_tool_values(tool)
+    ]
+    odoo_tools = [
+        tool
+        for tool in blueprint.tools
+        if ODOO_CONNECTOR_KEYS & _normalized_tool_values(tool)
+    ]
+    google_keys = set().union(
+        *[
+            GOOGLE_WORKSPACE_CONNECTOR_KEYS & _normalized_tool_values(tool)
+            for tool in google_workspace_tools
+        ]
+    ) if google_workspace_tools else set()
+    odoo_keys = set().union(
+        *[
+            ODOO_CONNECTOR_KEYS & _normalized_tool_values(tool)
+            for tool in odoo_tools
+        ]
+    ) if odoo_tools else set()
     external_tool_paths = [
         build_tool_contract_path_for_tool(tool, index)
         for index, tool in enumerate(blueprint.tools, start=1)
@@ -754,6 +800,175 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
                         example="provider=unknown; deployment_target=unknown"
                     ),
                 ],
+            )
+        )
+    if google_workspace_tools:
+        questions.append(
+            _question(
+                question_key="google_workspace_activation_context",
+                question_text="¿Cuál será la configuración OAuth y política de scopes para Google Workspace en sandbox y producción?",
+                rationale="LAB solo entrega contratos ACP; OAuth, consent screen, redirect URI y vault pertenecen al proyecto destino.",
+                purpose="Evitar que el builder invente client IDs, scopes o tokens y conservar el ciclo de vida de configuración.",
+                expected_answer_format=(
+                    "oauth_project=<id/nombre>; consent_screen=<internal|external|pending>; "
+                    "redirect_uri_sandbox=<url>; redirect_uri_production=<url>; "
+                    "client_id_ref=<secret_ref>; client_secret_ref=<secret_ref>; refresh_token_ref=<secret_ref>; "
+                    "allowed_scopes=<lista>; secret_store=<vault/env>; owner=<persona/equipo>"
+                ),
+                target_owner="integration_owner",
+                blocking=False,
+                options=[
+                    ConstructionQuestionOption(
+                        key="client_google_project",
+                        label="Proyecto Google del cliente",
+                        description="El cliente administra OAuth, consent screen y secretos.",
+                        impact="Mantiene separación clara entre LAB y el runtime construido.",
+                        example="oauth_project=cliente-prod; consent_screen=external; secret_store=render_env"
+                    ),
+                    ConstructionQuestionOption(
+                        key="builder_creates_project",
+                        label="Builder crea configuración",
+                        description="El equipo constructor guía la creación de OAuth en una cuenta controlada por el cliente.",
+                        impact="Requiere instrucciones paso a paso y validación manual del owner.",
+                        example="oauth_project=pending; owner=cliente_admin_google"
+                    ),
+                    ConstructionQuestionOption(
+                        key="deferred",
+                        label="Pendiente por definir",
+                        description="Se conserva como decisión delegada antes de construir el binding.",
+                        impact="El ACP puede exportarse, pero no se activa Google Workspace.",
+                        example="oauth_project=pending; allowed_scopes=pending"
+                    ),
+                ],
+            )
+        )
+    if "google_drive_file_picker" in google_keys:
+        questions.append(
+            _question(
+                question_key="google_drive_resource_scope",
+                question_text="¿Qué archivos, carpetas, tipos MIME y modo de refresco de Google Drive puede usar el agente?",
+                rationale="Drive debe limitarse a archivos seleccionados o permitidos; no conviene asumir lectura amplia.",
+                purpose="Definir recursos permitidos y evitar acceso excesivo a Drive.",
+                expected_answer_format="files=<ids/lista>; folders=<ids/lista>; mime_types=<lista>; max_size_mb=<n>; refresh=<manual|on_demand|scheduled>; owner=<persona>",
+                target_owner="knowledge_owner",
+                blocking=False,
+            )
+        )
+    if "google_sheets_read_table" in google_keys:
+        questions.append(
+            _question(
+                question_key="google_sheets_table_contract",
+                question_text="¿Cuál es el spreadsheet, rango, columnas y llave primaria que debe leer el agente en Google Sheets?",
+                rationale="Una hoja puede ser útil como fuente inicial, pero sin esquema produce lecturas frágiles.",
+                purpose="Convertir la hoja en contrato tabular determinístico antes de construir.",
+                expected_answer_format="spreadsheet_id=<id>; range=<A1>; header_row=<n>; primary_key=<columna>; columns=<lista>; cache=<politica>; owner=<persona>",
+                target_owner="data_owner",
+                blocking=False,
+            )
+        )
+    if {"google_calendar_availability_reader", "google_calendar_event_creator"} & google_keys:
+        questions.append(
+            _question(
+                question_key="google_calendar_booking_policy",
+                question_text="¿Qué calendario, zona horaria, ventanas y reglas de aprobación aplican para consultar o crear eventos?",
+                rationale="Consultar disponibilidad es lectura; crear eventos tiene side effects y requiere política clara.",
+                purpose="Separar disponibilidad, creación de citas, aprobación e idempotencia.",
+                expected_answer_format="calendar_id=<id>; timezone=<tz>; availability_window=<regla>; slot_minutes=<n>; attendee_policy=<regla>; approval_policy=<regla>; conflict_policy=<regla>",
+                target_owner="ops_owner",
+                blocking=False,
+            )
+        )
+    if {"gmail_draft_creator", "gmail_send_message"} & google_keys:
+        questions.append(
+            _question(
+                question_key="gmail_message_policy",
+                question_text="¿Desde qué cuenta Gmail se crearán borradores o envíos, y qué política de destinatarios/aprobación aplica?",
+                rationale="Gmail puede exponer datos sensibles y enviar comunicaciones; el MVP debe preferir borradores si no hay política explícita.",
+                purpose="Definir sender, destinatarios permitidos, retención y aprobación antes de activar Gmail.",
+                expected_answer_format="sender_account=<email>; mode=<draft|send>; recipient_policy=<regla>; approval_policy=<regla>; retention=<regla>; owner=<persona>",
+                target_owner="communications_owner",
+                blocking=False,
+            )
+        )
+    if odoo_tools:
+        questions.append(
+            _question(
+                question_key="odoo_version_context",
+                question_text="¿Qué versión de Odoo se integrará y qué modo API debe usar el builder?",
+                rationale="Odoo 17/18 suelen construirse con External API XML-RPC/JSON-RPC; Odoo 19 puede requerir JSON-2. LAB no debe inferirlo.",
+                purpose="Seleccionar el contrato tecnico correcto antes de construir adaptadores Odoo.",
+                expected_answer_format="version=<17|18|19|otra>; edition=<community|enterprise|online|sh>; api_mode=<xmlrpc_17_18|json2_19>; hosting=<url/entorno>; owner=<persona>",
+                target_owner="integration_owner",
+                blocking=False,
+                options=[
+                    ConstructionQuestionOption(
+                        key="odoo_17_18_rpc",
+                        label="Odoo 17/18 RPC",
+                        description="Construir con execute_kw sobre la External API tradicional.",
+                        impact="El ACP usará el contrato RPC 17/18 y sus pruebas de autenticación/modelos.",
+                        example="version=17; edition=community; api_mode=xmlrpc_17_18; hosting=https://odoo.example.com"
+                    ),
+                    ConstructionQuestionOption(
+                        key="odoo_19_json2",
+                        label="Odoo 19 JSON-2",
+                        description="Construir con JSON-2 si el Odoo destino lo expone para los modelos requeridos.",
+                        impact="El ACP usará política de versión Odoo 19 y validará endpoints por modelo.",
+                        example="version=19; api_mode=json2_19; hosting=https://odoo.example.com"
+                    ),
+                    ConstructionQuestionOption(
+                        key="unknown",
+                        label="Pendiente por definir",
+                        description="Se conserva como decisión delegada antes de activar sandbox.",
+                        impact="El builder no debe construir llamadas reales hasta confirmar versión y modo API.",
+                        example="version=pending; api_mode=pending"
+                    ),
+                ],
+            )
+        )
+        questions.append(
+            _question(
+                question_key="odoo_api_access_context",
+                question_text="¿Cuáles son las referencias de acceso Odoo para sandbox y producción?",
+                rationale="La integración necesita base URL, database y usuario técnico, pero el ACP no debe almacenar secretos planos.",
+                purpose="Evitar credenciales inventadas y mantener secret refs dentro del ciclo de vida de configuración.",
+                expected_answer_format="base_url=<url>; database=<db>; username_ref=<secret_ref>; password_ref=<secret_ref>; api_key_ref=<secret_ref>; secret_store=<vault/env>; sandbox=<si/no>; owner=<persona>",
+                target_owner="integration_owner",
+                blocking=False,
+            )
+        )
+        questions.append(
+            _question(
+                question_key="odoo_module_scope",
+                question_text="¿Qué módulos, modelos, campos y dominios de Odoo puede usar el agente?",
+                rationale="Odoo suele tener campos custom y permisos por módulo; leer o escribir sin allowlist puede romper el proceso comercial.",
+                purpose="Definir allowlist de modelos/campos/dominios antes de construir consultas.",
+                expected_answer_format="models=<lista>; fields_by_model=<mapa>; domains=<reglas>; custom_modules=<lista>; owner=<persona>",
+                target_owner="process_owner",
+                blocking=False,
+            )
+        )
+    if {"odoo_sale_quote_create", "odoo_activity_create", "odoo_crm_lead_update"} & odoo_keys:
+        questions.append(
+            _question(
+                question_key="odoo_write_policy",
+                question_text="¿Qué escrituras en Odoo están permitidas y qué aprobación exige cada una?",
+                rationale="Crear o modificar registros Odoo tiene side effects comerciales; debe pasar por approval, allowlist e idempotencia.",
+                purpose="Separar lecturas determinísticas de acciones con impacto operativo.",
+                expected_answer_format="allowed_write_actions=<lista>; approval_policy=<regla>; idempotency=<regla>; rollback_or_escalation=<regla>; owner=<persona>",
+                target_owner="business_owner",
+                blocking=False,
+            )
+        )
+    if "odoo_sale_quote_create" in odoo_keys:
+        questions.append(
+            _question(
+                question_key="odoo_quote_policy",
+                question_text="¿Cuál es la política comercial para crear cotizaciones en Odoo?",
+                rationale="Una cotización depende de cliente, productos, lista de precios, impuestos, descuentos y vencimiento; el agente no debe inventarlos.",
+                purpose="Hacer construible la creación de cotizaciones sin asumir reglas comerciales.",
+                expected_answer_format="pricelist=<id/regla>; currency=<moneda>; taxes=<regla>; discount_policy=<regla>; expiration=<regla>; confirm_order=<si/no>; owner=<persona>",
+                target_owner="sales_owner",
+                blocking=False,
             )
         )
     return _gap(

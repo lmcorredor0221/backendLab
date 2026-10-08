@@ -208,6 +208,119 @@ def test_whatsapp_signal_promotes_specific_connector_contract() -> None:
     assert whatsapp_tool.contract_review_state == "connector-detected"
 
 
+def test_google_workspace_signals_promote_specific_connector_contracts() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="El equipo comercial usa Google Sheets y Google Calendar para leads y citas.",
+            current_process=(
+                "Leer leads desde Google Sheets, consultar disponibilidad en Google Calendar, "
+                "agendar cita y preparar borrador Gmail para seguimiento."
+            ),
+            desired_outcome="Automatizar seguimiento comercial con Google Workspace sin inventar credenciales.",
+        ),
+        canvas=build_canvas(
+            user_goal="Leer hojas, agendar citas y preparar correos con revision humana.",
+            expected_outputs=["lead priorizado", "cita agendada", "borrador Gmail"],
+            human_approvals=["Ventas aprueba envios y citas sensibles."],
+        ),
+        blueprint=build_blueprint(
+            guardrails=["Usar OAuth con scopes minimos", "No enviar correos sin aprobacion"],
+            workflow_steps=[
+                {
+                    "name": "Gestionar lead Google Workspace",
+                    "objective": "Leer lead, revisar agenda y preparar seguimiento",
+                    "actor": "agent",
+                    "outputs": ["cita", "borrador"],
+                    "fallback": "escalar a ventas",
+                    "requires_approval": True,
+                }
+            ],
+        ),
+        blueprint_version_number=42,
+    )
+
+    evaluated = evaluate_tool_recommendation_artifact(artifact)
+    approved_tools, _, _ = promote_tool_recommendation_to_blueprint_tools(evaluated)
+    tools_by_connector = {item.connector_key: item for item in approved_tools if item.connector_key}
+
+    assert any(item.get("family_key") == "google_workspace_public_tools" for item in evaluated.preflight.detected_connectors)
+    assert "google_sheets_read_table" in tools_by_connector
+    assert "gmail_draft_creator" in tools_by_connector or "gmail_send_message" in tools_by_connector
+
+    sheets_tool = tools_by_connector["google_sheets_read_table"]
+    assert sheets_tool.integration_kind == "oauth2_rest_api"
+    assert sheets_tool.registered_api_ref == "google_sheets_read_table"
+    assert "spreadsheet_id" in sheets_tool.request_schema["properties"]
+    assert sheets_tool.security_config["auth_type"] == "oauth2"
+    assert "GOOGLE_OAUTH_CLIENT_ID" in sheets_tool.security_config["client_id_ref"]
+
+    scheduler_option = next(item for item in evaluated.optional_tools if item.tool_key == "scheduler")
+    calendar_tool = scheduler_option.contract_seed
+    assert calendar_tool is not None
+    assert calendar_tool.connector_key == "google_calendar_event_creator"
+    assert calendar_tool.has_side_effects is True
+    assert calendar_tool.requires_approval is True
+    assert "idempotency_key" in calendar_tool.request_schema["properties"]
+    assert calendar_tool.contract_review_state == "connector-detected"
+
+
+def test_odoo_signals_promote_versioned_connector_contracts() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="El equipo comercial gestiona clientes y cotizaciones en Odoo.",
+            current_process=(
+                "Consultar cliente en Odoo, revisar oportunidad CRM Odoo y crear cotizacion Odoo "
+                "cuando ventas aprueba la oferta."
+            ),
+            desired_outcome="Preparar cotizaciones en Odoo con lectura previa y approval humano.",
+        ),
+        canvas=build_canvas(
+            user_goal="Leer datos de Odoo y crear cotizaciones aprobadas.",
+            expected_outputs=["cliente validado", "cotizacion en borrador"],
+            human_approvals=["Ventas aprueba cada cotizacion antes de crearla en Odoo."],
+        ),
+        blueprint=build_blueprint(
+            guardrails=["No escribir en Odoo sin aprobacion", "Usar modelos y campos permitidos"],
+            workflow_steps=[
+                {
+                    "name": "Preparar cotizacion Odoo",
+                    "objective": "Consultar cliente y generar cotizacion aprobada",
+                    "actor": "agent",
+                    "outputs": ["cotizacion"],
+                    "fallback": "escalar a ventas",
+                    "requires_approval": True,
+                }
+            ],
+        ),
+        blueprint_version_number=43,
+    )
+
+    evaluated = evaluate_tool_recommendation_artifact(artifact)
+    approved_tools, _, _ = promote_tool_recommendation_to_blueprint_tools(evaluated)
+    tools_by_connector = {item.connector_key: item for item in approved_tools if item.connector_key}
+
+    assert any(item.get("family_key") == "odoo_business_management_tools" for item in evaluated.preflight.detected_connectors)
+    assert "odoo_partner_read" in tools_by_connector
+    assert "odoo_sale_quote_create" in tools_by_connector
+
+    read_tool = tools_by_connector["odoo_partner_read"]
+    assert read_tool.integration_kind == "versioned_rpc_api"
+    assert read_tool.registered_api_ref == "odoo_partner_read"
+    assert read_tool.security_config["auth_type"] == "odoo_api_key_or_password"
+    assert "model" in read_tool.request_schema["properties"]
+    assert read_tool.request_schema["properties"]["model"]["enum"] == ["res.partner"]
+
+    write_tool = tools_by_connector["odoo_sale_quote_create"]
+    assert write_tool.has_side_effects is True
+    assert write_tool.requires_approval is True
+    assert write_tool.security_config["api_mode_ref"] == "ODOO_API_MODE"
+    assert "idempotency_key" in write_tool.request_schema["properties"]
+    assert "allowed_write_action_validation" in write_tool.validations
+    assert write_tool.contract_review_state == "connector-detected"
+
+
 def test_tool_learning_report_prepares_safe_patterns_without_writing_global_knowledge() -> None:
     artifact = build_placeholder_tool_recommendation(
         session_id=uuid4(),
