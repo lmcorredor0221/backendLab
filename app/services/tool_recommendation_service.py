@@ -234,7 +234,11 @@ TOOL_FAMILY_CATALOG: dict[str, dict[str, object]] = {
 
 # ─── Cargador del catálogo de conectores de tendencia ──────────────────────────
 
-_CONNECTOR_CATALOG_PATH = pathlib.Path(__file__).parent.parent.parent / "shared_specs" / "tool-connectors-catalog.v1.json"
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+_CONNECTOR_CATALOG_PATHS = (
+    _REPO_ROOT / "shared_specs" / "tool-connectors-catalog.v1.json",
+    pathlib.Path(__file__).resolve().parents[2] / "shared_specs" / "tool-connectors-catalog.v1.json",
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -245,9 +249,10 @@ def _load_connector_catalog() -> list[dict]:
     Se invalida con un restart del servidor (misma estrategia que registry_service).
     Retorna lista vacía si el archivo no existe para mantener retrocompatibilidad.
     """
-    if not _CONNECTOR_CATALOG_PATH.exists():
+    catalog_path = next((path for path in _CONNECTOR_CATALOG_PATHS if path.exists()), None)
+    if catalog_path is None:
         return []
-    with _CONNECTOR_CATALOG_PATH.open(encoding="utf-8-sig") as f:
+    with catalog_path.open(encoding="utf-8-sig") as f:
         data = json.load(f)
     return data.get("connectors", [])
 
@@ -2794,15 +2799,24 @@ def _build_blueprint_tool_from_recommendation(
 
     def _match_connector(maps_to_capability: str) -> dict | None:
         for c in detected:
-            if c.get("maps_to_capability") == maps_to_capability:
+            mapped = c.get("maps_to_capabilities")
+            mapped_list = mapped if isinstance(mapped, list) else []
+            if c.get("maps_to_capability") == maps_to_capability or maps_to_capability in mapped_list:
                 return c
         return None
 
     def _connector_env_comment(connector: dict) -> str:
-        env_vars = connector.get("env_vars", [])
+        env_vars = [*connector.get("env_vars", []), *connector.get("required_secret_refs", [])]
         if not env_vars:
             return ""
-        return f"Variables de entorno requeridas: {', '.join(env_vars)}. Docs: {connector.get('docs_url', '')}"
+        docs = connector.get("docs_url") or ", ".join(connector.get("docs_refs", []))
+        return f"Referencias de entorno/secreto requeridas: {', '.join(env_vars)}. Docs: {docs}"
+
+    def _connector_endpoint(connector: dict, action: str, fallback: str = "") -> str:
+        endpoint_patterns = connector.get("endpoint_patterns", {})
+        if isinstance(endpoint_patterns, dict) and endpoint_patterns.get(action):
+            return str(endpoint_patterns[action])
+        return str(connector.get("endpoint_pattern") or fallback)
 
     if entry.tool_key == "read_system_of_record":
         connector = _match_connector("read_system_of_record")
@@ -3202,7 +3216,8 @@ def _build_blueprint_tool_from_recommendation(
 
     if entry.tool_key == "outbound_notification":
         connector = _match_connector("outbound_notification")
-        _tool_name = connector["connector_key"] if connector else "outbound_notification"
+        is_whatsapp_connector = bool(connector and connector.get("connector_key") == "whatsapp_cloud_api")
+        _tool_name = "whatsapp_business_messaging" if is_whatsapp_connector else connector["connector_key"] if connector else "outbound_notification"
         _tool_purpose = (
             f"Enviar mensajes y respuestas al usuario a traves de {connector['connector_label']}."
             if connector
@@ -3213,7 +3228,7 @@ def _build_blueprint_tool_from_recommendation(
             if connector
             else "Se utiliza al finalizar un flujo de trabajo o tras una aprobacion para enviar reportes, alertas o confirmaciones al usuario final o a un equipo en Slack/Email."
         )
-        _endpoint = connector.get("endpoint_pattern", "") if connector else seed.endpoint_reference or "notification://approved-channel/send"
+        _endpoint = _connector_endpoint(connector, "send_message") if connector else seed.endpoint_reference or "notification://approved-channel/send"
         _auth = f"workspace_secret:{connector['auth_scheme']}" if connector else seed.auth_reference or "workspace_managed_secret"
         _integration = connector.get("integration_kind", "api") if connector else seed.integration_kind or "api"
         _risk = connector.get("risk_level", "medium") if connector else seed.risk_level or "medium"
@@ -3221,12 +3236,115 @@ def _build_blueprint_tool_from_recommendation(
         # Cuando el conector es un canal conversacional, también es inbound trigger
         _is_inbound = connector.get("is_inbound_trigger", False) if connector else False
         _channel_enum = connector.get("connector_key", "webhook") if connector else "webhook"
+        request_schema = {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "enum": ["email", "slack", "teams", "webhook"]},
+                "recipient": {"type": "string", "description": "Email, ID de canal o URL objetivo"},
+                "subject": {"type": "string"},
+                "body_markdown": {"type": "string"}
+            },
+            "required": ["channel", "recipient", "body_markdown"]
+        }
+        response_schema = {
+            "type": "object",
+            "properties": {
+                "delivered": {"type": "boolean"},
+                "message_id": {"type": "string"},
+                "timestamp": {"type": "string", "format": "date-time"}
+            },
+            "required": ["delivered", "message_id"]
+        }
+        usage_examples = [
+            {
+                "title": "Envío de alerta por Slack",
+                "request": {"channel": "slack", "recipient": "#ops-alerts", "subject": "Alerta de Incidencia", "body_markdown": "Se aprobo la accion en el ticket TCK-5512"},
+                "response": {"delivered": True, "message_id": "MSG-99214", "timestamp": "2026-07-29T10:15:00Z"}
+            }
+        ]
+        security_config = {"auth_type": "api_key", "secret_ref": "SLACK_WEBHOOK_URL"}
+        validations = ["recipient_validation", "template_policy_validation"]
+        typed_errors = ["DELIVERY_FAILED", "INVALID_RECIPIENT", "CHANNEL_UNAVAILABLE"]
+        permissions = ["send_notification"]
+        scopes = ["workspace", "notification"]
+        sensitive_data = ["recipient_ref"]
+        audit_rules = ["Registrar recipient_ref, channel, template_id y delivery_receipt."]
+        if is_whatsapp_connector:
+            request_schema = {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["send_session_message", "send_template_message", "receive_inbound_message", "receive_delivery_status"],
+                    },
+                    "wa_id": {"type": "string", "description": "Identificador WhatsApp del contacto"},
+                    "text": {"type": "string"},
+                    "template_name": {"type": "string"},
+                    "template_language": {"type": "string"},
+                    "template_variables": {"type": "object"},
+                    "approval_token": {"type": "string"},
+                },
+                "required": ["action", "wa_id"],
+            }
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "accepted": {"type": "boolean"},
+                    "provider_message_id": {"type": "string"},
+                    "conversation_ref": {"type": "string"},
+                    "delivery_status": {"type": "string"},
+                    "timestamp": {"type": "string", "format": "date-time"},
+                },
+                "required": ["accepted", "provider_message_id"],
+            }
+            usage_examples = [
+                {
+                    "title": "Enviar template aprobado por WhatsApp",
+                    "request": {
+                        "action": "send_template_message",
+                        "wa_id": "573001112233",
+                        "template_name": "lead_follow_up",
+                        "template_language": "es_CO",
+                        "template_variables": {"name": "Ana", "advisor": "Luis"},
+                    },
+                    "response": {"accepted": True, "provider_message_id": "wamid.HBgMNTcz", "delivery_status": "accepted"},
+                }
+            ]
+            security_config = {
+                "auth_type": "bearer",
+                "secret_ref": "WHATSAPP_ACCESS_TOKEN",
+                "webhook_verify_token_ref": "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+                "app_secret_ref": "WHATSAPP_APP_SECRET",
+                "phone_number_id_ref": "WHATSAPP_PHONE_NUMBER_ID",
+                "business_account_id_ref": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+            }
+            validations = [
+                "webhook_verify_token_validation",
+                "webhook_signature_validation",
+                "template_policy_validation",
+                "opt_in_policy_validation",
+                "message_id_idempotency",
+            ]
+            typed_errors = [
+                "WHATSAPP_AUTH_EXPIRED",
+                "WHATSAPP_TEMPLATE_NOT_APPROVED",
+                "WHATSAPP_DELIVERY_FAILED",
+                "WHATSAPP_SIGNATURE_INVALID",
+                "WHATSAPP_RATE_LIMITED",
+            ]
+            permissions = ["receive_whatsapp_message", "send_whatsapp_message", "send_whatsapp_template"]
+            scopes = ["workspace", "notification", "messaging_gateway"]
+            sensitive_data = ["wa_id", "message_text", "template_variables", "raw_webhook_payload"]
+            audit_rules = [
+                "Registrar connector_key, wa_id hash, provider_message_id, template_name y delivery_status.",
+                "Registrar eventos inbound normalizados sin persistir secretos ni tokens planos.",
+            ]
 
         return BlueprintTool(
             name=_tool_name,
             purpose=_tool_purpose,
             owner=seed.owner or "ops_owner_pending",
-            archetype="notification",
+            archetype="messaging_gateway" if is_whatsapp_connector else "notification",
             tool_type="external",
             execution_stage="execution",
             when_to_use=_when_to_use,
@@ -3237,47 +3355,33 @@ def _build_blueprint_tool_from_recommendation(
             requires_approval=False,
             categories=list(connector.get("categories", [])) if connector else [],
             connector_key=connector.get("connector_key") if connector else None,
-            inputs=["recipient_ref", "approved_message_template", "delivery_channel"],
-            outputs=["delivery_receipt"],
+            inputs=["wa_id", "message_or_template", "delivery_channel"] if is_whatsapp_connector else ["recipient_ref", "approved_message_template", "delivery_channel"],
+            outputs=["delivery_receipt", "provider_message_id"] if is_whatsapp_connector else ["delivery_receipt"],
 
-            request_schema={
-                "type": "object",
-                "properties": {
-                    "channel": {"type": "string", "enum": ["email", "slack", "teams", "webhook"]},
-                    "recipient": {"type": "string", "description": "Email, ID de canal o URL objetivo"},
-                    "subject": {"type": "string"},
-                    "body_markdown": {"type": "string"}
-                },
-                "required": ["channel", "recipient", "body_markdown"]
-            },
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "delivered": {"type": "boolean"},
-                    "message_id": {"type": "string"},
-                    "timestamp": {"type": "string", "format": "date-time"}
-                },
-                "required": ["delivered", "message_id"]
-            },
-            usage_examples=[
-                {
-                    "title": "Envío de alerta por Slack",
-                    "request": {"channel": "slack", "recipient": "#ops-alerts", "subject": "Alerta de Incidencia", "body_markdown": "Se aprobo la accion en el ticket TCK-5512"},
-                    "response": {"delivered": True, "message_id": "MSG-99214", "timestamp": "2026-07-29T10:15:00Z"}
-                }
-            ],
-            security_config={"auth_type": "api_key", "secret_ref": "SLACK_WEBHOOK_URL"},
-            validations=["recipient_validation", "template_policy_validation"],
-            typed_errors=["DELIVERY_FAILED", "INVALID_RECIPIENT", "CHANNEL_UNAVAILABLE"],
-            permissions=["send_notification"],
-            scopes=["workspace", "notification"],
-            sensitive_data=["recipient_ref"],
-            audit_rules=["Registrar recipient_ref, channel, template_id y delivery_receipt."],
+            request_schema=request_schema,
+            response_schema=response_schema,
+            usage_examples=usage_examples,
+            security_config=security_config,
+            registered_api_ref=connector.get("connector_key", "") if connector else seed.registered_api_ref,
+            validations=validations,
+            typed_errors=typed_errors,
+            permissions=permissions,
+            scopes=scopes,
+            sensitive_data=sensitive_data,
+            audit_rules=audit_rules,
             has_side_effects=True,
             execution_mode=seed.execution_mode or "async",
-            approval_policy="Usar solo templates y canales aprobados para el workspace.",
+            approval_policy=(
+                "Usar solo templates aprobados, opt-in valido y approval_gate para mensajes sensibles o iniciados por negocio."
+                if is_whatsapp_connector
+                else "Usar solo templates y canales aprobados para el workspace."
+            ),
             retry_strategy="Retry asincrono con circuit breaker por canal.",
-            idempotency_strategy="Deduplicar mensajes por workflow_step y recipient_ref.",
+            idempotency_strategy=(
+                "Deduplicar eventos inbound por provider_message_id y envios por idempotency_key del workflow."
+                if is_whatsapp_connector
+                else "Deduplicar mensajes por workflow_step y recipient_ref."
+            ),
             compensation_strategy="Evitar reenvios duplicados y escalar cuando el canal falle.",
             approval_reason=_env_comment,
             failure_mode="Escalar a owner si la notificacion no se entrega en la ventana esperada.",

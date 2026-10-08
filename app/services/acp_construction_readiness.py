@@ -657,6 +657,13 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
     blueprint = snapshot.blueprint
     if blueprint is None or not blueprint.tools:
         return None
+    whatsapp_tools = [
+        tool
+        for tool in blueprint.tools
+        if str(getattr(tool, "connector_key", "") or "").strip().lower() == "whatsapp_cloud_api"
+        or str(getattr(tool, "name", "") or "").strip().lower() == "whatsapp_business_messaging"
+        or str(getattr(tool, "registered_api_ref", "") or "").strip().lower() == "whatsapp_cloud_api"
+    ]
     external_tool_paths = [
         build_tool_contract_path_for_tool(tool, index)
         for index, tool in enumerate(blueprint.tools, start=1)
@@ -671,6 +678,84 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
     evidence_paths = external_tool_paths[:]
     if required_contracts is not None:
         evidence_paths.insert(0, required_contracts.path)
+    questions = [
+        _question(
+            question_key="external_api_contracts",
+            question_text="¿Qué otros sistemas o herramientas de tu empresa debe conectar el asistente?",
+            rationale="Detalla qué aplicaciones externas consultará o modificará el asistente.",
+            purpose="Establecer los enlaces seguros entre el asistente y tus herramientas actuales.",
+            expected_answer_format="una línea por herramienta con tool=<herramienta>; system=<sistema>; endpoint=<ruta>",
+            target_owner="integration_owner",
+            blocking=False,
+            options=[
+                ConstructionQuestionOption(
+                    key="standard_rest_api",
+                    label="Servicios web estándar (API REST)",
+                    description="Conexión limpia a través de servicios web con clave de API.",
+                    impact="Integración ágil con software moderno como CRMs, ERPs o mensajería.",
+                    example="Ejemplo: Enviar un mensaje por WhatsApp o crear un ticket en Jira."
+                ),
+                ConstructionQuestionOption(
+                    key="custom_database",
+                    label="Conexión directa a base de datos de la empresa",
+                    description="Acceso a tablas específicas para leer o guardar registros.",
+                    impact="Acceso a datos históricos en tiempo real sin requerir APIs adicionales.",
+                    example="Ejemplo: Consultar la tabla de clientes en SQL Server."
+                ),
+                ConstructionQuestionOption(
+                    key="none",
+                    label="Sin conexiones externas por el momento",
+                    description="El asistente funcionará de forma independiente sin conectarse a otros sistemas.",
+                    impact="Despliegue inmediato sin requerir permisos de integración.",
+                    example="Ejemplo: Asistente independiente para consultas de manuales."
+                )
+            ]
+        )
+    ]
+    if whatsapp_tools:
+        questions.append(
+            _question(
+                question_key="whatsapp_activation_context",
+                question_text=(
+                    "¿Cuáles son los datos de activación de WhatsApp Business Cloud API para sandbox y producción?"
+                ),
+                rationale=(
+                    "LAB entrega el diseño del webhook; solo faltan datos que dependen del entorno real del cliente."
+                ),
+                purpose="Permitir que el builder implemente y pruebe WhatsApp sin inventar credenciales ni URLs.",
+                expected_answer_format=(
+                    "provider=<meta_cloud_api|partner>; waba_id=<id>; phone_number_id=<id>; "
+                    "callback_url_sandbox=<url>; callback_url_production=<url>; deployment_target=<target>; "
+                    "access_token_ref=<secret_ref>; verify_token_ref=<secret_ref>; app_secret_ref=<secret_ref>; "
+                    "templates=<lista>; opt_in_source=<fuente>; human_handoff=<equipo/canal>"
+                ),
+                target_owner="integration_owner",
+                blocking=False,
+                options=[
+                    ConstructionQuestionOption(
+                        key="meta_cloud_api_direct",
+                        label="Meta Cloud API directa",
+                        description="El equipo configurará app, WABA, número, callback URL y secretos en Meta.",
+                        impact="Permite implementar el webhook y sender con el contrato ACP.",
+                        example="provider=meta_cloud_api; deployment_target=render; callback_url_production=https://api.example.com/webhooks/whatsapp"
+                    ),
+                    ConstructionQuestionOption(
+                        key="business_solution_provider",
+                        label="Proveedor intermediario",
+                        description="Twilio, 360dialog, Zenvia, WATI u otro proveedor gestionará parte de la integración.",
+                        impact="El builder adapta el contrato ACP al proveedor seleccionado.",
+                        example="provider=twilio; callback_url_production=https://api.example.com/webhooks/whatsapp"
+                    ),
+                    ConstructionQuestionOption(
+                        key="unknown",
+                        label="Pendiente por definir",
+                        description="Aún no se conoce el proveedor, URL pública o secret store.",
+                        impact="Se puede construir el contrato, pero no activar sandbox ni producción.",
+                        example="provider=unknown; deployment_target=unknown"
+                    ),
+                ],
+            )
+        )
     return _gap(
         gap_key="external_api_contracts_missing",
         title="Faltan contratos operativos de APIs o sistemas externos",
@@ -686,40 +771,7 @@ def _collect_external_api_gap(snapshot: SessionSnapshot, files: dict[str, ACPFil
             "Definir autenticacion, payloads y errores esperados.",
             "Definir limites operativos o retries si aplican.",
         ],
-        questions=[
-            _question(
-                question_key="external_api_contracts",
-                question_text="¿Qué otros sistemas o herramientas de tu empresa debe conectar el asistente?",
-                rationale="Detalla qué aplicaciones externas consultará o modificará el asistente.",
-                purpose="Establecer los enlaces seguros entre el asistente y tus herramientas actuales.",
-                expected_answer_format="una línea por herramienta con tool=<herramienta>; system=<sistema>; endpoint=<ruta>",
-                target_owner="integration_owner",
-                blocking=False,
-                options=[
-                    ConstructionQuestionOption(
-                        key="standard_rest_api",
-                        label="Servicios web estándar (API REST)",
-                        description="Conexión limpia a través de servicios web con clave de API.",
-                        impact="Integración ágil con software moderno como CRMs, ERPs o mensajería.",
-                        example="Ejemplo: Enviar un mensaje por WhatsApp o crear un ticket en Jira."
-                    ),
-                    ConstructionQuestionOption(
-                        key="custom_database",
-                        label="Conexión directa a base de datos de la empresa",
-                        description="Acceso a tablas específicas para leer o guardar registros.",
-                        impact="Acceso a datos históricos en tiempo real sin requerir APIs adicionales.",
-                        example="Ejemplo: Consultar la tabla de clientes en SQL Server."
-                    ),
-                    ConstructionQuestionOption(
-                        key="none",
-                        label="Sin conexiones externas por el momento",
-                        description="El asistente funcionará de forma independiente sin conectarse a otros sistemas.",
-                        impact="Despliegue inmediato sin requerir permisos de integración.",
-                        example="Ejemplo: Asistente independiente para consultas de manuales."
-                    )
-                ]
-            )
-        ],
+        questions=questions,
     )
 
 

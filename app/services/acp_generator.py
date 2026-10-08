@@ -2156,6 +2156,8 @@ def _build_tools_files(snapshot: SessionSnapshot, context: ProjectGenerationCont
 
 
 def _tool_connector_slug(tool: Any, index: int) -> str:
+    if _is_whatsapp_cloud_tool(tool):
+        return "whatsapp-cloud-api"
     registered_ref = str(getattr(tool, "registered_api_ref", "") or "").strip()
     source = registered_ref.rsplit("/", 1)[-1] if registered_ref else str(getattr(tool, "name", "") or "")
     return _slugify(source, default=f"tool-{index}")
@@ -2174,8 +2176,75 @@ def _tool_permission_mode(tool: Any) -> str:
     return "write" if getattr(tool, "has_side_effects", False) else "read"
 
 
+def _is_whatsapp_cloud_tool(tool: Any) -> bool:
+    values = {
+        str(getattr(tool, "connector_key", "") or ""),
+        str(getattr(tool, "registered_api_ref", "") or ""),
+        str(getattr(tool, "name", "") or ""),
+    }
+    normalized = {item.strip().lower().replace("-", "_") for item in values if item}
+    return bool({"whatsapp_cloud_api", "whatsapp_business_messaging"} & normalized)
+
+
 def _tool_connector_profile_payload(tool: Any, index: int) -> dict[str, Any]:
     slug = _tool_connector_slug(tool, index)
+    if _is_whatsapp_cloud_tool(tool):
+        return {
+            "schema_version": "tool-connector-profile.v1",
+            "connector_key": "whatsapp_cloud_api",
+            "label": "WhatsApp Business Cloud API",
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "tool_type": "external",
+            "binding_category": "pending_binding",
+            "provider_model": {
+                "known_provider_required": True,
+                "provider": "meta_whatsapp_cloud_api",
+                "custom_provider_supported": True,
+                "registered_api_ref": "whatsapp_cloud_api",
+                "supported_binding_types": ["webhook_plus_rest_api", "rest_api", "webhook"],
+            },
+            "contract_surface": {
+                "purpose": getattr(tool, "purpose", "") or "Canal conversacional inbound/outbound por WhatsApp Business.",
+                "permission_mode": "write",
+                "actions": [
+                    "receive_inbound_message",
+                    "send_session_message",
+                    "send_template_message",
+                    "receive_delivery_status",
+                    "handoff_to_human",
+                ],
+                "inputs": getattr(tool, "request_schema", {}) or {},
+                "outputs": getattr(tool, "response_schema", {}) or {},
+                "when_to_use": getattr(tool, "when_to_use", "") or "",
+            },
+            "configuration_schema": {
+                "required_fields": [
+                    "binding_type",
+                    "environment",
+                    "phone_number_id_ref",
+                    "business_account_id_ref",
+                    "auth_secret_ref",
+                    "webhook_verify_token_ref",
+                    "app_secret_ref",
+                    "callback_url_ref",
+                    "enabled_actions",
+                ],
+                "expected_auth_schemes": ["bearer_token", "webhook_verify_token", "app_secret_signature"],
+                "secret_policy": "references_only_no_plaintext_values",
+                "environment_specific_bindings": True,
+            },
+            "governance": {
+                "risk_level": getattr(tool, "risk_level", "") or "medium",
+                "requires_approval": bool(getattr(tool, "requires_approval", False)),
+                "approval_reason": getattr(tool, "approval_reason", "") or "Mensajes sensibles o iniciados por negocio requieren politica aprobada.",
+                "allowed_roles": list(getattr(tool, "permissions", []) or ["send_whatsapp_message"]),
+                "side_effects": True,
+                "retry_policy": getattr(tool, "retry_strategy", "") or "Retry asincrono con circuit breaker por canal.",
+                "timeout_policy": getattr(tool, "timeout_policy", "5000ms") or "5000ms",
+                "failure_mode": getattr(tool, "failure_mode", "") or "Escalar a owner si el canal falla o falta binding.",
+                "compensation_strategy": getattr(tool, "compensation_strategy", "") or "Evitar reenvios duplicados y registrar fallo.",
+            },
+        }
     security_config = getattr(tool, "security_config", {}) or {}
     auth_scheme = str(security_config.get("auth_scheme") or security_config.get("type") or "").strip()
     expected_auth_schemes = [auth_scheme] if auth_scheme else ["bearer", "api_key", "oauth2", "basic", "service_account", "custom"]
@@ -2223,6 +2292,51 @@ def _tool_binding_payload(tool: Any, index: int, environment: str) -> dict[str, 
     slug = _tool_connector_slug(tool, index)
     secret_key = _tool_secret_key(tool, index)
     tool_name = getattr(tool, "name", "") or f"tool_{index}"
+    if _is_whatsapp_cloud_tool(tool):
+        env_prefix = environment.upper()
+        return {
+            "schema_version": "tool-environment-binding.v1",
+            "environment": environment,
+            "connector_key": "whatsapp_cloud_api",
+            "tool_name": tool_name,
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "binding_category": "pending_binding",
+            "binding": {
+                "binding_type": "webhook_plus_rest_api",
+                "provider": "meta_whatsapp_cloud_api",
+                "base_url_ref": "env:WHATSAPP_GRAPH_API_BASE_URL",
+                "graph_api_version_ref": "env:WHATSAPP_GRAPH_API_VERSION",
+                "phone_number_id_ref": "env:WHATSAPP_PHONE_NUMBER_ID",
+                "business_account_id_ref": "env:WHATSAPP_BUSINESS_ACCOUNT_ID",
+                "auth_secret_ref": "secret:WHATSAPP_ACCESS_TOKEN",
+                "webhook_verify_token_ref": "secret:WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+                "app_secret_ref": "secret:WHATSAPP_APP_SECRET",
+                "callback_url_ref": f"env:WHATSAPP_{env_prefix}_WEBHOOK_CALLBACK_URL",
+                "enabled_actions": [
+                    "receive_inbound_message",
+                    "send_session_message",
+                    "send_template_message",
+                    "receive_delivery_status",
+                ],
+                "client_owned_contract": True,
+            },
+            "approval_overrides": {
+                "requires_approval": bool(getattr(tool, "requires_approval", False)),
+                "side_effects": True,
+                "approval_reason": getattr(tool, "approval_reason", "") or "Usar templates aprobados y opt-in antes de mensajes iniciados por negocio.",
+                "production_write_actions_require_named_owner": True,
+            },
+            "validation": {
+                "webhook_contract_ref": "ACP/webhooks/whatsapp-business-webhook.yaml",
+                "smoke_test_ref": "ACP/tools/tests/whatsapp-cloud-api-smoke-test.yaml",
+                "contract_must_match_blueprint_tool": True,
+                "fail_closed_when_binding_missing": environment == "production",
+            },
+            "notes": [
+                "LAB entrega el contrato de construccion del webhook; no inventa URL publica, WABA, phone number ni secretos.",
+                "No almacenar secretos planos en el ACP; usar referencias de entorno o vault.",
+            ],
+        }
     return {
         "schema_version": "tool-environment-binding.v1",
         "environment": environment,
@@ -2259,6 +2373,24 @@ def _tool_binding_payload(tool: Any, index: int, environment: str) -> dict[str, 
 
 def _tool_smoke_test_payload(tool: Any, index: int) -> dict[str, Any]:
     slug = _tool_connector_slug(tool, index)
+    if _is_whatsapp_cloud_tool(tool):
+        return {
+            "schema_version": "tool-smoke-test.v1",
+            "connector_key": "whatsapp_cloud_api",
+            "tool_name": getattr(tool, "name", "") or "whatsapp_business_messaging",
+            "source_tool_contract": _tool_contract_ref(tool, index),
+            "checks": [
+                {"check": "binding_resolves", "description": "El binding sandbox/production existe y usa referencias, no secretos planos."},
+                {"check": "webhook_verify_accepts_valid_challenge", "description": "GET /webhooks/whatsapp retorna hub.challenge cuando verify token coincide."},
+                {"check": "webhook_verify_rejects_invalid_token", "description": "GET /webhooks/whatsapp retorna 403 cuando verify token no coincide."},
+                {"check": "webhook_signature_validation", "description": "POST /webhooks/whatsapp valida X-Hub-Signature-256 cuando existe app secret."},
+                {"check": "inbound_payload_normalizes", "description": "El payload inbound se transforma a InboundMessage normalizado."},
+                {"check": "message_id_idempotency", "description": "Un provider message_id duplicado no dispara dos veces el agente."},
+                {"check": "template_send_uses_approved_template", "description": "Los mensajes iniciados por negocio usan templates aprobados."},
+                {"check": "typed_errors_map_provider_failures", "description": "Errores de Meta/proveedor se mapean a typed_errors del contrato."},
+            ],
+            "expected_result": "ready_for_sandbox_activation_after_all_checks_pass",
+        }
     return {
         "schema_version": "tool-smoke-test.v1",
         "connector_key": slug,
@@ -2352,6 +2484,134 @@ def _build_tool_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]
         ),
     )
     return files
+
+
+def _build_whatsapp_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
+    blueprint = snapshot.blueprint
+    if blueprint is None or not blueprint.tools:
+        return []
+    whatsapp_tools = [(index, tool) for index, tool in enumerate(blueprint.tools, start=1) if _is_whatsapp_cloud_tool(tool)]
+    if not whatsapp_tools:
+        return []
+    index, tool = whatsapp_tools[0]
+    tool_contract_ref = _tool_contract_ref(tool, index)
+    webhook_contract = {
+        "schema_version": "webhook-contract.v1",
+        "webhook_key": "whatsapp_business_webhook",
+        "provider": "meta_whatsapp_cloud_api",
+        "callback_route": "/webhooks/whatsapp",
+        "lab_boundary": "LAB entrega este contrato; el builder implementa el endpoint en el proyecto destino.",
+        "methods": {
+            "verify": {
+                "method": "GET",
+                "purpose": "Meta webhook verification challenge",
+                "query_params": ["hub.mode", "hub.verify_token", "hub.challenge"],
+                "expected_behavior": [
+                    "compare hub.verify_token against WHATSAPP_WEBHOOK_VERIFY_TOKEN_REF",
+                    "return hub.challenge when valid",
+                    "return 403 when invalid",
+                ],
+            },
+            "receive": {
+                "method": "POST",
+                "purpose": "Receive inbound messages and status events",
+                "required_headers": ["X-Hub-Signature-256"],
+                "validation": [
+                    "verify signature with WHATSAPP_APP_SECRET_REF when available",
+                    "reject malformed payloads",
+                    "dedupe by provider message id",
+                ],
+                "response": {"success_status": 200, "failure_statuses": [400, 401, 403, 500]},
+            },
+        },
+        "normalized_event": {
+            "type": "InboundMessage",
+            "fields": [
+                "provider",
+                "workspace_id",
+                "wa_id",
+                "phone_number_id",
+                "message_id",
+                "timestamp",
+                "message_type",
+                "text",
+                "media_ref",
+                "raw_payload_ref",
+            ],
+        },
+        "idempotency": {"key": "message_id", "duplicate_behavior": "ignore_and_ack"},
+        "source_tool_contract": tool_contract_ref,
+    }
+    send_message_contract = {
+        "schema_version": "whatsapp-send-message-contract.v1",
+        "connector_key": "whatsapp_cloud_api",
+        "provider": "meta_whatsapp_cloud_api",
+        "endpoint": "https://graph.facebook.com/{version}/{phone_number_id}/messages",
+        "actions": {
+            "send_session_message": {
+                "requires": ["wa_id", "text", "WHATSAPP_ACCESS_TOKEN_REF", "WHATSAPP_PHONE_NUMBER_ID"],
+                "policy": "Usar solo cuando exista ventana conversacional o regla aprobada por el owner.",
+            },
+            "send_template_message": {
+                "requires": ["wa_id", "template_name", "template_language", "template_variables", "WHATSAPP_ACCESS_TOKEN_REF"],
+                "policy": "Usar templates aprobados para mensajes iniciados por negocio.",
+            },
+        },
+        "typed_errors": [
+            "WHATSAPP_AUTH_EXPIRED",
+            "WHATSAPP_TEMPLATE_NOT_APPROVED",
+            "WHATSAPP_DELIVERY_FAILED",
+            "WHATSAPP_RATE_LIMITED",
+        ],
+        "audit": ["provider_message_id", "wa_id_hash", "template_name", "delivery_status"],
+        "source_tool_contract": tool_contract_ref,
+    }
+    templates_contract = {
+        "schema_version": "whatsapp-template-contract.v1",
+        "connector_key": "whatsapp_cloud_api",
+        "required_owner_input": True,
+        "templates": [
+            {
+                "template_name": "needs_client_answer",
+                "category": "needs_client_answer",
+                "language": "needs_client_answer",
+                "variables": [],
+                "approval_owner": "marketing_or_ops_owner",
+            }
+        ],
+        "rules": [
+            "No inventar templates en el ACP.",
+            "Usar solo nombres, idiomas y variables aprobadas por el cliente/proveedor.",
+            "Mensajes sensibles o comerciales requieren politica de opt-in y aprobacion cuando aplique.",
+        ],
+    }
+    return [
+        build_acp_file_entry(
+            path="ACP/webhooks/whatsapp-business-webhook.yaml",
+            domain="integrations",
+            title="WhatsApp Business webhook contract",
+            format="yaml",
+            source_sections=["blueprint.tools", "client_integrations"],
+            content_text=serialize_yaml_document(webhook_contract),
+        ),
+        build_acp_file_entry(
+            path="ACP/integrations/whatsapp/send-message.contract.yaml",
+            domain="integrations",
+            title="WhatsApp send message contract",
+            format="yaml",
+            source_sections=["blueprint.tools", "tool_contracts"],
+            content_text=serialize_yaml_document(send_message_contract),
+        ),
+        build_acp_file_entry(
+            path="ACP/integrations/whatsapp/templates.yaml",
+            domain="integrations",
+            title="WhatsApp template contract",
+            format="yaml",
+            source_sections=["blueprint.tools", "construction_readiness.gaps.questions"],
+            content_text=serialize_yaml_document(templates_contract),
+            warnings=["Completar templates aprobados antes de activar mensajes iniciados por negocio."],
+        ),
+    ]
 
 
 def _flow_node(
@@ -3416,6 +3676,38 @@ def _iter_external_tools(snapshot: SessionSnapshot) -> list[tuple[int, Any]]:
     ]
 
 
+def _whatsapp_required_api_contract(tool: Any, index: int) -> dict[str, Any]:
+    return {
+        "system_name": "WhatsApp Business Cloud API",
+        "connector_key": "whatsapp_cloud_api",
+        "tool_name": getattr(tool, "name", "") or "whatsapp_business_messaging",
+        "purpose": "Canal conversacional inbound/outbound para el agente.",
+        "required_endpoints_or_actions": [
+            "GET /webhooks/whatsapp",
+            "POST /webhooks/whatsapp",
+            "POST /{phone_number_id}/messages",
+        ],
+        "expected_authentication": {
+            "outbound": "Bearer token via WHATSAPP_ACCESS_TOKEN_REF",
+            "inbound_verify": "WHATSAPP_WEBHOOK_VERIFY_TOKEN_REF",
+            "inbound_signature": "WHATSAPP_APP_SECRET_REF",
+        },
+        "unknown_payloads": [
+            "approved_templates",
+            "sandbox_callback_url",
+            "production_callback_url",
+            "deployment_target",
+            "contact_opt_in_source",
+        ],
+        "examples_required": True,
+        "impact_if_missing": "Bloquea construccion real del canal WhatsApp.",
+        "contract_path": build_tool_contract_path_for_tool(tool, index),
+        "webhook_contract_path": "ACP/webhooks/whatsapp-business-webhook.yaml",
+        "send_contract_path": "ACP/integrations/whatsapp/send-message.contract.yaml",
+        "template_contract_path": "ACP/integrations/whatsapp/templates.yaml",
+    }
+
+
 def _build_construction_step_guide_markdown(
     *,
     validation: Any,
@@ -3674,6 +3966,12 @@ def _build_construction_readiness_files(
     for index, tool in external_tools:
         contract_entry = _find_contract_answer_for_tool(tool.name, external_contract_answer)
         if contract_entry is None:
+            if _is_whatsapp_cloud_tool(tool):
+                required_api_contracts.append(_whatsapp_required_api_contract(tool, index))
+                required_api_contracts_warning = (
+                    "WhatsApp Business Cloud API requiere datos de activacion del cliente antes de conectar sandbox o produccion."
+                )
+                continue
             required_api_contracts.append(
                 {
                     "system_name": tool.name,
@@ -3971,8 +4269,8 @@ def _build_construction_readiness_files(
 
 def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
     readiness = preview.construction_readiness
-    builder_handoff = "\n".join(
-        [
+    has_whatsapp = any(item.path == "ACP/webhooks/whatsapp-business-webhook.yaml" for item in preview.files)
+    builder_handoff_lines = [
             "# Builder Handoff",
             "",
             "Continua la construccion del agente usando este ACP sin inventar datos criticos del entorno.",
@@ -3994,8 +4292,20 @@ def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
             "- No reabras fases estables del Blueprint por flags stale o deuda operativa interna ya cerrada en el handoff.",
             "- Resuelve o delega cada decision implementable justo antes de modificar el artefacto afectado.",
             "- Si una respuesta contradice el Blueprint aprobado, crea una reconciliacion granular del artefacto afectado; no reinicies fases completas.",
-        ]
-    )
+    ]
+    if has_whatsapp:
+        builder_handoff_lines.extend(
+            [
+                "",
+                "## WhatsApp Business Cloud API",
+                "- LAB ya entrega el contrato tecnico del webhook; no preguntes como disenar el webhook.",
+                "- Implementa primero `ACP/webhooks/whatsapp-business-webhook.yaml` con GET verification y POST inbound.",
+                "- Luego implementa `ACP/integrations/whatsapp/send-message.contract.yaml` y `ACP/integrations/whatsapp/templates.yaml`.",
+                "- Pide solo datos de activacion: WABA, phone number, callback URL publica, referencias de secretos, templates aprobados y opt-in.",
+                "- No actives produccion hasta pasar `ACP/tools/tests/whatsapp-cloud-api-smoke-test.yaml`.",
+            ]
+        )
+    builder_handoff = "\n".join(builder_handoff_lines)
     gap_closure = "\n".join(
         [
             "# Gap Closure",
@@ -4044,6 +4354,7 @@ def _build_continuity_prompt_files(preview: ACPPreview) -> list[ACPFileEntry]:
 
 def _build_implementation_guidance_files(preview: ACPPreview) -> list[ACPFileEntry]:
     readiness = preview.construction_readiness
+    has_whatsapp = any(item.path == "ACP/webhooks/whatsapp-business-webhook.yaml" for item in preview.files)
     lines = [
         "# Implementation Guide",
         "",
@@ -4070,6 +4381,17 @@ def _build_implementation_guidance_files(preview: ACPPreview) -> list[ACPFileEnt
         f"- open_questions: {readiness.open_questions}",
         f"- can_start_build: {str(readiness.can_start_build).lower()}",
     ]
+    if has_whatsapp:
+        lines.extend(
+            [
+                "",
+                "## WhatsApp Business Cloud API",
+                "- Construir `GET /webhooks/whatsapp` segun `ACP/webhooks/whatsapp-business-webhook.yaml`.",
+                "- Construir `POST /webhooks/whatsapp` con validacion de firma, normalizacion e idempotencia.",
+                "- Construir sender REST desacoplado para mensajes de sesion y templates.",
+                "- Resolver solo datos de activacion desde `open-questions.yaml`; no pedir al usuario que disene el webhook.",
+            ]
+        )
     checklist = [
         "# Release Readiness Checklist",
         "",
@@ -5481,18 +5803,46 @@ def _build_deployment_files(
         },
     )
 
-    env_template = "\n".join(
-        [
-            "OPENAI_API_KEY=",
-            "DATABASE_URL=",
-            "APP_ENV=development",
-            f"# deployment_target={target_pairs.get('target', '')}",
-            f"# secrets_source={network_pairs.get('secrets', '')}",
-            "",
-        ]
-    )
+    env_lines = [
+        "OPENAI_API_KEY=",
+        "DATABASE_URL=",
+        "APP_ENV=development",
+        f"# deployment_target={target_pairs.get('target', '')}",
+        f"# secrets_source={network_pairs.get('secrets', '')}",
+    ]
+    environment_refs = ["OPENAI_API_KEY", "DATABASE_URL"]
+    blueprint = snapshot.blueprint
+    has_whatsapp = bool(blueprint and any(_is_whatsapp_cloud_tool(tool) for tool in blueprint.tools))
+    if has_whatsapp:
+        env_lines.extend(
+            [
+                "",
+                "# WhatsApp Business Cloud API (referencias, no secretos planos)",
+                "WHATSAPP_GRAPH_API_VERSION=",
+                "WHATSAPP_GRAPH_API_BASE_URL=",
+                "WHATSAPP_BUSINESS_ACCOUNT_ID=",
+                "WHATSAPP_PHONE_NUMBER_ID=",
+                "WHATSAPP_SANDBOX_WEBHOOK_CALLBACK_URL=",
+                "WHATSAPP_PRODUCTION_WEBHOOK_CALLBACK_URL=",
+                "WHATSAPP_ACCESS_TOKEN_REF=",
+                "WHATSAPP_WEBHOOK_VERIFY_TOKEN_REF=",
+                "WHATSAPP_APP_SECRET_REF=",
+            ]
+        )
+        environment_refs.extend(
+            [
+                "WHATSAPP_GRAPH_API_VERSION",
+                "WHATSAPP_GRAPH_API_BASE_URL",
+                "WHATSAPP_BUSINESS_ACCOUNT_ID",
+                "WHATSAPP_PHONE_NUMBER_ID",
+                "WHATSAPP_SANDBOX_WEBHOOK_CALLBACK_URL",
+                "WHATSAPP_PRODUCTION_WEBHOOK_CALLBACK_URL",
+            ]
+        )
+    env_lines.append("")
+    env_template = "\n".join(env_lines)
     agent_service: dict[str, Any] = {
-        "environment": ["OPENAI_API_KEY", "DATABASE_URL"],
+        "environment": environment_refs,
         "ports": ["8000:8000"],
     }
     image_name = image_pairs.get("image", "")
@@ -6095,6 +6445,7 @@ def generate_acp_files(
     files.extend(_build_knowledge_files(snapshot, continuity_answers, acp_context))
     files.extend(_build_tools_files(snapshot, acp_context))
     files.extend(_build_tool_connector_files(snapshot))
+    files.extend(_build_whatsapp_connector_files(snapshot))
     files.extend(_build_objective_files(snapshot, response_records))
     files.extend(_build_workflow_files(snapshot, acp_context))
     files.extend(_build_prompt_files(snapshot, acp_context, prompt_synthesizer))

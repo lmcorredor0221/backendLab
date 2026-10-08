@@ -165,6 +165,49 @@ def test_enterprise_copilot_shortlists_lookup_without_extra_tools() -> None:
     assert artifact.learning_report.candidate_count == len(artifact.candidate_tool_patterns)
 
 
+def test_whatsapp_signal_promotes_specific_connector_contract() -> None:
+    artifact = build_placeholder_tool_recommendation(
+        session_id=uuid4(),
+        discovery=build_discovery(
+            problem_statement="El equipo comercial atiende leads por WhatsApp y pierde seguimiento.",
+            current_process="Recibir mensajes de WhatsApp, responder al lead y enviar seguimiento comercial.",
+            desired_outcome="Gestionar conversaciones por WhatsApp con trazabilidad y handoff humano.",
+        ),
+        canvas=build_canvas(
+            user_goal="Responder leads por WhatsApp y enviar mensajes de seguimiento aprobados.",
+            expected_outputs=["respuesta por WhatsApp", "handoff comercial"],
+            human_approvals=["Ventas aprueba mensajes sensibles o iniciados por negocio."],
+        ),
+        blueprint=build_blueprint(
+            guardrails=["No enviar mensajes sensibles sin aprobacion"],
+            workflow_steps=[
+                {
+                    "name": "Atender lead WhatsApp",
+                    "objective": "Recibir mensaje inbound y preparar respuesta",
+                    "actor": "agent",
+                    "outputs": ["respuesta sugerida"],
+                    "fallback": "escalar a ventas",
+                    "requires_approval": False,
+                }
+            ],
+        ),
+        blueprint_version_number=41,
+    )
+
+    evaluated = evaluate_tool_recommendation_artifact(artifact)
+    approved_tools, _, _ = promote_tool_recommendation_to_blueprint_tools(evaluated)
+    whatsapp_tool = next(item for item in approved_tools if item.connector_key == "whatsapp_cloud_api")
+
+    assert any(item.get("connector_key") == "whatsapp_cloud_api" for item in evaluated.preflight.detected_connectors)
+    assert whatsapp_tool.name == "whatsapp_business_messaging"
+    assert whatsapp_tool.archetype == "messaging_gateway"
+    assert whatsapp_tool.integration_kind == "webhook_plus_rest_api"
+    assert whatsapp_tool.registered_api_ref == "whatsapp_cloud_api"
+    assert "send_template_message" in whatsapp_tool.request_schema["properties"]["action"]["enum"]
+    assert "WHATSAPP_WEBHOOK_VERIFY_TOKEN" in whatsapp_tool.security_config["webhook_verify_token_ref"]
+    assert whatsapp_tool.contract_review_state == "connector-detected"
+
+
 def test_tool_learning_report_prepares_safe_patterns_without_writing_global_knowledge() -> None:
     artifact = build_placeholder_tool_recommendation(
         session_id=uuid4(),

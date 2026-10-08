@@ -406,6 +406,89 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert preview.construction_readiness.open_questions >= 1
 
 
+def test_generate_acp_preview_expands_whatsapp_connector_end_to_end() -> None:
+    snapshot = build_ready_snapshot()
+    assert snapshot.blueprint is not None
+    snapshot.blueprint.tools.append(
+        BlueprintTool(
+            name="whatsapp_business_messaging",
+            purpose="Canal conversacional inbound/outbound para leads por WhatsApp.",
+            archetype="messaging_gateway",
+            integration_kind="webhook_plus_rest_api",
+            tool_type="external",
+            execution_stage="execution",
+            when_to_use="Recibir mensajes inbound y enviar respuestas o templates aprobados por WhatsApp.",
+            endpoint_reference="https://graph.facebook.com/{version}/{phone_number_id}/messages",
+            auth_reference="workspace_secret:bearer_token",
+            risk_level="medium",
+            connector_key="whatsapp_cloud_api",
+            registered_api_ref="whatsapp_cloud_api",
+            inputs=["wa_id", "message_or_template", "delivery_channel"],
+            outputs=["delivery_receipt", "provider_message_id"],
+            request_schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["send_session_message", "send_template_message", "receive_inbound_message"],
+                    },
+                    "wa_id": {"type": "string"},
+                },
+                "required": ["action", "wa_id"],
+            },
+            response_schema={"type": "object", "properties": {"provider_message_id": {"type": "string"}}},
+            security_config={
+                "auth_type": "bearer",
+                "secret_ref": "WHATSAPP_ACCESS_TOKEN",
+                "webhook_verify_token_ref": "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+                "app_secret_ref": "WHATSAPP_APP_SECRET",
+            },
+            permissions=["receive_whatsapp_message", "send_whatsapp_message"],
+            has_side_effects=True,
+            contract_review_state="connector-detected",
+        )
+    )
+
+    preview = generate_acp_preview(snapshot)
+    paths = {item.path for item in preview.files}
+
+    assert "ACP/tools/external/tool-whatsapp-business-messaging.yaml" in paths
+    assert "ACP/webhooks/whatsapp-business-webhook.yaml" in paths
+    assert "ACP/integrations/whatsapp/send-message.contract.yaml" in paths
+    assert "ACP/integrations/whatsapp/templates.yaml" in paths
+    assert "ACP/tools/connectors/whatsapp-cloud-api.yaml" in paths
+    assert "ACP/tools/bindings/whatsapp-cloud-api.sandbox.yaml" in paths
+    assert "ACP/tools/bindings/whatsapp-cloud-api.production.yaml" in paths
+    assert "ACP/tools/tests/whatsapp-cloud-api-smoke-test.yaml" in paths
+
+    webhook_contract = next(item for item in preview.files if item.path == "ACP/webhooks/whatsapp-business-webhook.yaml")
+    assert "GET" in webhook_contract.content_text
+    assert "POST" in webhook_contract.content_text
+    assert "WHATSAPP_WEBHOOK_VERIFY_TOKEN_REF" in webhook_contract.content_text
+    assert "message_id" in webhook_contract.content_text
+
+    open_questions = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/open-questions.yaml"
+    )
+    assert "whatsapp_activation_context" in open_questions.content_text
+    assert "callback_url_sandbox" in open_questions.content_text
+    assert "access_token_ref" in open_questions.content_text
+
+    required_contracts = next(
+        item for item in preview.files if item.path == "ACP/construction-readiness/required-api-contracts.yaml"
+    )
+    assert "WhatsApp Business Cloud API" in required_contracts.content_text
+    assert "GET /webhooks/whatsapp" in required_contracts.content_text
+    assert "sandbox_callback_url" in required_contracts.content_text
+
+    env_template = next(item for item in preview.files if item.path == "ACP/deployment/env.template")
+    assert "WHATSAPP_PHONE_NUMBER_ID=" in env_template.content_text
+    assert "WHATSAPP_ACCESS_TOKEN_REF=" in env_template.content_text
+
+    builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
+    assert "LAB ya entrega el contrato tecnico del webhook" in builder_handoff.content_text
+
+
 def test_generate_acp_preview_applies_valid_prompt_section_synthesis() -> None:
     snapshot = build_ready_snapshot()
 
