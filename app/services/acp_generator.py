@@ -1753,24 +1753,310 @@ def _build_architecture_files(snapshot: SessionSnapshot, context: ProjectGenerat
     ]
 
 
+def _cognition_default_patterns(selected_pattern: str, has_tools: bool) -> list[dict[str, Any]]:
+    normalized = selected_pattern.strip().lower()
+    return [
+        {
+            "family": "reasoning",
+            "key": "plan_and_execute",
+            "label": "Plan-and-Execute",
+            "summary": "Descomponer la solicitud en pasos verificables antes de ejecutar herramientas o responder.",
+            "use_when": [
+                "El usuario pide una accion con multiples dependencias.",
+                "La respuesta depende de fuentes externas, memoria o aprobaciones.",
+            ],
+            "tradeoffs": ["Mas trazabilidad a cambio de mayor latencia."],
+            "fit_score": 90,
+            "selected": "plan" in normalized or "execute" in normalized,
+        },
+        {
+            "family": "reasoning",
+            "key": "react_tool_loop",
+            "label": "ReAct tool loop",
+            "summary": "Alternar observacion, seleccion de herramienta, accion, verificacion y respuesta trazable.",
+            "use_when": [
+                "El agente necesita consultar herramientas antes de decidir.",
+                "La solicitud requiere evidencia actualizada o efectos externos gobernados.",
+            ],
+            "tradeoffs": ["Requiere contratos de tools y manejo estricto de errores."],
+            "fit_score": 88 if has_tools else 70,
+            "selected": bool(has_tools),
+        },
+        {
+            "family": "reasoning",
+            "key": "human_in_the_loop",
+            "label": "Human-in-the-loop gated reasoning",
+            "summary": "Pausar decisiones sensibles, side effects o incertidumbre alta para aprobacion humana.",
+            "use_when": [
+                "La accion modifica sistemas externos.",
+                "Falta evidencia, hay ambiguedad o la confianza no alcanza el umbral definido.",
+            ],
+            "tradeoffs": ["Reduce automatizacion pero aumenta control operacional."],
+            "fit_score": 82,
+            "selected": True,
+        },
+    ]
+
+
+def _cognition_tool_entries(snapshot: SessionSnapshot) -> list[dict[str, Any]]:
+    tools = project_blueprint_tools_for_construction(snapshot) if snapshot.blueprint is not None else []
+    entries: list[dict[str, Any]] = []
+    for index, tool in enumerate(tools, start=1):
+        entries.append(
+            {
+                "tool_name": getattr(tool, "name", ""),
+                "connector_key": getattr(tool, "connector_key", None) or getattr(tool, "registered_api_ref", "") or "",
+                "purpose": getattr(tool, "purpose", ""),
+                "contract_ref": build_tool_contract_path_for_tool(tool, index),
+                "permission_mode": _tool_permission_mode(tool),
+                "risk_level": getattr(tool, "risk_level", "") or "medium",
+                "side_effects": bool(getattr(tool, "has_side_effects", False)),
+                "requires_approval": bool(getattr(tool, "requires_approval", False)),
+                "when_to_use": getattr(tool, "when_to_use", "") or getattr(tool, "purpose", ""),
+                "failure_mode": getattr(tool, "failure_mode", "") or "fail_closed_and_ask_for_review",
+            }
+        )
+    return entries
+
+
+def _cognition_connector_policies(snapshot: SessionSnapshot) -> list[dict[str, Any]]:
+    policies: list[dict[str, Any]] = []
+    tools = project_blueprint_tools_for_construction(snapshot) if snapshot.blueprint is not None else []
+    connector_keys = {
+        str(
+            resolve_whatsapp_connector_key(tool)
+            or resolve_google_workspace_connector_key(tool)
+            or resolve_odoo_connector_key(tool)
+            or getattr(tool, "connector_key", "")
+            or getattr(tool, "registered_api_ref", "")
+            or getattr(tool, "name", "")
+        )
+        .strip()
+        .lower()
+        .replace("-", "_")
+        for tool in tools
+    }
+    if "whatsapp_cloud_api" in connector_keys or "whatsapp_business_messaging" in connector_keys:
+        policies.append(
+            {
+                "connector_family": "whatsapp",
+                "reasoning_policy": "Tratar WhatsApp como canal de entrada/salida gobernado; normalizar inbound antes de decidir.",
+                "must_escalate_when": ["message_type=image", "payload_ambiguous", "delivery_failure_after_retry"],
+                "evidence_required": ["wa_id", "message_id", "timestamp", "normalized_message_type"],
+                "side_effect_guard": "No enviar template, confirmacion de compra o instruccion de pago sin politica de aprobacion aplicable.",
+            }
+        )
+    if "google_sheets_read_table" in connector_keys:
+        policies.append(
+            {
+                "connector_family": "google_sheets",
+                "reasoning_policy": "Usar Sheets como fuente tabular para catalogo, stock, precios o datos operativos autorizados.",
+                "must_verify_before_decision": ["spreadsheet_id", "range", "header_row", "source_revision"],
+                "evidence_required": ["row_id_or_range", "columns_used", "fetched_at"],
+                "fallback": "Si falta fila, precio, stock o revision, responder needs_review antes de cotizar.",
+            }
+        )
+    if "google_drive_file_picker" in connector_keys:
+        policies.append(
+            {
+                "connector_family": "google_drive",
+                "reasoning_policy": "Usar Drive solo para archivos seleccionados o permitidos, con referencias de fuente trazables.",
+                "must_verify_before_decision": ["file_id", "mime_type", "export_format", "source_ref"],
+                "evidence_required": ["file_id", "file_name", "source_ref"],
+                "fallback": "Si la ficha, imagen o documento no existe o no esta autorizado, no inventar atributos del producto.",
+            }
+        )
+    if any(key.startswith("odoo_") for key in connector_keys) or _odoo_connector_keys_for_snapshot(snapshot):
+        policies.append(
+            {
+                "connector_family": "odoo",
+                "reasoning_policy": "Usar Odoo mediante allowlist de modelos/campos y approval gate para escrituras comerciales.",
+                "must_verify_before_decision": ["odoo_version", "model_allowlist", "technical_user_permissions"],
+                "evidence_required": ["model", "record_id", "domain_or_payload_hash"],
+                "side_effect_guard": "No crear o actualizar registros sin idempotency_key, owner y aprobacion cuando aplique.",
+            }
+        )
+    return policies
+
+
+def _default_planner_steps(snapshot: SessionSnapshot) -> list[dict[str, Any]]:
+    objective_statement = ""
+    if snapshot.blueprint is not None:
+        objective = active_objective(snapshot.blueprint.objective_contract)
+        objective_statement = objective.statement if objective is not None else ""
+    if not objective_statement and snapshot.canvas is not None:
+        objective_statement = snapshot.canvas.user_goal
+
+    steps = [
+        {
+            "step_key": "intake",
+            "objective": "Recibir solicitud, identificar canal, usuario, intencion y datos minimos.",
+            "required_inputs": ["user_message", "channel_context"],
+            "outputs": ["normalized_request", "intent", "missing_fields"],
+            "tool_policy": "no_tool_call",
+            "approval_required": False,
+        },
+        {
+            "step_key": "plan",
+            "objective": "Crear plan corto contra el objetivo activo sin exponer cadena de pensamiento privada.",
+            "required_inputs": ["normalized_request", "objective_contract", "guardrails"],
+            "outputs": ["plan_summary", "tool_sequence", "stop_conditions"],
+            "tool_policy": "select_tools_by_contract",
+            "approval_required": False,
+        },
+        {
+            "step_key": "gather_evidence",
+            "objective": "Consultar solo herramientas necesarias para obtener evidencia actualizada.",
+            "required_inputs": ["tool_sequence", "tool_contracts", "allowed_resources"],
+            "outputs": ["evidence_refs", "tool_results", "confidence_signals"],
+            "tool_policy": "read_only_tools_first",
+            "approval_required": False,
+        },
+        {
+            "step_key": "decide",
+            "objective": "Comparar evidencia contra reglas de negocio, restricciones y criterios del objetivo.",
+            "required_inputs": ["evidence_refs", "business_rules", "memory_policy"],
+            "outputs": ["decision_summary", "risk_flags", "next_action"],
+            "tool_policy": "no_side_effects_during_decision",
+            "approval_required": False,
+        },
+        {
+            "step_key": "act_or_escalate",
+            "objective": "Ejecutar accion permitida, pedir aprobacion o escalar a humano segun riesgo y evidencia.",
+            "required_inputs": ["next_action", "approval_policy", "side_effect_policy"],
+            "outputs": ["action_result", "handoff_ref", "user_response"],
+            "tool_policy": "side_effects_require_gate",
+            "approval_required": True,
+        },
+        {
+            "step_key": "verify_and_log",
+            "objective": "Verificar resultado, registrar trazabilidad y decidir cierre o replanificacion acotada.",
+            "required_inputs": ["action_result", "evidence_refs", "objective_success_criteria"],
+            "outputs": ["verification_status", "decision_log", "final_or_replan_signal"],
+            "tool_policy": "audit_only",
+            "approval_required": False,
+        },
+    ]
+    if objective_statement:
+        steps[1]["active_objective"] = objective_statement
+    return steps
+
+
 def _build_cognition_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     blueprint = snapshot.blueprint
     if blueprint is None:
         return []
+    tools = _cognition_tool_entries(snapshot)
+    pattern_catalog = [
+        item.model_dump(mode="json")
+        for item in blueprint.delivery_package.pattern_catalog
+        if item.family == "reasoning"
+    ]
+    if not pattern_catalog:
+        pattern_catalog = _cognition_default_patterns(blueprint.reasoning_pattern, bool(tools))
+    workflow_steps = [
+        item.model_dump(mode="json")
+        for item in blueprint.delivery_package.workflow_profile.steps
+        if item.name or item.objective
+    ]
+    if not workflow_steps:
+        workflow_steps = _default_planner_steps(snapshot)
+    objective = active_objective(blueprint.objective_contract)
     reasoning_payload = {
+        "schema_version": "acp-cognition-reasoning.v1",
         "selected_pattern": blueprint.reasoning_pattern,
-        "available_patterns": [item.model_dump(mode="json") for item in blueprint.delivery_package.pattern_catalog if item.family == "reasoning"],
-        "plan_summary_policy": blueprint.delivery_package.observability_plan.plan_summary_policy,
+        "available_patterns": pattern_catalog,
+        "pattern_stack": [
+            item["label"]
+            for item in pattern_catalog
+            if item.get("selected") or item.get("key") in {"plan_and_execute", "react_tool_loop"}
+        ],
+        "active_objective": objective.statement if objective is not None else (snapshot.canvas.user_goal if snapshot.canvas else ""),
+        "plan_summary_policy": blueprint.delivery_package.observability_plan.plan_summary_policy
+        or "Exponer un resumen breve del plan, no la cadena de pensamiento privada.",
+        "private_reasoning_policy": {
+            "do_not_export_chain_of_thought": True,
+            "expose_only": ["plan_summary", "tool_calls", "evidence_refs", "decision_summary", "approval_reason"],
+            "redact": ["secret_values", "tokens", "raw_private_reasoning"],
+        },
+        "operating_loop": [
+            {"step": "observe", "purpose": "Normalizar solicitud, canal, objetivo y restricciones."},
+            {"step": "plan", "purpose": "Definir pasos verificables y herramientas necesarias."},
+            {"step": "act", "purpose": "Ejecutar solo herramientas permitidas por contrato."},
+            {"step": "verify", "purpose": "Contrastar resultado con evidencia, guardrails y criterios de exito."},
+            {"step": "respond_or_escalate", "purpose": "Responder, pedir aprobacion o transferir a humano."},
+        ],
+        "decision_rules": [
+            "Si falta un dato critico, preguntar o marcar needs_review antes de actuar.",
+            "Si la accion tiene side effects, aplicar approval_gate o owner explicito antes de ejecutar.",
+            "Si la evidencia contradice el objetivo o los datos fuente, detener y escalar.",
+            "Si una herramienta falla, registrar fallo, aplicar retry policy y evitar duplicados.",
+        ],
+        "tool_reasoning_contracts": tools,
+        "connector_policies": _cognition_connector_policies(snapshot),
     }
     planner_payload = {
-        "execution_pattern": blueprint.delivery_package.workflow_profile.execution_pattern,
-        "steps": [item.model_dump(mode="json") for item in blueprint.delivery_package.workflow_profile.steps],
-        "checkpoint_policy": blueprint.delivery_package.workflow_profile.checkpoint_policy,
+        "schema_version": "acp-cognition-planner.v1",
+        "execution_pattern": blueprint.delivery_package.workflow_profile.execution_pattern
+        or "plan -> gather_evidence -> decide -> act_or_escalate -> verify_and_log",
+        "steps": workflow_steps,
+        "checkpoint_policy": blueprint.delivery_package.workflow_profile.checkpoint_policy
+        or "Persistir checkpoint antes de tool calls, antes de side effects y despues de verificacion.",
+        "retry_strategy": blueprint.delivery_package.workflow_profile.retry_strategy
+        or "Un reintento gobernado para fallas transitorias; despues escalar o marcar needs_review.",
+        "approval_pause": blueprint.delivery_package.workflow_profile.approval_pause
+        or "Pausar antes de escrituras externas, confirmaciones comerciales o acciones irreversibles.",
+        "stop_conditions": [
+            "insufficient_evidence",
+            "missing_required_field",
+            "constraint_violation",
+            "tool_contract_missing",
+            "human_handoff_required",
+        ],
+        "checkpoint_schema": {
+            "required_fields": [
+                "session_id",
+                "step_key",
+                "objective_ref",
+                "tool_refs",
+                "evidence_refs",
+                "decision_summary",
+                "approval_state",
+                "next_action",
+            ]
+        },
     }
     reflection_payload = {
+        "schema_version": "acp-cognition-reflection.v1",
         "review_trigger": blueprint.memory_profile.review_trigger,
         "goal_drift_guard": blueprint.memory_profile.goal_drift_guard,
-        "decision_logging": blueprint.delivery_package.observability_plan.decision_logging,
+        "decision_logging": blueprint.delivery_package.observability_plan.decision_logging
+        or "Registrar decision_summary, evidence_refs, tool_result_refs, approval_state y next_action.",
+        "self_check_rubric": [
+            "La respuesta esta alineada con el objetivo activo.",
+            "Cada recomendacion o cotizacion tiene evidencia o fuente autorizada.",
+            "No se inventaron campos, precios, stock, politicas ni credenciales.",
+            "Los side effects fueron aprobados o escalados segun politica.",
+            "El usuario recibio una respuesta accionable o una pregunta concreta.",
+        ],
+        "reflection_triggers": [
+            "tool_error",
+            "low_confidence",
+            "contradictory_evidence",
+            "before_side_effect",
+            "before_final_answer",
+            "after_human_handoff",
+        ],
+        "escalation_policy": {
+            "escalate_when": [
+                "unsupported_media_or_image",
+                "ambiguous_business_decision",
+                "payment_or_purchase_confirmation_unclear",
+                "policy_or_price_missing",
+                "security_or_secret_issue",
+            ],
+            "handoff_payload": ["reason", "conversation_ref", "evidence_refs", "last_safe_state", "recommended_next_step"],
+        },
     }
     guardrails_payload = {
         "guardrails": blueprint.guardrails,
@@ -2873,7 +3159,7 @@ def _tool_smoke_test_payload(tool: Any, index: int) -> dict[str, Any]:
 
 def _build_tool_connector_files(snapshot: SessionSnapshot) -> list[ACPFileEntry]:
     blueprint = snapshot.blueprint
-    if blueprint is None or not blueprint.tools:
+    if blueprint is None:
         return []
 
     catalog_items: list[dict[str, Any]] = []

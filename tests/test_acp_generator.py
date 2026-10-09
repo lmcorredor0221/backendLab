@@ -349,6 +349,20 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
     assert "Lee primero `ACP/construction-readiness/construction-guide.md`" in builder_handoff.content_text
     assert "`ACP/blueprint.graph.json`" in builder_handoff.content_text
+    cognition_reasoning = next(item for item in preview.files if item.path == "ACP/cognition/reasoning.yaml")
+    assert "schema_version: acp-cognition-reasoning.v1" in cognition_reasoning.content_text
+    assert "private_reasoning_policy:" in cognition_reasoning.content_text
+    assert "do_not_export_chain_of_thought: true" in cognition_reasoning.content_text
+    assert "operating_loop:" in cognition_reasoning.content_text
+    assert "tool_reasoning_contracts:" in cognition_reasoning.content_text
+    cognition_planner = next(item for item in preview.files if item.path == "ACP/cognition/planner.yaml")
+    assert "schema_version: acp-cognition-planner.v1" in cognition_planner.content_text
+    assert "checkpoint_schema:" in cognition_planner.content_text
+    assert "stop_conditions:" in cognition_planner.content_text
+    cognition_reflection = next(item for item in preview.files if item.path == "ACP/cognition/reflection.yaml")
+    assert "schema_version: acp-cognition-reflection.v1" in cognition_reflection.content_text
+    assert "self_check_rubric:" in cognition_reflection.content_text
+    assert "escalation_policy:" in cognition_reflection.content_text
     implementation_guide = next(item for item in preview.files if item.path == "ACP/IMPLEMENTATION_GUIDE.md")
     assert "ACP/construction-readiness/construction-guide.md" in implementation_guide.content_text
     assert "Deuda de proceso" in implementation_guide.content_text
@@ -404,6 +418,21 @@ def test_generate_acp_preview_builds_cross_domain_files() -> None:
     assert preview.construction_readiness.can_start_build is True
     assert preview.construction_readiness.blocking_gaps == 0
     assert preview.construction_readiness.open_questions >= 1
+
+
+def test_generate_acp_preview_keeps_empty_tool_connector_catalog() -> None:
+    snapshot = build_ready_snapshot()
+    assert snapshot.blueprint is not None
+    snapshot.blueprint.tools = []
+
+    preview = generate_acp_preview(snapshot)
+
+    paths = [item.path for item in preview.files]
+    assert "ACP/tools/permissions.yaml" in paths
+    assert "ACP/tools/connectors/catalog.yaml" in paths
+    connector_catalog = next(item for item in preview.files if item.path == "ACP/tools/connectors/catalog.yaml")
+    assert "schema_version: tool-connector-catalog.v1" in connector_catalog.content_text
+    assert "items: []" in connector_catalog.content_text
 
 
 def test_generate_acp_preview_expands_whatsapp_connector_end_to_end() -> None:
@@ -487,6 +516,10 @@ def test_generate_acp_preview_expands_whatsapp_connector_end_to_end() -> None:
 
     builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
     assert "LAB ya entrega el contrato tecnico del webhook" in builder_handoff.content_text
+    reasoning = next(item for item in preview.files if item.path == "ACP/cognition/reasoning.yaml")
+    assert "connector_family: whatsapp" in reasoning.content_text
+    assert "message_type=image" in reasoning.content_text
+    assert "side_effect_guard:" in reasoning.content_text
 
 
 def test_generate_acp_preview_canonicalizes_legacy_whatsapp_aliases() -> None:
@@ -632,6 +665,11 @@ def test_generate_acp_preview_expands_google_workspace_connector_family_end_to_e
     builder_handoff = next(item for item in preview.files if item.path == "ACP/prompts/builder-handoff.md")
     assert "Google Workspace public APIs" in builder_handoff.content_text
     assert "no conviertas LAB en runtime Google" in builder_handoff.content_text
+    reasoning = next(item for item in preview.files if item.path == "ACP/cognition/reasoning.yaml")
+    assert "connector_family: google_sheets" in reasoning.content_text
+    assert "connector_family: google_drive" in reasoning.content_text
+    assert "source_revision" in reasoning.content_text
+    assert "source_ref" in reasoning.content_text
 
 
 def test_generate_acp_preview_canonicalizes_google_workspace_aliases() -> None:
